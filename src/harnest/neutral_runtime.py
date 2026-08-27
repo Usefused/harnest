@@ -806,6 +806,7 @@ def create_neutral_app(
         from fastapi import FastAPI
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("The neutral runtime requires FastAPI") from exc
+
     @asynccontextmanager
     async def lifespan(_app: Any) -> AsyncIterator[None]:
         try:
@@ -814,6 +815,9 @@ def create_neutral_app(
             await driver.close()
 
     app = FastAPI(title=f"Harnest: {driver.info.name}", lifespan=lifespan)
+    from .playground import create_playground_router
+
+    app.include_router(create_playground_router())
     app.include_router(
         create_neutral_router(
             driver,

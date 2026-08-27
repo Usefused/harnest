@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Harnest Playground</title>
+    <link rel="stylesheet" href="/_harnest/playground.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Harnest Playground">
+          <span class="brand-mark">H</span>
+          <span>Harnest</span>
+        </a>
+
+        <section class="agent-card" aria-labelledby="agent-name">
+          <span class="eyebrow">Connected agent</span>
+          <h1 id="agent-name">Loading agent…</h1>
+          <p id="agent-description">Reading the neutral agent card.</p>
+          <div class="pills">
+            <span class="pill" id="agent-framework">—</span>
+            <span class="pill muted" id="agent-mode">—</span>
+          </div>
+        </section>
+
+        <section class="control-group" aria-labelledby="session-heading">
+          <div class="section-heading">
+            <h2 id="session-heading">Session</h2>
+            <button id="new-session" class="icon-button" type="button" title="Create session">+</button>
+          </div>
+          <label class="sr-only" for="session-select">Active session</label>
+          <select id="session-select" aria-label="Active session">
+            <option value="">No session</option>
+          </select>
+          <button id="refresh-sessions" class="secondary-button" type="button">Refresh sessions</button>
+        </section>
+
+        <section class="control-group" aria-labelledby="transport-heading">
+          <h2 id="transport-heading">Transport</h2>
+          <div class="segmented" role="radiogroup" aria-label="Response transport">
+            <button class="transport active" data-transport="stream" role="radio" aria-checked="true" type="button">Stream</button>
+            <button class="transport" data-transport="response" role="radio" aria-checked="false" type="button">Response</button>
+            <button class="transport" data-transport="live" role="radio" aria-checked="false" type="button">Live</button>
+          </div>
+          <p id="transport-note" class="note">SSE streams response events as they arrive.</p>
+        </section>
+
+        <details class="auth-panel">
+          <summary>Bearer authentication</summary>
+          <label for="bearer-token">Token</label>
+          <input id="bearer-token" type="password" autocomplete="off" placeholder="Kept in page memory only">
+          <p>Used only for HTTP and SSE requests. Browser WebSockets require same-origin cookie authentication.</p>
+        </details>
+
+        <nav class="links" aria-label="Developer links">
+          <a href="/docs" target="_blank" rel="noreferrer">API docs <span>↗</span></a>
+          <a href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI <span>↗</span></a>
+          <a href="/agent" target="_blank" rel="noreferrer">Agent metadata <span>↗</span></a>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">Development playground</span>
+            <h2>Conversation</h2>
+          </div>
+          <div id="connection-status" class="status" data-tone="pending">
+            <span class="status-dot"></span>
+            <span id="status-text">Connecting…</span>
+          </div>
+        </header>
+
+        <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+        <section id="conversation" class="conversation" aria-live="polite">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-mark">⌁</div>
+            <h3>Test the compiled agent</h3>
+            <p>Messages, tool activity, streaming output, and session state appear here through Harnest’s neutral runtime.</p>
+          </div>
+        </section>
+
+        <form id="composer" class="composer">
+          <label class="sr-only" for="message-input">Message</label>
+          <textarea id="message-input" rows="1" placeholder="Send a message to the agent…" required></textarea>
+          <button id="send-message" class="send-button" type="submit">
+            <span>Send</span><span aria-hidden="true">↑</span>
+          </button>
+        </form>
+      </main>
+
+      <aside class="inspector">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Current session</span>
+            <h2>State</h2>
+          </div>
+          <button id="refresh-state" class="icon-button" type="button" title="Refresh state">↻</button>
+        </div>
+        <pre id="session-state">{}</pre>
+        <div class="inspector-footer">
+          <span>Session ID</span>
+          <code id="session-id">Not created</code>
+        </div>
+      </aside>
+    </div>
+    <script src="/_harnest/playground.js" defer></script>
+  </body>
+</html>

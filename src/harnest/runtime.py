@@ -440,6 +440,7 @@ def _build_fastapi_app(
     _apply_observability_defaults(application.framework)
 
     from .neutral_runtime import create_neutral_app, create_neutral_router
+    from .playground import create_playground_router
     from .telemetry import configure_observability, instrument_fastapi
 
     native_adk = _exposes_native_adk_api(application)
@@ -465,6 +466,9 @@ def _build_fastapi_app(
             extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
             adk_session_service=adk_session_service,
         )
+        # ADK's generated FastAPI app owns a flat route table, so the bundled
+        # playground follows the same mounting path as the neutral endpoints.
+        app.router.routes.extend(create_playground_router().routes)
         neutral_router = create_neutral_router(
             driver,
             request_timeout=request_timeout,

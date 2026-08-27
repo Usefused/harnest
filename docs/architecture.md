@@ -416,6 +416,15 @@ Harnest integration boundary.
 `GET /healthz` and `GET /.well-known/agent-card.json` remain available for
 health and card discovery in both frameworks.
 
+`GET /` serves Harnest's dependency-free development playground, with its
+bundled assets under `/_harnest/`. The UI depends only on the neutral agent,
+session, response, SSE, and live WebSocket contracts, which prevents framework
+adapters from developing separate test surfaces. Shell assets are public when
+authentication is injected; session and execution APIs remain protected. A
+bearer token stays in page memory for HTTP/SSE calls. Browser WebSockets use
+same-origin cookie authentication because their API cannot set arbitrary
+authorization headers.
+
 This is a process boundary, not a deployment boundary: the interpreter still
 needs Harnest, the selected framework, model adapters, and agent dependencies.
 The standalone server does not interpret deployment resources, resolve secrets,

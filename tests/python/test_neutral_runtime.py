@@ -189,6 +189,26 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(self.client.delete("/sessions/one").status_code, 204)
         self.assertEqual(self.client.get("/sessions/one").status_code, 404)
 
+    def test_development_playground_is_bundled_and_framework_neutral(self):
+        page = self.client.get("/")
+        stylesheet = self.client.get("/_harnest/playground.css")
+        javascript = self.client.get("/_harnest/playground.js")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Harnest Playground", page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("default-src 'self'", page.headers["content-security-policy"])
+        self.assertEqual(stylesheet.status_code, 200)
+        self.assertIn("text/css", stylesheet.headers["content-type"])
+        self.assertEqual(javascript.status_code, 200)
+        self.assertIn("text/javascript", javascript.headers["content-type"])
+        for endpoint in ('"/agent"', '"/sessions"', '"/responses"', '"/live"'):
+            self.assertIn(endpoint, javascript.text)
+        for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
+            self.assertNotIn(native_endpoint, javascript.text)
+        self.assertNotIn("localStorage", javascript.text)
+        self.assertNotIn("sessionStorage", javascript.text)
+
     def test_json_response_preserves_the_public_envelope(self):
         session = self.client.post("/sessions", json={"id": "json"})
         self.assertEqual(session.status_code, 201)
@@ -338,8 +358,20 @@ class NeutralRuntimeTests(unittest.TestCase):
         driver = FakeDriver()
         app = create_neutral_app(driver, authenticator=HeaderAuthenticator())
         with TestClient(app) as client:
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(
+                client.get("/_harnest/playground.js").status_code,
+                200,
+            )
             self.assertEqual(client.get("/agent").status_code, 200)
             self.assertEqual(client.get("/sessions").status_code, 401)
+            self.assertEqual(
+                client.post(
+                    "/responses",
+                    json={"input": "protected"},
+                ).status_code,
+                401,
+            )
             with self.assertRaises(WebSocketDisconnect) as rejected:
                 with client.websocket_connect("/live"):
                     pass

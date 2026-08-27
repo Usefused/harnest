@@ -747,6 +747,18 @@ ADK-native types and can vary with the installed ADK version; new integrations
 should use the neutral routes above. Inspect `/docs` or `/openapi.json` for the
 exact surface compiled for the selected mode.
 
+Open `http://127.0.0.1:8080/` for Harnest's bundled development playground. It
+uses only `/agent`, `/sessions`, `/responses`, and `/live`, so the same UI tests
+managed or advanced ADK and LangGraph agents. The playground can create and
+select sessions, inspect state, show tool calls/results, and run complete JSON,
+SSE streaming, or WebSocket live conversations. No frontend build or ADK web UI
+is required.
+
+An optional bearer token entered in the playground is held only in page memory
+and sent on HTTP/SSE requests. It is never placed in storage or a URL. Browsers
+cannot add arbitrary authorization headers to WebSocket handshakes, so protected
+`/live` deployments must use a same-origin authentication cookie.
+
 This standalone path needs the artifact's Python dependencies and any model or
 MCP services used by the agent. A compiled folder is not a bundled Python
 environment, and the local server does not apply `config.yaml` resource limits,

@@ -106,6 +106,12 @@ The neutral server includes `/agent`, `/sessions`, `/responses`, and WebSocket
 `/redoc` describe that surface in every mode. Only an advanced-mode ADK artifact
 additionally exposes ADK-native endpoints.
 
+Open `/` to test any compiled ADK or LangGraph agent in Harnest's neutral
+playground. Create or select a session, inspect state, choose JSON response, SSE
+streaming, or WebSocket live mode, and verify visible output plus tool activity.
+The UI never calls framework-native endpoints. Bearer tokens stay in page memory
+for HTTP/SSE; authenticated browser WebSockets require a same-origin cookie.
+
 ## Change checklist
 
 Before finishing a modification:

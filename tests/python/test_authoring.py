@@ -782,6 +782,7 @@ class AuthoringTests(unittest.TestCase):
             from fastapi.testclient import TestClient
 
             with TestClient(app) as client:
+                playground_response = client.get("/")
                 schema_response = client.get("/openapi.json")
                 docs_response = client.get("/docs")
                 redoc_response = client.get("/redoc")
@@ -789,11 +790,14 @@ class AuthoringTests(unittest.TestCase):
                 native_response = client.post("/run", json={})
                 native_health = client.get("/health")
 
+            self.assertEqual(playground_response.status_code, 200)
+            self.assertIn("Harnest Playground", playground_response.text)
             self.assertEqual(schema_response.status_code, 200)
             self.assertEqual(docs_response.status_code, 200)
             self.assertEqual(redoc_response.status_code, 200)
             schema_paths = schema_response.json()["paths"]
             self.assertIn("/responses", schema_paths)
+            self.assertNotIn("/", schema_paths)
             self.assertFalse(
                 {"/health", "/version", "/list-apps", "/run", "/run_sse"}
                 & set(schema_paths)
@@ -826,6 +830,9 @@ class AuthoringTests(unittest.TestCase):
                 for method in (getattr(route, "methods", None) or {"WEBSOCKET"})
             }
             expected = {
+                ("GET", "/"),
+                ("GET", "/_harnest/playground.css"),
+                ("GET", "/_harnest/playground.js"),
                 ("GET", "/docs"),
                 ("GET", "/health"),
                 ("GET", "/version"),
@@ -866,6 +873,9 @@ class AuthoringTests(unittest.TestCase):
             from fastapi.testclient import TestClient
 
             with TestClient(app) as client:
+                playground_response = client.get("/")
+                self.assertEqual(playground_response.status_code, 200)
+                self.assertIn("Harnest Playground", playground_response.text)
                 response = client.post(
                     "/apps/root/users/test-user/sessions",
                     json={"sessionId": "session-1", "state": {"ready": True}},
@@ -912,6 +922,7 @@ class AuthoringTests(unittest.TestCase):
                 openapi_paths = client.get("/openapi.json").json()["paths"]
                 self.assertIn("/run", openapi_paths)
                 self.assertIn("/responses", openapi_paths)
+                self.assertNotIn("/", openapi_paths)
 
                 neutral_session = client.post(
                     "/sessions",

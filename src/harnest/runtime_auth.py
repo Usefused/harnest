@@ -9,7 +9,16 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 ANONYMOUS_USER_ID = "_harnest_neutral"
 _PRINCIPAL_STATE_KEY = "harnest_principal"
-_PUBLIC_PATHS = frozenset({"/healthz", "/.well-known/agent-card.json", "/agent"})
+_PUBLIC_PATHS = frozenset(
+    {
+        "/",
+        "/_harnest/playground.css",
+        "/_harnest/playground.js",
+        "/healthz",
+        "/.well-known/agent-card.json",
+        "/agent",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
