@@ -1,0 +1,311 @@
+# Self-serve example
+
+This project demonstrates the authoring boundary: agent owners write Python and
+YAML, while the platform runs one shared Go discovery and deployment engine.
+
+To add another agent, copy `agents/helpdesk` to a new immediate child directory,
+then change at least:
+
+1. `config.yaml` → `metadata.name`, `spec.entrypoint`, runtime requirements,
+   resources, secret references, and permissions;
+2. `agent-card.yaml` → public identity, deployed interface URL, modalities, and
+   skills; and
+3. `agent.py` → the root `Agent` definition using explicit `harnest.*` imports;
+4. `instructions.md` → the required non-empty root instruction;
+5. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
+6. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
+7. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
+8. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
+9. `evals/<id>.evalset.json` → optional official ADK eval sets; and
+10. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
+    live-model tests.
+
+The existing `orchestrator.py` selects every child under `agents/`, so no Go
+registration is needed. Use `include` or `exclude` when only part of a source
+root should be deployed, or add another `AgentSource.directory(...)` for a
+different root.
+
+From the repository root:
+
+```bash
+make plan
+make dry-run
+```
+
+`plan` shows the versioned JSON consumed by Go. `dry-run` performs discovery,
+manifest validation, and source compilation before printing the immutable bundle
+digest; it does not install requirements or serve the agent. Install the declared
+Python dependencies first. URLs and secret references in this example are
+placeholders for the deployment environment.
+
+## Live local run with Ollama
+
+The helpdesk agent and its technical subagent both construct the provider-neutral
+`LiteLLMModel` from `LITELLM_MODEL`, whose value defaults to
+`ollama_chat/qwen3.5:cloud`. LiteLLM connects to the local Ollama daemon at
+the URL in `LITELLM_API_BASE`, and the daemon authenticates onward to Ollama
+Cloud. Neither setting is a secret, so both are declared under
+`spec.environment` in `config.yaml`.
+
+Install [Ollama](https://ollama.com), start it (`ollama serve` when it is not
+already managed by the desktop app), sign in once with `ollama signin`, then run
+from the repository root:
+
+```bash
+make example-install
+make live-run
+```
+
+This installs Harnest from the working tree, including its ADK and LiteLLM
+runtime dependencies, compiles the flat source folder into
+`.harnest/helpdesk`, and starts the ADK interactive CLI against that generated
+artifact. Requests go to
+`http://127.0.0.1:11434`; Ollama transparently runs `qwen3.5:cloud` using the
+signed-in account. The local Python process does not consume `config.yaml`, so
+the Make target exports the same model and base-URL values explicitly. Override
+them with `LITELLM_MODEL` or `LITELLM_API_BASE`; for example,
+`ollama_chat/qwen3.5:9b` uses a locally installed model instead of Ollama Cloud.
+
+Run `make example-test` for the offline unit suite. It uses the
+injected `agent` and read-only `tools` fixtures to check filesystem composition
+and call `triage_request` directly; it does not invoke Ollama.
+
+Run `make example-smoke` (or the retained `make live-test` alias) for the
+explicit live acceptance check. The `smoke` fixture sends only benign synthetic
+demo data through the neutral `/responses` API and verifies the model calls
+`triage_request` and returns the expected `technical-support / urgent` result.
+The `--smoke` command always runs the unit suite first.
+
+Run `make example-eval` to execute the offline unit suite and then every
+validated checked-in ADK eval set. Harnest automatically applies
+`evals/test_config.json`; the example's in-order tool-trajectory criterion
+allows extra skill-loading calls but requires the expected `triage_request`
+call. Like `live-run`, evals use Ollama Cloud and require a running, signed-in
+daemon. `make example-all` selects unit tests, live smoke tests, and evals in one
+command; Python tests must pass before eval execution begins.
+
+The remote knowledge MCP connection is optional. Without
+`KNOWLEDGE_MCP_TOKEN`, the example uses only its local triage tool and subagent,
+which keeps this path credential-free.
+
+The test modules themselves import no Harnest package. `agent` exposes the
+compiled ADK root, `tools` maps local tool names to callables, and smoke-only
+tests may request either the high-level `smoke` helper or a raw FastAPI `client`.
+Unit tests are offline by convention—the runner withholds HTTP fixtures but does
+not install an operating-system network sandbox. Neither test directory is
+composed into agent instructions, resources, or advertised capabilities.
+
+## Standalone HTTP server
+
+The compiled artifact runs without the Go provisioner. After running
+`make example-install`, start its generated launcher from the repository root:
+
+```bash
+make serve-example
+```
+
+`serve-example` compiles first and listens on `127.0.0.1:8080`. `SERVE_PORT`,
+`SERVE_REQUEST_TIMEOUT`, and `SERVE_MAX_CONCURRENCY` are configurable. In
+another terminal, inspect the agent, create a session, and run an agent turn
+through Harnest's neutral API:
+
+```bash
+curl -sS http://127.0.0.1:8080/agent
+
+curl -sS -X POST http://127.0.0.1:8080/sessions \
+  -H 'Content-Type: application/json' \
+  --data '{"id":"demo-session","state":{}}'
+
+curl -sS -X POST http://127.0.0.1:8080/responses \
+  -H 'Content-Type: application/json' \
+  --data '{"input":"Triage a fictional production API authentication outage.","sessionId":"demo-session"}'
+```
+
+The final call returns `id`, `status`, `sessionId`, `outputText`, ordered
+provider-neutral `output` items, and `metadata`. Reuse the session for a
+follow-up, or set `stream: true` for named SSE events:
+
+```bash
+curl -N -sS -X POST http://127.0.0.1:8080/responses \
+  -H 'Content-Type: application/json' \
+  --data '{"input":"What should I collect next?","sessionId":"demo-session","stream":true}'
+```
+
+The stream begins with `response.created`, emits text deltas and any tool
+call/result events, then ends with `response.completed`. Each event includes a
+sequence number plus response and session IDs. `WS /live` uses the same event
+vocabulary: first send `{"type":"connect","sessionId":"demo-session"}`, wait
+for `session.connected`, then send a `response.create` frame with `input` and
+optional `requestId`/`metadata`. Send `session.close` to finish; `/live` does not
+use a mode flag.
+
+Session CRUD is available at `/sessions` and `/sessions/{id}`; PATCH accepts
+exactly `{"stateDelta": {...}}`. Sessions are in memory and last only for this
+process. HTTP request failures use `{"detail":"..."}`; failures after an SSE or
+WebSocket stream starts use a typed `error` event. The matching helpers are
+`make demo-agent`, `make demo-session`, `make demo-response`, and
+`make demo-stream`.
+
+Health and Agent Card discovery are also available:
+
+```bash
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:8080/.well-known/agent-card.json
+```
+
+The generated app additionally mounts official ADK `/run`, `/run_sse`,
+`/run_live`, and `/apps/{app}/users/{user}/sessions` routes as a compatibility
+escape hatch. They expose ADK-native event types and may change with the
+installed ADK release; use the neutral API for new integrations. Run
+`make demo-adk-run` for a native example, or inspect `/docs` and
+`/openapi.json` for the installed route schemas.
+
+The artifact is independently launchable, not dependency-free: its interpreter
+still needs Harnest, Google ADK, LiteLLM, and the agent's requirements, plus a
+reachable model and any enabled MCP services. The standalone server does not
+read deployment environment from `config.yaml` or provide the provisioner's
+secret resolution, resource enforcement, permissions, scaling, authentication,
+or TLS. The Make target exports the Ollama settings; export any optional MCP
+variables yourself. The authored Agent Card is served unchanged, including its
+deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent --host
+127.0.0.1 --port 8080`; `python .harnest/helpdesk` also starts the defaults.
+Do not bind it beyond loopback without adding authentication and TLS through a
+trusted proxy. The launcher also requires `--allow-remote`; with Make, pass it
+as `SERVE_EXTRA_ARGS=--allow-remote` alongside the non-loopback `SERVE_HOST`.
+
+## Filesystem composition contract
+
+Agent-owned source imports its compiler-provided types explicitly. The root uses
+`from harnest.agent import Agent`; tool files use
+`from harnest.tool import tool`; model connectors use
+`from harnest.model import LiteLLMModel`; and MCP files use
+`from harnest.mcp import MCPClient`. Harnest belongs to the compiler/runtime, so
+it is not listed in the agent's `requirements.txt`. The compiler examines
+sibling resource directories, so root code still never maintains an import or
+registration list.
+
+`harnest compile` is the source entrypoint and supplies the namespace while
+loading authored code; ADK receives only the generated package. Authored files
+must import every Harnest symbol explicitly; bare magic globals are rejected. The
+import-free orchestrator similarly runs through `harnest plan`.
+
+Portable graph construction remains managed mode. If this example eventually
+needs direct ADK or LangGraph features that Harnest's graph cannot express,
+audit it before migrating:
+
+```bash
+harnest mode advanced examples/self-serve/agents/helpdesk --check
+```
+
+The check is read-only and preserves every change already made to the example.
+It reports managed resources that would need explicit wiring; it does not alter
+`config.yaml`, regenerate `agent.py`, or move folders. An advanced entrypoint
+imports its framework directly and exports
+`Agent.advanced(name=..., target=...)`; Harnest does not provide a wrapped ADK
+or LangGraph package.
+
+- `instructions.md` is required, non-empty UTF-8. The compiler supplies it when
+  `Agent.instruction` is omitted; an explicit nonblank instruction wins without
+  merging, but the file is still validated.
+- `tools/<name>.py` must export a callable named `<name>` decorated with
+  `@tool`. Use one public resource file per discovered tool.
+- `subagents/<name>.py` must export exactly one `AgentDefinition` named
+  `<name>`.
+- `mcp/<name>.py` must export an `MCPClient` or `None` named `<name>`.
+  Exporting `None` is the supported way to disable an optional integration.
+- `plugins/<name>/mcp/` contains plugin-owned MCP client definitions and
+  `plugins/<name>/skills/` contains progressive instructions that teach the
+  host agent when and how to use those MCP tools. A non-empty plugin requires
+  at least one client and one skill; plugins never contain agents.
+- `extensions/<name>/lifecycle.py` exports an `Extension` named `extension`.
+  Optional `adk.py` or `langgraph.py` files provide native integration for the
+  selected framework.
+- `__init__.py`, dotfiles, caches, and underscore-prefixed helper files are
+  ignored.
+
+Any optional resource root can be missing, empty, or contain only ignored
+starter/helper files. Compilation skips it and continues. Public files and
+directories are validated strictly once present. `harnest init` gives every
+resource folder starter content, including an inline graph agent, an
+environment-gated MCP-and-skill plugin, a portable extension, and an ignored
+sandbox example that can be renamed to `sandbox.py` when isolation is
+configured.
+
+Each public directory directly under `skills/` is one ADK Agent Skill. Its name
+must be kebab-case and its `SKILL.md` frontmatter `name` must match the directory:
+
+```text
+skills/
+└── incident-triage/
+    ├── SKILL.md
+    ├── references/   # optional
+    ├── assets/       # optional
+    └── scripts/      # optional
+```
+
+Skills are exposed through one ADK `SkillToolset`, enabling progressive
+list/load/resource access instead of injecting every skill body into the prompt.
+Symlinks are rejected.
+
+These internal skills are distinct from the public capabilities advertised by
+the Agent Card's `skills` field. They do not need matching IDs, but the card
+must remain a truthful summary of the composed agent.
+
+The test-only `evals/` directory accepts sorted
+`<eval-set-id>.evalset.json` files and optional `test_config.json`. Files must
+validate as ADK `EvalSet`/`EvalConfig`, each `eval_set_id` must match its
+filename, and case IDs must be unique. Evals are validated during compilation but
+never added to instructions or tools. Run all of them through the same authored
+test entrypoint:
+
+```bash
+harnest test examples/self-serve/agents/helpdesk --evals
+```
+
+This always runs `tests/unit` first, then the validated eval sets in filename
+order, automatically using `test_config.json` when present. Add `--smoke` to run
+all three lanes. Smoke tests and evals are explicit live checks: they may call
+the configured model or MCP services and consume credentials, time, and paid
+capacity. Harnest runs each eval case once, uses a temporary compiled artifact,
+and does not persist ADK eval history; retain CI output when a durable record is
+needed.
+
+Public resource files are compiled in deterministic filename order. A missing or
+wrongly typed filename-matched export fails compilation with a convention error;
+duplicate tool names, agent names, or identical MCP configurations also fail.
+Explicit resources already present on the root definition are retained first,
+then discovered resources are appended.
+
+A subagent that needs its own filesystem-composed resources can use the nested
+form `subagents/<name>/agent.py`. That file must export an `AgentDefinition`
+named `<name>` and may have its own sibling `tools/`, `subagents/`, and
+`mcp/` directories. Do not define both `subagents/<name>.py` and
+`subagents/<name>/agent.py`.
+
+The example's `mcp/knowledge.py` reads both `KNOWLEDGE_MCP_URL` and
+`KNOWLEDGE_MCP_TOKEN`. It exports `knowledge = None` unless both are present, so
+partial local or deployment configuration never constructs a broken MCP client.
+When enabled, the definition retains `${KNOWLEDGE_MCP_URL}` and
+`${KNOWLEDGE_MCP_TOKEN}` placeholders; expansion is deferred until ADK toolset
+construction, so the token is not captured in the dataclass or its `repr`.
+
+## Source and compiled artifact
+
+Run the compiler explicitly when inspecting or integrating its output:
+
+```bash
+harnest compile examples/self-serve/agents/helpdesk \
+  --output .harnest/helpdesk
+```
+
+The source folder remains the self-serve ownership boundary. The generated
+folder contains a preserved `source/` tree, ADK-compatible `agent.py`,
+`__init__.py`, and `__main__.py` adapters, the executable `harnest-agent`
+launcher, and `harnest-manifest.json`. ADK tools or the standalone launcher
+consume the generated folder; authors edit only source. `.harnest/` is ignored
+because the artifact is reproducible build output. The compiler also excludes VCS metadata,
+virtual environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode;
+runtime secrets are injected by the engine rather than copied into artifacts.
+
+`harnest plan orchestrator.py` applies the same zero-import experience to the
+deployment declaration by injecting `AgentSource` and `define_orchestrator`.

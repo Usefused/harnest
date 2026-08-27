@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/config.schema.json",
+  "title": "Harnest agent configuration",
+  "description": "Deployment contract consumed by the Harnest Go runtime. Agent behavior stays in the Python entrypoint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "harnest.dev/v1alpha1" },
+    "kind": { "const": "Agent" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoint", "framework", "runtime", "resources"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "entrypoint": {
+          "type": "string",
+          "description": "Importable Python module and exported managed Agent/Graph or Agent.advanced definition, in module:symbol form.",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "framework": {
+          "type": "object",
+          "description": "Compiler backend and managed or advanced authoring mode.",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "enum": ["adk", "langgraph"] },
+            "mode": { "enum": ["managed", "advanced"], "default": "managed" }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version"],
+          "properties": {
+            "version": { "enum": ["3.10", "3.11", "3.12", "3.13", "3.14"] },
+            "requirementsFile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path relative to the agent directory. It may not escape that directory."
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\\.[0-9]+)?)$" },
+            "memory": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$" },
+            "ephemeralStorage": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$" },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "maxConcurrentRequests": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "scaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minReplicas": { "type": "integer", "minimum": 0 },
+            "maxReplicas": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "environment": {
+          "type": "object",
+          "description": "Non-secret environment values. Credentials belong in spec.secrets.",
+          "additionalProperties": { "type": "string" }
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["environmentVariable", "secretRef"],
+            "properties": {
+              "environmentVariable": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+              "secretRef": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Opaque identifier resolved by the deployment engine, never a secret value."
+              }
+            }
+          }
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "network": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "outbound": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "filesystem": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "readOnly": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "readWrite": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

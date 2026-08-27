@@ -1,0 +1,550 @@
+package engine
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+)
+
+func TestDiscoverLoadsEnabledBundlesInStableOrder(t *testing.T) {
+	project := t.TempDir()
+	writeAgent(t, project, "zeta", true)
+	writeAgent(t, project, "alpha", true)
+	writeAgent(t, project, "disabled", false)
+	plan := testPlan(project)
+	plan.Labels = map[string]string{"environment": "test"}
+
+	bundles, err := Discover(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 2 {
+		t.Fatalf("got %d bundles, want 2", len(bundles))
+	}
+	if bundles[0].Config.Metadata.Name != "alpha" || bundles[1].Config.Metadata.Name != "zeta" {
+		t.Fatalf("bundles not sorted: %v, %v", bundles[0].Config.Metadata.Name, bundles[1].Config.Metadata.Name)
+	}
+	if len(bundles[0].Digest) != len("sha256:")+64 {
+		t.Fatalf("unexpected digest %q", bundles[0].Digest)
+	}
+	if bundles[0].Labels["environment"] != "test" {
+		t.Fatalf("deployment labels were not propagated: %v", bundles[0].Labels)
+	}
+}
+
+func TestDiscoverRejectsUnknownConfigFields(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "broken", true)
+	file, err := os.OpenFile(filepath.Join(directory, "config.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.WriteString("unknownField: true\n")
+	_ = file.Close()
+
+	if _, err := Discover(testPlan(project)); err == nil {
+		t.Fatal("expected strict YAML error")
+	}
+}
+
+func TestDeployAllCallsDeployerForEachAgent(t *testing.T) {
+	project := t.TempDir()
+	writeAgent(t, project, "alpha", true)
+	writeAgent(t, project, "beta", true)
+	deployer := &recordingDeployer{}
+
+	if err := DeployAll(context.Background(), testPlan(project), deployer); err != nil {
+		t.Fatal(err)
+	}
+	deployer.mu.Lock()
+	defer deployer.mu.Unlock()
+	if len(deployer.names) != 2 {
+		t.Fatalf("deployed %v, want two agents", deployer.names)
+	}
+}
+
+func TestDecodePlanRejectsUnknownFields(t *testing.T) {
+	input := bytes.NewBufferString(`{"apiVersion":"harnest.dev/v1alpha1","kind":"DeploymentPlan","projectRoot":"/tmp","parallelism":1,"sources":[{"root":"agents"}],"surprise":true}`)
+	if _, err := DecodePlan(input); err == nil {
+		t.Fatal("expected unknown field error")
+	}
+}
+
+func TestDecodePlanRejectsTrailingJSONValue(t *testing.T) {
+	input := bytes.NewBufferString(`{"apiVersion":"harnest.dev/v1alpha1","kind":"DeploymentPlan","projectRoot":"/tmp","parallelism":1,"sources":[{"root":"agents"}]} {}`)
+	if _, err := DecodePlan(input); err == nil {
+		t.Fatal("expected trailing JSON value error")
+	}
+}
+
+func TestDiscoverRejectsSourceSymlinkOutsideProject(t *testing.T) {
+	project := t.TempDir()
+	external := t.TempDir()
+	writeAgent(t, external, "outside", true)
+	if err := os.Symlink(filepath.Join(external, "agents"), filepath.Join(project, "agents")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Discover(testPlan(project)); err == nil {
+		t.Fatal("expected source symlink escape error")
+	}
+}
+
+func TestLoadBundleRejectsRequirementsSymlink(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "unsafe", true)
+	requirements := filepath.Join(directory, "requirements.txt")
+	if err := os.Remove(requirements); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "requirements.txt")
+	mustWrite(t, external, "external-package\n")
+	if err := os.Symlink(external, requirements); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadBundle(directory); err == nil {
+		t.Fatal("expected requirements symlink error")
+	}
+}
+
+func TestLoadBundleRequiresNonEmptyInstructions(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		instructions *string
+	}{
+		{name: "missing", instructions: nil},
+		{name: "empty", instructions: stringPointer(" \n\t")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			project := t.TempDir()
+			directory := writeAgent(t, project, "instructions", true)
+			path := filepath.Join(directory, "instructions.md")
+			if testCase.instructions == nil {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				mustWrite(t, path, *testCase.instructions)
+			}
+			if _, err := LoadBundle(directory); err == nil || !strings.Contains(err.Error(), "instructions.md") {
+				t.Fatalf("got error %v, want instructions.md validation error", err)
+			}
+		})
+	}
+}
+
+func TestLoadBundleRejectsSymlinksInConventionDirectories(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "unsafe-resources", true)
+	skills := filepath.Join(directory, "skills")
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "SKILL.md")
+	mustWrite(t, external, "External instructions.\n")
+	if err := os.Symlink(external, filepath.Join(skills, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadBundle(directory); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("got error %v, want resource symlink validation error", err)
+	}
+}
+
+func TestLoadBundleRejectsLegacyMCPServersDirectory(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "legacy-mcp", true)
+	if err := os.Mkdir(filepath.Join(directory, "mcp_servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadBundle(directory); err == nil || !strings.Contains(err.Error(), "use mcp") {
+		t.Fatalf("got error %v, want mcp directory migration error", err)
+	}
+}
+
+func TestLoadBundleUsesAdvancedModeAndRejectsRemovedNativeMode(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "advanced-mode", true)
+	configPath := filepath.Join(directory, "config.yaml")
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced := strings.Replace(string(contents), "mode: managed", "mode: advanced", 1)
+	mustWrite(t, configPath, advanced)
+	bundle, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatalf("advanced mode should be valid: %v", err)
+	}
+	if bundle.Config.Spec.Framework.EffectiveMode() != "advanced" {
+		t.Fatalf("unexpected framework mode %#v", bundle.Config.Spec.Framework)
+	}
+
+	removed := strings.Replace(advanced, "mode: advanced", "mode: native", 1)
+	mustWrite(t, configPath, removed)
+	if _, err := LoadBundle(directory); err == nil || !strings.Contains(err.Error(), "managed or advanced") {
+		t.Fatalf("got error %v, want removed native-mode validation error", err)
+	}
+}
+
+func TestBundleDigestIncludesSkillsAndEvals(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "resources", true)
+	mustWrite(t, filepath.Join(directory, "skills", "support", "SKILL.md"), "First skill version.\n")
+	mustWrite(t, filepath.Join(directory, "evals", "cases.jsonl"), "{\"input\":\"hello\"}\n")
+	first, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.InstructionsPath != filepath.Join(first.Directory, "instructions.md") {
+		t.Fatalf("unexpected instructions path %q", first.InstructionsPath)
+	}
+	mustWrite(t, filepath.Join(directory, "skills", "support", "SKILL.md"), "Second skill version.\n")
+	second, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest == second.Digest {
+		t.Fatal("skill content change did not alter bundle digest")
+	}
+}
+
+func TestDeployAllValidatesPlanBeforeStartingWorkers(t *testing.T) {
+	plan := testPlan(t.TempDir())
+	plan.Parallelism = 0
+	err := DeployAll(context.Background(), plan, &recordingDeployer{})
+	if err == nil || !strings.Contains(err.Error(), "parallelism") {
+		t.Fatalf("got error %v, want parallelism validation error", err)
+	}
+}
+
+func TestDeployAllHonorsCanceledContext(t *testing.T) {
+	project := t.TempDir()
+	writeAgent(t, project, "alpha", true)
+	deployer := &recordingDeployer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := DeployAll(ctx, testPlan(project), deployer)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got error %v, want context cancellation", err)
+	}
+	deployer.mu.Lock()
+	defer deployer.mu.Unlock()
+	if len(deployer.names) != 0 {
+		t.Fatalf("deployed %v after context cancellation", deployer.names)
+	}
+}
+
+func TestDeployAllFailFastStopsPendingAgents(t *testing.T) {
+	project := t.TempDir()
+	writeAgent(t, project, "alpha", true)
+	writeAgent(t, project, "beta", true)
+	writeAgent(t, project, "gamma", true)
+	plan := testPlan(project)
+	plan.Parallelism = 1
+	plan.FailFast = true
+	deployer := &failingDeployer{}
+
+	err := DeployAll(context.Background(), plan, deployer)
+	if err == nil || !strings.Contains(err.Error(), "deploy alpha") {
+		t.Fatalf("got error %v, want alpha deployment error", err)
+	}
+	deployer.mu.Lock()
+	defer deployer.mu.Unlock()
+	if fmt.Sprint(deployer.names) != "[alpha]" {
+		t.Fatalf("deployed %v, want only first agent", deployer.names)
+	}
+}
+
+func TestCompileAndDeployAllAttachesCompiledArtifact(t *testing.T) {
+	project := t.TempDir()
+	writeAgent(t, project, "alpha", true)
+	compiler := &recordingCompiler{}
+	deployer := &compiledRecordingDeployer{}
+
+	if err := CompileAndDeployAll(context.Background(), testPlan(project), compiler, deployer); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(compiler.names) != "[alpha]" {
+		t.Fatalf("compiled %v, want alpha", compiler.names)
+	}
+	if fmt.Sprint(deployer.entrypoints) != "[agent:root_agent]" {
+		t.Fatalf("deployed entrypoints %v", deployer.entrypoints)
+	}
+}
+
+func TestLoadCompiledArtifactVerifiesManifestAndSource(t *testing.T) {
+	project := t.TempDir()
+	source, err := LoadBundle(writeAgent(t, project, "compiled", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactDirectory := filepath.Join(t.TempDir(), "artifact")
+	copyTree(t, source.Directory, filepath.Join(artifactDirectory, "source"))
+	mustWrite(t, filepath.Join(artifactDirectory, "__init__.py"), "from .agent import root_agent\n")
+	mustWrite(t, filepath.Join(artifactDirectory, "agent.py"), "root_agent = object()\n")
+	manifest := compiledManifestForDirectory(t, artifactDirectory, source)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(artifactDirectory, compiledManifestFilename), string(manifestJSON))
+
+	artifact, err := loadCompiledArtifact(artifactDirectory, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Manifest.Entrypoint != "agent:root_agent" {
+		t.Fatalf("unexpected compiled entrypoint %q", artifact.Manifest.Entrypoint)
+	}
+
+	mismatch := manifest
+	mismatch.Framework = AgentFramework{Name: "langgraph", Mode: "managed"}
+	mismatchJSON, err := json.Marshal(mismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(artifactDirectory, compiledManifestFilename), string(mismatchJSON))
+	if _, err := loadCompiledArtifact(artifactDirectory, source); err == nil || !strings.Contains(err.Error(), "does not match config") {
+		t.Fatalf("got error %v, want framework mismatch", err)
+	}
+	mustWrite(t, filepath.Join(artifactDirectory, compiledManifestFilename), string(manifestJSON))
+
+	mustWrite(t, filepath.Join(artifactDirectory, "source", "instructions.md"), "Tampered.\n")
+	if _, err := loadCompiledArtifact(artifactDirectory, source); err == nil {
+		t.Fatal("expected tampered compiled source to fail validation")
+	}
+}
+
+func TestCompiledArtifactAllowsDistinctDNSDeploymentAndADKNames(t *testing.T) {
+	project := t.TempDir()
+	source, err := LoadBundle(writeAgent(t, project, "support-agent", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactDirectory := filepath.Join(t.TempDir(), "artifact")
+	copyTree(t, source.Directory, filepath.Join(artifactDirectory, "source"))
+	mustWrite(t, filepath.Join(artifactDirectory, "__init__.py"), "from .agent import root_agent\n")
+	mustWrite(t, filepath.Join(artifactDirectory, "agent.py"), "root_agent = object()\n")
+	manifest := compiledManifestForDirectory(t, artifactDirectory, source)
+	manifest.Name = "support_agent"
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(artifactDirectory, compiledManifestFilename), string(manifestJSON))
+	if _, err := loadCompiledArtifact(artifactDirectory, source); err != nil {
+		t.Fatalf("valid distinct ADK name was rejected: %v", err)
+	}
+
+	manifest.Name = "support-agent"
+	manifestJSON, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(artifactDirectory, compiledManifestFilename), string(manifestJSON))
+	if _, err := loadCompiledArtifact(artifactDirectory, source); err == nil || !strings.Contains(err.Error(), "valid agent runtime name") {
+		t.Fatalf("got error %v, want invalid runtime name rejection", err)
+	}
+}
+
+func TestDigestSeparatesFileBoundaries(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	mustWrite(t, filepath.Join(first, "a"), "b\x00X")
+	mustWrite(t, filepath.Join(second, "a"), "")
+	mustWrite(t, filepath.Join(second, "b"), "X")
+	firstDigest, err := digestDirectory(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := digestDirectory(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatalf("structurally different directories have the same digest %s", firstDigest)
+	}
+}
+
+type recordingDeployer struct {
+	mu    sync.Mutex
+	names []string
+}
+
+type failingDeployer struct {
+	mu    sync.Mutex
+	names []string
+}
+
+type recordingCompiler struct {
+	names []string
+}
+
+func (c *recordingCompiler) Compile(_ context.Context, bundle Bundle) (CompiledArtifact, error) {
+	c.names = append(c.names, bundle.Config.Metadata.Name)
+	return CompiledArtifact{
+		Directory: "/compiled/" + bundle.Config.Metadata.Name,
+		Manifest: CompiledManifest{
+			Entrypoint: "agent:root_agent",
+		},
+	}, nil
+}
+
+type compiledRecordingDeployer struct {
+	entrypoints []string
+}
+
+func (d *compiledRecordingDeployer) Deploy(_ context.Context, bundle Bundle) error {
+	if bundle.Compiled == nil {
+		return fmt.Errorf("compiled artifact is missing")
+	}
+	d.entrypoints = append(d.entrypoints, bundle.Compiled.Manifest.Entrypoint)
+	return nil
+}
+
+func (d *failingDeployer) Deploy(_ context.Context, bundle Bundle) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.names = append(d.names, bundle.Config.Metadata.Name)
+	return fmt.Errorf("test failure")
+}
+
+func (d *recordingDeployer) Deploy(_ context.Context, bundle Bundle) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.names = append(d.names, bundle.Config.Metadata.Name)
+	return nil
+}
+
+func testPlan(project string) DeploymentPlan {
+	return DeploymentPlan{
+		APIVersion: APIVersion, Kind: "DeploymentPlan", ProjectRoot: project,
+		Parallelism: 2, Sources: []AgentSource{{Root: "agents", Include: []string{"*"}}},
+	}
+}
+
+func writeAgent(t *testing.T, project, name string, enabled bool) string {
+	t.Helper()
+	directory := filepath.Join(project, "agents", name)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(directory, "agent.py"), "root_agent = object()\n")
+	mustWrite(t, filepath.Join(directory, "instructions.md"), "Be useful.\n")
+	mustWrite(t, filepath.Join(directory, "requirements.txt"), "harnest==0.1.0\n")
+	mustWrite(t, filepath.Join(directory, "config.yaml"), fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: %s
+spec:
+  enabled: %t
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    requirementsFile: requirements.txt
+  resources:
+    cpu: "1"
+    memory: 1Gi
+`, name, enabled))
+	mustWrite(t, filepath.Join(directory, "agent-card.yaml"), fmt.Sprintf(`name: %s
+description: Test agent.
+version: 1.0.0
+supportedInterfaces:
+  - url: https://example.com/a2a
+    protocolBinding: JSONRPC
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+defaultInputModes: [text/plain]
+defaultOutputModes: [text/plain]
+skills:
+  - id: test
+    name: Test
+    description: Test things.
+    tags: [test]
+`, name))
+	return directory
+}
+
+func stringPointer(value string) *string { return &value }
+
+func copyTree(t *testing.T, source, destination string) {
+	t.Helper()
+	if err := filepath.WalkDir(source, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, filePath)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, content, 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func compiledManifestForDirectory(t *testing.T, directory string, source Bundle) CompiledManifest {
+	t.Helper()
+	var files []CompiledFile
+	if err := filepath.WalkDir(directory, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(directory, filePath)
+		if err != nil {
+			return err
+		}
+		digest, size, err := hashFile(filePath)
+		if err != nil {
+			return err
+		}
+		files = append(files, CompiledFile{Path: filepath.ToSlash(relative), SHA256: digest, Size: size})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(files, func(left, right int) bool { return files[left].Path < files[right].Path })
+	return CompiledManifest{
+		APIVersion: APIVersion, Kind: "CompiledAgent", Name: source.Config.Metadata.Name,
+		Entrypoint: "agent:root_agent", SourceEntrypoint: source.Config.Spec.Entrypoint,
+		SourceDirectory: "source", Framework: source.Config.Spec.Framework,
+		Digest: compiledManifestDigest(files), Files: files,
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

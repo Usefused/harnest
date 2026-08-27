@@ -1,0 +1,64 @@
+version: 2
+
+project_name: harnest
+
+release:
+  github:
+    owner: creativeJoe007
+    name: harnest
+
+before:
+  hooks:
+    - python3 -c "import shutil; shutil.rmtree('.harnest-release/python', ignore_errors=True)"
+    - HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir .harnest-release/python
+
+builds:
+  - id: harnest
+    main: ./cmd/harnest
+    binary: harnest
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: harnest
+    ids:
+      - harnest
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - src: .harnest-release/python/*.whl
+        dst: python
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../../../../schemas/config.schema.json
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: helpdesk
+  displayName: Helpdesk Assistant
+  labels:
+    owner: customer-experience
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    requirementsFile: requirements.txt
+  resources:
+    cpu: "1"
+    memory: 1Gi
+    ephemeralStorage: 1Gi
+    timeoutSeconds: 300
+    maxConcurrentRequests: 20
+  scaling:
+    minReplicas: 0
+    maxReplicas: 5
+  environment:
+    LOG_LEVEL: INFO
+    LITELLM_MODEL: ollama_chat/qwen3.5:cloud
+    LITELLM_API_BASE: http://127.0.0.1:11434
+    KNOWLEDGE_MCP_URL: https://mcp.example.com/support
+  secrets:
+    - environmentVariable: KNOWLEDGE_MCP_TOKEN
+      secretRef: projects/example/secrets/knowledge-mcp-token/latest
+  permissions:
+    network:
+      outbound:
+        - 127.0.0.1:11434
+        - mcp.example.com:443
+    filesystem:
+      readOnly:
+        - /app
+      readWrite:
+        - /tmp

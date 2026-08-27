@@ -1,0 +1,256 @@
+import asyncio
+import unittest
+from dataclasses import replace
+from typing import AsyncIterator, Mapping, Sequence
+
+from harnest.extension import Extension
+from harnest.neutral_runtime import (
+    AgentInfo,
+    InvocationRequest,
+    InvocationResult,
+    RuntimeEvent,
+    SessionRecord,
+)
+from harnest.runtime_extensions import (
+    DROP_EVENT,
+    ExtensionRuntimeDriver,
+    ExtensionTransformError,
+    StreamingResultTransformationError,
+)
+
+
+class FakeDriver:
+    def __init__(self) -> None:
+        self._info = AgentInfo(
+            id="support",
+            name="support",
+            description="Support",
+            card={},
+            framework="adk",
+            mode="managed",
+        )
+        self.requests = []
+        self.closed = False
+        self.fail = False
+
+    @property
+    def info(self) -> AgentInfo:
+        return self._info
+
+    async def create_session(
+        self, *, session_id: str, user_id: str, state: Mapping[str, object]
+    ) -> SessionRecord:
+        return SessionRecord(id=session_id, user_id=user_id, state=state)
+
+    async def get_session(
+        self, *, session_id: str, user_id: str
+    ) -> SessionRecord | None:
+        return SessionRecord(id=session_id, user_id=user_id, state={})
+
+    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
+        return [SessionRecord(id="session-1", user_id=user_id, state={})]
+
+    async def update_session(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        state_delta: Mapping[str, object],
+    ) -> SessionRecord | None:
+        return SessionRecord(id=session_id, user_id=user_id, state=state_delta)
+
+    async def delete_session(self, *, session_id: str, user_id: str) -> bool:
+        return True
+
+    def _events(self) -> list[RuntimeEvent]:
+        return [
+            {"type": "message", "text": "hello"},
+            {"type": "tool_call", "name": "hidden"},
+            {"type": "graph_output", "output": 3},
+        ]
+
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        self.requests.append(request)
+        if self.fail:
+            raise RuntimeError("driver failed")
+        return InvocationResult(
+            text="hello",
+            events=self._events(),
+            result=3,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+    async def stream(
+        self, request: InvocationRequest
+    ) -> AsyncIterator[RuntimeEvent]:
+        self.requests.append(request)
+        for event in self._events():
+            await asyncio.sleep(0)
+            yield event
+        if self.fail:
+            raise RuntimeError("stream failed")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def request() -> InvocationRequest:
+    return InvocationRequest(
+        input="raw",
+        user_id="user-1",
+        session_id="session-1",
+        invocation_id="invoke-1",
+        metadata={"source": "test"},
+        state_delta={},
+    )
+
+
+class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invoke_runs_transformations_in_order_with_one_context(self):
+        driver = FakeDriver()
+        seen = []
+
+        def before(context, value):
+            context.attributes["guarded"] = True
+            seen.append(("before", value.input))
+            return replace(value, input="checked")
+
+        async def on_event(context, event):
+            self.assertTrue(context.attributes["guarded"])
+            if event["type"] == "tool_call":
+                return DROP_EVENT
+            if event["type"] == "message":
+                return {**event, "text": event["text"].upper()}
+            return None
+
+        def after(context, result):
+            seen.append(("after", context.invocation_id))
+            return replace(result, text=result.text + "!")
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [
+                Extension(
+                    name="guardrails",
+                    before_invoke=before,
+                    on_event=on_event,
+                    after_invoke=after,
+                )
+            ],
+        )
+
+        result = await wrapped.invoke(request())
+
+        self.assertEqual(driver.requests[0].input, "checked")
+        self.assertEqual(result.text, "HELLO!")
+        self.assertEqual(
+            result.events,
+            (
+                {"type": "message", "text": "HELLO"},
+                {"type": "graph_output", "output": 3},
+            ),
+        )
+        self.assertEqual(seen, [("before", "raw"), ("after", "invoke-1")])
+
+    async def test_stream_transforms_events_and_after_is_observational(self):
+        driver = FakeDriver()
+        observed = []
+
+        async def on_event(_context, event):
+            if event["type"] == "tool_call":
+                return DROP_EVENT
+            return {**event, "observed": True}
+
+        def after(_context, result):
+            observed.append(result)
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [Extension(name="history", on_event=on_event, after_invoke=after)],
+        )
+
+        events = [event async for event in wrapped.stream(request())]
+
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(event["observed"] for event in events))
+        self.assertEqual(observed[0].events, tuple(events))
+        self.assertEqual(observed[0].text, "hello")
+        self.assertEqual(observed[0].result, 3)
+
+    async def test_stream_rejects_after_result_replacement(self):
+        driver = FakeDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [Extension(name="invalid", after_invoke=lambda _ctx, result: result)],
+        )
+
+        with self.assertRaisesRegex(
+            StreamingResultTransformationError, "after_invoke cannot replace"
+        ):
+            _ = [event async for event in wrapped.stream(request())]
+
+    async def test_errors_notify_every_extension_without_masking_original(self):
+        driver = FakeDriver()
+        driver.fail = True
+        notified = []
+
+        async def first(_context, error):
+            notified.append(("first", str(error)))
+            raise RuntimeError("notification failed")
+
+        def second(_context, error):
+            notified.append(("second", str(error)))
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [
+                Extension(name="first", on_error=first),
+                Extension(name="second", on_error=second),
+            ],
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "driver failed"):
+            await wrapped.invoke(request())
+        self.assertEqual(
+            notified,
+            [("first", "driver failed"), ("second", "driver failed")],
+        )
+
+    async def test_invalid_hook_replacements_are_rejected_and_notified(self):
+        notified = []
+        wrapped = ExtensionRuntimeDriver(
+            FakeDriver(),
+            [
+                Extension(
+                    name="invalid",
+                    before_invoke=lambda _context, _request: "wrong",
+                    on_error=lambda _context, error: notified.append(str(error)),
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            ExtensionTransformError, "InvocationRequest or None"
+        ):
+            await wrapped.invoke(request())
+        self.assertEqual(len(notified), 1)
+
+    async def test_session_and_close_operations_are_forwarded(self):
+        driver = FakeDriver()
+        wrapped = ExtensionRuntimeDriver(driver, [])
+
+        session = await wrapped.create_session(
+            session_id="session-1", user_id="user-1", state={"ready": True}
+        )
+        self.assertEqual(session.state, {"ready": True})
+        self.assertEqual((await wrapped.list_sessions(user_id="user-1"))[0].id, "session-1")
+        self.assertTrue(
+            await wrapped.delete_session(session_id="session-1", user_id="user-1")
+        )
+        await wrapped.close()
+        self.assertTrue(driver.closed)
+
+
+if __name__ == "__main__":
+    unittest.main()

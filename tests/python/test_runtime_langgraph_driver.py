@@ -1,0 +1,411 @@
+import sys
+import unittest
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
+
+from harnest.agent import Agent, AgentDefinition
+from harnest.application import CompiledApplication
+from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
+from harnest.graph import START, Edge, Graph
+from harnest.mcp import MCPClient
+from harnest.neutral_runtime import InvocationRequest, SessionConflictError
+from harnest.runtime_langgraph import LangGraphRuntimeDriver
+
+
+class _Message:
+    def __init__(
+        self,
+        content,
+        *,
+        message_type="ai",
+        tool_calls=(),
+        tool_call_id=None,
+        name=None,
+    ):
+        self.content = content
+        self.type = message_type
+        self.tool_calls = list(tool_calls)
+        self.tool_call_id = tool_call_id
+        self.name = name
+
+    def model_dump(self, **_kwargs):
+        return {
+            "type": self.type,
+            "content": self.content,
+            "tool_calls": self.tool_calls,
+            "tool_call_id": self.tool_call_id,
+            "name": self.name,
+        }
+
+
+class _HumanMessage:
+    type = "human"
+
+    def __init__(self, content):
+        self.content = content
+
+    def model_dump(self, **_kwargs):
+        return {"type": self.type, "content": self.content}
+
+
+class _Target:
+    def __init__(self):
+        self.inputs = []
+        self.configs = []
+        self.closed = 0
+
+    def _result(self, graph_input):
+        counter = graph_input.get("counter", 0) + 1
+        return {
+            "messages": [
+                _Message(
+                    "",
+                    tool_calls=[
+                        {"id": "call-1", "name": "echo", "args": {"text": "ok"}}
+                    ],
+                ),
+                _Message(
+                    "ok",
+                    message_type="tool",
+                    tool_call_id="call-1",
+                    name="echo",
+                ),
+                _Message(
+                    [
+                        {"type": "thinking", "thinking": "private"},
+                        {"type": "text", "text": f"answer-{counter}"},
+                    ]
+                ),
+            ],
+            "counter": counter,
+            "value": f"value-{counter}",
+        }
+
+    async def ainvoke(self, graph_input, *, config):
+        self.inputs.append(graph_input)
+        self.configs.append(config)
+        return self._result(graph_input)
+
+    async def astream(self, graph_input, *, config, stream_mode):
+        self.inputs.append(graph_input)
+        self.configs.append(config)
+        assert stream_mode == ["messages", "values"]
+        result = self._result(graph_input)
+        yield "messages", (_Message("answer-"), {"node": "reply"})
+        yield "messages", (result["messages"][0], {"node": "reply"})
+        yield "messages", (result["messages"][1], {"node": "tools"})
+        yield "messages", (_Message(str(result["counter"])), {"node": "reply"})
+        yield "values", result
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class _MCPAdapterClient:
+    instances = []
+
+    def __init__(self, connections, *, tool_name_prefix):
+        self.connections = connections
+        self.tool_name_prefix = tool_name_prefix
+        self.requests = []
+        self.closed = 0
+        self.__class__.instances.append(self)
+
+    async def get_tools(self, *, server_name):
+        self.requests.append(server_name)
+        return [
+            SimpleNamespace(name=f"{server_name}_echo"),
+            SimpleNamespace(name=f"{server_name}_hidden"),
+        ]
+
+    async def aclose(self):
+        self.closed += 1
+
+
+def _request(session_id="session-1", *, state_delta=None):
+    return InvocationRequest(
+        input="hello",
+        user_id="user-1",
+        session_id=session_id,
+        invocation_id="invocation-1",
+        metadata={"source": "test"},
+        state_delta=state_delta or {},
+    )
+
+
+def _application(target, *, bridge=None):
+    return CompiledApplication(
+        name="portable",
+        framework="langgraph",
+        mode="advanced" if bridge is not None else "managed",
+        target=target,
+        kind="advanced" if bridge is not None else "agent",
+        bridge=bridge,
+    )
+
+
+class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        _MCPAdapterClient.instances.clear()
+        langchain_core = ModuleType("langchain_core")
+        langchain_core.__path__ = []
+        messages = ModuleType("langchain_core.messages")
+        messages.HumanMessage = _HumanMessage
+        self.langchain_modules = patch.dict(
+            sys.modules,
+            {
+                "langchain_core": langchain_core,
+                "langchain_core.messages": messages,
+            },
+        )
+        self.langchain_modules.start()
+        self.target = _Target()
+        self.driver = LangGraphRuntimeDriver(
+            _application(self.target),
+            card={"name": "Portable agent", "description": "Deterministic"},
+        )
+
+    async def asyncTearDown(self):
+        await self.driver.close()
+        self.langchain_modules.stop()
+
+    async def test_session_map_is_user_scoped_and_supports_crud(self):
+        created = await self.driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 1}
+        )
+        await self.driver.create_session(
+            session_id="session-2", user_id="user-1", state={}
+        )
+        await self.driver.create_session(
+            session_id="session-1", user_id="user-2", state={"private": True}
+        )
+
+        self.assertEqual(created.state, {"counter": 1})
+        self.assertEqual(self.driver.info.framework, "langgraph")
+        self.assertEqual(self.driver.info.name, "Portable agent")
+        self.assertEqual(
+            [item.id for item in await self.driver.list_sessions(user_id="user-1")],
+            ["session-1", "session-2"],
+        )
+        self.assertIsNone(
+            await self.driver.get_session(
+                session_id="session-2", user_id="another-user"
+            )
+        )
+
+        updated = await self.driver.update_session(
+            session_id="session-1",
+            user_id="user-1",
+            state_delta={"enabled": True},
+        )
+        self.assertEqual(updated.state, {"counter": 1, "enabled": True})
+        self.assertTrue(
+            await self.driver.delete_session(
+                session_id="session-2", user_id="user-1"
+            )
+        )
+        self.assertFalse(
+            await self.driver.delete_session(
+                session_id="session-2", user_id="user-1"
+            )
+        )
+        with self.assertRaises(SessionConflictError):
+            await self.driver.create_session(
+                session_id="session-1", user_id="user-1", state={}
+            )
+
+    async def test_invoke_normalizes_events_and_persists_returned_state(self):
+        await self.driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 1}
+        )
+
+        result = await self.driver.invoke(
+            _request(state_delta={"request_flag": "present"})
+        )
+
+        self.assertEqual(result.text, "answer-2")
+        self.assertEqual(result.session_id, "session-1")
+        self.assertEqual(result.metadata, {"source": "test"})
+        self.assertEqual(
+            [event["type"] for event in result.events],
+            ["tool_call", "tool_result", "message", "graph_output"],
+        )
+        self.assertEqual(result.events[0]["arguments"], {"text": "ok"})
+        self.assertEqual(result.events[1]["result"], "ok")
+        self.assertEqual(result.events[2]["text"], "answer-2")
+        self.assertNotIn("private", result.events[2]["text"])
+        self.assertEqual(result.result["counter"], 2)
+        self.assertEqual(self.target.inputs[0]["request_flag"], "present")
+
+        session = await self.driver.get_session(
+            session_id="session-1", user_id="user-1"
+        )
+        self.assertEqual(session.state["counter"], 2)
+        self.assertIn("messages", session.state)
+
+        await self.driver.invoke(_request())
+        thread_ids = [item["configurable"]["thread_id"] for item in self.target.configs]
+        self.assertEqual(len(set(thread_ids)), 2)
+        self.assertTrue(all(item.startswith("session-1:") for item in thread_ids))
+        self.assertNotIn("session-1", thread_ids)
+        self.assertEqual(len(self.target.inputs[1]["messages"]), 4)
+
+    async def test_stream_emits_only_canonical_events_and_updates_state(self):
+        await self.driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 3}
+        )
+
+        events = [event async for event in self.driver.stream(_request())]
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["message", "tool_call", "tool_result", "message", "graph_output"],
+        )
+        self.assertEqual(
+            "".join(event["text"] for event in events if event["type"] == "message"),
+            "answer-4",
+        )
+        self.assertEqual(events[-1]["output"]["counter"], 4)
+        session = await self.driver.get_session(
+            session_id="session-1", user_id="user-1"
+        )
+        self.assertEqual(session.state["counter"], 4)
+
+    async def test_advanced_bridge_controls_input_and_visible_output(self):
+        target = _Target()
+        bridge = Agent.advanced(
+            target=target,
+            input_adapter=lambda text, state: {
+                "counter": state["counter"],
+                "prompt": text.upper(),
+            },
+            output_adapter=lambda result: f"bridge:{result['counter']}",
+        )
+        driver = LangGraphRuntimeDriver(_application(target, bridge=bridge))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 8}
+        )
+
+        result = await driver.invoke(_request())
+
+        self.assertEqual(target.inputs[0]["prompt"], "HELLO")
+        self.assertEqual(result.text, "bridge:9")
+        self.assertEqual(result.result, "bridge:9")
+        await driver.close()
+
+    async def test_driver_materializes_and_closes_one_mcp_client(self):
+        definition = AgentDefinition(
+            name="mcp_agent",
+            model="openai:test",
+            instruction="Use MCP tools.",
+            mcp=(
+                MCPClient.sse(
+                    "https://mcp.example/sse",
+                    prefix="legacy",
+                    tools=("echo",),
+                ),
+            ),
+        )
+        plan = ManagedAgentPlan(definition, tools=("local-tool",))
+        target = _Target()
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 0}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain_mcp_adapters": adapters,
+                "langchain_mcp_adapters.client": client_module,
+            },
+        ), patch(
+            "harnest.backends.langgraph.materialize_agent",
+            return_value=target,
+        ) as materialize:
+            first = await driver.invoke(_request())
+            second = await driver.invoke(_request())
+
+        self.assertEqual(first.text, "answer-1")
+        self.assertEqual(second.text, "answer-2")
+        self.assertEqual(len(_MCPAdapterClient.instances), 1)
+        client = _MCPAdapterClient.instances[0]
+        self.assertEqual(client.requests, ["legacy"])
+        self.assertEqual(client.connections["legacy"]["transport"], "sse")
+        self.assertTrue(client.tool_name_prefix)
+        passed_plan, passed_tools = materialize.call_args.args
+        self.assertIs(passed_plan, plan)
+        self.assertEqual([tool.name for tool in passed_tools], ["legacy_echo"])
+
+        await driver.close()
+
+        self.assertEqual(target.closed, 1)
+        self.assertEqual(client.closed, 1)
+
+    async def test_driver_materializes_mcp_agents_inside_graph(self):
+        definition = AgentDefinition(
+            name="graph_agent",
+            model="openai:test",
+            instruction="Use MCP tools.",
+            mcp=(
+                MCPClient.sse(
+                    "https://mcp.example/sse", prefix="graph", tools=("echo",)
+                ),
+            ),
+        )
+        graph = Graph(
+            name="mcp_graph",
+            nodes={"primary": definition, "secondary": definition},
+            edges=(Edge(START, "primary"), Edge(START, "secondary")),
+        )
+        plan = ManagedGraphPlan(graph)
+        target = _Target()
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 0}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain_mcp_adapters": adapters,
+                "langchain_mcp_adapters.client": client_module,
+            },
+        ), patch(
+            "harnest.backends.langgraph.materialize_graph",
+            return_value=target,
+        ) as materialize:
+            result = await driver.invoke(_request())
+
+        self.assertEqual(result.text, "answer-1")
+        self.assertEqual(len(_MCPAdapterClient.instances), 1)
+        client = _MCPAdapterClient.instances[-1]
+        self.assertEqual(client.requests, ["graph"])
+        passed_plan, tool_groups = materialize.call_args.args
+        self.assertIs(passed_plan, plan)
+        self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo"])
+        self.assertIs(tool_groups[0], tool_groups[1])
+
+        await driver.close()
+        self.assertEqual(target.closed, 1)
+        self.assertEqual(client.closed, 1)
+
+    async def test_close_is_idempotent_and_rejects_new_work(self):
+        await self.driver.close()
+        await self.driver.close()
+
+        self.assertEqual(self.target.closed, 1)
+        with self.assertRaises(RuntimeError):
+            await self.driver.list_sessions(user_id="user-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

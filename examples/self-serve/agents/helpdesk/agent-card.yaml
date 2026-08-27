@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../../../../schemas/agent-card.schema.json
+name: Helpdesk Assistant
+description: Answers product questions and triages customer support requests.
+version: 1.0.0
+provider:
+  organization: Example Inc.
+  url: https://example.com
+documentationUrl: https://example.com/docs/helpdesk-agent
+supportedInterfaces:
+  - url: https://agents.example.com/helpdesk/a2a
+    protocolBinding: JSONRPC
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+  pushNotifications: false
+defaultInputModes:
+  - text/plain
+defaultOutputModes:
+  - text/plain
+skills:
+  - id: answer-product-question
+    name: Answer product questions
+    description: Finds and explains product information from the support knowledge base.
+    tags: [support, product, knowledge-base]
+    examples:
+      - How do I reset my workspace API key?
+  - id: triage-ticket
+    name: Triage a support request
+    description: Classifies a request and recommends its priority and destination queue.
+    tags: [support, triage]
+    examples:
+      - Our production integration stopped authenticating.

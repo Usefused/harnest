@@ -1,0 +1,47 @@
+{
+  "eval_set_id": "helpdesk_triage",
+  "name": "Helpdesk incident triage",
+  "description": "Checks that a fictional demo incident is triaged with the local tool.",
+  "eval_cases": [
+    {
+      "evalId": "fictional_demo_outage",
+      "conversation": [
+        {
+          "userContent": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Synthetic acceptance test only. Call triage_request with summary exactly 'Fictional demo service is unavailable' and production_blocked true. Then report the recommendation without claiming a ticket was created."
+              }
+            ]
+          },
+          "finalResponse": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Route this incident to technical-support with urgent priority. Production is blocked."
+              }
+            ]
+          },
+          "intermediateData": {
+            "toolUses": [
+              {
+                "name": "triage_request",
+                "args": {
+                  "summary": "Fictional demo service is unavailable",
+                  "production_blocked": true
+                }
+              }
+            ],
+            "toolResponses": []
+          }
+        }
+      ],
+      "sessionInput": {
+        "appName": "helpdesk",
+        "userId": "eval-user",
+        "state": {}
+      }
+    }
+  ]
+}

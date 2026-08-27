@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/deployment-plan.schema.json",
+  "title": "Harnest deployment plan",
+  "description": "Versioned JSON emitted by a user-authored Python orchestrator and consumed by the Go runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "projectRoot", "parallelism", "failFast", "sources"],
+  "properties": {
+    "apiVersion": { "const": "harnest.dev/v1alpha1" },
+    "kind": { "const": "DeploymentPlan" },
+    "projectRoot": { "type": "string", "minLength": 1 },
+    "parallelism": { "type": "integer", "minimum": 1 },
+    "failFast": { "type": "boolean" },
+    "labels": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root"],
+        "properties": {
+          "root": { "type": "string", "minLength": 1 },
+          "include": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "exclude": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}
