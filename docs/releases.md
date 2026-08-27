@@ -33,7 +33,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.11 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.12 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -147,6 +147,9 @@ The Go binary also embeds the `harnest-authoring` coding-agent skill. Run
 coding agent, or select `--target agents|codex|claude|cursor|copilot`. This
 project-local guidance is separate from runtime skills authored under an
 agent's `skills/` directory.
+An existing project-local copy is intentionally preserved across Harnest
+upgrades. Review local customizations, then run `harnest skills install --force`
+when the project should receive the release's updated authoring guidance.
 
 ## GitHub Actions
 

@@ -1,6 +1,8 @@
 # Harnest project layout
 
 Read this reference when adding, moving, or removing authored resources.
+Use [folder-edits.md](folder-edits.md) for the safe modification workflow; this
+file is the path and ownership contract it relies on.
 
 ## Required root files
 

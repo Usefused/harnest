@@ -3,10 +3,14 @@ package main
 import (
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var markdownReferencePattern = regexp.MustCompile(`\]\(([^)#]+\.md)(?:#[^)]*)?\)`)
 
 func TestSkillsShowPrintsEmbeddedAuthoringSkill(t *testing.T) {
 	stdout, _, err := executeForTest(t, defaultSystem(), "skills", "show")
@@ -15,6 +19,29 @@ func TestSkillsShowPrintsEmbeddedAuthoringSkill(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "name: harnest-authoring") {
 		t.Fatalf("unexpected authoring skill output:\n%s", stdout)
+	}
+}
+
+func TestEmbeddedAuthoringSkillMarkdownLinksResolve(t *testing.T) {
+	t.Helper()
+	err := fs.WalkDir(authoringSkill, authoringSkillRoot, func(file string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || path.Ext(file) != ".md" {
+			return walkErr
+		}
+		contents, err := authoringSkill.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		for _, match := range markdownReferencePattern.FindAllStringSubmatch(string(contents), -1) {
+			target := path.Join(path.Dir(file), match[1])
+			if _, err := fs.Stat(authoringSkill, target); err != nil {
+				t.Errorf("%s links to missing skill reference %s", file, target)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect embedded authoring skill: %v", err)
 	}
 }
 

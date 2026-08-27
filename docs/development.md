@@ -40,6 +40,13 @@ designed explicitly.
 
 ## Tests and quality gates
 
+Keep every repository `SKILL.md` at 400 words or fewer, including frontmatter.
+Write skill entrypoints around outcomes and actions: tell the coding or runtime
+agent what result to produce and what decisions to make. Move conditional API
+detail, schemas, examples, and background into linked `references/` files. The
+`skill-quality` gate enforces the word ceiling; reviewers enforce usefulness and
+action orientation.
+
 Every behavior change needs focused unit tests and an integration test when the
 change crosses a compiler/backend, process, transport, datastore, or framework
 boundary. Add an end-to-end test only when the behavior cannot be established at

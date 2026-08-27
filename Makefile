@@ -11,17 +11,20 @@ SERVE_EXTRA_ARGS ?=
 AGENT_URL ?= http://127.0.0.1:$(SERVE_PORT)
 DEMO_SESSION_ID ?= demo-session
 
-.PHONY: test quality complexity format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
 
 test: schemas
 	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests/python -v
 	GOCACHE=$(GOCACHE) go test ./...
 
-quality: test complexity format-check vet validate-examples
+quality: test complexity skill-quality format-check vet validate-examples
 
 complexity:
 	$(PYTHON) scripts/check_python_complexity.py --max 10 src scripts tests/python examples/self-serve
 	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
+
+skill-quality:
+	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .
 
 format-check:
 	@test -z "$$(gofmt -l cmd engine internal)" || (gofmt -l cmd engine internal; exit 1)

@@ -5,51 +5,49 @@ description: Build, modify, debug, test, or review a filesystem-first Harnest ag
 
 # Harnest authoring
 
-Treat an authored agent directory as compiler input. Edit its source files, then
-let `harnest` discover, validate, compose, and lower them. Never edit generated
-`.harnest/` artifacts.
+Produce a valid, tested Harnest agent without bypassing filesystem ownership.
+Edit authored source, then let `harnest` discover, compose, and lower it. Never
+edit generated `.harnest/` artifacts.
 
-Do not confuse this coding-agent skill with an authored agent's `skills/`
-directory. The latter contains progressive runtime instructions for the agent
-being built.
+Keep this coding-agent skill separate from authored runtime `skills/`, which
+teach the deployed agent how to perform tasks.
 
-## Work safely
+## Modify safely
 
-1. Read `config.yaml`, `agent.py`, `instructions.md`, and the relevant resource
-   folders before changing the project.
-2. Preserve the selected `spec.framework.name` (`adk` or `langgraph`) and mode
-   (`managed` or `advanced`) unless the user asks to change architecture.
-3. Put each capability in the folder owned by the intended `agent.py`. Do not
-   import sibling tools, MCP clients, plugins, skills, or flat subagents; the
-   compiler discovers them. A nested folder-based agent owns its sibling
-   resources without inheriting its parent's. Nested child-subagent discovery is
-   ADK-only; LangGraph graph nodes must still be referenced explicitly in the
-   graph.
-4. Import every authoring symbol explicitly from `harnest.*`. There are no magic
-   globals and no compatibility layer.
-5. Match filename, export name, and declared resource name where the convention
-   requires it. Populated invalid folders fail compilation; empty folders are
-   skipped.
-6. Keep provider packages in `requirements.txt`, configuration in `config.yaml`,
-   secrets in declared secret references or runtime environment, and public
-   identity in `agent-card.yaml`. Keep ADK or LangGraph inside the version range
-   supported by the installed Harnest release; do not widen it independently.
-7. Run the narrowest useful checks, then `harnest test <agent-dir>`. Add
-   `--smoke` only for authorized live calls and `--evals` when eval assets exist.
-   Compile after structural changes to catch composition and backend errors.
+1. Preserve unrelated changes. Read `config.yaml`, `agent.py`,
+   `instructions.md`, and the affected folders before editing. Never run
+   `harnest init` over an existing project.
+2. Preserve `spec.framework.name` and mode unless the user requests an
+   architectural migration.
+3. Put each capability beside its owning `agent.py`. Managed resources are
+   discovered; do not import or manually register sibling tools, MCP clients,
+   plugins, skills, or subagents. Nested agents do not inherit parent resources.
+4. Import authoring symbols explicitly from `harnest.*`; no magic globals or
+   compatibility aliases exist.
+5. Match required paths, exports, and declared names. Missing or empty optional
+   folders are skipped; populated invalid folders fail compilation.
+6. Put dependencies in `requirements.txt`, deployment settings in `config.yaml`,
+   secrets in environment/secret references, and public identity in
+   `agent-card.yaml`. Keep framework versions within this Harnest release's
+   supported range.
 
-## Read the relevant reference
+## Load only relevant guidance
 
-- Read [references/layout.md](references/layout.md) before adding, moving, or
-  removing files or folders.
-- Read [references/python-api.md](references/python-api.md) when authoring with
-  a `harnest.*` namespace or choosing between plugins and extensions.
-- Read [references/frameworks.md](references/frameworks.md) when changing graph
-  structure, framework, managed/advanced mode, models, subagents, or sandboxing.
-- Read [references/workflows.md](references/workflows.md) for CLI validation,
-  testing, compilation, serving, and a final change checklist.
+- Read [references/folder-edits.md](references/folder-edits.md) before changing
+  structure or capability ownership.
+- Read [references/layout.md](references/layout.md) for path contracts.
+- Read [references/python-api.md](references/python-api.md) for `harnest.*`,
+  plugins, extensions, telemetry, MCP, and sandbox APIs.
+- Read [references/frameworks.md](references/frameworks.md) for graphs,
+  frameworks, modes, models, and subagents.
+- Read [references/workflows.md](references/workflows.md) for installation,
+  migration, tests, evals, compilation, and serving.
 - Read [references/quality.md](references/quality.md) when contributing to
-  Harnest's own Python or Go implementation.
+  Harnest source.
 
-Prefer the smallest change that satisfies the request. Let compiler diagnostics
-define the contract when authored source and remembered documentation disagree.
+## Finish with evidence
+
+Run focused tests, then `harnest test AGENT_DIR` and compile after structural
+changes. Use `--evals` when eval assets changed and `--smoke` only for authorized
+live calls. Report the framework/mode, checks, live calls, and remaining
+provider requirements. Treat compiler diagnostics as authoritative.

@@ -4,6 +4,9 @@ Apply these rules when changing Harnest's own Python and Go source. An authored
 agent repository follows its own project standards unless the user says
 otherwise.
 
+- Keep every repository `SKILL.md`, including frontmatter, at 400 words or
+  fewer. Make it outcome/action driven and move conditional detail into linked
+  references.
 - Keep every function and method at cyclomatic complexity 10 or below. Extract
   cohesive helpers; do not suppress or game the check.
 - Keep shared behavior in one place and separate policy from I/O, framework,

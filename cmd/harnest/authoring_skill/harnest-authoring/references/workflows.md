@@ -106,8 +106,11 @@ Before finishing a modification:
    behavior.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
    resources are not manually registered.
-4. Keep secrets out of source, skills, logs, cards, and compiled artifacts.
-5. Run focused tests, `harnest test`, and a compile. Run smoke/evals only when
+4. After a rename, move, or deletion, confirm graph strings, tests, skills,
+   evals, export names, and declared identities no longer reference the old
+   resource. Confirm every discovered graph resource is consumed.
+5. Keep secrets out of source, skills, logs, cards, and compiled artifacts.
+6. Run focused tests, `harnest test`, and a compile. Run smoke/evals only when
    relevant and authorized.
-6. Report the selected framework/mode, checks run, any live external calls, and
+7. Report the selected framework/mode, checks run, any live external calls, and
    any remaining provider-specific requirements.

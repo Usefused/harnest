@@ -98,6 +98,17 @@ Targets install beneath `.agents/skills`, `.claude/skills`, `.cursor/skills`, or
 This authoring skill is never placed in the generated agent's runtime `skills/`
 folder and is never compiled into the deployed agent.
 
+The skill includes a folder-editing playbook that tells coding agents how to
+identify the owning `agent.py`, choose the correct resource folder, preserve
+existing work during moves or promotions, and validate managed versus advanced
+mode changes. After upgrading Harnest, reinstall with `--force` to receive the
+new bundled guide only after confirming the project-local copy has not been
+customized:
+
+```bash
+harnest skills install --force
+```
+
 ## Repository layout
 
 ```text
