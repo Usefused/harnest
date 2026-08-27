@@ -14,7 +14,9 @@ the agent grows.
 ## Install
 
 GitHub Releases ship a native `harnest` CLI with its matching Python wheel
-embedded directly in the executable.
+embedded directly in the executable. Installation requires Python 3.10 or
+newer on the host to create Harnest's managed virtual environment; normal CLI
+commands use that managed environment afterward.
 On macOS or Linux, install the latest release into an isolated managed runtime:
 
 ```bash

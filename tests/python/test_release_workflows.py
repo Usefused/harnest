@@ -72,11 +72,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_installer_bootstraps_the_runtime_from_the_binary(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn('"${extract_directory}/harnest" runtime install', installer)
         self.assertIn('[ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]', installer)
         self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)
         self.assertNotIn("python/harnest-", installer)
+        self.assertIn("requires Python 3.10 or\nnewer on the host", readme)
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
