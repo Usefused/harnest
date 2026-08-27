@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"harnest.dev/harnest/internal/runtimewheel"
+	"harnest.dev/harnest/internal/uvbootstrap"
 )
 
 func TestRuntimeInstallAutoDiscoversSupportedPython(t *testing.T) {
@@ -47,8 +48,58 @@ exit 1
 	assertContainsAll(t, "Python discovery error", err.Error(), []string{
 		"Python 3.10 or newer was not found",
 		"Python 3.9.6 at " + unsupported + " is unsupported",
-		"HARNEST_BOOTSTRAP_PYTHON",
 	})
+}
+
+func TestRuntimeInstallFallsBackWhenHostPythonCannotCreateEnvironment(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "uv-calls.txt")
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	hostPython := writeExecutable(t, `#!/bin/sh
+if [ "$1" = "-c" ]; then
+  printf '%s\n' '3.11.9'
+  exit 0
+fi
+exit 1
+`)
+	sys := defaultSystem()
+	sys.lookPath = func(candidate string) (string, error) {
+		if candidate == "python3.11" {
+			return hostPython, nil
+		}
+		return "", os.ErrNotExist
+	}
+	sys.embeddedWheel = testEmbeddedWheel(t)
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		return uvbootstrap.Artifact{Name: "uv", Contents: []byte(`#!/bin/sh
+printf 'UV\t%s\t%s\t%s\n' "$0" "$UV_PYTHON_INSTALL_DIR" "$*" >> "$HARNEST_TEST_RECORD"
+if [ "$1" = "venv" ]; then
+  /bin/mkdir -p "$6/bin"
+  printf '%s\n' '#!/bin/sh' > "$6/bin/python"
+  /bin/chmod 0755 "$6/bin/python"
+fi
+`)}, nil
+	}
+	runtimeDirectory := filepath.Join(t.TempDir(), "runtime")
+
+	stdout, _, err := executeForTest(t, sys, "runtime", "install", "--directory", runtimeDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "managed Python output", stdout, []string{
+		"installing managed Python 3.12 with embedded uv 0.12.6",
+		"Installed embedded Harnest runtime test-version",
+	})
+	calls, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "embedded uv calls", string(calls), []string{
+		managedPythonDirectory(runtimeDirectory),
+		"venv --python 3.12 --managed-python --clear " + runtimeDirectory,
+		"pip install --python " + runtimePythonPath(runtimeDirectory) + " --upgrade ",
+		"harnest-test-version-py3-none-any.whl[all]",
+	})
+	assertStagedUVRemoved(t, string(calls))
 }
 
 func TestRuntimeInstallBootstrapsFromEmbeddedWheel(t *testing.T) {
@@ -64,15 +115,7 @@ if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
 fi
 `)
 	sys := defaultSystem()
-	sys.embeddedWheel = func(version string) (runtimewheel.Artifact, error) {
-		if version != "test-version" {
-			t.Fatalf("wheel requested for version %q", version)
-		}
-		return runtimewheel.Artifact{
-			Name:     "harnest-test-version-py3-none-any.whl",
-			Contents: []byte("embedded wheel"),
-		}, nil
-	}
+	sys.embeddedWheel = testEmbeddedWheel(t)
 	runtimeDirectory := filepath.Join(t.TempDir(), "runtime")
 
 	stdout, _, err := executeForTest(
@@ -101,6 +144,19 @@ fi
 	assertStagedWheelRemoved(t, string(calls))
 }
 
+func testEmbeddedWheel(t *testing.T) func(string) (runtimewheel.Artifact, error) {
+	t.Helper()
+	return func(version string) (runtimewheel.Artifact, error) {
+		if version != "test-version" {
+			t.Fatalf("wheel requested for version %q", version)
+		}
+		return runtimewheel.Artifact{
+			Name:     "harnest-test-version-py3-none-any.whl",
+			Contents: []byte("embedded wheel"),
+		}, nil
+	}
+}
+
 func assertStagedWheelRemoved(t *testing.T, calls string) {
 	t.Helper()
 	for _, field := range strings.Fields(calls) {
@@ -113,6 +169,20 @@ func assertStagedWheelRemoved(t *testing.T, calls string) {
 		}
 	}
 	t.Fatal("pip invocation did not include a staged wheel")
+}
+
+func assertStagedUVRemoved(t *testing.T, calls string) {
+	t.Helper()
+	for _, line := range strings.Split(calls, "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) > 1 && fields[0] == "UV" {
+			if _, err := os.Stat(fields[1]); !os.IsNotExist(err) {
+				t.Fatalf("staged uv was not removed: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatal("uv invocation was not recorded")
 }
 
 func writeNamedExecutable(t *testing.T, directory, name, contents string) string {

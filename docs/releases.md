@@ -3,9 +3,10 @@
 ## Install the standalone CLI
 
 Harnest releases contain a native `harnest` executable with the matching Python
-wheel embedded directly inside it. The installer supports macOS and Linux on
-AMD64 and ARM64. It requires Python 3.10 or newer only to create the managed
-environment; normal Harnest commands then use that environment automatically.
+wheel and native `uv` bootstrapper embedded directly inside it. The installer
+supports macOS and Linux on AMD64 and ARM64 and does not require a preinstalled
+Python. Normal Harnest commands use the installed managed environment
+automatically.
 
 Install the latest release from the canonical repository:
 
@@ -32,7 +33,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.5 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.6 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -53,14 +54,14 @@ metadata differs from the CLI version. The installer then:
 - atomically installs the native executable at
   `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`.
 
-The installer automatically checks versioned Python commands from 3.14 down to
-3.10, then `python3` and `python`, and uses the first interpreter that actually
-reports Python 3.10 or newer. This avoids selecting an older operating-system
-`python3` when a supported Homebrew, pyenv, or other installation is present.
-`HARNEST_BOOTSTRAP_PYTHON` selects an exact interpreter when an override is
-needed. The installer does not silently install or modify a system Python; if
-none qualifies, it reports the discovered unsupported versions and asks for a
-supported installation or override.
+The installer checks versioned Python commands from 3.14 down to 3.10, then
+`python3` and `python`, and uses the first interpreter that actually reports
+Python 3.10 or newer. This avoids selecting an older operating-system `python3`
+when a supported Homebrew, pyenv, or other installation is present. If none is
+compatible, embedded `uv` installs pinned CPython 3.12 under the Harnest data
+directory and creates the runtime from it. Harnest does not modify the system
+Python installation. `HARNEST_BOOTSTRAP_PYTHON` requires an exact host
+interpreter instead of allowing the managed fallback.
 
 `HARNEST_PYTHON` is different: it overrides the interpreter used later by the
 `harnest` command. The CLI normally resolves Python in this order: `--python`,
@@ -91,7 +92,8 @@ Direct ADK or LangGraph imports in advanced mode do not bypass this check.
 Releases use GoReleaser v2.18 or newer. Each platform archive contains:
 
 - the native `harnest` executable built from `cmd/harnest`, including its
-  version-matched universal Python wheel;
+  version-matched universal Python wheel and platform-native `uv` bootstrapper;
+- `THIRD_PARTY_NOTICES.md` and the redistributed `uv` license;
 - `README.md`; and
 - the Apache 2.0 `LICENSE`.
 
@@ -107,9 +109,9 @@ wheel before compiling it into the binary, which deliberately rejects a
 mismatch at runtime. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
-machine needs Go 1.24 or newer, Python 3.10 or
-newer, the Python `build` package, GoReleaser, and permission to publish to the
-GitHub repository.
+machine needs Go 1.24 or newer, Python 3.10 or newer, the Python `build`
+package, GoReleaser, and permission to download the pinned `uv` assets and
+publish to the GitHub repository.
 
 Run the full non-live checks and a local package build first:
 

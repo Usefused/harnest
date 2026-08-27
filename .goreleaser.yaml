@@ -10,6 +10,7 @@ release:
 before:
   hooks:
     - python3 -c "import pathlib; [item.unlink() for item in pathlib.Path('internal/runtimewheel/assets').glob('*.whl')]"
+    - python3 scripts/prepare_uv_assets.py
     - env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir internal/runtimewheel/assets
 
 builds:
@@ -27,6 +28,8 @@ builds:
       - arm64
     flags:
       - -trimpath
+    tags:
+      - harnest_release
     ldflags:
       - -s -w -X main.version={{ .Version }}
 
@@ -44,6 +47,8 @@ archives:
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - licenses/uv-LICENSE-MIT
       - README.md
 
 checksum:

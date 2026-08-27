@@ -12,5 +12,6 @@ __pycache__/
 dist/
 build/
 internal/runtimewheel/assets/*.whl
+internal/uvbootstrap/assets/release/
 coverage.out
 bin/

@@ -25,6 +25,7 @@ Install `.[all,quality]` and run `make quality` before completing a Harnest
 source change.
 
 For release changes, preserve the single-binary invariant: GoReleaser builds
-the version-matched Python wheel into `internal/runtimewheel/assets/` before Go
-compilation, release archives contain no sidecar wheel, and `harnest runtime
-install` is the only supported bootstrap path for that embedded runtime.
+the version-matched Python wheel and verified platform-native `uv` into the Go
+executable before compilation, release archives contain no sidecar wheel or
+bootstrapper, and `harnest runtime install` is the only supported bootstrap path
+for that embedded runtime.

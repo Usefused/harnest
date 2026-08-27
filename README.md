@@ -14,9 +14,10 @@ the agent grows.
 ## Install
 
 GitHub Releases ship a native `harnest` CLI with its matching Python wheel
-embedded directly in the executable. Installation requires Python 3.10 or
-newer on the host to create Harnest's managed virtual environment; normal CLI
-commands use that managed environment afterward.
+and a native `uv` bootstrapper embedded directly in the executable. Installation
+does not require a preinstalled Python: when no compatible interpreter exists,
+Harnest installs a pinned managed CPython into its own data directory. Normal
+CLI commands use the isolated managed environment afterward.
 On macOS or Linux, install the latest release into an isolated managed runtime:
 
 ```bash
@@ -40,9 +41,10 @@ The binary is installed at `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`;
 Python dependencies stay in the dedicated
 `${HARNEST_RUNTIME_DIR:-$HOME/.harnest/runtime}` virtual environment. Downloads
 must match the release's published SHA-256 checksum before anything is
-installed. The installer finds a Python 3.10+ interpreter even when the system
-`python3` is older; set `HARNEST_BOOTSTRAP_PYTHON` only to choose an exact
-interpreter. The managed runtime installs both supported compiler backends;
+installed. The installer uses an existing Python 3.10+ when possible and falls
+back to managed CPython 3.12 through its embedded `uv`; set
+`HARNEST_BOOTSTRAP_PYTHON` only to require an exact host interpreter. The
+managed runtime installs both supported compiler backends;
 model-provider and agent-specific packages remain declared by each agent. Pin
 or redirect the source with `HARNEST_VERSION` and
 `HARNEST_REPO=owner/repository`. See [Installation and

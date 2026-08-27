@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/internal/runtimewheel"
+	"harnest.dev/harnest/internal/uvbootstrap"
 )
 
 const rootDescription = `Harnest builds self-contained ADK or LangGraph agents from ordinary folders.
@@ -54,6 +55,7 @@ type system struct {
 	lookPath       func(string) (string, error)
 	commandContext func(context.Context, string, ...string) *exec.Cmd
 	embeddedWheel  func(string) (runtimewheel.Artifact, error)
+	embeddedUV     func() (uvbootstrap.Artifact, error)
 }
 
 func defaultSystem() system {
@@ -63,6 +65,7 @@ func defaultSystem() system {
 		lookPath:       exec.LookPath,
 		commandContext: exec.CommandContext,
 		embeddedWheel:  runtimewheel.Embedded,
+		embeddedUV:     uvbootstrap.Embedded,
 	}
 }
 

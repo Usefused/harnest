@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,12 +14,20 @@ import (
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/internal/runtimewheel"
+	"harnest.dev/harnest/internal/uvbootstrap"
 )
 
 type runtimeInstallOptions struct {
 	directory       string
 	bootstrapPython string
 }
+
+type runtimeBootstrapError struct {
+	cause error
+}
+
+func (e runtimeBootstrapError) Error() string { return e.cause.Error() }
+func (e runtimeBootstrapError) Unwrap() error { return e.cause }
 
 // Versioned commands come first because macOS may keep an older system
 // python3 ahead of a supported package-manager installation on PATH.
@@ -75,7 +84,7 @@ func (a *application) newRuntimeInstallCommand() *cobra.Command {
 		&options.bootstrapPython,
 		"bootstrap-python",
 		options.bootstrapPython,
-		"Python 3.10+ executable used to create the managed environment (default: auto-detect)",
+		"Python 3.10+ executable used instead of Harnest-managed Python",
 	)
 	return command
 }
@@ -86,23 +95,88 @@ func (a *application) installRuntime(
 	bootstrapPython string,
 	artifact runtimewheel.Artifact,
 ) error {
-	bootstrap, err := a.resolveBootstrapPython(command.Context(), bootstrapPython)
-	if err != nil {
-		return err
-	}
 	wheelPath, cleanup, err := stageRuntimeWheel(artifact)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
+	bootstrap, discoveryErr := a.resolveBootstrapPython(command.Context(), bootstrapPython)
+	if discoveryErr != nil && bootstrapPython == "" {
+		return a.installRuntimeWithManagedPython(command, directory, wheelPath, discoveryErr)
+	}
+	if discoveryErr != nil {
+		return discoveryErr
+	}
+	installErr := a.installRuntimeWithPython(command, directory, bootstrap, wheelPath)
+	if bootstrapPython == "" && isRuntimeBootstrapError(installErr) {
+		// A version-compatible interpreter can still lack venv/ensurepip support;
+		// the managed path keeps that host packaging detail out of the user contract.
+		return a.installRuntimeWithManagedPython(command, directory, wheelPath, installErr)
+	}
+	return installErr
+}
+
+func (a *application) installRuntimeWithPython(
+	command *cobra.Command,
+	directory, bootstrap, wheelPath string,
+) error {
 	if err := a.runRuntimeCommand(command, bootstrap, "-m", "venv", directory); err != nil {
-		return fmt.Errorf("create managed Python environment: %w", err)
+		return runtimeBootstrapError{cause: fmt.Errorf("create managed Python environment: %w", err)}
 	}
 	python := runtimePythonPath(directory)
 	if err := a.runRuntimeCommand(
 		command,
 		python,
 		"-m", "pip", "--disable-pip-version-check", "install", "--upgrade", wheelPath+"[all]",
+	); err != nil {
+		return fmt.Errorf("install embedded Harnest runtime: %w", err)
+	}
+	return nil
+}
+
+func isRuntimeBootstrapError(err error) bool {
+	var bootstrapErr runtimeBootstrapError
+	return errors.As(err, &bootstrapErr)
+}
+
+func (a *application) installRuntimeWithManagedPython(
+	command *cobra.Command,
+	directory, wheelPath string,
+	discoveryErr error,
+) error {
+	artifact, err := a.system.embeddedUV()
+	if err != nil {
+		return fmt.Errorf("bootstrap managed Python after %v: %w", discoveryErr, err)
+	}
+	uvPath, cleanup, err := stageUV(artifact)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	fmt.Fprintf(
+		command.OutOrStdout(),
+		"No compatible system Python found; installing managed Python %s with embedded uv %s.\n",
+		uvbootstrap.ManagedPythonVersion,
+		uvbootstrap.Version,
+	)
+	environment := mergedEnvironment(map[string]string{
+		"UV_NO_CONFIG":          "1",
+		"UV_NO_PROGRESS":        "1",
+		"UV_PYTHON_INSTALL_DIR": managedPythonDirectory(directory),
+	})
+	if err := a.runRuntimeCommandWithEnvironment(
+		command,
+		environment,
+		uvPath,
+		"venv", "--python", uvbootstrap.ManagedPythonVersion, "--managed-python", "--clear", directory,
+	); err != nil {
+		return fmt.Errorf("install managed Python %s: %w", uvbootstrap.ManagedPythonVersion, err)
+	}
+	if err := a.runRuntimeCommandWithEnvironment(
+		command,
+		environment,
+		uvPath,
+		"pip", "install", "--python", runtimePythonPath(directory), "--upgrade", wheelPath+"[all]",
 	); err != nil {
 		return fmt.Errorf("install embedded Harnest runtime: %w", err)
 	}
@@ -154,7 +228,7 @@ func unsupportedPythonError(problems []string) error {
 		detail = strings.Join(problems, "; ")
 	}
 	return fmt.Errorf(
-		"Python 3.10 or newer was not found: %s; install a supported Python or set HARNEST_BOOTSTRAP_PYTHON",
+		"Python 3.10 or newer was not found: %s",
 		detail,
 	)
 }
@@ -189,18 +263,51 @@ func (a *application) runRuntimeCommand(command *cobra.Command, executable strin
 	)
 }
 
+func (a *application) runRuntimeCommandWithEnvironment(
+	command *cobra.Command,
+	environment []string,
+	executable string,
+	arguments ...string,
+) error {
+	process := a.system.commandContext(command.Context(), executable, arguments...)
+	process.Env = environment
+	return runCommand(
+		process,
+		command.InOrStdin(),
+		command.OutOrStdout(),
+		command.ErrOrStderr(),
+	)
+}
+
 func stageRuntimeWheel(artifact runtimewheel.Artifact) (string, func(), error) {
-	directory, err := os.MkdirTemp("", "harnest-embedded-runtime-")
+	return stageEmbeddedArtifact(
+		"harnest-embedded-runtime-",
+		artifact.Name,
+		artifact.Contents,
+		0o600,
+	)
+}
+
+func stageUV(artifact uvbootstrap.Artifact) (string, func(), error) {
+	return stageEmbeddedArtifact("harnest-embedded-uv-", artifact.Name, artifact.Contents, 0o700)
+}
+
+func stageEmbeddedArtifact(prefix, name string, contents []byte, mode os.FileMode) (string, func(), error) {
+	directory, err := os.MkdirTemp("", prefix)
 	if err != nil {
-		return "", nil, fmt.Errorf("create embedded runtime staging directory: %w", err)
+		return "", nil, fmt.Errorf("create embedded artifact staging directory: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
-	wheel := filepath.Join(directory, filepath.Base(artifact.Name))
-	if err := os.WriteFile(wheel, artifact.Contents, 0o600); err != nil {
+	artifactPath := filepath.Join(directory, filepath.Base(name))
+	if err := os.WriteFile(artifactPath, contents, mode); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("stage embedded Harnest wheel: %w", err)
+		return "", nil, fmt.Errorf("stage embedded artifact: %w", err)
 	}
-	return wheel, cleanup, nil
+	return artifactPath, cleanup, nil
+}
+
+func managedPythonDirectory(runtimeDirectory string) string {
+	return filepath.Join(filepath.Dir(runtimeDirectory), "python")
 }
 
 func runtimePythonPath(directory string) string {

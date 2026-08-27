@@ -63,6 +63,15 @@ func (a *application) resolvePythonCandidate(value, source string) (pythonSelect
 }
 
 func configuredEnvironment(bundle engine.Bundle) []string {
+	overrides := make(map[string]string, len(bundle.Config.Spec.Environment)+1)
+	for key, value := range bundle.Config.Spec.Environment {
+		overrides[key] = value
+	}
+	overrides["PYTHONDONTWRITEBYTECODE"] = "1"
+	return mergedEnvironment(overrides)
+}
+
+func mergedEnvironment(overrides map[string]string) []string {
 	values := make(map[string]string)
 	for _, item := range os.Environ() {
 		key, value, found := strings.Cut(item, "=")
@@ -70,10 +79,9 @@ func configuredEnvironment(bundle engine.Bundle) []string {
 			values[key] = value
 		}
 	}
-	for key, value := range bundle.Config.Spec.Environment {
+	for key, value := range overrides {
 		values[key] = value
 	}
-	values["PYTHONDONTWRITEBYTECODE"] = "1"
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

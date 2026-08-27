@@ -53,15 +53,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_goreleaser_embeds_the_versioned_wheel_before_go_build(self):
         config = load_yaml(".goreleaser.yaml")
-        wheel_hook = config["before"]["hooks"][1]
+        uv_hook = config["before"]["hooks"][1]
+        wheel_hook = config["before"]["hooks"][2]
 
+        self.assertEqual(uv_hook, "python3 scripts/prepare_uv_assets.py")
         self.assertEqual(
             wheel_hook,
             "env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel "
             "--outdir internal/runtimewheel/assets",
         )
         self.assertEqual(config["archives"][0]["ids"], ["harnest"])
-        self.assertEqual(config["archives"][0]["files"], ["LICENSE", "README.md"])
+        self.assertEqual(config["builds"][0]["tags"], ["harnest_release"])
+        self.assertEqual(
+            config["archives"][0]["files"],
+            ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/uv-LICENSE-MIT", "README.md"],
+        )
         self.assertEqual(config["snapshot"]["version_template"], "{{ incpatch .Version }}.dev0")
 
     def test_goreleaser_changelog_omits_commit_identity(self):
@@ -78,7 +84,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('[ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]', installer)
         self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)
         self.assertNotIn("python/harnest-", installer)
-        self.assertIn("requires Python 3.10 or\nnewer on the host", readme)
+        self.assertIn("does not require a preinstalled Python", readme)
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

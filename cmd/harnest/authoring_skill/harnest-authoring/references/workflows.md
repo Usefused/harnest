@@ -6,13 +6,13 @@ or handing off a Harnest agent project.
 ## Diagnose installation
 
 The release executable is a native Go CLI with its version-matched Python wheel
-embedded inside it. Installation creates a separate managed virtual environment
-for that wheel; users do not install a second Harnest package manually. The
-installer discovers Python 3.10+ across versioned commands, `python3`, and
-`python`. If discovery fails, inspect `python3 --version` and available
-`python3.10` through `python3.14` commands, or select one explicitly with
-`HARNEST_BOOTSTRAP_PYTHON`. After installation, use `harnest doctor` to inspect
-the exact managed interpreter and packages selected by the CLI.
+and native `uv` bootstrapper embedded inside it. Installation creates a separate
+managed virtual environment for that wheel; users do not install Python or a
+second Harnest package manually. The installer uses a compatible host Python
+when one exists and otherwise installs pinned managed CPython into the Harnest
+data directory. `HARNEST_BOOTSTRAP_PYTHON` opts out of that fallback and
+requires the named host interpreter. After installation, use `harnest doctor`
+to inspect the exact managed interpreter and packages selected by the CLI.
 
 ## Initialize and inspect
 
