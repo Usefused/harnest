@@ -94,3 +94,11 @@ API base is commonly `http://127.0.0.1:11434` locally or `https://ollama.com`
 for Ollama Cloud; an OpenAI-compatible `/v1` base is not the native Ollama
 `/api/chat` base used by the `ollama_chat` provider. Credentials remain runtime
 environment or secret configuration.
+
+Both managed frameworks use the same model mode contract. `thinking=True`
+requests reasoning, `thinking=False` requests no reasoning, and omission uses
+the provider default. LiteLLM maps the non-thinking mode to Ollama's
+`think: false`. Use `reasoning_effort` directly when a specific supported level
+is required. Harnest filters native ADK thought parts and LangGraph thinking
+blocks at its public boundary while leaving them available to the framework for
+multi-turn continuity.

@@ -218,6 +218,7 @@ root_agent = Agent(
     model=LiteLLMModel(
         model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
         api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
+        thinking=True,
     ),
     description="Answers product questions and triages support requests.",
 )
@@ -228,6 +229,16 @@ graph. The Harnest runtime remains the single session authority for both.
 `LiteLLMModel` and `OllamaModel` have
 adapters for both frameworks. Provider-specific Python dependencies still
 belong in the agent's `requirements.txt`.
+
+Both connectors support thinking and non-thinking models. Set `thinking=True`
+to request reasoning, `thinking=False` to disable it, or omit the option to use
+the provider default. For an exact provider-supported level, pass
+`reasoning_effort="low"`, `"medium"`, or `"high"` instead of `thinking`.
+Harnest preserves framework/model reasoning state for subsequent turns but
+never places hidden thought parts in `/responses`, SSE, `/live`, or eval output.
+If a provider completes with reasoning only and no visible answer or structured
+result, JSON returns `502` and streaming transports emit an `error` event rather
+than reporting a successful empty response.
 
 `advanced` mode is the framework-native escape hatch. It still exports the
 public `Agent` type, constructed with `Agent.advanced(...)`. Harnest validates

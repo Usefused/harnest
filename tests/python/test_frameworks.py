@@ -76,6 +76,14 @@ class FrameworkArtifactTests(unittest.TestCase):
         self.assertEqual(text_value, "visible answer")
         self.assertEqual(structured["value"], "stale input")
 
+        thought_only = SimpleNamespace(
+            content=[{"type": "thinking", "thinking": "private reasoning"}]
+        )
+        self.assertEqual(
+            _graph_output(application, {"messages": [thought_only]}),
+            ("", None),
+        )
+
         call = SimpleNamespace(
             type="ai",
             tool_calls=[{"id": "call-1", "name": "echo", "args": {"text": "ok"}}],

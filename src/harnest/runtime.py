@@ -189,7 +189,7 @@ async def run_agent_message(
     application = load_compiled_application(artifact)
     _apply_observability_defaults(application.framework)
 
-    from .neutral_runtime import InvocationRequest
+    from .neutral_runtime import InvocationRequest, require_customer_facing_output
     from .telemetry import configure_observability
 
     configure_observability(application.name, framework=application.framework)
@@ -231,6 +231,7 @@ async def run_agent_message(
                 result = await asyncio.wait_for(
                     driver.invoke(request), timeout=request_timeout
                 )
+                require_customer_facing_output(result.text, result.result)
             except asyncio.TimeoutError as exc:
                 logger.error("agent.invocation.timeout", agent_name=application.name)
                 raise AgentExecutionTimeout(

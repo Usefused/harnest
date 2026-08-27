@@ -37,6 +37,7 @@ class FakeDriver:
         self.invocations: list[InvocationRequest] = []
         self.closed = False
         self.fail_stream = False
+        self.empty_output = False
 
     async def create_session(
         self,
@@ -87,6 +88,8 @@ class FakeDriver:
         return self.sessions.pop((user_id, session_id), None) is not None
 
     def events(self) -> list[RuntimeEvent]:
+        if self.empty_output:
+            return []
         return [
             {"type": "message", "role": "assistant", "text": "hel"},
             {"type": "message", "role": "assistant", "text": "lo"},
@@ -108,9 +111,9 @@ class FakeDriver:
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         self.invocations.append(request)
         return InvocationResult(
-            text="hello",
+            text="" if self.empty_output else "hello",
             events=self.events(),
-            result=42,
+            result=None if self.empty_output else 42,
             session_id=request.session_id,
             metadata=request.metadata,
         )
@@ -237,6 +240,38 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertIn("event: error", failed.text)
         self.assertIn('"error": "driver failed"', failed.text)
+
+    def test_reasoning_only_completion_is_never_reported_as_success(self):
+        self.driver.empty_output = True
+        self.client.post("/sessions", json={"id": "empty"})
+
+        response = self.client.post(
+            "/responses", json={"input": "hello", "sessionId": "empty"}
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "Agent completed without customer-facing output",
+        )
+
+        stream = self.client.post(
+            "/responses",
+            json={"input": "hello", "sessionId": "empty", "stream": True},
+        )
+        self.assertIn("event: error", stream.text)
+        self.assertNotIn("event: response.completed", stream.text)
+
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json({"type": "connect", "sessionId": "empty"})
+            websocket.receive_json()
+            websocket.send_json({"type": "response.create", "input": "hello"})
+            self.assertEqual(websocket.receive_json()["type"], "response.created")
+            failure = websocket.receive_json()
+
+        self.assertEqual(failure["type"], "error")
+        self.assertEqual(
+            failure["error"], "Agent completed without customer-facing output"
+        )
 
     def test_live_uses_the_same_sequence_and_output_contract(self):
         self.client.post("/sessions", json={"id": "live"})

@@ -68,6 +68,14 @@ routes through LiteLLM. Pass provider options such as `api_base` and `api_key`
 through the connector or runtime environment. Managed ADK and LangGraph both
 resolve a `ModelConnector` lazily without contacting the model during compile.
 
+Set `thinking=True` to enable model reasoning, `thinking=False` to disable it,
+or omit the option for the provider default. Use `reasoning_effort="low"`,
+`"medium"`, or `"high"` instead when the provider supports explicit levels; do
+not combine it with `thinking`. Hidden thought parts never belong in tools,
+customer responses, streams, or eval expectations. Treat
+`Agent completed without customer-facing output` as a provider/model completion
+failure: the model reasoned but did not emit a final answer or structured result.
+
 ## MCP clients
 
 ```python

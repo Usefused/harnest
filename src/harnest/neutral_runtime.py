@@ -116,6 +116,23 @@ class SessionConflictError(RuntimeError):
     """Raised by a driver when a requested session id already exists."""
 
 
+class NoCustomerFacingOutputError(RuntimeError):
+    """Raised when a completed invocation contains no public answer or result."""
+
+
+def require_customer_facing_output(text: str, result: Any) -> None:
+    """Reject reasoning-only completions without exposing their hidden content."""
+
+    if text.strip() or result is not None:
+        return
+    # Returning an empty successful response makes provider failures look like
+    # valid agent behavior. The error remains provider-neutral and keeps hidden
+    # chain-of-thought out of every public transport.
+    raise NoCustomerFacingOutputError(
+        "Agent completed without customer-facing output"
+    )
+
+
 def _session_payload(session: SessionRecord) -> dict[str, Any]:
     return {"id": session.id, "state": dict(session.state)}
 
@@ -367,6 +384,8 @@ async def _serve_live_frame(
             for event in state.events
             if event.get("type") == "message"
         )
+        result_value = _final_event_result(state.events)
+        require_customer_facing_output(text_output, result_value)
         await websocket.send_json(
             _completed_payload(
                 response_id=response_id,
@@ -375,7 +394,7 @@ async def _serve_live_frame(
                 events=state.events,
                 text=text_output,
                 metadata=metadata,
-                result=_final_event_result(state.events),
+                result=result_value,
                 request_id=request_id,
             )
         )
@@ -633,8 +652,11 @@ def create_neutral_router(
                     result = await asyncio.wait_for(
                         driver.invoke(run), timeout=request_timeout
                     )
+                    require_customer_facing_output(result.text, result.result)
             except asyncio.TimeoutError as exc:
                 raise HTTPException(status_code=504, detail="Response timed out") from exc
+            except NoCustomerFacingOutputError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
             completed = _completed_payload(
                 response_id=response_id,
                 session_id=result.session_id,
@@ -683,6 +705,7 @@ def create_neutral_router(
                     if event.get("type") == "message"
                 )
                 result_value = _final_event_result(events)
+                require_customer_facing_output(text_output, result_value)
                 completed = _completed_payload(
                     response_id=response_id,
                     session_id=session.id,
@@ -784,10 +807,12 @@ __all__ = [
     "MAX_LIVE_FRAMES",
     "MAX_REQUEST_BYTES",
     "NEUTRAL_USER_ID",
+    "NoCustomerFacingOutputError",
     "RuntimeDriver",
     "RuntimeEvent",
     "SessionConflictError",
     "SessionRecord",
     "create_neutral_app",
     "create_neutral_router",
+    "require_customer_facing_output",
 ]

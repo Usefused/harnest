@@ -553,6 +553,12 @@ def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
         content = _message_text(messages[-1])
         if content:
             return content, public_result
+        if public_result is not None:
+            return _visible_value(public_result), public_result
+        # A reasoning-only AI message is not a customer response. Returning its
+        # object representation could leak provider internals and would bypass
+        # the neutral runtime's empty-output protection.
+        return "", None
     value = result.get("value")
     if value is None:
         return _visible_value(result), _json_value(result)

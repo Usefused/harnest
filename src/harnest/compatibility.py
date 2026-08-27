@@ -16,7 +16,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 
-_SOURCE_VERSION = "0.1.10"
+_SOURCE_VERSION = "0.1.11"
 
 
 @dataclass(frozen=True, slots=True)

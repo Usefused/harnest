@@ -74,6 +74,15 @@ service without changing the agent package. The default `qwen3.5:cloud` request
 still goes through the local Ollama API; the daemon owns the user's Ollama Cloud
 sign-in and forwards the request.
 
+The connector's optional `thinking` switch is framework-neutral: `True` maps to
+LiteLLM's medium reasoning effort, `False` maps to `none`, and omission preserves
+the provider default. Explicit `reasoning_effort` remains available for finer
+provider control and cannot be combined with `thinking`. Framework drivers may
+retain hidden reasoning in their native conversation state, but the neutral
+response normalizers expose only customer-facing text and structured output. A
+reasoning-only completion fails the public response contract instead of
+becoming a successful response with an empty body.
+
 ## Filesystem-first composition
 
 An agent folder is itself the Python authoring unit; there is no required wrapper

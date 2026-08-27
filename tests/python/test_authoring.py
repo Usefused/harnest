@@ -340,6 +340,64 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(built_model.kwargs, expected)
         self.assertEqual(built_agent.kwargs["model"].kwargs, expected)
 
+    def test_litellm_model_supports_thinking_and_non_thinking_modes(self):
+        thinking = LiteLLMModel("ollama_chat/qwen3.5:cloud", thinking=True)
+        non_thinking = LiteLLMModel(
+            "ollama_chat/qwen3.5:cloud", thinking=False
+        )
+        provider_default = LiteLLMModel("ollama_chat/qwen3.5:cloud")
+
+        self.assertEqual(thinking.completion_args, {"reasoning_effort": "medium"})
+        self.assertEqual(
+            non_thinking.completion_args, {"reasoning_effort": "none"}
+        )
+        self.assertEqual(provider_default.completion_args, {})
+
+        modules = _fake_adk_modules()
+        with patch.dict(sys.modules, modules):
+            self.assertEqual(
+                non_thinking.build().kwargs["reasoning_effort"], "none"
+            )
+
+        chat_adapter = _recording_class("ChatLiteLLM")
+        chat_adapter.model_fields = {
+            "model": object(),
+            "api_base": object(),
+            "model_kwargs": object(),
+        }
+        langgraph_module = types.ModuleType("langchain_litellm")
+        langgraph_module.ChatLiteLLM = chat_adapter
+        with patch.dict(sys.modules, {"langchain_litellm": langgraph_module}):
+            built = non_thinking.build_langgraph()
+
+        self.assertEqual(
+            built.kwargs,
+            {
+                "model": "ollama_chat/qwen3.5:cloud",
+                "model_kwargs": {"reasoning_effort": "none"},
+            },
+        )
+        ollama = OllamaModel(
+            "qwen3.5:cloud",
+            api_base="https://ollama.example",
+            thinking=True,
+        )
+        with patch.dict(sys.modules, {"langchain_litellm": langgraph_module}):
+            built_ollama = ollama.build_langgraph()
+        self.assertEqual(built_ollama.kwargs["api_base"], "https://ollama.example")
+        self.assertEqual(
+            built_ollama.kwargs["model_kwargs"], {"reasoning_effort": "medium"}
+        )
+
+    def test_model_thinking_mode_rejects_ambiguous_configuration(self):
+        with self.assertRaisesRegex(TypeError, "thinking must be a boolean"):
+            LiteLLMModel("ollama_chat/qwen3.5:cloud", thinking="yes")
+        with self.assertRaisesRegex(ValueError, "cannot be used together"):
+            OllamaModel(
+                thinking=True,
+                reasoning_effort="high",
+            )
+
     def test_litellm_model_requires_an_explicit_provider(self):
         for invalid in ("", "gpt-4.1-mini", "/gpt-4.1-mini", "openai/"):
             with self.subTest(model=invalid):

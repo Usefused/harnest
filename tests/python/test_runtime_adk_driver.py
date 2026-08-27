@@ -195,6 +195,16 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         )
+        thought_only = python_types.SimpleNamespace(
+            partial=False,
+            content=python_types.SimpleNamespace(
+                parts=[python_types.SimpleNamespace(text="private", thought=True)]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+        self.assertEqual(_ADKEventNormalizer().feed(thought_only), [])
 
 
 if __name__ == "__main__":
