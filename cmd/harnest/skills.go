@@ -139,7 +139,18 @@ func (a *application) resolveCodingAgentTarget(requested, project string) (codin
 		}
 		return target, nil
 	}
+	if target, found := a.detectActiveCodingAgent(); found {
+		return target, nil
+	}
+	if target, found := detectProjectCodingAgent(project); found {
+		return target, nil
+	}
+	// Agent Skills is an open project-local convention and the safest fallback
+	// when no invoking coding agent identifies itself.
+	return codingAgentTargets["agents"], nil
+}
 
+func (a *application) detectActiveCodingAgent() (codingAgentTarget, bool) {
 	for _, detection := range []struct {
 		environment []string
 		target      string
@@ -151,51 +162,41 @@ func (a *application) resolveCodingAgentTarget(requested, project string) (codin
 	} {
 		for _, key := range detection.environment {
 			if strings.TrimSpace(a.system.getenv(key)) != "" {
-				return codingAgentTargets[detection.target], nil
+				return codingAgentTargets[detection.target], true
 			}
 		}
 	}
 	if strings.Contains(strings.ToLower(a.system.getenv("TERM_PROGRAM")), "cursor") {
-		return codingAgentTargets["cursor"], nil
+		return codingAgentTargets["cursor"], true
 	}
 	// CODEX_HOME can remain set outside a running Codex session, so treat it as
 	// a weaker hint than active-agent markers above.
 	if strings.TrimSpace(a.system.getenv("CODEX_HOME")) != "" {
-		return codingAgentTargets["codex"], nil
+		return codingAgentTargets["codex"], true
 	}
+	return codingAgentTarget{}, false
+}
 
+func detectProjectCodingAgent(project string) (codingAgentTarget, bool) {
 	for _, candidate := range []string{".agents", ".claude", ".cursor"} {
 		info, err := os.Stat(filepath.Join(project, candidate))
 		if err == nil && info.IsDir() {
 			switch candidate {
 			case ".claude":
-				return codingAgentTargets["claude"], nil
+				return codingAgentTargets["claude"], true
 			case ".cursor":
-				return codingAgentTargets["cursor"], nil
+				return codingAgentTargets["cursor"], true
 			default:
-				return codingAgentTargets["agents"], nil
+				return codingAgentTargets["agents"], true
 			}
 		}
 	}
-
-	// Agent Skills is an open project-local convention and the safest fallback
-	// when no invoking coding agent identifies itself.
-	return codingAgentTargets["agents"], nil
+	return codingAgentTarget{}, false
 }
 
 func installAuthoringSkill(destination string, force bool) error {
-	if info, err := os.Lstat(destination); err == nil {
-		if !force {
-			return fmt.Errorf(
-				"authoring skill already exists at %s; pass --force to replace it",
-				destination,
-			)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("authoring skill destination %s is not a directory", destination)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect authoring skill destination: %w", err)
+	if err := validateSkillDestination(destination, force); err != nil {
+		return err
 	}
 
 	parent := filepath.Dir(destination)
@@ -225,6 +226,23 @@ func installAuthoringSkill(destination string, force bool) error {
 			_ = os.Rename(backup, destination)
 		}
 		return fmt.Errorf("install authoring skill: %w", err)
+	}
+	return nil
+}
+
+func validateSkillDestination(destination string, force bool) error {
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect authoring skill destination: %w", err)
+	}
+	if !force {
+		return fmt.Errorf("authoring skill already exists at %s; pass --force to replace it", destination)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("authoring skill destination %s is not a directory", destination)
 	}
 	return nil
 }

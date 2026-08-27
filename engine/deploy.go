@@ -19,6 +19,22 @@ type Deployer interface {
 	Deploy(context.Context, Bundle) error
 }
 
+type deploymentJob struct {
+	index  int
+	bundle Bundle
+}
+
+type deploymentRun struct {
+	ctx               context.Context
+	cancel            context.CancelFunc
+	plan              DeploymentPlan
+	compiler          Compiler
+	deployer          Deployer
+	errors            []error
+	errorsMutex       sync.Mutex
+	failFastTriggered atomic.Bool
+}
+
 // DeployAll deploys source bundles without compiling them. Deprecated: runtime
 // integrations should use CompileAndDeployAll so deployers never import raw
 // authored entrypoints.
@@ -55,80 +71,93 @@ func deployAll(ctx context.Context, plan DeploymentPlan, compiler Compiler, depl
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	type deploymentJob struct {
-		index  int
-		bundle Bundle
-	}
+	run := &deploymentRun{ctx: ctx, cancel: cancel, plan: plan, compiler: compiler, deployer: deployer, errors: make([]error, len(bundles))}
 	jobs := make(chan deploymentJob)
-	deploymentErrors := make([]error, len(bundles))
-	var errorsMutex sync.Mutex
-	var failFastTriggered atomic.Bool
 	workerCount := min(plan.Parallelism, len(bundles))
 	var workers sync.WaitGroup
 	for range workerCount {
 		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for job := range jobs {
-				if ctx.Err() != nil || (plan.FailFast && failFastTriggered.Load()) {
-					return
-				}
-				bundle := job.bundle
-				if compiler != nil {
-					artifact, err := compiler.Compile(ctx, bundle)
-					if err != nil {
-						errorsMutex.Lock()
-						deploymentErrors[job.index] = fmt.Errorf("compile %s: %w", bundle.Config.Metadata.Name, err)
-						errorsMutex.Unlock()
-						if plan.FailFast {
-							failFastTriggered.Store(true)
-							cancel()
-							return
-						}
-						continue
-					}
-					bundle.Compiled = &artifact
-				}
-				if err := deployer.Deploy(ctx, bundle); err != nil {
-					errorsMutex.Lock()
-					deploymentErrors[job.index] = fmt.Errorf("deploy %s: %w", job.bundle.Config.Metadata.Name, err)
-					errorsMutex.Unlock()
-					if plan.FailFast {
-						failFastTriggered.Store(true)
-						cancel()
-						return
-					}
-				}
-			}
-		}()
+		go run.worker(jobs, &workers)
 	}
+	run.enqueue(jobs, bundles)
+	close(jobs)
+	workers.Wait()
+	return run.joinErrors()
+}
 
+func (r *deploymentRun) worker(jobs <-chan deploymentJob, workers *sync.WaitGroup) {
+	defer workers.Done()
+	for job := range jobs {
+		if r.stopped() {
+			return
+		}
+		bundle, ok := r.compile(job)
+		if !ok {
+			if r.stopped() {
+				return
+			}
+			continue
+		}
+		if err := r.deployer.Deploy(r.ctx, bundle); err != nil {
+			r.record(job.index, "deploy", bundle, err)
+			if r.stopped() {
+				return
+			}
+		}
+	}
+}
+
+func (r *deploymentRun) compile(job deploymentJob) (Bundle, bool) {
+	if r.compiler == nil {
+		return job.bundle, true
+	}
+	artifact, err := r.compiler.Compile(r.ctx, job.bundle)
+	if err != nil {
+		r.record(job.index, "compile", job.bundle, err)
+		return Bundle{}, false
+	}
+	job.bundle.Compiled = &artifact
+	return job.bundle, true
+}
+
+func (r *deploymentRun) record(index int, operation string, bundle Bundle, err error) {
+	r.errorsMutex.Lock()
+	r.errors[index] = fmt.Errorf("%s %s: %w", operation, bundle.Config.Metadata.Name, err)
+	r.errorsMutex.Unlock()
+	if r.plan.FailFast {
+		r.failFastTriggered.Store(true)
+		r.cancel()
+	}
+}
+
+func (r *deploymentRun) stopped() bool {
+	return r.ctx.Err() != nil || (r.plan.FailFast && r.failFastTriggered.Load())
+}
+
+func (r *deploymentRun) enqueue(jobs chan<- deploymentJob, bundles []Bundle) {
 	for index, bundle := range bundles {
-		if ctx.Err() != nil || (plan.FailFast && failFastTriggered.Load()) {
-			break
+		if r.stopped() {
+			return
 		}
 		select {
 		case jobs <- deploymentJob{index: index, bundle: bundle}:
-		case <-ctx.Done():
-			break
-		}
-		if ctx.Err() != nil {
-			break
+		case <-r.ctx.Done():
+			return
 		}
 	}
-	close(jobs)
-	workers.Wait()
-	joinedErrors := make([]error, 0, len(deploymentErrors)+1)
-	for _, deploymentError := range deploymentErrors {
-		if deploymentError != nil {
-			joinedErrors = append(joinedErrors, deploymentError)
+}
+
+func (r *deploymentRun) joinErrors() error {
+	joined := make([]error, 0, len(r.errors)+1)
+	for _, err := range r.errors {
+		if err != nil {
+			joined = append(joined, err)
 		}
 	}
-	if parentError := ctx.Err(); parentError != nil && !failFastTriggered.Load() {
-		joinedErrors = append(joinedErrors, parentError)
+	if err := r.ctx.Err(); err != nil && !r.failFastTriggered.Load() {
+		joined = append(joined, err)
 	}
-	return errors.Join(joinedErrors...)
+	return errors.Join(joined...)
 }
 
 // CommandDeployer is a production-friendly bridge while the engine client is

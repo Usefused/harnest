@@ -310,7 +310,9 @@ func TestLoadCompiledArtifactVerifiesManifestAndSource(t *testing.T) {
 	}
 
 	mismatch := manifest
-	mismatch.Framework = AgentFramework{Name: "langgraph", Mode: "managed"}
+	mismatch.Framework = CompiledFramework{
+		Name: "langgraph", Mode: "managed", Distribution: "langgraph", Version: "1.2.0",
+	}
 	mismatchJSON, err := json.Marshal(mismatch)
 	if err != nil {
 		t.Fatal(err)
@@ -534,8 +536,17 @@ func compiledManifestForDirectory(t *testing.T, directory string, source Bundle)
 	return CompiledManifest{
 		APIVersion: APIVersion, Kind: "CompiledAgent", Name: source.Config.Metadata.Name,
 		Entrypoint: "agent:root_agent", SourceEntrypoint: source.Config.Spec.Entrypoint,
-		SourceDirectory: "source", Framework: source.Config.Spec.Framework,
-		Digest: compiledManifestDigest(files), Files: files,
+		SourceDirectory: "source", HarnestVersion: "0.1.0",
+		Framework: compiledFrameworkForTest(source.Config.Spec.Framework),
+		Digest:    compiledManifestDigest(files), Files: files,
+	}
+}
+
+func compiledFrameworkForTest(framework AgentFramework) CompiledFramework {
+	distribution := map[string]string{"adk": "google-adk", "langgraph": "langgraph"}[framework.Name]
+	return CompiledFramework{
+		Name: framework.Name, Mode: framework.EffectiveMode(),
+		Distribution: distribution, Version: "1.2.0",
 	}
 }
 

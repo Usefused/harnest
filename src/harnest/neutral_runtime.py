@@ -16,6 +16,7 @@ import uuid
 
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.exceptions import HTTPException
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 
@@ -247,6 +248,154 @@ def _final_event_result(events: Sequence[RuntimeEvent]) -> Any:
 
 def _sse(event_name: str, payload: Mapping[str, Any]) -> str:
     return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@dataclass(slots=True)
+class _LiveStreamState:
+    """Retain sequence progress so mid-stream errors keep the wire contract."""
+
+    events: list[RuntimeEvent] = field(default_factory=list)
+    sequence: int = 1
+
+
+async def _live_session(websocket: Any, response_session: Any) -> SessionRecord | None:
+    envelope = await websocket.receive_json()
+    if (
+        not isinstance(envelope, dict)
+        or not set(envelope) <= {"type", "sessionId"}
+        or envelope.get("type") != "connect"
+    ):
+        await websocket.send_json(
+            {"type": "error", "error": "First frame must be a connect request"}
+        )
+        await websocket.close(code=1008)
+        return None
+    try:
+        session = await response_session(envelope)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "error": exc.detail})
+        await websocket.close(code=1008)
+        return None
+    await websocket.send_json({"type": "session.connected", "sessionId": session.id})
+    return session
+
+
+def _live_frame_error(frame: Any) -> str | None:
+    if (
+        not isinstance(frame, dict)
+        or not set(frame) <= {"type", "input", "requestId", "metadata"}
+        or frame.get("type") != "response.create"
+        or not isinstance(frame.get("input"), str)
+        or not frame["input"].strip()
+    ):
+        return "Invalid live input frame"
+    if len(frame["input"].encode("utf-8")) > MAX_REQUEST_BYTES:
+        return "Input exceeds 1 MiB"
+    if not isinstance(frame.get("metadata", {}), dict):
+        return "metadata must be an object"
+    request_id = frame.get("requestId")
+    if request_id is not None and not isinstance(request_id, str):
+        return "requestId must be a string"
+    return None
+
+
+async def _live_stream_events(
+    websocket: Any,
+    source: AsyncIterator[RuntimeEvent],
+    with_deadline: Any,
+    state: _LiveStreamState,
+    *,
+    response_id: str,
+    session_id: str,
+    request_id: str | None,
+) -> None:
+    async with aclosing(source) as stream:
+        async for event in with_deadline(stream):
+            state.events.append(event)
+            normalized = _stream_frame(
+                event,
+                sequence=state.sequence,
+                response_id=response_id,
+                session_id=session_id,
+                request_id=request_id,
+            )
+            if normalized is None:
+                continue
+            _event_name, data = normalized
+            await websocket.send_json(data)
+            state.sequence += 1
+
+
+async def _serve_live_frame(
+    websocket: Any,
+    frame: Mapping[str, Any],
+    session: SessionRecord,
+    *,
+    invocation: Any,
+    with_deadline: Any,
+    semaphore: asyncio.Semaphore,
+    driver: RuntimeDriver,
+) -> None:
+    response_id = f"resp_{uuid.uuid4().hex}"
+    request_id = frame.get("requestId")
+    metadata = frame.get("metadata", {})
+    await websocket.send_json(
+        {
+            "type": "response.created",
+            "sequence": 0,
+            "responseId": response_id,
+            "sessionId": session.id,
+            "requestId": request_id,
+            "metadata": metadata,
+        }
+    )
+    run = invocation(frame["input"], session.id, response_id, metadata)
+    state = _LiveStreamState()
+    try:
+        async with semaphore:
+            await _live_stream_events(
+                websocket,
+                driver.stream(run),
+                with_deadline,
+                state,
+                response_id=response_id,
+                session_id=session.id,
+                request_id=request_id,
+            )
+        text_output = "".join(
+            str(event.get("text", ""))
+            for event in state.events
+            if event.get("type") == "message"
+        )
+        await websocket.send_json(
+            _completed_payload(
+                response_id=response_id,
+                session_id=session.id,
+                sequence=state.sequence,
+                events=state.events,
+                text=text_output,
+                metadata=metadata,
+                result=_final_event_result(state.events),
+                request_id=request_id,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "sequence": state.sequence,
+                "responseId": response_id,
+                "sessionId": session.id,
+                "requestId": request_id,
+                "error": (
+                    "Response timed out"
+                    if isinstance(exc, asyncio.TimeoutError)
+                    else str(exc)
+                ),
+            }
+        )
 
 
 def create_neutral_router(
@@ -566,26 +715,9 @@ def create_neutral_router(
     async def live(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
-            envelope = await websocket.receive_json()
-            if (
-                not isinstance(envelope, dict)
-                or not set(envelope) <= {"type", "sessionId"}
-                or envelope.get("type") != "connect"
-            ):
-                await websocket.send_json(
-                    {"type": "error", "error": "First frame must be a connect request"}
-                )
-                await websocket.close(code=1008)
+            session = await _live_session(websocket, response_session)
+            if session is None:
                 return
-            try:
-                session = await response_session(envelope)
-            except HTTPException as exc:
-                await websocket.send_json({"type": "error", "error": exc.detail})
-                await websocket.close(code=1008)
-                return
-            await websocket.send_json(
-                {"type": "session.connected", "sessionId": session.id}
-            )
             frame_count = 0
             while True:
                 frame = await websocket.receive_json()
@@ -596,102 +728,19 @@ def create_neutral_router(
                 if frame == {"type": "session.close"}:
                     await websocket.close(code=1000)
                     return
-                if (
-                    not isinstance(frame, dict)
-                    or not set(frame)
-                    <= {"type", "input", "requestId", "metadata"}
-                    or frame.get("type") != "response.create"
-                    or not isinstance(frame.get("input"), str)
-                    or not frame["input"].strip()
-                ):
-                    await websocket.send_json(
-                        {"type": "error", "error": "Invalid live input frame"}
-                    )
+                error = _live_frame_error(frame)
+                if error is not None:
+                    await websocket.send_json({"type": "error", "error": error})
                     continue
-                if len(frame["input"].encode("utf-8")) > MAX_REQUEST_BYTES:
-                    await websocket.send_json(
-                        {"type": "error", "error": "Input exceeds 1 MiB"}
-                    )
-                    continue
-                metadata = frame.get("metadata", {})
-                if not isinstance(metadata, dict):
-                    await websocket.send_json(
-                        {"type": "error", "error": "metadata must be an object"}
-                    )
-                    continue
-                request_id = frame.get("requestId")
-                if request_id is not None and not isinstance(request_id, str):
-                    await websocket.send_json(
-                        {"type": "error", "error": "requestId must be a string"}
-                    )
-                    continue
-
-                response_id = f"resp_{uuid.uuid4().hex}"
-                sequence = 0
-                events: list[RuntimeEvent] = []
-                created = {
-                    "type": "response.created",
-                    "sequence": sequence,
-                    "responseId": response_id,
-                    "sessionId": session.id,
-                    "requestId": request_id,
-                    "metadata": metadata,
-                }
-                await websocket.send_json(created)
-                sequence += 1
-                run = invocation(frame["input"], session.id, response_id, metadata)
-                try:
-                    async with semaphore:
-                        async with aclosing(driver.stream(run)) as source:
-                            async for event in with_deadline(source):
-                                events.append(event)
-                                normalized = _stream_frame(
-                                    event,
-                                    sequence=sequence,
-                                    response_id=response_id,
-                                    session_id=session.id,
-                                    request_id=request_id,
-                                )
-                                if normalized is None:
-                                    continue
-                                _event_name, data = normalized
-                                await websocket.send_json(data)
-                                sequence += 1
-                    text_output = "".join(
-                        str(event.get("text", ""))
-                        for event in events
-                        if event.get("type") == "message"
-                    )
-                    result_value = _final_event_result(events)
-                    await websocket.send_json(
-                        _completed_payload(
-                            response_id=response_id,
-                            session_id=session.id,
-                            sequence=sequence,
-                            events=events,
-                            text=text_output,
-                            metadata=metadata,
-                            result=result_value,
-                            request_id=request_id,
-                        )
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "sequence": sequence,
-                            "responseId": response_id,
-                            "sessionId": session.id,
-                            "requestId": request_id,
-                            "error": (
-                                "Response timed out"
-                                if isinstance(exc, asyncio.TimeoutError)
-                                else str(exc)
-                            ),
-                        }
-                    )
+                await _serve_live_frame(
+                    websocket,
+                    frame,
+                    session,
+                    invocation=invocation,
+                    with_deadline=with_deadline,
+                    semaphore=semaphore,
+                    driver=driver,
+                )
         except WebSocketDisconnect:
             pass
 

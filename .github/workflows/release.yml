@@ -34,10 +34,10 @@ jobs:
           cache: pip
 
       - name: Install Python build and runtime dependencies
-        run: python -m pip install --upgrade build ".[all]"
+        run: python -m pip install --upgrade build ".[all,quality]"
 
-      - name: Run test suite
-        run: make test
+      - name: Run quality gates
+        run: make quality
 
       - name: Validate installer shell
         run: sh -n install.sh

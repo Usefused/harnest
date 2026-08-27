@@ -97,6 +97,17 @@ class Graph:
     _node_names: frozenset[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._validate_metadata()
+        normalized_nodes = self._normalize_nodes()
+        normalized_edges = self._normalize_edges()
+        node_names = frozenset(normalized_nodes)
+        adjacency = self._validate_edges(normalized_edges, node_names)
+        self._validate_reachability(adjacency, node_names)
+        object.__setattr__(self, "nodes", MappingProxyType(normalized_nodes))
+        object.__setattr__(self, "edges", normalized_edges)
+        object.__setattr__(self, "_node_names", node_names)
+
+    def _validate_metadata(self) -> None:
         if not isinstance(self.name, str) or not self.name.isidentifier():
             raise ValueError("graph name must be a valid Python identifier")
         if self.name == "user":
@@ -112,6 +123,7 @@ class Graph:
         if not isinstance(self.nodes, Mapping):
             raise TypeError("graph nodes must be a mapping")
 
+    def _normalize_nodes(self) -> dict[str, Any]:
         normalized_nodes = dict(self.nodes)
         if not normalized_nodes:
             raise ValueError("graph must define at least one node")
@@ -122,19 +134,25 @@ class Graph:
                 )
             if name in {START, "__START__"}:
                 raise ValueError(f"graph node reference {name!r} is reserved")
+        return normalized_nodes
 
+    def _normalize_edges(self) -> tuple[Edge, ...]:
         if isinstance(self.edges, (str, bytes)):
             raise TypeError("graph edges must be a sequence of Edge values")
         normalized_edges = tuple(self.edges)
         if any(not isinstance(edge, Edge) for edge in normalized_edges):
             raise TypeError("graph edges must contain only Edge values")
+        return normalized_edges
 
-        node_names = frozenset(normalized_nodes)
+    @staticmethod
+    def _validate_edges(
+        edges: tuple[Edge, ...], node_names: frozenset[str]
+    ) -> dict[str, set[str]]:
         seen_edges: set[tuple[str, str]] = set()
         adjacency: dict[str, set[str]] = {
             START: set(), **{name: set() for name in node_names}
         }
-        for edge in normalized_edges:
+        for edge in edges:
             if edge.source != START and edge.source not in node_names:
                 raise ValueError(
                     f"graph edge references unknown source node {edge.source!r}"
@@ -151,7 +169,12 @@ class Graph:
                 )
             seen_edges.add(identity)
             adjacency[edge.source].add(edge.target)
+        return adjacency
 
+    @staticmethod
+    def _validate_reachability(
+        adjacency: Mapping[str, set[str]], node_names: frozenset[str]
+    ) -> None:
         reachable: set[str] = set()
         pending = [START]
         while pending:
@@ -167,9 +190,6 @@ class Graph:
                 + ", ".join(repr(name) for name in unreachable)
             )
 
-        object.__setattr__(self, "nodes", MappingProxyType(normalized_nodes))
-        object.__setattr__(self, "edges", normalized_edges)
-        object.__setattr__(self, "_node_names", node_names)
 
     def build(self, backend: str = "adk") -> Any:
         """Lower this graph with the named runtime backend."""

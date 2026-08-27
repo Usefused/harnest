@@ -272,6 +272,29 @@ export an `@tool` callable named `lookup_order`;
 `order_specialist`; and `mcp/catalog.py` must export an `MCPClient` (or
 `None`) named `catalog`.
 
+### Folder-scoped agent ownership
+
+In managed mode, each folder-based `agent.py` is a composition boundary. The
+root `agent.py` owns resources in the root folder. A nested
+`subagents/researcher/agent.py` owns the supported resource folders beside it:
+`instructions.md`, `tools/`, `skills/`, `mcp/`, and `sandbox/`. ADK nested
+agents may also own child agents under their sibling `subagents/`; LangGraph
+nested `Agent` definitions cannot consume discovered child subagents today.
+Root tools and skills are not inherited by that nested agent, and its private
+resources are not exposed to its parent merely because the folders are nested.
+
+A flat `subagents/researcher.py` is useful when only an agent definition is
+needed. It cannot own private resource folders or a private `instructions.md`;
+move it to `subagents/researcher/agent.py` when it needs either. An `Agent`
+written inline as a node in the root `agent.py` remains root-scoped and uses the
+root folder's discovered resources.
+
+Location is the access declaration. Do not repeat discovered tool or skill
+names in `Agent` fields as folder-access selectors. Harnest has no separate
+`SubAgent` class: the same `Agent` becomes a nested subagent through its folder
+and graph/parent reference. Plugins and extensions are deliberately root-only;
+a populated nested `plugins/` or `extensions/` folder fails compilation.
+
 `plugins/<name>/` packages MCP client connections with the progressive skills
 that teach the host agent when and how to use their tools. Its `mcp/` files
 follow the normal MCP client export convention and its `skills/` folders follow
@@ -377,6 +400,11 @@ temporary and eval history is not persisted; CI should retain command output as
 its test record. `--evals` requires at least one validated eval-set file and is
 rejected for the LangGraph backend.
 
+The eval runner discovers only the root agent folder's `evals/`. Eval files
+placed below a nested subagent may be encountered by compilation validation but
+are not selected or executed by `harnest test --evals`; keep runnable eval sets
+at the root.
+
 Both test trees are test-only. They are not added to prompts, tools, subagents,
 skills, the Agent Card, or the deployed capability surface.
 
@@ -435,8 +463,9 @@ Every deployable directory must contain:
   runtime module.
 - optional sibling `tools/`, `subagents/`, `mcp/`, and `sandbox/` directories
   whose public files follow the filename-matched export conventions above;
-  `plugins/<name>/{mcp,skills}` capability bundles; and
-  `extensions/<name>/` runtime lifecycle directories.
+  root-only `plugins/<name>/{mcp,skills}` capability bundles; and root-only
+  `extensions/<name>/` runtime lifecycle directories. Folder-based nested
+  subagents get their own supported sibling resource scope as described above.
 - non-empty UTF-8 `instructions.md` (also required as bundle metadata in advanced
   mode), plus optional `skills/`, ADK-only `evals/`, and
   test-only `tests/unit/` and `tests/smoke/` directories following the
@@ -660,11 +689,17 @@ translation.
 ## Development
 
 ```bash
-python -m unittest discover -s tests/python -v
-go test ./...
+python -m pip install -e ".[all,quality]"
+make quality
 ```
 
-Or run `make test` for both suites and schema syntax checks, and
+The quality gate runs both test suites and schema checks, enforces cyclomatic
+complexity of at most 10 in Python and Go, verifies Go formatting, and runs
+`go vet` plus the offline Python-to-Go integration example. See
+[Harnest development standards](docs/development.md) for the design,
+database-access, OTEL auditing, comments, and test requirements.
+
+Use `make test` when only the suites and schema syntax checks are needed, and
 `make validate-examples` to run the offline helpdesk author tests, render the
 Python plan, and dry-run every enabled example agent. The package requires
 Python 3.10 or newer; if `python3` resolves

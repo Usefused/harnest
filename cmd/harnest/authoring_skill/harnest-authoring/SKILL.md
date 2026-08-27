@@ -1,6 +1,6 @@
 ---
 name: harnest-authoring
-description: Build, modify, debug, test, or review a filesystem-first Harnest agent project. Use for Harnest agent folders, compiler-owned harnest.* Python imports, managed ADK or LangGraph graphs, plugins, extensions, MCP clients, skills, evals, tests, compilation, and standalone serving.
+description: Build, modify, debug, test, or review a filesystem-first Harnest agent project or contribute to Harnest itself. Use for Harnest agent folders, compiler-owned harnest.* Python imports, managed ADK or LangGraph graphs, plugins, extensions, MCP clients, skills, evals, tests, compilation, standalone serving, and Harnest Python or Go source changes.
 ---
 
 # Harnest authoring
@@ -19,9 +19,12 @@ being built.
    folders before changing the project.
 2. Preserve the selected `spec.framework.name` (`adk` or `langgraph`) and mode
    (`managed` or `advanced`) unless the user asks to change architecture.
-3. Put each capability in its conventional folder. Do not import sibling tools,
-   MCP clients, plugins, skills, or flat subagents into `agent.py`; the compiler
-   discovers them. Graph nodes must still be referenced explicitly in the graph.
+3. Put each capability in the folder owned by the intended `agent.py`. Do not
+   import sibling tools, MCP clients, plugins, skills, or flat subagents; the
+   compiler discovers them. A nested folder-based agent owns its sibling
+   resources without inheriting its parent's. Nested child-subagent discovery is
+   ADK-only; LangGraph graph nodes must still be referenced explicitly in the
+   graph.
 4. Import every authoring symbol explicitly from `harnest.*`. There are no magic
    globals and no compatibility layer.
 5. Match filename, export name, and declared resource name where the convention
@@ -45,6 +48,8 @@ being built.
   structure, framework, managed/advanced mode, models, subagents, or sandboxing.
 - Read [references/workflows.md](references/workflows.md) for CLI validation,
   testing, compilation, serving, and a final change checklist.
+- Read [references/quality.md](references/quality.md) when contributing to
+  Harnest's own Python or Go implementation.
 
 Prefer the smallest change that satisfies the request. Let compiler diagnostics
 define the contract when authored source and remembered documentation disagree.

@@ -104,6 +104,10 @@ class MCPClient:
         )
 
     def __post_init__(self) -> None:
+        self._validate_timeouts()
+        self._validate_transport()
+
+    def _validate_timeouts(self) -> None:
         if self.timeout_seconds <= 0:
             raise ValueError("MCP timeout_seconds must be greater than zero")
         if self.sse_read_timeout_seconds <= 0:
@@ -114,6 +118,8 @@ class MCPClient:
             raise TypeError("MCP args must be a sequence of arguments, not a string")
         if isinstance(self.tool_filter, (str, bytes)):
             raise TypeError("MCP tools must be a sequence of tool names, not a string")
+
+    def _validate_transport(self) -> None:
         if self.transport == "stdio" and (not self.command or not self.command.strip()):
             raise ValueError("stdio MCP clients require a server command")
         if self.transport in {"sse", "streamable-http"} and (
@@ -126,62 +132,33 @@ class MCPClient:
     def to_adk_toolset(self):
         """Construct an ADK MCP toolset, resolving ``${ENV_VAR}`` placeholders."""
 
-        try:
-            from google.adk.tools.mcp_tool import (
-                McpToolset,
-                SseConnectionParams,
-                StdioConnectionParams,
-                StreamableHTTPConnectionParams,
-            )
-            from mcp import StdioServerParameters
-        except ImportError:  # pragma: no cover - depends on optional runtime
-            # ADK releases differ in what mcp_tool re-exports. Importing from
-            # the defining modules works across the supported 2.x line.
-            try:
-                from google.adk.tools.mcp_tool.mcp_session_manager import (
-                    SseConnectionParams,
-                    StdioConnectionParams,
-                    StreamableHTTPConnectionParams,
-                )
-                from mcp import StdioServerParameters
-                try:
-                    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-                except ImportError:
-                    from google.adk.tools.mcp_tool import McpToolset
-            except ImportError as fallback_exc:  # pragma: no cover - optional runtime
-                raise RuntimeError(
-                    "google-adk with MCP support is required to use MCPClient"
-                ) from fallback_exc
-
-        if self.transport == "stdio":
-            server_params = StdioServerParameters(
-                command=_expand(self.command or ""),
-                args=[_expand(arg) for arg in self.args],
-                env={key: _expand(value) for key, value in self.env.items()} or None,
-            )
-            connection = StdioConnectionParams(
-                server_params=server_params, timeout=self.timeout_seconds
-            )
-        elif self.transport == "sse":
-            connection = SseConnectionParams(
-                url=_expand(self.url or ""),
-                headers={key: _expand(value) for key, value in self.headers.items()},
-                timeout=self.timeout_seconds,
-                sse_read_timeout=self.sse_read_timeout_seconds,
-            )
-        else:
-            connection = StreamableHTTPConnectionParams(
-                url=_expand(self.url or ""),
-                headers={key: _expand(value) for key, value in self.headers.items()},
-                timeout=self.timeout_seconds,
-                sse_read_timeout=self.sse_read_timeout_seconds,
-            )
-
-        return McpToolset(
+        classes = _adk_mcp_classes()
+        connection = self._adk_connection(classes)
+        return classes[0](
             connection_params=connection,
             tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
             tool_name_prefix=self.tool_name_prefix,
         )
+
+    def _adk_connection(self, classes: tuple[Any, ...]) -> Any:
+        _, sse_params, stdio_params, stream_params, server_parameters = classes
+        if self.transport == "stdio":
+            return self._adk_stdio(stdio_params, server_parameters)
+        params = sse_params if self.transport == "sse" else stream_params
+        return params(
+            url=_expand(self.url or ""),
+            headers={key: _expand(value) for key, value in self.headers.items()},
+            timeout=self.timeout_seconds,
+            sse_read_timeout=self.sse_read_timeout_seconds,
+        )
+
+    def _adk_stdio(self, params: Any, server_parameters: Any) -> Any:
+        server = server_parameters(
+            command=_expand(self.command or ""),
+            args=[_expand(arg) for arg in self.args],
+            env={key: _expand(value) for key, value in self.env.items()} or None,
+        )
+        return params(server_params=server, timeout=self.timeout_seconds)
 
     def to_langgraph_connection(self) -> dict[str, Any]:
         """Return a LangChain MCP adapter connection without opening it."""
@@ -191,13 +168,9 @@ class MCPClient:
                 "transport": "stdio",
                 "command": _expand(self.command or ""),
                 "args": [_expand(arg) for arg in self.args],
-                "env": {
-                    key: _expand(value) for key, value in self.env.items()
-                },
+                "env": {key: _expand(value) for key, value in self.env.items()},
                 "session_kwargs": {
-                    "read_timeout_seconds": timedelta(
-                        seconds=self.timeout_seconds
-                    )
+                    "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
                 },
             }
         return {
@@ -207,12 +180,44 @@ class MCPClient:
                 else self.transport
             ),
             "url": _expand(self.url or ""),
-            "headers": {
-                key: _expand(value) for key, value in self.headers.items()
-            },
+            "headers": {key: _expand(value) for key, value in self.headers.items()},
             "timeout": self.timeout_seconds,
             "sse_read_timeout": self.sse_read_timeout_seconds,
             "session_kwargs": {
                 "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
             },
         }
+
+
+def _adk_mcp_classes() -> tuple[Any, ...]:
+    try:
+        from google.adk.tools.mcp_tool import (
+            McpToolset, SseConnectionParams, StdioConnectionParams,
+            StreamableHTTPConnectionParams,
+        )
+        from mcp import StdioServerParameters
+    except ImportError:  # pragma: no cover - depends on optional runtime
+        return _fallback_adk_mcp_classes()
+    return (McpToolset, SseConnectionParams, StdioConnectionParams,
+            StreamableHTTPConnectionParams, StdioServerParameters)
+
+
+def _fallback_adk_mcp_classes() -> tuple[Any, ...]:
+    # ADK releases differ in what mcp_tool re-exports, so use the defining
+    # modules as a compatibility seam for the supported 2.x line.
+    try:
+        from google.adk.tools.mcp_tool.mcp_session_manager import (
+            SseConnectionParams, StdioConnectionParams,
+            StreamableHTTPConnectionParams,
+        )
+        from mcp import StdioServerParameters
+        try:
+            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+        except ImportError:
+            from google.adk.tools.mcp_tool import McpToolset
+    except ImportError as exc:  # pragma: no cover - optional runtime
+        raise RuntimeError(
+            "google-adk with MCP support is required to use MCPClient"
+        ) from exc
+    return (McpToolset, SseConnectionParams, StdioConnectionParams,
+            StreamableHTTPConnectionParams, StdioServerParameters)

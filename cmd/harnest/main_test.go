@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,39 +51,26 @@ func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{
+	assertContainsAll(t, "generated agent.py", string(agentSource), []string{
 		`name="support_agent"`,
 		"from harnest.agent import Agent",
 		"from harnest.graph import START, Edge, Graph",
 		`"respond": Agent(`,
-	} {
-		if !strings.Contains(string(agentSource), expected) {
-			t.Fatalf("generated agent.py is missing %q:\n%s", expected, agentSource)
-		}
-	}
+	})
 	skillManifest, err := os.ReadFile(filepath.Join(target, "skills", "getting-started", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{
+	assertContainsAll(t, "starter skill", string(skillManifest), []string{
 		"---\nname: getting-started\n",
 		"description: Apply the agent's core instructions",
 		"# Getting started",
-	} {
-		if !strings.Contains(string(skillManifest), expected) {
-			t.Fatalf("starter skill is missing %q:\n%s", expected, skillManifest)
-		}
-	}
-	for _, relative := range []string{
+	})
+	assertDirectories(t, target, []string{
 		"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
-	} {
-		info, err := os.Stat(filepath.Join(target, filepath.FromSlash(relative)))
-		if err != nil || !info.IsDir() {
-			t.Fatalf("generated directory %s is missing: %v", relative, err)
-		}
-	}
-	for relative, expected := range map[string]string{
+	})
+	assertFilesContain(t, target, map[string]string{
 		"tools/echo.py":                                    "from harnest.tool import tool",
 		"subagents/__init__.py":                            "Add direct graph agents",
 		"mcp/_README.md":                                   "Add direct MCP client connections",
@@ -90,15 +79,7 @@ func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"sandbox/_README.md":                               "Sandbox.container",
 		"sandbox/_example.py":                              "from harnest.sandbox import Sandbox",
-	} {
-		contents, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(relative)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(contents), expected) {
-			t.Fatalf("generated %s is missing %q:\n%s", relative, expected, contents)
-		}
-	}
+	})
 	if _, err := os.Stat(filepath.Join(target, "plugins", "starter", "agents")); !os.IsNotExist(err) {
 		t.Fatalf("generated plugin must not contain agents: %v", err)
 	}
@@ -123,6 +104,34 @@ func TestInitRefusesNonEmptyDirectory(t *testing.T) {
 	}
 }
 
+type failingScaffoldWriter struct {
+	file *os.File
+}
+
+func (w failingScaffoldWriter) Write(contents []byte) (int, error) {
+	written, _ := w.file.Write(contents[:min(4, len(contents))])
+	return written, errors.New("simulated write failure")
+}
+
+func (w failingScaffoldWriter) Close() error { return w.file.Close() }
+
+func TestCreateScaffoldFileRemovesPartialWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.py")
+	opener := func(path string) (io.WriteCloser, error) {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		return failingScaffoldWriter{file: file}, err
+	}
+
+	err := createScaffoldFileWith(path, "complete contents", opener)
+
+	if err == nil || !strings.Contains(err.Error(), "simulated write failure") {
+		t.Fatalf("got error %v, want simulated write failure", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("partial scaffold file remains after failure: %v", statErr)
+	}
+}
+
 func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	managed := filepath.Join(t.TempDir(), "langgraph-agent")
 	if _, _, err := executeForTest(
@@ -130,34 +139,7 @@ func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := engine.LoadBundle(managed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bundle.Config.Spec.Framework.Name != "langgraph" || bundle.Config.Spec.Framework.EffectiveMode() != "managed" {
-		t.Fatalf("unexpected managed framework: %#v", bundle.Config.Spec.Framework)
-	}
-	managedSource, err := os.ReadFile(filepath.Join(managed, "agent.py"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{
-		"from harnest.agent import Agent",
-		"root_agent = Graph(",
-		`"respond": Agent(`,
-	} {
-		if !strings.Contains(string(managedSource), expected) {
-			t.Fatalf("managed scaffold is missing %q:\n%s", expected, managedSource)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(managed, "subagents", "helper.py")); !os.IsNotExist(err) {
-		t.Fatalf("managed LangGraph scaffold must not create an implicit subagent: %v", err)
-	}
-	for _, relative := range []string{"subagents/_README.md", "evals/_README.md"} {
-		if _, err := os.Stat(filepath.Join(managed, filepath.FromSlash(relative))); err != nil {
-			t.Fatalf("managed LangGraph placeholder %s is missing: %v", relative, err)
-		}
-	}
+	assertManagedLangGraphScaffold(t, managed)
 
 	advanced := filepath.Join(t.TempDir(), "advanced-agent")
 	if _, _, err := executeForTest(
@@ -166,32 +148,95 @@ func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err = engine.LoadBundle(advanced)
+	assertAdvancedLangGraphScaffold(t, advanced)
+}
+
+func assertContainsAll(t *testing.T, label, contents string, expected []string) {
+	t.Helper()
+	for _, value := range expected {
+		if !strings.Contains(contents, value) {
+			t.Fatalf("%s is missing %q:\n%s", label, value, contents)
+		}
+	}
+}
+
+func assertDirectories(t *testing.T, root string, paths []string) {
+	t.Helper()
+	for _, relative := range paths {
+		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("generated directory %s is missing: %v", relative, err)
+		}
+	}
+}
+
+func assertFilesContain(t *testing.T, root string, expected map[string]string) {
+	t.Helper()
+	for relative, needle := range expected {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(contents), needle) {
+			t.Fatalf("generated %s is missing %q:\n%s", relative, needle, contents)
+		}
+	}
+}
+
+func assertManagedLangGraphScaffold(t *testing.T, directory string) {
+	t.Helper()
+	bundle, err := engine.LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Config.Spec.Framework.Name != "langgraph" || bundle.Config.Spec.Framework.EffectiveMode() != "managed" {
+		t.Fatalf("unexpected managed framework: %#v", bundle.Config.Spec.Framework)
+	}
+	source, err := os.ReadFile(filepath.Join(directory, "agent.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "managed scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Graph(", `"respond": Agent(`})
+	if _, err := os.Stat(filepath.Join(directory, "subagents", "helper.py")); !os.IsNotExist(err) {
+		t.Fatalf("managed LangGraph scaffold must not create an implicit subagent: %v", err)
+	}
+	assertFilesExist(t, directory, []string{"subagents/_README.md", "evals/_README.md"})
+}
+
+func assertFilesExist(t *testing.T, root string, paths []string) {
+	t.Helper()
+	for _, relative := range paths {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Fatalf("generated file %s is missing: %v", relative, err)
+		}
+	}
+}
+
+func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
+	t.Helper()
+	bundle, err := engine.LoadBundle(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bundle.Config.Spec.Framework.EffectiveMode() != "advanced" {
 		t.Fatalf("unexpected advanced framework: %#v", bundle.Config.Spec.Framework)
 	}
-	advancedSource, err := os.ReadFile(filepath.Join(advanced, "agent.py"))
+	source, err := os.ReadFile(filepath.Join(directory, "agent.py"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(advancedSource), "from harnest.agent import Agent") ||
-		!strings.Contains(string(advancedSource), "root_agent = Agent.advanced(") ||
-		!strings.Contains(string(advancedSource), "from langchain.agents import create_agent") {
-		t.Fatalf("advanced scaffold is missing LangGraph wiring:\n%s", advancedSource)
+	assertContainsAll(t, "advanced scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Agent.advanced(", "from langchain.agents import create_agent"})
+	if strings.Contains(string(source), "NativeApp") {
+		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
 	}
-	if strings.Contains(string(advancedSource), "NativeApp") {
-		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", advancedSource)
-	}
-	if _, err := os.Stat(filepath.Join(advanced, "tools", "_README.md")); err != nil {
-		t.Fatalf("advanced optional folder is missing starter content: %v", err)
-	}
-	for _, directory := range []string{
-		"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
-	} {
-		entries, err := os.ReadDir(filepath.Join(advanced, directory))
+	assertFilesExist(t, directory, []string{"tools/_README.md"})
+	assertOnlyPlaceholderResources(t, directory)
+}
+
+func assertOnlyPlaceholderResources(t *testing.T, root string) {
+	t.Helper()
+	for _, directory := range []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+		entries, err := os.ReadDir(filepath.Join(root, directory))
 		if err != nil {
 			t.Fatalf("read advanced optional folder %s: %v", directory, err)
 		}

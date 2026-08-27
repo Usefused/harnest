@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"harnest.dev/harnest/engine"
 )
 
 func (a *application) newCompileCommand() *cobra.Command {
@@ -113,104 +115,16 @@ func (a *application) newServeCommand() *cobra.Command {
 		Short: "Compile an agent and run its standalone HTTP server",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			if strings.TrimSpace(host) == "" {
-				return fmt.Errorf("--host cannot be empty")
-			}
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("--port must be between 1 and 65535")
-			}
 			bundle, err := loadAgentBundle(arguments[0])
 			if err != nil {
 				return err
 			}
-			if !command.Flags().Changed("request-timeout") {
-				requestTimeout = float64(bundle.Config.Spec.Resources.TimeoutSeconds)
-				if requestTimeout == 0 {
-					requestTimeout = 300
-				}
-			}
-			if requestTimeout <= 0 {
-				return fmt.Errorf("--request-timeout must be greater than zero")
-			}
-			if !command.Flags().Changed("max-concurrency") {
-				maxConcurrency = bundle.Config.Spec.Resources.MaxConcurrentRequests
-				if maxConcurrency == 0 {
-					maxConcurrency = 8
-				}
-			}
-			if maxConcurrency < 1 {
-				return fmt.Errorf("--max-concurrency must be at least one")
-			}
-
-			python, err := a.resolvePython()
-			if err != nil {
+			options := serveOptions{output: output, host: host, port: port, requestTimeout: requestTimeout, maxConcurrency: maxConcurrency, allowRemote: allowRemote}
+			options.applyBundleDefaults(command, bundle)
+			if err := options.validate(); err != nil {
 				return err
 			}
-			artifactDirectory := output
-			cleanup := func() {}
-			if strings.TrimSpace(artifactDirectory) == "" {
-				temporaryRoot, err := os.MkdirTemp("", "harnest-serve-")
-				if err != nil {
-					return fmt.Errorf("create temporary artifact root: %w", err)
-				}
-				cleanup = func() { _ = os.RemoveAll(temporaryRoot) }
-				artifactDirectory = filepath.Join(temporaryRoot, bundle.Config.Metadata.Name)
-			}
-			defer cleanup()
-
-			var compileOutput bytes.Buffer
-			if err := runPythonCLI(
-				command.Context(),
-				a,
-				python,
-				[]string{
-					"compile", bundle.Directory, "--output", artifactDirectory,
-					"--entrypoint", bundle.Config.Spec.Entrypoint,
-					"--framework", bundle.Config.Spec.Framework.Name,
-					"--mode", bundle.Config.Spec.Framework.EffectiveMode(),
-				},
-				configuredEnvironment(bundle),
-				command.InOrStdin(),
-				&compileOutput,
-				command.ErrOrStderr(),
-			); err != nil {
-				return err
-			}
-			launcher := filepath.Join(artifactDirectory, "harnest-agent")
-			info, err := os.Lstat(launcher)
-			if err != nil {
-				return fmt.Errorf("inspect generated launcher: %w", err)
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("generated launcher %s is not a regular file", launcher)
-			}
-
-			serveArguments := []string{
-				launcher,
-				"--host", host,
-				"--port", strconv.Itoa(port),
-				"--request-timeout", strconv.FormatFloat(requestTimeout, 'g', -1, 64),
-				"--max-concurrency", strconv.Itoa(maxConcurrency),
-			}
-			if allowRemote {
-				serveArguments = append(serveArguments, "--allow-remote")
-			}
-			fmt.Fprintf(
-				command.ErrOrStderr(),
-				"Serving %s on http://%s:%d using %s\n",
-				bundle.Config.Metadata.Name,
-				host,
-				port,
-				python.Executable,
-			)
-			server := a.system.commandContext(command.Context(), python.Executable, serveArguments...)
-			server.Env = configuredEnvironment(bundle)
-			if err := runCommand(
-				server, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr(),
-			); err != nil {
-				return fmt.Errorf("run generated harnest-agent: %w", err)
-			}
-			return nil
+			return a.serveBundle(command, bundle, options)
 		},
 	}
 	command.Flags().StringVarP(&output, "output", "o", "", "retain the compiled artifact in this directory")
@@ -225,4 +139,107 @@ func (a *application) newServeCommand() *cobra.Command {
 		"allow a non-loopback bind (the server has no built-in authentication)",
 	)
 	return command
+}
+
+type serveOptions struct {
+	output, host   string
+	port           int
+	requestTimeout float64
+	maxConcurrency int
+	allowRemote    bool
+}
+
+func (o *serveOptions) applyBundleDefaults(command *cobra.Command, bundle engine.Bundle) {
+	if !command.Flags().Changed("request-timeout") {
+		o.requestTimeout = float64(bundle.Config.Spec.Resources.TimeoutSeconds)
+		if o.requestTimeout == 0 {
+			o.requestTimeout = 300
+		}
+	}
+	if !command.Flags().Changed("max-concurrency") {
+		o.maxConcurrency = bundle.Config.Spec.Resources.MaxConcurrentRequests
+		if o.maxConcurrency == 0 {
+			o.maxConcurrency = 8
+		}
+	}
+}
+
+func (o serveOptions) validate() error {
+	if strings.TrimSpace(o.host) == "" {
+		return fmt.Errorf("--host cannot be empty")
+	}
+	if o.port < 1 || o.port > 65535 {
+		return fmt.Errorf("--port must be between 1 and 65535")
+	}
+	if o.requestTimeout <= 0 {
+		return fmt.Errorf("--request-timeout must be greater than zero")
+	}
+	if o.maxConcurrency < 1 {
+		return fmt.Errorf("--max-concurrency must be at least one")
+	}
+	return nil
+}
+
+func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, options serveOptions) error {
+	python, err := a.resolvePython()
+	if err != nil {
+		return err
+	}
+	artifact, cleanup, err := serveArtifactDirectory(options.output, bundle.Config.Metadata.Name)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := a.compileForServe(command, python, bundle, artifact); err != nil {
+		return err
+	}
+	launcher, err := compiledLauncher(artifact)
+	if err != nil {
+		return err
+	}
+	args := options.arguments(launcher)
+	fmt.Fprintf(command.ErrOrStderr(), "Serving %s on http://%s:%d using %s\n", bundle.Config.Metadata.Name, options.host, options.port, python.Executable)
+	server := a.system.commandContext(command.Context(), python.Executable, args...)
+	server.Env = configuredEnvironment(bundle)
+	if err := runCommand(server, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr()); err != nil {
+		return fmt.Errorf("run generated harnest-agent: %w", err)
+	}
+	return nil
+}
+
+func serveArtifactDirectory(output, name string) (string, func(), error) {
+	if strings.TrimSpace(output) != "" {
+		return output, func() {}, nil
+	}
+	root, err := os.MkdirTemp("", "harnest-serve-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary artifact root: %w", err)
+	}
+	return filepath.Join(root, name), func() { _ = os.RemoveAll(root) }, nil
+}
+
+func (a *application) compileForServe(command *cobra.Command, python pythonSelection, bundle engine.Bundle, artifact string) error {
+	var output bytes.Buffer
+	args := []string{"compile", bundle.Directory, "--output", artifact, "--entrypoint", bundle.Config.Spec.Entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
+	return runPythonCLI(command.Context(), a, python, args, configuredEnvironment(bundle), command.InOrStdin(), &output, command.ErrOrStderr())
+}
+
+func compiledLauncher(artifact string) (string, error) {
+	launcher := filepath.Join(artifact, "harnest-agent")
+	info, err := os.Lstat(launcher)
+	if err != nil {
+		return "", fmt.Errorf("inspect generated launcher: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("generated launcher %s is not a regular file", launcher)
+	}
+	return launcher, nil
+}
+
+func (o serveOptions) arguments(launcher string) []string {
+	args := []string{launcher, "--host", o.host, "--port", strconv.Itoa(o.port), "--request-timeout", strconv.FormatFloat(o.requestTimeout, 'g', -1, 64), "--max-concurrency", strconv.Itoa(o.maxConcurrency)}
+	if o.allowRemote {
+		args = append(args, "--allow-remote")
+	}
+	return args
 }

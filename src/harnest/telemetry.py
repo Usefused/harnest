@@ -9,7 +9,7 @@ import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from opentelemetry import trace
 
@@ -236,78 +236,12 @@ def configure_observability(
         if _STATE is not None:
             return _STATE
         enabled = _otel_enabled() or span_exporter is not None or log_exporter is not None
-        tracer_provider = None
-        logger_provider = None
-        owns_providers = False
-        if enabled:
-            adopt_global_providers = use_global_providers
-            if set_global_providers and not adopt_global_providers:
-                from opentelemetry import _logs
-                from opentelemetry.sdk._logs import LoggerProvider
-                from opentelemetry.sdk.trace import TracerProvider
-
-                adopt_global_providers = isinstance(
-                    trace.get_tracer_provider(), TracerProvider
-                ) or isinstance(_logs.get_logger_provider(), LoggerProvider)
-            if adopt_global_providers:
-                if span_exporter is not None or log_exporter is not None:
-                    raise ValueError(
-                        "custom exporters cannot be combined with global providers"
-                    )
-                from opentelemetry import _logs
-
-                tracer_provider = trace.get_tracer_provider()
-                logger_provider = _logs.get_logger_provider()
-            else:
-                from opentelemetry.sdk.resources import Resource
-
-                attributes = {
-                    "service.name": os.getenv(
-                        "OTEL_SERVICE_NAME", service_name
-                    ).strip(),
-                    "harnest.framework": framework,
-                }
-                if service_version:
-                    attributes["service.version"] = service_version
-                resource = Resource.create(attributes)
-
-                from opentelemetry.sdk.trace import TracerProvider
-                from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-                tracer_provider = TracerProvider(
-                    resource=resource, shutdown_on_exit=False
-                )
-                selected_span_exporter = (
-                    span_exporter
-                    if span_exporter is not None
-                    else _trace_exporter(_exporter_name("traces"))
-                )
-                if selected_span_exporter is not None:
-                    tracer_provider.add_span_processor(
-                        BatchSpanProcessor(selected_span_exporter)
-                    )
-
-                from opentelemetry.sdk._logs import LoggerProvider
-                from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-
-                logger_provider = LoggerProvider(
-                    resource=resource, shutdown_on_exit=False
-                )
-                selected_log_exporter = (
-                    log_exporter
-                    if log_exporter is not None
-                    else _log_exporter(_exporter_name("logs"))
-                )
-                if selected_log_exporter is not None:
-                    logger_provider.add_log_record_processor(
-                        BatchLogRecordProcessor(selected_log_exporter)
-                    )
-                if set_global_providers:
-                    from opentelemetry import _logs
-
-                    trace.set_tracer_provider(tracer_provider)
-                    _logs.set_logger_provider(logger_provider)
-                owns_providers = True
+        tracer_provider, logger_provider, owns_providers = _providers(
+            enabled=enabled, service_name=service_name, framework=framework,
+            service_version=service_version, span_exporter=span_exporter,
+            log_exporter=log_exporter, use_global_providers=use_global_providers,
+            set_global_providers=set_global_providers,
+        )
         _configure_agent_logger(logger_provider)
         _STATE = TelemetryState(
             service_name=service_name.strip(),
@@ -321,6 +255,65 @@ def configure_observability(
         if _STATE.owns_tracer_provider or _STATE.owns_logger_provider:
             atexit.register(_STATE.shutdown)
         return _STATE
+
+
+def _providers(**options: Any) -> tuple[Any | None, Any | None, bool]:
+    if not options["enabled"]:
+        return None, None, False
+    if _should_adopt_global(options):
+        if options["span_exporter"] is not None or options["log_exporter"] is not None:
+            raise ValueError("custom exporters cannot be combined with global providers")
+        from opentelemetry import _logs
+
+        return trace.get_tracer_provider(), _logs.get_logger_provider(), False
+    tracer_provider, logger_provider = _new_providers(options)
+    if options["set_global_providers"]:
+        from opentelemetry import _logs
+
+        trace.set_tracer_provider(tracer_provider)
+        _logs.set_logger_provider(logger_provider)
+    return tracer_provider, logger_provider, True
+
+
+def _should_adopt_global(options: Mapping[str, Any]) -> bool:
+    if options["use_global_providers"] or not options["set_global_providers"]:
+        return bool(options["use_global_providers"])
+    from opentelemetry import _logs
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.trace import TracerProvider
+
+    return isinstance(trace.get_tracer_provider(), TracerProvider) or isinstance(
+        _logs.get_logger_provider(), LoggerProvider
+    )
+
+
+def _new_providers(options: Mapping[str, Any]) -> tuple[Any, Any]:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+    attributes = {
+        "service.name": os.getenv("OTEL_SERVICE_NAME", options["service_name"]).strip(),
+        "harnest.framework": options["framework"],
+    }
+    if options["service_version"]:
+        attributes["service.version"] = options["service_version"]
+    resource = Resource.create(attributes)
+    tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
+    logger_provider = LoggerProvider(resource=resource, shutdown_on_exit=False)
+    selected_span = options["span_exporter"]
+    if selected_span is None:
+        selected_span = _trace_exporter(_exporter_name("traces"))
+    selected_log = options["log_exporter"]
+    if selected_log is None:
+        selected_log = _log_exporter(_exporter_name("logs"))
+    if selected_span is not None:
+        tracer_provider.add_span_processor(BatchSpanProcessor(selected_span))
+    if selected_log is not None:
+        logger_provider.add_log_record_processor(BatchLogRecordProcessor(selected_log))
+    return tracer_provider, logger_provider
 
 
 def get_tracer(name: str, *, version: str | None = None) -> Any:

@@ -384,9 +384,24 @@ def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
 
     END, LANGGRAPH_START, StateGraph, add_messages, Pregel = _langgraph_types()
 
-    # The functional form keeps the locally imported reducer as an evaluated
-    # annotation even though this module uses postponed annotations.
-    GraphState = TypedDict(
+    builder = StateGraph(_graph_state(add_messages))
+    for name, value in graph.nodes.items():
+        builder.add_node(name, _lower_node(value, Pregel, middleware))
+    outgoing, join_inputs = _classified_edges(graph)
+    _add_outgoing_edges(builder, outgoing, LANGGRAPH_START, END)
+    _add_join_edges(builder, join_inputs, LANGGRAPH_START)
+    _add_terminal_edges(builder, graph, END)
+
+    compiled = builder.compile(name=graph.name)
+    if graph.max_concurrency is not None:
+        compiled = compiled.with_config(max_concurrency=graph.max_concurrency)
+    return compiled
+
+
+def _graph_state(add_messages: Any) -> type[Any]:
+    # The functional form evaluates the locally imported reducer even though
+    # this module uses postponed annotations.
+    return TypedDict(
         "GraphState",
         {
             "messages": Annotated[list[Any], add_messages],
@@ -396,54 +411,49 @@ def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
         total=False,
     )
 
-    builder = StateGraph(GraphState)
-    for name, value in graph.nodes.items():
-        builder.add_node(name, _lower_node(value, Pregel, middleware))
 
+def _classified_edges(
+    graph: Graph,
+) -> tuple[dict[str, list[Edge]], dict[str, list[str]]]:
     outgoing: dict[str, list[Edge]] = defaultdict(list)
     join_inputs: dict[str, list[str]] = defaultdict(list)
-    all_sources = {edge.source for edge in graph.edges}
     for edge in graph.edges:
-        if isinstance(graph.nodes[edge.target], Join):
-            if edge.route is not None:
-                raise ValueError(
-                    f"Join node {edge.target!r} cannot have routed incoming edges"
-                )
-            join_inputs[edge.target].append(edge.source)
-        else:
+        if not isinstance(graph.nodes[edge.target], Join):
             outgoing[edge.source].append(edge)
+            continue
+        if edge.route is not None:
+            raise ValueError(f"Join node {edge.target!r} cannot have routed incoming edges")
+        join_inputs[edge.target].append(edge.source)
+    return outgoing, join_inputs
 
+
+def _add_outgoing_edges(
+    builder: Any, outgoing: Mapping[str, list[Edge]], graph_start: str, end: str
+) -> None:
     for source, edges in outgoing.items():
+        native_source = graph_start if source == START else source
         if all(edge.route is None for edge in edges):
             for edge in edges:
-                builder.add_edge(
-                    LANGGRAPH_START if source == START else source,
-                    edge.target,
-                )
+                builder.add_edge(native_source, edge.target)
         else:
-            builder.add_conditional_edges(
-                LANGGRAPH_START if source == START else source,
-                _route_selector(edges, END),
-            )
+            builder.add_conditional_edges(native_source, _route_selector(edges, end))
 
+
+def _add_join_edges(
+    builder: Any, join_inputs: Mapping[str, list[str]], graph_start: str
+) -> None:
     for target, sources in join_inputs.items():
         if START in sources and len(sources) > 1:
-            raise ValueError(
-                f"Join node {target!r} cannot combine START with node inputs"
-            )
-        normalized = [
-            LANGGRAPH_START if source == START else source for source in sources
-        ]
+            raise ValueError(f"Join node {target!r} cannot combine START with node inputs")
+        normalized = [graph_start if source == START else source for source in sources]
         builder.add_edge(normalized if len(normalized) > 1 else normalized[0], target)
 
+
+def _add_terminal_edges(builder: Any, graph: Graph, end: str) -> None:
+    all_sources = {edge.source for edge in graph.edges}
     for node_name in graph.nodes:
         if node_name not in all_sources:
-            builder.add_edge(node_name, END)
-
-    compiled = builder.compile(name=graph.name)
-    if graph.max_concurrency is not None:
-        compiled = compiled.with_config(max_concurrency=graph.max_concurrency)
-    return compiled
+            builder.add_edge(node_name, end)
 
 
 lower_graph = build_graph

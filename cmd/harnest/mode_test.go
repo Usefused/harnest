@@ -14,14 +14,8 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 	}
 	configPath := filepath.Join(target, "config.yaml")
 	agentPath := filepath.Join(target, "agent.py")
-	configBefore, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentBefore, err := os.ReadFile(agentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	configBefore := mustReadTestFile(t, configPath)
+	agentBefore := mustReadTestFile(t, agentPath)
 
 	stdout, _, err := executeForTest(
 		t, defaultSystem(), "mode", "advanced", target, "--check",
@@ -29,7 +23,7 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{
+	assertContainsAll(t, "advanced mode audit", stdout, []string{
 		"Advanced-mode migration check (read-only)",
 		"Framework: adk",
 		"Current mode: managed",
@@ -42,27 +36,31 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		"Agent.advanced(...)",
 		"spec.framework.mode to advanced",
 		"No files were changed.",
-	} {
-		if !strings.Contains(stdout, expected) {
-			t.Fatalf("advanced mode audit is missing %q:\n%s", expected, stdout)
-		}
-	}
-	for _, placeholder := range []string{"  - subagents/", "  - mcp/", "  - sandbox/"} {
-		if strings.Contains(stdout, placeholder) {
-			t.Fatalf("advanced mode audit reported placeholder directory %q:\n%s", placeholder, stdout)
-		}
-	}
+	})
+	assertContainsNone(t, "advanced mode audit", stdout, []string{"  - subagents/", "  - mcp/", "  - sandbox/"})
 
-	configAfter, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentAfter, err := os.ReadFile(agentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	configAfter := mustReadTestFile(t, configPath)
+	agentAfter := mustReadTestFile(t, agentPath)
 	if string(configAfter) != string(configBefore) || string(agentAfter) != string(agentBefore) {
 		t.Fatal("advanced mode check modified config.yaml or agent.py")
+	}
+}
+
+func mustReadTestFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
+}
+
+func assertContainsNone(t *testing.T, label, contents string, unexpected []string) {
+	t.Helper()
+	for _, value := range unexpected {
+		if strings.Contains(contents, value) {
+			t.Fatalf("%s unexpectedly contains %q:\n%s", label, value, contents)
+		}
 	}
 }
 

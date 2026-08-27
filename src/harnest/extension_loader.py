@@ -47,42 +47,35 @@ def discover_extensions(
     if not root.exists():
         return ()
 
-    result: list[DiscoveredExtension] = []
-    for child in sorted(root.iterdir(), key=lambda value: value.name):
-        if child.is_symlink():
-            raise ExtensionDiscoveryError(
-                f"extension directory cannot be a symlink: {child}"
-            )
-        if _ignored(child):
-            continue
-        if not child.is_dir() or not child.name.isidentifier():
-            raise ExtensionDiscoveryError(
-                f"each extension must be a Python-identifier directory: {child}"
-            )
-        files = _extension_files(child)
-        if not files:
-            continue
-        portable_path = child / "lifecycle.py"
-        native_path = child / f"{framework}.py"
-        portable = (
-            _load_portable(portable_path, expected_name=child.name)
-            if portable_path in files
-            else None
+    return tuple(
+        extension
+        for child in sorted(root.iterdir(), key=lambda value: value.name)
+        if (extension := _discover_extension(child, framework)) is not None
+    )
+
+
+def _discover_extension(child: Path, framework: str) -> DiscoveredExtension | None:
+    if child.is_symlink():
+        raise ExtensionDiscoveryError(f"extension directory cannot be a symlink: {child}")
+    if _ignored(child):
+        return None
+    if not child.is_dir() or not child.name.isidentifier():
+        raise ExtensionDiscoveryError(
+            f"each extension must be a Python-identifier directory: {child}"
         )
-        native = (
-            _load_native(native_path, framework=framework, expected_name=child.name)
-            if native_path in files
-            else None
+    files = _extension_files(child)
+    if not files:
+        return None
+    portable_path = child / "lifecycle.py"
+    native_path = child / f"{framework}.py"
+    portable = _load_portable(portable_path, expected_name=child.name) if portable_path in files else None
+    native = _load_native(native_path, framework=framework, expected_name=child.name) if native_path in files else None
+    if portable is None and native is None:
+        raise ExtensionDiscoveryError(
+            f"extension {child.name!r} has no lifecycle.py or {framework}.py "
+            f"for the selected {framework} backend"
         )
-        if portable is None and native is None:
-            raise ExtensionDiscoveryError(
-                f"extension {child.name!r} has no lifecycle.py or {framework}.py "
-                f"for the selected {framework} backend"
-            )
-        result.append(
-            DiscoveredExtension(child.name, child, portable=portable, native=native)
-        )
-    return tuple(result)
+    return DiscoveredExtension(child.name, child, portable=portable, native=native)
 
 
 def _extension_files(directory: Path) -> set[Path]:

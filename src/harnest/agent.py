@@ -74,6 +74,10 @@ class AgentDefinition:
         )
 
     def __post_init__(self) -> None:
+        self._validate_identity()
+        self._validate_resources()
+
+    def _validate_identity(self) -> None:
         if not isinstance(self.name, str) or not _AGENT_NAME_PATTERN.fullmatch(self.name):
             raise ValueError(
                 "agent name must start with a letter or underscore and contain "
@@ -87,6 +91,8 @@ class AgentDefinition:
             not isinstance(self.instruction, str) or not self.instruction.strip()
         ):
             raise ValueError("agent instruction is required")
+
+    def _validate_resources(self) -> None:
         for field_name, value in (
             ("tools", self.tools),
             ("subagents", self.subagents),
@@ -115,6 +121,9 @@ class AgentDefinition:
                 "google-adk is required to build an agent; install the harnest package"
             ) from exc
 
+        return LlmAgent(**self._build_kwargs())
+
+    def _build_kwargs(self) -> dict[str, Any]:
         children = [
             child.build() if isinstance(child, AgentDefinition) else child
             for child in self.subagents
@@ -137,18 +146,20 @@ class AgentDefinition:
                 else self.sandbox
             )
         if self.generate_content_config is not None:
-            config = self.generate_content_config
-            if isinstance(config, Mapping):
-                try:
-                    from google.genai import types
+            kwargs["generate_content_config"] = self._content_config()
+        return kwargs
 
-                    config = types.GenerateContentConfig(**dict(config))
-                except ImportError as exc:  # pragma: no cover
-                    raise RuntimeError(
-                        "google-genai is required for generate_content_config"
-                    ) from exc
-            kwargs["generate_content_config"] = config
-        return LlmAgent(**kwargs)
+    def _content_config(self) -> Any:
+        config = self.generate_content_config
+        if not isinstance(config, Mapping):
+            return config
+        try:
+            from google.genai import types
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "google-genai is required for generate_content_config"
+            ) from exc
+        return types.GenerateContentConfig(**dict(config))
 
 
 @dataclass(frozen=True, slots=True)

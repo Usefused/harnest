@@ -279,6 +279,14 @@ class _ADKEventNormalizer:
 
 
 def _event_items(event: Any) -> list[dict[str, Any]]:
+    items, text = _content_items(event)
+    items.extend(_output_items(event, text))
+    items.extend(_function_call_items(event))
+    items.extend(_function_response_items(event))
+    return items
+
+
+def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
     items: list[dict[str, Any]] = []
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) if content is not None else None
@@ -290,7 +298,11 @@ def _event_items(event: Any) -> list[dict[str, Any]]:
     )
     if text:
         items.append({"type": "message", "role": "assistant", "text": text})
+    return items, text
 
+
+def _output_items(event: Any, text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     output = getattr(event, "output", None)
     if output is not None and _is_terminal_output(event):
         if isinstance(output, str):
@@ -306,7 +318,11 @@ def _event_items(event: Any) -> list[dict[str, Any]]:
                 "result": normalized_output,
             }
         )
+    return items
 
+
+def _function_call_items(event: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     get_calls = getattr(event, "get_function_calls", None)
     for call in get_calls() if callable(get_calls) else ():
         items.append(
@@ -317,6 +333,11 @@ def _event_items(event: Any) -> list[dict[str, Any]]:
                 "arguments": _json_value(getattr(call, "args", None)),
             }
         )
+    return items
+
+
+def _function_response_items(event: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     get_responses = getattr(event, "get_function_responses", None)
     for response in get_responses() if callable(get_responses) else ():
         items.append(

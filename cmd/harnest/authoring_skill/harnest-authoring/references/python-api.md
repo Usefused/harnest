@@ -26,7 +26,10 @@ root_agent = Graph(
 `Agent` is an alias of `AgentDefinition`. Common fields are `name`, `model`,
 `instruction`, `description`, `tools`, `subagents`, `mcp`, `sandbox`,
 `output_key`, and `generate_content_config`. Prefer filesystem composition over
-manually populating discovered resources.
+manually populating discovered resources. These explicit object fields are not
+name-based access selectors for resource folders: filesystem location defines
+which discovered resources an agent owns. Harnest does not define a separate
+`SubAgent` class.
 
 `Graph` nodes may be `Agent` definitions, typed callables, nested `Graph`
 objects, `Join()` nodes, accepted backend-native nodes, or strings naming
@@ -34,6 +37,12 @@ filesystem-discovered tools and subagents. String references are how a graph
 uses a sibling resource without importing it. `Edge` sources use `START` for
 entry. A callable can return a plain value or `Event(output=..., route=...,
 message=...)`; routed edges set `route=`. Every node must be reachable.
+
+An inline `Agent` node defined in the root `agent.py` is composed in the root
+resource scope. For an agent with private tools or skills, define the same
+`Agent` under `subagents/<name>/agent.py`; its sibling resources remain isolated
+from the parent. A flat `subagents/<name>.py` has no private folder and should be
+promoted to that directory form when private resources are needed.
 
 ## Tools
 

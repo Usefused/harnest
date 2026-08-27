@@ -159,15 +159,30 @@ type CompiledArtifact struct {
 }
 
 type CompiledManifest struct {
-	APIVersion       string         `json:"apiVersion"`
-	Kind             string         `json:"kind"`
-	Name             string         `json:"name"`
-	Entrypoint       string         `json:"entrypoint"`
-	SourceEntrypoint string         `json:"sourceEntrypoint"`
-	SourceDirectory  string         `json:"sourceDirectory"`
-	Framework        AgentFramework `json:"framework"`
-	Digest           string         `json:"digest"`
-	Files            []CompiledFile `json:"files"`
+	APIVersion       string            `json:"apiVersion"`
+	Kind             string            `json:"kind"`
+	Name             string            `json:"name"`
+	Entrypoint       string            `json:"entrypoint"`
+	SourceEntrypoint string            `json:"sourceEntrypoint"`
+	SourceDirectory  string            `json:"sourceDirectory"`
+	HarnestVersion   string            `json:"harnestVersion"`
+	Framework        CompiledFramework `json:"framework"`
+	Digest           string            `json:"digest"`
+	Files            []CompiledFile    `json:"files"`
+}
+
+type CompiledFramework struct {
+	Name         string `json:"name"`
+	Mode         string `json:"mode"`
+	Distribution string `json:"distribution"`
+	Version      string `json:"version"`
+}
+
+func (f CompiledFramework) EffectiveMode() string {
+	if f.Mode == "" {
+		return "managed"
+	}
+	return f.Mode
 }
 
 type CompiledFile struct {

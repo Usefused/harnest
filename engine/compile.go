@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -33,25 +34,10 @@ type PythonCompiler struct {
 }
 
 func (c PythonCompiler) Compile(ctx context.Context, bundle Bundle) (CompiledArtifact, error) {
-	if ctx == nil {
-		return CompiledArtifact{}, fmt.Errorf("compilation context is nil")
-	}
-	if strings.TrimSpace(c.Python) == "" {
-		return CompiledArtifact{}, fmt.Errorf("Python compiler executable is empty")
-	}
-	outputRoot, err := existingDirectory(c.OutputRoot)
+	outputDirectory, err := c.prepare(ctx, bundle)
 	if err != nil {
-		return CompiledArtifact{}, fmt.Errorf("resolve compiler output root: %w", err)
+		return CompiledArtifact{}, err
 	}
-	outputDirectory := filepath.Join(outputRoot, bundle.Config.Metadata.Name)
-	if info, err := os.Lstat(outputDirectory); err == nil {
-		if !info.IsDir() {
-			return CompiledArtifact{}, fmt.Errorf("compiler output %s must be a directory, not a symlink or file", outputDirectory)
-		}
-	} else if !os.IsNotExist(err) {
-		return CompiledArtifact{}, fmt.Errorf("inspect compiler output %s: %w", outputDirectory, err)
-	}
-
 	command := exec.CommandContext(ctx, c.Python, "-m", "harnest.cli", "compile", bundle.Directory,
 		"--output", outputDirectory,
 		"--entrypoint", bundle.Config.Spec.Entrypoint,
@@ -76,6 +62,28 @@ func (c PythonCompiler) Compile(ctx context.Context, bundle Bundle) (CompiledArt
 		return CompiledArtifact{}, fmt.Errorf("compiler stdout manifest does not match %s", artifact.ManifestPath)
 	}
 	return artifact, nil
+}
+
+func (c PythonCompiler) prepare(ctx context.Context, bundle Bundle) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("compilation context is nil")
+	}
+	if strings.TrimSpace(c.Python) == "" {
+		return "", fmt.Errorf("Python compiler executable is empty")
+	}
+	outputRoot, err := existingDirectory(c.OutputRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve compiler output root: %w", err)
+	}
+	output := filepath.Join(outputRoot, bundle.Config.Metadata.Name)
+	info, err := os.Lstat(output)
+	if err == nil && !info.IsDir() {
+		return "", fmt.Errorf("compiler output %s must be a directory, not a symlink or file", output)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect compiler output %s: %w", output, err)
+	}
+	return output, nil
 }
 
 func compilerEnvironment(configured map[string]string) []string {
@@ -158,6 +166,26 @@ func loadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, er
 }
 
 func validateCompiledManifest(directory string, source Bundle, manifest CompiledManifest) error {
+	if err := validateCompiledIdentity(source, manifest); err != nil {
+		return err
+	}
+	if err := validateCompiledSource(directory, source, manifest); err != nil {
+		return err
+	}
+	seen, err := validateCompiledFiles(directory, manifest.Files)
+	if err != nil {
+		return err
+	}
+	if err := requireCompiledFiles(seen); err != nil {
+		return err
+	}
+	if expected := compiledManifestDigest(manifest.Files); manifest.Digest != expected {
+		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expected)
+	}
+	return validateCompiledFileSet(directory, seen)
+}
+
+func validateCompiledIdentity(source Bundle, manifest CompiledManifest) error {
 	if manifest.APIVersion != APIVersion || manifest.Kind != "CompiledAgent" {
 		return fmt.Errorf("compiled manifest has unsupported apiVersion/kind %q/%q", manifest.APIVersion, manifest.Kind)
 	}
@@ -177,6 +205,9 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 			source.Config.Spec.Framework.EffectiveMode(),
 		)
 	}
+	if err := validateCompiledCompatibility(manifest); err != nil {
+		return err
+	}
 	if manifest.Entrypoint != "agent:root_agent" {
 		return fmt.Errorf("compiled manifest entrypoint must be agent:root_agent, got %q", manifest.Entrypoint)
 	}
@@ -186,6 +217,26 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 	if manifest.SourceDirectory != "source" {
 		return fmt.Errorf("compiled manifest sourceDirectory must be source, got %q", manifest.SourceDirectory)
 	}
+	return nil
+}
+
+func validateCompiledCompatibility(manifest CompiledManifest) error {
+	if strings.TrimSpace(manifest.HarnestVersion) == "" {
+		return fmt.Errorf("compiled manifest harnestVersion cannot be empty")
+	}
+	// The package identity is retained separately from the framework name so an
+	// engine can diagnose dependency drift without importing the Python runtime.
+	expectedDistribution := map[string]string{"adk": "google-adk", "langgraph": "langgraph"}[manifest.Framework.Name]
+	if manifest.Framework.Distribution != expectedDistribution {
+		return fmt.Errorf("compiled manifest framework distribution %q does not match %q", manifest.Framework.Distribution, expectedDistribution)
+	}
+	if strings.TrimSpace(manifest.Framework.Version) == "" {
+		return fmt.Errorf("compiled manifest framework version cannot be empty")
+	}
+	return nil
+}
+
+func validateCompiledSource(directory string, source Bundle, manifest CompiledManifest) error {
 	compiledSource, err := existingDirectory(filepath.Join(directory, filepath.FromSlash(manifest.SourceDirectory)))
 	if err != nil {
 		return fmt.Errorf("resolve compiled source directory: %w", err)
@@ -197,52 +248,69 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 	if compiledSourceDigest != source.Digest {
 		return fmt.Errorf("compiled source digest %q does not match source bundle %q", compiledSourceDigest, source.Digest)
 	}
-	if len(manifest.Files) == 0 {
-		return fmt.Errorf("compiled manifest files cannot be empty")
-	}
+	return nil
+}
 
-	seen := make(map[string]struct{}, len(manifest.Files))
+func validateCompiledFiles(directory string, files []CompiledFile) (map[string]struct{}, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("compiled manifest files cannot be empty")
+	}
+	seen := make(map[string]struct{}, len(files))
 	previous := ""
-	for index, record := range manifest.Files {
-		if !validCompiledPath(record.Path) {
-			return fmt.Errorf("compiled manifest file %d has unsafe path %q", index, record.Path)
-		}
-		if index > 0 && record.Path <= previous {
-			return fmt.Errorf("compiled manifest files must be strictly sorted by path")
+	for index, record := range files {
+		if err := validateCompiledRecordMetadata(index, previous, record); err != nil {
+			return nil, err
 		}
 		previous = record.Path
 		seen[record.Path] = struct{}{}
-		if len(record.SHA256) != 64 {
-			return fmt.Errorf("compiled manifest file %q has invalid sha256", record.Path)
-		}
-		if _, err := hex.DecodeString(record.SHA256); err != nil {
-			return fmt.Errorf("compiled manifest file %q has invalid sha256: %w", record.Path, err)
-		}
-		if record.Size < 0 {
-			return fmt.Errorf("compiled manifest file %q has negative size", record.Path)
-		}
-		filePath, err := containedRegularFile(directory, filepath.Join(directory, filepath.FromSlash(record.Path)))
-		if err != nil {
-			return fmt.Errorf("invalid compiled file %q: %w", record.Path, err)
-		}
-		actualHash, actualSize, err := hashFile(filePath)
-		if err != nil {
-			return err
-		}
-		if actualHash != record.SHA256 || actualSize != record.Size {
-			return fmt.Errorf("compiled file %q does not match manifest hash and size", record.Path)
+		if err := validateCompiledRecordFile(directory, record); err != nil {
+			return nil, err
 		}
 	}
+	return seen, nil
+}
+
+func validateCompiledRecordMetadata(index int, previous string, record CompiledFile) error {
+	if !validCompiledPath(record.Path) {
+		return fmt.Errorf("compiled manifest file %d has unsafe path %q", index, record.Path)
+	}
+	if index > 0 && record.Path <= previous {
+		return fmt.Errorf("compiled manifest files must be strictly sorted by path")
+	}
+	if len(record.SHA256) != 64 {
+		return fmt.Errorf("compiled manifest file %q has invalid sha256", record.Path)
+	}
+	if _, err := hex.DecodeString(record.SHA256); err != nil {
+		return fmt.Errorf("compiled manifest file %q has invalid sha256: %w", record.Path, err)
+	}
+	if record.Size < 0 {
+		return fmt.Errorf("compiled manifest file %q has negative size", record.Path)
+	}
+	return nil
+}
+
+func validateCompiledRecordFile(directory string, record CompiledFile) error {
+	filePath, err := containedRegularFile(directory, filepath.Join(directory, filepath.FromSlash(record.Path)))
+	if err != nil {
+		return fmt.Errorf("invalid compiled file %q: %w", record.Path, err)
+	}
+	actualHash, actualSize, err := hashFile(filePath)
+	if err != nil {
+		return err
+	}
+	if actualHash != record.SHA256 || actualSize != record.Size {
+		return fmt.Errorf("compiled file %q does not match manifest hash and size", record.Path)
+	}
+	return nil
+}
+
+func requireCompiledFiles(seen map[string]struct{}) error {
 	for _, required := range []string{"__init__.py", "agent.py", "source/config.yaml", "source/agent-card.yaml", "source/instructions.md"} {
 		if _, exists := seen[required]; !exists {
 			return fmt.Errorf("compiled manifest is missing required file %q", required)
 		}
 	}
-	expectedDigest := compiledManifestDigest(manifest.Files)
-	if manifest.Digest != expectedDigest {
-		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expectedDigest)
-	}
-	return validateCompiledFileSet(directory, seen)
+	return nil
 }
 
 func compiledManifestDigest(files []CompiledFile) string {
@@ -282,7 +350,23 @@ func hashFile(filePath string) (string, int64, error) {
 
 func validateCompiledFileSet(directory string, expected map[string]struct{}) error {
 	actual := make(map[string]struct{}, len(expected))
-	err := filepath.WalkDir(directory, func(filePath string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(directory, collectCompiledFile(directory, actual))
+	if err != nil {
+		return fmt.Errorf("inspect compiled artifact: %w", err)
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("compiled artifact file set does not match manifest")
+	}
+	for filePath := range actual {
+		if _, exists := expected[filePath]; !exists {
+			return fmt.Errorf("compiled artifact contains unmanifested file %q", filePath)
+		}
+	}
+	return nil
+}
+
+func collectCompiledFile(directory string, actual map[string]struct{}) fs.WalkDirFunc {
+	return func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -308,19 +392,7 @@ func validateCompiledFileSet(directory string, expected map[string]struct{}) err
 			actual[relative] = struct{}{}
 		}
 		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("inspect compiled artifact: %w", err)
 	}
-	if len(actual) != len(expected) {
-		return fmt.Errorf("compiled artifact file set does not match manifest")
-	}
-	for filePath := range actual {
-		if _, exists := expected[filePath]; !exists {
-			return fmt.Errorf("compiled artifact contains unmanifested file %q", filePath)
-		}
-	}
-	return nil
 }
 
 func compiledManifestsEqual(left, right CompiledManifest) bool {

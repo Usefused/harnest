@@ -81,27 +81,7 @@ func findPopulatedManagedResources(root string) ([]populatedManagedResource, err
 	for _, name := range managedResourceDirectories {
 		directory := filepath.Join(root, name)
 		count := 0
-		err := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				if path == directory && errors.Is(walkErr, fs.ErrNotExist) {
-					return nil
-				}
-				return walkErr
-			}
-			if path == directory {
-				return nil
-			}
-			if isPlaceholderResourceEntry(entry.Name()) {
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !entry.IsDir() {
-				count++
-			}
-			return nil
-		})
+		err := filepath.WalkDir(directory, countManagedResourceFiles(directory, &count))
 		if err != nil {
 			return nil, fmt.Errorf("inspect managed resource directory %s: %w", directory, err)
 		}
@@ -110,6 +90,30 @@ func findPopulatedManagedResources(root string) ([]populatedManagedResource, err
 		}
 	}
 	return resources, nil
+}
+
+func countManagedResourceFiles(directory string, count *int) fs.WalkDirFunc {
+	return func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == directory && errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if path == directory {
+			return nil
+		}
+		if isPlaceholderResourceEntry(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.IsDir() {
+			*count++
+		}
+		return nil
+	}
 }
 
 func isPlaceholderResourceEntry(name string) bool {

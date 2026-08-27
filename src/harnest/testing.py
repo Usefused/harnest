@@ -251,31 +251,9 @@ def run_agent_tests(
         compile_artifact(
             source_directory, artifact, framework=framework, mode=mode
         )
-        copied_tests = artifact / "source" / "tests"
-        unit = copied_tests / "unit"
-        smoke = copied_tests / "smoke"
-        selected = [unit]
-        if include_smoke:
-            selected.append(smoke)
-        missing = [path for path in selected if not path.is_dir()]
-        if missing:
-            expected = ", ".join(
-                str(path.relative_to(artifact / "source")) for path in missing
-            )
-            raise AgentTestError(f"missing authored test directory: {expected}")
-
+        selected = _selected_test_directories(artifact, include_smoke)
         plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
-        args = [
-            *(str(path) for path in selected),
-            "-q",
-            "--disable-warnings",
-            "-W",
-            "ignore::pytest.PytestAssertRewriteWarning",
-            "-p",
-            "no:cacheprovider",
-            "-p",
-            "no:anyio",
-        ]
+        args = _pytest_args(selected)
         test_status = int(pytest.main(args, plugins=[plugin]))
         if test_status != 0 or not include_evals:
             return test_status
@@ -291,6 +269,29 @@ def run_agent_tests(
                 "--evals requires evals/ with at least one *.evalset.json"
             )
         return _run_adk_evals(artifact, suite)
+
+
+def _selected_test_directories(artifact: Path, include_smoke: bool) -> list[Path]:
+    tests = artifact / "source" / "tests"
+    selected = [tests / "unit"]
+    if include_smoke:
+        selected.append(tests / "smoke")
+    missing = [path for path in selected if not path.is_dir()]
+    if missing:
+        expected = ", ".join(
+            str(path.relative_to(artifact / "source")) for path in missing
+        )
+        raise AgentTestError(f"missing authored test directory: {expected}")
+    return selected
+
+
+def _pytest_args(selected: list[Path]) -> list[str]:
+    return [
+        *(str(path) for path in selected),
+        "-q", "--disable-warnings", "-W",
+        "ignore::pytest.PytestAssertRewriteWarning",
+        "-p", "no:cacheprovider", "-p", "no:anyio",
+    ]
 
 
 __all__ = ["AgentTestError", "SmokeClient", "run_agent_tests"]

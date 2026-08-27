@@ -12,11 +12,23 @@ AGENT_URL ?= http://127.0.0.1:$(SERVE_PORT)
 DEMO_SESSION_ID ?= demo-session
 ADK_DEMO_USER_ID ?= demo-user
 
-.PHONY: test schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream demo-adk-run example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test quality complexity format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream demo-adk-run example-test example-smoke example-eval example-all live-run live-test
 
 test: schemas
 	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests/python -v
 	GOCACHE=$(GOCACHE) go test ./...
+
+quality: test complexity format-check vet validate-examples
+
+complexity:
+	$(PYTHON) scripts/check_python_complexity.py --max 10 src scripts tests/python examples/self-serve
+	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine
+
+format-check:
+	@test -z "$$(gofmt -l cmd engine)" || (gofmt -l cmd engine; exit 1)
+
+vet:
+	GOCACHE=$(GOCACHE) go vet ./...
 
 schemas:
 	$(PYTHON) -m json.tool schemas/config.schema.json >/dev/null

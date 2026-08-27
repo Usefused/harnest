@@ -168,22 +168,23 @@ non-empty UTF-8 sibling `instructions.md`. Managed `Agent` composition supplies
 it when the definition omits `instruction`; an explicit nonblank instruction
 wins without merging. For a managed `Graph` or advanced application the file
 remains required bundle metadata, but Harnest does not inject it into the
-framework object. Managed compilation also discovers the following sibling
-directories recursively:
+framework object. Managed compilation discovers resources relative to an owning
+`agent.py`. Paths in this table are relative to that composition folder unless
+marked root-only:
 
 | Path | Required filename-matched export |
 | --- | --- |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
 | `subagents/<name>.py` | Exactly one `AgentDefinition` named `<name>`. |
 | `mcp/<name>.py` | An `MCPClient` or `None` named `<name>`. |
-| `plugins/<name>/mcp/<client>.py` | A plugin-owned `MCPClient` or `None` named `<client>`. |
-| `plugins/<name>/skills/<skill>/SKILL.md` | Plugin-owned progressive skills. |
-| `extensions/<name>/lifecycle.py` | One portable `Extension` exported as `extension`. |
-| `extensions/<name>/adk.py` | Optional native ADK plugin integration. |
-| `extensions/<name>/langgraph.py` | Optional native LangGraph middleware integration. |
+| `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `MCPClient` or `None` named `<client>`. |
+| `plugins/<name>/skills/<skill>/SKILL.md` (root-only) | Plugin-owned progressive skills. |
+| `extensions/<name>/lifecycle.py` (root-only) | One portable `Extension` exported as `extension`. |
+| `extensions/<name>/adk.py` (root-only) | Optional native ADK plugin integration. |
+| `extensions/<name>/langgraph.py` (root-only) | Optional native LangGraph middleware integration. |
 | `sandbox/sandbox.py` | One optional ADK-only `Sandbox` defining the agent's lazy code-execution backend. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
-| `evals/<id>.evalset.json` | A test-only, ADK-only `EvalSet` whose `eval_set_id` matches its filename. |
+| `evals/<id>.evalset.json` (root test lane) | A test-only, ADK-only `EvalSet` whose `eval_set_id` matches its filename. |
 | `tests/unit/test_*.py` | Offline agent/tool tests run by `harnest test`. |
 | `tests/smoke/test_*.py` | Explicitly enabled live-runtime tests. |
 
@@ -252,6 +253,11 @@ artifact is temporary and no ADK eval history is persisted; external CI is
 responsible for retaining output. Selecting `--evals` without at least one
 validated eval set is a convention error.
 
+The test runner discovers and executes eval assets only from the root bundle's
+`evals/`. Nested eval files can be reached by composition validation, but they
+are not a nested-agent test lane and are never selected by `harnest test
+--evals`.
+
 The `--evals` lane is currently rejected when `framework.name` is `langgraph`;
 unit and opt-in smoke tests remain available through the neutral runtime.
 
@@ -288,13 +294,26 @@ serving routes. A test failure stops the command with a nonzero exit status but
 does not mutate the authored agent.
 
 For a recursively composed subagent, use `subagents/<name>/agent.py`, exporting
-an `AgentDefinition` named `<name>`. The nested folder may contain its own
-`tools/`, `subagents/`, `mcp/`, `plugins/`, and `extensions/`. A direct
-`subagents/<name>.py` and same-named nested folder are mutually exclusive. A
-nested folder-based subagent has the same required `instructions.md` and may
-also define its own skills and evals. A flat subagent file has no private
-instruction directory, so its `AgentDefinition` must provide an explicit
-instruction.
+an `AgentDefinition` named `<name>`. That `agent.py` owns the supported sibling
+`instructions.md`, `tools/`, `skills/`, `mcp/`, and `sandbox/` resources in its
+folder. Under ADK it may also own child agents in a sibling `subagents/` folder.
+LangGraph nested `Agent` definitions cannot consume discovered child subagents
+today. Parent resources are not added to the nested definition, and nested
+resources are not promoted to the parent.
+Plugins and extensions remain root-only; populated nested `plugins/` or
+`extensions/` folders are convention errors.
+
+A direct `subagents/<name>.py` and same-named nested folder are mutually
+exclusive. A flat subagent has no private resource directory, so it must provide
+an explicit instruction and should be promoted to `subagents/<name>/agent.py`
+when it needs private tools, skills, or other supported resources. Conversely,
+an `Agent` value written inline in the root `agent.py` is root-scoped when used
+as a graph node and consumes the root folder's discovered resources.
+
+Filesystem placement is the access model. There are no tool/skill name lists on
+`Agent` that select access to discovered folders, and no separate `SubAgent`
+class. An `Agent` becomes a nested subagent through its folder and its
+graph/parent relationship.
 
 Compilation writes a separate runtime directory containing the preserved source
 tree, generated `agent.py`, `__init__.py`, and `__main__.py` adapters, the
@@ -497,6 +516,11 @@ adapter must also:
 - use the bundle digest as immutable source identity.
 
 ## Observability boundary
+
+Source changes follow the project-wide complexity, separation, database-access,
+testing, and audit rules in [development.md](development.md). Compiler and CLI
+filesystem mutations are currently excluded from OTEL auditing; this avoids
+creating a second telemetry lifecycle before that boundary is designed.
 
 The compiled runtime exposes `harnest.logging` and `harnest.tracing` to authored
 code and owns the default OpenTelemetry bootstrap. LangGraph uses one

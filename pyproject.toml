@@ -24,6 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+quality = ["radon>=6,<7"]
 adk = ["google-adk[eval,mcp]>=2.8,<3"]
 langgraph = [
   "langgraph>=1.2,<2",

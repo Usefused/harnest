@@ -17,6 +17,12 @@ framework selected in `config.yaml`.
 - Prefer explicit graph nodes for multi-agent flows. Flat `subagents/` are
   discovered capabilities, but LangGraph does not implicitly attach ADK-style
   child agents to one `Agent` definition.
+- An inline `Agent` node in the root `agent.py` is root-scoped. A folder-based
+  `subagents/<name>/agent.py` is separately composed from its own sibling
+  resources and does not inherit root tools or skills.
+- ADK folder-based agents may recursively discover child subagents. A nested
+  LangGraph `Agent` definition cannot consume a discovered sibling
+  `subagents/` folder today; model the flow explicitly in the root graph.
 - ADK-specific `sandbox`, `output_key`, and `generate_content_config` settings
   are not portable to LangGraph.
 
@@ -60,6 +66,9 @@ edit. Before changing it:
 3. Replace unsupported fields or move truly native logic behind the selected
    framework integration.
 4. Run unit tests, compilation, and explicitly authorized smoke/eval lanes.
+
+ADK eval execution is root-scoped: `harnest test --evals` does not select eval
+files below nested agent folders.
 
 ## Framework versions
 

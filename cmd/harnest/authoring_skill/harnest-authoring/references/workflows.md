@@ -52,7 +52,8 @@ harnest test support-agent --smoke --evals
 - `--smoke` additionally runs live-runtime tests and may consume credentials,
   model tokens, MCP services, time, and money. Use it only when authorized.
 - `--evals` runs validated eval assets after Python tests. ADK EvalSet JSON is
-  ADK-specific; LangGraph can use authored pytest evaluations.
+  ADK-specific; LangGraph can use authored pytest evaluations. Only root
+  `evals/` assets are selected; nested eval files are not an executable lane.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
 
@@ -80,8 +81,10 @@ Before finishing a modification:
 
 1. Confirm every resource is in the right folder and follows its export-name
    contract.
-2. Confirm plugins contain only MCP clients plus one or more skill directories;
-   extensions contain lifecycle behavior; agents live under `subagents/`.
+2. Confirm nested agents own only their sibling supported resources; parent
+   tools/skills do not leak in. Plugins and extensions are root-only, plugins
+   contain only MCP clients plus skills, and extensions contain lifecycle
+   behavior.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
    resources are not manually registered.
 4. Keep secrets out of source, skills, logs, cards, and compiled artifacts.

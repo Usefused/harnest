@@ -90,6 +90,17 @@ class EvalSuite:
     config: Path | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _DiscoveredResources:
+    """Resources discovered once for a single folder-owned agent scope."""
+
+    tools: tuple[Callable[..., Any], ...]
+    subagents: tuple[AgentDefinition, ...]
+    mcp: tuple[MCPClient, ...]
+    sandbox: Sandbox | None
+    skill_directories: tuple[Path, ...]
+
+
 def compile_agent(
     source: str | Path,
     *,
@@ -149,45 +160,72 @@ def compile_application(
     module, value = _load_export(anchor, export_name)
 
     if mode == "advanced":
-        if not isinstance(value, _AdvancedAgentDefinition):
-            raise BundleExportError(
-                f"advanced agent module {anchor} must export the result of "
-                f"Agent.advanced(...) as {export_name!r}; got {type(value).__name__}"
-            )
-        _reject_extra_exports(
-            module,
-            anchor,
-            export_name,
-            kind="advanced application",
-            predicate=lambda item: isinstance(item, _AdvancedAgentDefinition),
+        return _compile_advanced_application(
+            anchor, module, value, export_name, framework, backend, compatibility
         )
-        _reject_advanced_filesystem_resources(anchor.parent, framework=framework)
-        try:
-            advanced = backend.validate_advanced(
-                value, fallback_name=anchor.parent.name
-            )
-        except BackendDependencyError as exc:
-            raise BundleImportError(str(exc)) from exc
-        except AdvancedBackendValidationError as exc:
-            raise BundleExportError(str(exc)) from exc
-        return CompiledApplication(
-            name=advanced.name,
-            framework=framework,
-            mode="advanced",
-            target=advanced.target,
-            native_app=advanced.native_app,
-            kind="advanced",
-            bridge=value,
-            harnest_version=compatibility.harnest_version,
-            framework_distribution=compatibility.distribution,
-            framework_version=compatibility.distribution_version,
-        )
+    return _compile_managed_application(
+        anchor, module, value, export_name, framework, mode, backend, compatibility
+    )
 
+
+def _compile_advanced_application(
+    anchor: Path,
+    module: ModuleType,
+    value: Any,
+    export_name: str,
+    framework: str,
+    backend: Any,
+    compatibility: Any,
+) -> CompiledApplication:
+    if not isinstance(value, _AdvancedAgentDefinition):
+        raise BundleExportError(
+            f"advanced agent module {anchor} must export the result of "
+            f"Agent.advanced(...) as {export_name!r}; got {type(value).__name__}"
+        )
+    _reject_extra_exports(
+        module,
+        anchor,
+        export_name,
+        kind="advanced application",
+        predicate=lambda item: isinstance(item, _AdvancedAgentDefinition),
+    )
+    _reject_advanced_filesystem_resources(anchor.parent, framework=framework)
+    try:
+        advanced = backend.validate_advanced(
+            value, fallback_name=anchor.parent.name
+        )
+    except BackendDependencyError as exc:
+        raise BundleImportError(str(exc)) from exc
+    except AdvancedBackendValidationError as exc:
+        raise BundleExportError(str(exc)) from exc
+    return CompiledApplication(
+        name=advanced.name,
+        framework=framework,
+        mode="advanced",
+        target=advanced.target,
+        native_app=advanced.native_app,
+        kind="advanced",
+        bridge=value,
+        harnest_version=compatibility.harnest_version,
+        framework_distribution=compatibility.distribution,
+        framework_version=compatibility.distribution_version,
+    )
+
+
+def _compile_managed_application(
+    anchor: Path,
+    module: ModuleType,
+    value: Any,
+    export_name: str,
+    framework: str,
+    mode: str,
+    backend: Any,
+    compatibility: Any,
+) -> CompiledApplication:
     if not isinstance(value, (AgentDefinition, Graph)):
         raise BundleExportError(
             f"managed agent module {anchor} must export Agent or Graph "
-            f"{export_name!r}; "
-            f"got {type(value).__name__}"
+            f"{export_name!r}; got {type(value).__name__}"
         )
     _reject_extra_exports(
         module,
@@ -196,12 +234,7 @@ def compile_application(
         kind="managed application",
         predicate=lambda item: isinstance(item, (AgentDefinition, Graph)),
     )
-    try:
-        discovered_extensions = discover_extensions(
-            anchor.parent / "extensions", framework=framework
-        )
-    except ExtensionDiscoveryError as exc:
-        raise BundleConventionError(str(exc)) from exc
+    discovered_extensions = _load_extensions(anchor.parent, framework)
     portable_extensions = tuple(
         item.portable
         for item in discovered_extensions
@@ -221,8 +254,8 @@ def compile_application(
             graph, native_extensions=native_extensions
         )
 
-    # Lifecycle behavior is supplied by extensions. Capability plugins are
-    # already resolved into the managed definition/graph above.
+    # Extensions wrap the completed target because capability composition must
+    # finish first and remain independent of runtime lifecycle behavior.
     try:
         native_app = backend.wrap_managed(
             target, native_extensions=native_extensions
@@ -243,6 +276,13 @@ def compile_application(
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
     )
+
+
+def _load_extensions(bundle_root: Path, framework: str) -> tuple[Any, ...]:
+    try:
+        return discover_extensions(bundle_root / "extensions", framework=framework)
+    except ExtensionDiscoveryError as exc:
+        raise BundleConventionError(str(exc)) from exc
 
 
 def compile_artifact(
@@ -576,111 +616,114 @@ def _resolve_graph_resources(
 ) -> Graph:
     """Resolve string graph nodes from filesystem-discovered tools/subagents."""
 
-    bundle_root = anchor.parent
-    tools = _discover_tools(bundle_root / "tools")
-    subagents = _discover_subagents(bundle_root / "subagents", framework=framework)
-    mcp = _discover_mcp(bundle_root / "mcp")
-    plugins = _discover_capability_plugins(bundle_root / "plugins")
-    plugin_mcp = _discover_plugin_mcp(plugins)
-    all_mcp = _merge_mcp_sources(
-        ("discovered", mcp),
-        *(
-            (f"plugin {plugin.name!r}", clients)
-            for plugin, clients in plugin_mcp
-        ),
-    )
-    sandbox = _discover_sandbox(bundle_root / "sandbox")
-    skill_directories = _bundle_skill_directories(bundle_root, plugins)
-    if framework == "adk":
-        _discover_evals(bundle_root / "evals")
-    elif _has_public_entries(bundle_root / "evals", kind="evals"):
-        raise BundleConventionError(
-            "evals/ uses ADK evaluation files and cannot be compiled by the "
-            "LangGraph backend"
-        )
-
-    has_agent_node = _graph_contains_agent(graph)
+    resources = _discover_folder_resources(anchor.parent, framework, is_root=True)
+    has_root_agent_node = _graph_contains_agent(graph)
     referenced = _graph_string_references(graph)
+    registry, resource_kinds = _graph_resource_registry(resources)
+    _validate_graph_resource_consumption(
+        graph, resources, resource_kinds, referenced, has_root_agent_node, framework
+    )
+    return replace(
+        graph,
+        nodes={
+            name: _resolve_graph_node(value, graph.name, registry, anchor, framework)
+            for name, value in graph.nodes.items()
+        },
+    )
+
+
+def _graph_resource_registry(
+    resources: _DiscoveredResources,
+) -> tuple[dict[str, Any], dict[str, str]]:
     registry: dict[str, Any] = {}
-    graph_resources: dict[str, str] = {}
-    for value, kind in (
-        *((value, "tool") for value in tools),
-        *((value, "subagent") for value in subagents),
-    ):
-        name = _tool_name(value) if kind == "tool" else _subagent_name(value)
+    kinds: dict[str, str] = {}
+    values = (
+        *((value, "tool", _tool_name(value)) for value in resources.tools),
+        *((value, "subagent", _subagent_name(value)) for value in resources.subagents),
+    )
+    for value, kind, name in values:
         if name in registry:
             raise BundleDuplicateError(f"duplicate graph resource {name!r}")
         registry[name] = value
-        graph_resources[name] = kind
-    has_agent_node = has_agent_node or any(
-        name in referenced and kind == "subagent"
-        for name, kind in graph_resources.items()
-    )
+        kinds[name] = kind
+    return registry, kinds
 
-    ignored_names: list[str] = []
-    for name, kind in graph_resources.items():
-        consumed_by_agent = has_agent_node and (
-            kind == "tool" or (kind == "subagent" and framework == "adk")
-        )
-        if name not in referenced and not consumed_by_agent:
-            ignored_names.append(f"{kind} {name!r}")
-    if ignored_names:
+
+def _validate_graph_resource_consumption(
+    graph: Graph,
+    resources: _DiscoveredResources,
+    resource_kinds: dict[str, str],
+    referenced: set[str],
+    has_root_agent: bool,
+    framework: str,
+) -> None:
+    ignored = [
+        f"{kind} {name!r}"
+        for name, kind in resource_kinds.items()
+        if name not in referenced
+        and not _root_agent_consumes(kind, has_root_agent, framework)
+    ]
+    if ignored:
         raise BundleConventionError(
             f"graph {graph.name!r} does not consume discovered resources: "
-            + ", ".join(sorted(ignored_names))
+            + ", ".join(sorted(ignored))
             + "; reference them as graph nodes or remove them"
         )
+    if has_root_agent:
+        return
+    _reject_unconsumed_graph_capabilities(graph.name, resources)
 
-    if not has_agent_node and all_mcp:
-        raise BundleConventionError(
-            f"graph {graph.name!r} has MCP clients but no Agent node to consume them"
-        )
-    if not has_agent_node and skill_directories:
-        raise BundleConventionError(
-            f"graph {graph.name!r} has skills but no Agent node to expose their tools"
-        )
-    if not has_agent_node and sandbox is not None:
-        raise BundleConventionError(
-            f"graph {graph.name!r} has sandbox configuration but no Agent node "
-            "to execute it"
-        )
-    def resolve(value: Any) -> Any:
-        if isinstance(value, str):
-            try:
-                resolved = registry[value]
-            except KeyError as exc:
-                raise BundleExportError(
-                    f"graph {graph.name!r} references unknown filesystem "
-                    f"resource {value!r}"
-                ) from exc
-            if isinstance(resolved, AgentDefinition):
-                return _compose_definition(
-                    anchor,
-                    resolved,
-                    framework=framework,
-                    graph_resource_context=True,
-                    shared_skill_directories=skill_directories,
-                )
-            return resolved
-        if isinstance(value, Graph):
-            return replace(
-                value,
-                nodes={name: resolve(node) for name, node in value.nodes.items()},
-            )
-        if isinstance(value, AgentDefinition):
-            return _compose_definition(
-                anchor,
-                value,
-                framework=framework,
-                graph_resource_context=True,
-                shared_skill_directories=skill_directories,
-            )
-        return value
 
-    return replace(
-        graph,
-        nodes={name: resolve(value) for name, value in graph.nodes.items()},
+def _root_agent_consumes(kind: str, present: bool, framework: str) -> bool:
+    return present and (kind == "tool" or (kind == "subagent" and framework == "adk"))
+
+
+def _reject_unconsumed_graph_capabilities(
+    graph_name: str, resources: _DiscoveredResources
+) -> None:
+    if resources.mcp:
+        detail = "MCP clients"
+    elif resources.skill_directories:
+        detail = "skills"
+    elif resources.sandbox is not None:
+        detail = "sandbox configuration"
+    else:
+        return
+    raise BundleConventionError(
+        f"graph {graph_name!r} has {detail} but no Agent node in the root graph "
+        "to consume them; filesystem subagents use only their own resources"
     )
+
+
+def _resolve_graph_node(
+    value: Any,
+    graph_name: str,
+    registry: dict[str, Any],
+    anchor: Path,
+    framework: str,
+) -> Any:
+    if isinstance(value, str):
+        try:
+            # String nodes retain the folder scope established during discovery;
+            # recomposing them here would leak root resources into subagents.
+            return registry[value]
+        except KeyError as exc:
+            raise BundleExportError(
+                f"graph {graph_name!r} references unknown filesystem resource {value!r}"
+            ) from exc
+    if isinstance(value, Graph):
+        return replace(
+            value,
+            nodes={
+                name: _resolve_graph_node(node, graph_name, registry, anchor, framework)
+                for name, node in value.nodes.items()
+            },
+        )
+    if isinstance(value, AgentDefinition):
+        return _compose_definition(
+            anchor, value, framework=framework, graph_resource_context=True
+        )
+    return value
 
 
 def _compose_definition(
@@ -690,63 +733,20 @@ def _compose_definition(
     is_root: bool = True,
     framework: str = "adk",
     graph_resource_context: bool = False,
-    shared_skill_directories: Sequence[Path] = (),
 ) -> AgentDefinition:
     bundle_root = anchor.parent
-    legacy_mcp = bundle_root / "mcp_servers"
-    if legacy_mcp.exists() or legacy_mcp.is_symlink():
-        raise BundleConventionError(
-            f"unsupported legacy MCP directory {legacy_mcp}; use mcp/"
-        )
-    if not is_root and _has_public_entries(bundle_root / "plugins", kind="plugins"):
-        raise BundleConventionError(
-            f"capability plugins are root-only; move {bundle_root / 'plugins'} "
-            "to the root agent folder"
-        )
-    if not is_root and _has_public_entries(
-        bundle_root / "extensions", kind="extensions"
-    ):
-        raise BundleConventionError(
-            f"runtime extensions are root-only; move {bundle_root / 'extensions'} "
-            "to the root agent folder"
-        )
+    _validate_folder_scope(bundle_root, is_root)
     instruction = _resolve_instruction(bundle_root, root.instruction)
-    discovered_tools = _discover_tools(bundle_root / "tools")
-    discovered_subagents = _discover_subagents(
-        bundle_root / "subagents", framework=framework
-    )
-    discovered_mcp = _discover_mcp(bundle_root / "mcp")
-    plugins = _discover_capability_plugins(bundle_root / "plugins") if is_root else ()
-    plugin_mcp = _discover_plugin_mcp(plugins)
-    discovered_sandbox = _discover_sandbox(bundle_root / "sandbox")
-    if framework == "adk":
-        _discover_evals(bundle_root / "evals")
-    elif _has_public_entries(bundle_root / "evals", kind="evals"):
-        raise BundleConventionError(
-            "evals/ uses ADK evaluation files and cannot be compiled by the "
-            "LangGraph backend"
-        )
-
+    resources = _discover_folder_resources(bundle_root, framework, is_root=is_root)
     tools = _merge_named_sources(
         "tool",
         ("explicit", root.tools),
-        ("discovered", discovered_tools),
+        ("discovered", resources.tools),
         identity=_tool_name,
     )
-    if framework == "langgraph":
-        # Filesystem agents are graph resources for LangGraph. They are not
-        # silently converted into model-controlled delegation; a Graph refers
-        # to them explicitly by their filename-matched name.
-        ignored_subagents = [
-            f"subagent {_subagent_name(value)!r}" for value in discovered_subagents
-        ]
-        if ignored_subagents and not graph_resource_context:
-            raise BundleConventionError(
-                "LangGraph Agent definitions cannot consume discovered subagents: "
-                + ", ".join(ignored_subagents)
-                + "; use a Graph and reference each subagent explicitly"
-            )
-        discovered_subagents = ()
+    discovered_subagents = _agent_subagents_for_framework(
+        resources.subagents, framework, graph_resource_context
+    )
     subagents = _merge_named_sources(
         "subagent",
         ("explicit", root.subagents),
@@ -755,42 +755,119 @@ def _compose_definition(
     )
     mcp = _merge_mcp_sources(
         ("explicit", root.mcp),
-        ("discovered", discovered_mcp),
-        *(
-            (f"plugin {plugin.name!r}", clients)
-            for plugin, clients in plugin_mcp
-        ),
+        ("discovered", resources.mcp),
     )
-    skill_directories = _bundle_skill_directories(bundle_root, plugins)
-    if shared_skill_directories:
-        skill_directories = _merge_skill_directories(
-            skill_directories, shared_skill_directories
-        )
-    if framework == "adk":
-        skill_toolset = _discover_skill_toolset(skill_directories, tools)
-        if skill_toolset is not None:
-            tools = (*tools, skill_toolset)
-    else:
-        tools = (*tools, *_discover_portable_skill_tools(skill_directories, tools))
-    if root.sandbox is not None and discovered_sandbox is not None:
-        raise BundleDuplicateError(
-            "sandbox is configured explicitly and in sandbox/sandbox.py"
-        )
-    if framework == "langgraph" and (
-        root.sandbox is not None or discovered_sandbox is not None
-    ):
-        raise BundleConventionError(
-            "sandbox/ currently requires the ADK backend; expose sandboxed "
-            "execution as a graph tool for LangGraph"
-        )
+    tools = _attach_skill_tools(framework, resources.skill_directories, tools)
+    sandbox = _resolve_sandbox(root.sandbox, resources.sandbox, framework)
     return replace(
         root,
         instruction=instruction,
         tools=tools,
         subagents=subagents,
         mcp=mcp,
-        sandbox=root.sandbox if root.sandbox is not None else discovered_sandbox,
+        sandbox=sandbox,
     )
+
+
+def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
+    legacy_mcp = bundle_root / "mcp_servers"
+    if legacy_mcp.exists() or legacy_mcp.is_symlink():
+        raise BundleConventionError(
+            f"unsupported legacy MCP directory {legacy_mcp}; use mcp/"
+        )
+    if is_root:
+        return
+    root_only_resources = (
+        ("plugins", "capability plugins"),
+        ("extensions", "runtime extensions"),
+    )
+    for directory, label in root_only_resources:
+        path = bundle_root / directory
+        if _has_public_entries(path, kind=directory):
+            # These hooks affect the whole application, so accepting them below
+            # a subagent would create ambiguous lifecycle and ownership order.
+            raise BundleConventionError(
+                f"{label} are root-only; move {path} to the root agent folder"
+            )
+
+
+def _discover_folder_resources(
+    bundle_root: Path, framework: str, *, is_root: bool
+) -> _DiscoveredResources:
+    tools = _discover_tools(bundle_root / "tools")
+    subagents = _discover_subagents(bundle_root / "subagents", framework=framework)
+    discovered_mcp = _discover_mcp(bundle_root / "mcp")
+    plugins = _discover_capability_plugins(bundle_root / "plugins") if is_root else ()
+    plugin_mcp = _discover_plugin_mcp(plugins)
+    mcp = _merge_mcp_sources(
+        ("discovered", discovered_mcp),
+        *((f"plugin {plugin.name!r}", clients) for plugin, clients in plugin_mcp),
+    )
+    sandbox = _discover_sandbox(bundle_root / "sandbox")
+    skill_directories = _bundle_skill_directories(bundle_root, plugins)
+    _validate_framework_evals(bundle_root / "evals", framework)
+    return _DiscoveredResources(
+        tools=tools,
+        subagents=subagents,
+        mcp=mcp,
+        sandbox=sandbox,
+        skill_directories=skill_directories,
+    )
+
+
+def _validate_framework_evals(directory: Path, framework: str) -> None:
+    if framework == "adk":
+        _discover_evals(directory)
+        return
+    if _has_public_entries(directory, kind="evals"):
+        raise BundleConventionError(
+            "evals/ uses ADK evaluation files and cannot be compiled by the "
+            "LangGraph backend"
+        )
+
+
+def _agent_subagents_for_framework(
+    discovered: tuple[AgentDefinition, ...],
+    framework: str,
+    graph_resource_context: bool,
+) -> tuple[AgentDefinition, ...]:
+    if framework != "langgraph":
+        return discovered
+    if discovered and not graph_resource_context:
+        rendered = ", ".join(
+            f"subagent {_subagent_name(value)!r}" for value in discovered
+        )
+        raise BundleConventionError(
+            "LangGraph Agent definitions cannot consume discovered subagents: "
+            f"{rendered}; use a Graph and reference each subagent explicitly"
+        )
+    # LangGraph requires explicit graph edges rather than implicit delegation.
+    return ()
+
+
+def _attach_skill_tools(
+    framework: str, skill_directories: Sequence[Path], tools: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    if framework == "adk":
+        skill_toolset = _discover_skill_toolset(skill_directories, tools)
+        return tools if skill_toolset is None else (*tools, skill_toolset)
+    return (*tools, *_discover_portable_skill_tools(skill_directories, tools))
+
+
+def _resolve_sandbox(
+    explicit: Sandbox | None, discovered: Sandbox | None, framework: str
+) -> Sandbox | None:
+    if explicit is not None and discovered is not None:
+        raise BundleDuplicateError(
+            "sandbox is configured explicitly and in sandbox/sandbox.py"
+        )
+    resolved = explicit if explicit is not None else discovered
+    if framework == "langgraph" and resolved is not None:
+        raise BundleConventionError(
+            "sandbox/ currently requires the ADK backend; expose sandboxed "
+            "execution as a graph tool for LangGraph"
+        )
+    return resolved
 
 
 def _resolve_instruction(bundle_root: Path, explicit: str | None) -> str:
@@ -858,36 +935,44 @@ def _discover_subagents(
     if not directory.is_dir():
         raise BundleConventionError(f"subagents path must be a directory: {directory}")
 
-    entries: list[tuple[str, Path, bool]] = []
-    for path in directory.iterdir():
-        if path.is_symlink():
-            raise BundleConventionError(f"subagent resource cannot be a symlink: {path}")
-        if _is_ignored(path):
-            continue
-        if path.is_file():
-            if path.suffix != ".py":
-                raise BundleConventionError(
-                    f"unexpected file in subagents directory: {path}; "
-                    "use a public .py resource or prefix helper files with _"
-                )
-            _validate_resource_name(path.stem, path)
-            entries.append((path.stem, path, False))
-        elif path.is_dir():
-            _validate_resource_name(path.name, path)
-            nested_anchor = path / "agent.py"
-            if nested_anchor.is_symlink():
-                raise BundleConventionError(
-                    f"nested subagent agent.py cannot be a symlink: {nested_anchor}"
-                )
-            if not nested_anchor.is_file():
-                raise BundleConventionError(
-                    f"nested subagent directory must contain agent.py: {path}"
-                )
-            entries.append((path.name, nested_anchor, True))
-        else:
-            raise BundleConventionError(f"unsupported subagent resource: {path}")
-
+    entries = [
+        entry
+        for path in directory.iterdir()
+        if (entry := _subagent_entry(path)) is not None
+    ]
     return _load_subagent_entries(entries, framework=framework)
+
+
+def _subagent_entry(path: Path) -> tuple[str, Path, bool] | None:
+    if path.is_symlink():
+        raise BundleConventionError(f"subagent resource cannot be a symlink: {path}")
+    if _is_ignored(path):
+        return None
+    if path.is_file():
+        if path.suffix != ".py":
+            raise BundleConventionError(
+                f"unexpected file in subagents directory: {path}; "
+                "use a public .py resource or prefix helper files with _"
+            )
+        _validate_resource_name(path.stem, path)
+        return path.stem, path, False
+    if path.is_dir():
+        return _nested_subagent_entry(path)
+    raise BundleConventionError(f"unsupported subagent resource: {path}")
+
+
+def _nested_subagent_entry(path: Path) -> tuple[str, Path, bool]:
+    _validate_resource_name(path.name, path)
+    nested_anchor = path / "agent.py"
+    if nested_anchor.is_symlink():
+        raise BundleConventionError(
+            f"nested subagent agent.py cannot be a symlink: {nested_anchor}"
+        )
+    if not nested_anchor.is_file():
+        raise BundleConventionError(
+            f"nested subagent directory must contain agent.py: {path}"
+        )
+    return path.name, nested_anchor, True
 
 
 def _load_subagent_entries(
@@ -1024,21 +1109,8 @@ def _discover_skill_toolset(
             f"tools conflict with ADK SkillToolset names: {rendered}"
         )
 
-    try:
-        from google.adk.skills import load_skill_from_dir
-        from google.adk.tools.skill_toolset import SkillToolset
-    except ImportError as exc:  # pragma: no cover - runtime dependency
-        raise BundleImportError(
-            "discovered skills require Google ADK 2.x skill support"
-        ) from exc
-
-    try:
-        skills = [load_skill_from_dir(path) for path in skill_directories]
-    except Exception as exc:
-        raise BundleSkillError(
-            f"failed to load skills: {type(exc).__name__}: {exc}"
-        ) from exc
-
+    load_skill_from_dir, skill_toolset_class = _adk_skill_api()
+    skills = _load_adk_skills(skill_directories, load_skill_from_dir)
     expected_names = [path.name for path in skill_directories]
     loaded_names = [getattr(skill, "name", None) for skill in skills]
     if loaded_names != expected_names:
@@ -1047,11 +1119,33 @@ def _discover_skill_toolset(
             f"{expected_names!r}, got {loaded_names!r}"
         )
     try:
-        return SkillToolset(skills=skills)
+        return skill_toolset_class(skills=skills)
     except Exception as exc:
         raise BundleSkillError(
             "failed to create ADK SkillToolset: "
             f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _adk_skill_api() -> tuple[Callable[..., Any], type[Any]]:
+    try:
+        from google.adk.skills import load_skill_from_dir
+        from google.adk.tools.skill_toolset import SkillToolset
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise BundleImportError(
+            "discovered skills require Google ADK 2.x skill support"
+        ) from exc
+    return load_skill_from_dir, SkillToolset
+
+
+def _load_adk_skills(
+    skill_directories: Sequence[Path], loader: Callable[..., Any]
+) -> list[Any]:
+    try:
+        return [loader(path) for path in skill_directories]
+    except Exception as exc:
+        raise BundleSkillError(
+            f"failed to load skills: {type(exc).__name__}: {exc}"
         ) from exc
 
 
@@ -1136,22 +1230,6 @@ def _merge_skill_directories(
     return tuple(resolved)
 
 
-def _attach_skill_directories(
-    agent: AgentDefinition,
-    skill_directories: Sequence[Path],
-    *,
-    framework: str,
-) -> AgentDefinition:
-    tools = tuple(agent.tools)
-    if framework == "adk":
-        toolset = _discover_skill_toolset(skill_directories, tools)
-        if toolset is not None:
-            tools = (*tools, toolset)
-    else:
-        tools = (*tools, *_discover_portable_skill_tools(skill_directories, tools))
-    return replace(agent, tools=tools)
-
-
 def _skill_directories(directory: Path) -> tuple[Path, ...]:
     if directory.is_symlink():
         raise BundleConventionError(f"skills directory cannot be a symlink: {directory}")
@@ -1166,25 +1244,31 @@ def _skill_directories(directory: Path) -> tuple[Path, ...]:
             raise BundleConventionError(f"skill resource cannot be a symlink: {path}")
         if _is_ignored(path):
             continue
-        if not path.is_dir():
-            raise BundleConventionError(
-                f"unexpected resource in skills directory: {path}; "
-                "each public entry must be a skill directory"
-            )
-        manifest = path / "SKILL.md"
-        if manifest.is_symlink():
-            raise BundleConventionError(f"skill manifest cannot be a symlink: {manifest}")
-        if not manifest.is_file():
-            raise BundleConventionError(
-                f"skill directory must contain uppercase SKILL.md: {path}"
-            )
-        _validate_tree_has_no_symlinks(path, kind="skill")
-        if manifest.stat().st_size > _MAX_METADATA_FILE_BYTES:
-            raise BundleConventionError(
-                f"skill manifest exceeds {_MAX_METADATA_FILE_BYTES} bytes: {manifest}"
-            )
+        _validate_skill_directory(path)
         skill_directories.append(path)
     return tuple(skill_directories)
+
+
+def _validate_skill_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise BundleConventionError(f"skill resource cannot be a symlink: {path}")
+    if not path.is_dir():
+        raise BundleConventionError(
+            f"unexpected resource in skills directory: {path}; "
+            "each public entry must be a skill directory"
+        )
+    manifest = path / "SKILL.md"
+    if manifest.is_symlink():
+        raise BundleConventionError(f"skill manifest cannot be a symlink: {manifest}")
+    if not manifest.is_file():
+        raise BundleConventionError(
+            f"skill directory must contain uppercase SKILL.md: {path}"
+        )
+    _validate_tree_has_no_symlinks(path, kind="skill")
+    if manifest.stat().st_size > _MAX_METADATA_FILE_BYTES:
+        raise BundleConventionError(
+            f"skill manifest exceeds {_MAX_METADATA_FILE_BYTES} bytes: {manifest}"
+        )
 
 
 def _validate_tree_has_no_symlinks(directory: Path, *, kind: str) -> None:
@@ -1204,33 +1288,40 @@ def _discover_evals(directory: Path) -> EvalSuite:
     eval_paths = []
     config_path = None
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
-        if path.is_symlink():
-            raise BundleConventionError(f"eval resource cannot be a symlink: {path}")
-        if _is_ignored(path):
+        kind = _eval_file_kind(path)
+        if kind == "ignored":
             continue
-        if not path.is_file():
-            raise BundleConventionError(
-                f"unexpected resource in evals directory: {path}; "
-                "evals must use a flat file layout"
-            )
-        if path.name == "test_config.json":
+        if kind == "config":
             config_path = path
-        elif path.name.endswith(".evalset.json"):
-            eval_paths.append(path)
         else:
-            raise BundleConventionError(
-                f"unexpected eval file {path}; expected *.evalset.json or "
-                "test_config.json"
-            )
-
-    if not eval_paths and config_path is None:
-        return EvalSuite(())
+            eval_paths.append(path)
     if not eval_paths:
-        raise BundleConventionError(
-            f"evals directory must contain at least one *.evalset.json: {directory}"
-        )
+        if config_path is not None:
+            raise BundleConventionError(
+                f"evals directory must contain at least one *.evalset.json: {directory}"
+            )
+        return EvalSuite(())
     _validate_eval_files(eval_paths, config_path)
     return EvalSuite(tuple(eval_paths), config_path)
+
+
+def _eval_file_kind(path: Path) -> str:
+    if path.is_symlink():
+        raise BundleConventionError(f"eval resource cannot be a symlink: {path}")
+    if _is_ignored(path):
+        return "ignored"
+    if not path.is_file():
+        raise BundleConventionError(
+            f"unexpected resource in evals directory: {path}; "
+            "evals must use a flat file layout"
+        )
+    if path.name == "test_config.json":
+        return "config"
+    if path.name.endswith(".evalset.json"):
+        return "eval"
+    raise BundleConventionError(
+        f"unexpected eval file {path}; expected *.evalset.json or test_config.json"
+    )
 
 
 def _validate_eval_files(eval_paths: Sequence[Path], config_path: Path | None) -> None:
@@ -1243,35 +1334,39 @@ def _validate_eval_files(eval_paths: Sequence[Path], config_path: Path | None) -
         ) from exc
 
     for path in eval_paths:
-        payload = _read_json_payload(path, kind="eval set")
-        try:
-            eval_set = EvalSet.model_validate_json(payload)
-        except Exception as exc:
-            raise BundleEvalError(
-                f"invalid ADK eval set {path}: {type(exc).__name__}: {exc}"
-            ) from exc
-        expected_id = path.name[: -len(".evalset.json")]
-        if eval_set.eval_set_id != expected_id:
-            raise BundleEvalError(
-                f"eval_set_id in {path} must match filename {expected_id!r}; "
-                f"got {eval_set.eval_set_id!r}"
-            )
-        case_ids = [case.eval_id for case in eval_set.eval_cases]
-        duplicates = sorted({name for name in case_ids if case_ids.count(name) > 1})
-        if duplicates:
-            raise BundleEvalError(
-                f"duplicate eval_id values in {path}: {duplicates!r}"
-            )
-
+        _validate_eval_set(path, EvalSet)
     if config_path is not None:
-        payload = _read_json_payload(config_path, kind="eval config")
-        try:
-            EvalConfig.model_validate_json(payload)
-        except Exception as exc:
-            raise BundleEvalError(
-                f"invalid ADK eval config {config_path}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        _validate_eval_config(config_path, EvalConfig)
+
+
+def _validate_eval_set(path: Path, eval_set_class: type[Any]) -> None:
+    payload = _read_json_payload(path, kind="eval set")
+    try:
+        eval_set = eval_set_class.model_validate_json(payload)
+    except Exception as exc:
+        raise BundleEvalError(
+            f"invalid ADK eval set {path}: {type(exc).__name__}: {exc}"
+        ) from exc
+    expected_id = path.name[: -len(".evalset.json")]
+    if eval_set.eval_set_id != expected_id:
+        raise BundleEvalError(
+            f"eval_set_id in {path} must match filename {expected_id!r}; "
+            f"got {eval_set.eval_set_id!r}"
+        )
+    case_ids = [case.eval_id for case in eval_set.eval_cases]
+    duplicates = sorted({name for name in case_ids if case_ids.count(name) > 1})
+    if duplicates:
+        raise BundleEvalError(f"duplicate eval_id values in {path}: {duplicates!r}")
+
+
+def _validate_eval_config(path: Path, eval_config_class: type[Any]) -> None:
+    payload = _read_json_payload(path, kind="eval config")
+    try:
+        eval_config_class.model_validate_json(payload)
+    except Exception as exc:
+        raise BundleEvalError(
+            f"invalid ADK eval config {path}: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def _read_json_payload(path: Path, *, kind: str) -> str:

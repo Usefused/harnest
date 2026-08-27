@@ -37,6 +37,13 @@ class _StoredSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+@dataclass(slots=True)
+class _StreamState:
+    final_state: Any = None
+    text: str = ""
+    tools: set[tuple[Any, ...]] = field(default_factory=set)
+
+
 class LangGraphRuntimeDriver(RuntimeDriver):
     """Adapt one compiled LangGraph application to the neutral runtime.
 
@@ -52,38 +59,15 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         card: Mapping[str, Any] | None = None,
         recursion_limit: int = 64,
     ) -> None:
-        if not isinstance(application, CompiledApplication):
-            raise TypeError("application must be a CompiledApplication")
-        if application.framework != "langgraph":
-            raise ValueError("LangGraphRuntimeDriver requires a LangGraph application")
-        if recursion_limit < 1:
-            raise ValueError("recursion_limit must be at least one")
-        from .backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
-
-        plan = (
-            application.target
-            if isinstance(application.target, (ManagedAgentPlan, ManagedGraphPlan))
-            else None
-        )
-        if plan is None and not callable(getattr(application.target, "ainvoke", None)):
-            raise TypeError("compiled LangGraph target must expose ainvoke")
-
+        plan = _runtime_plan(application, recursion_limit)
         card_value = dict(card or {})
-        name = str(card_value.get("name") or application.name)
         self._application = application
         self._plan = plan
         self._target = None if plan is not None else application.target
         self._mcp_clients: list[Any] = []
         self._materialize_lock = asyncio.Lock()
         self._recursion_limit = recursion_limit
-        self._info = AgentInfo(
-            id=application.name,
-            name=name,
-            description=str(card_value.get("description") or ""),
-            card=card_value,
-            framework="langgraph",
-            mode=application.mode,
-        )
+        self._info = _agent_info(application, card_value)
         self._sessions: dict[tuple[str, str], _StoredSession] = {}
         self._sessions_lock = asyncio.Lock()
         self._closed = False
@@ -205,62 +189,14 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 self._application, request.input, stored.state
             )
             config = self._execution_config(session_id)
-            final_state: Any = None
-            streamed_text = ""
-            emitted_tools: set[tuple[Any, ...]] = set()
-            stream = target.astream(
-                graph_input,
-                config=config,
-                stream_mode=["messages", "values"],
-            )
-            async with aclosing(stream):
-                iterator = stream.__aiter__()
-                while True:
-                    try:
-                        item = await iterator.__anext__()
-                    except StopAsyncIteration:
-                        break
-                    mode, value = _stream_item(item)
-                    if mode == "values":
-                        final_state = value
-                        continue
-                    message = value[0] if isinstance(value, tuple) else value
-                    for event in _message_tool_events(message):
-                        identity = _event_identity(event)
-                        if identity not in emitted_tools:
-                            emitted_tools.add(identity)
-                            yield event
-                    content = _message_text(message)
-                    if content:
-                        streamed_text += content
-                        yield {"type": "message", "role": "assistant", "text": content}
-
-            if final_state is None:
-                final_state = {}
-            self._store_result(stored, final_state)
-
-        final_text, public_result = _graph_output(
-            self._application, final_state
-        )
-        if final_text and final_text != streamed_text:
-            delta = (
-                final_text[len(streamed_text) :]
-                if final_text.startswith(streamed_text)
-                else final_text
-            )
-            if delta:
-                yield {"type": "message", "role": "assistant", "text": delta}
-        for event in _tool_events(final_state):
-            identity = _event_identity(event)
-            if identity not in emitted_tools:
-                emitted_tools.add(identity)
+            state = _StreamState()
+            async for event in _target_stream(target, graph_input, config, state):
                 yield event
-        if public_result is not None:
-            yield {
-                "type": "graph_output",
-                "output": public_result,
-                "result": public_result,
-            }
+            state.final_state = state.final_state if state.final_state is not None else {}
+            self._store_result(stored, state.final_state)
+
+        for event in _final_stream_events(self._application, state):
+            yield event
 
     async def close(self) -> None:
         """Close a lazily initialized backend resource, if it owns one."""
@@ -301,84 +237,62 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             self._ensure_open()
             if self._target is not None:
                 return self._target
-            try:
-                from langchain_mcp_adapters.client import MultiServerMCPClient
-            except ImportError as exc:  # pragma: no cover - optional backend
-                raise RuntimeError(
-                    "LangGraph MCP connections require langchain-mcp-adapters"
-                ) from exc
-
             plan = self._plan
             if plan is None:  # pragma: no cover - protected by constructor
                 raise RuntimeError("LangGraph target is unavailable")
-            try:
-                from .backends.langgraph import (
-                    ManagedAgentPlan,
-                    managed_graph_mcp_clients,
-                    materialize_agent,
-                    materialize_graph,
-                )
-
-                configured_groups = (
-                    (tuple(plan.definition.mcp),)
-                    if isinstance(plan, ManagedAgentPlan)
-                    else managed_graph_mcp_clients(plan)
-                )
-                tool_groups = []
-                resolved_groups: list[tuple[tuple[Any, ...], list[Any]]] = []
-                for configured_group in configured_groups:
-                    shared_tools = next(
-                        (
-                            tools
-                            for existing, tools in resolved_groups
-                            if existing == configured_group
-                        ),
-                        None,
-                    )
-                    if shared_tools is not None:
-                        tool_groups.append(shared_tools)
-                        continue
-                    connections: dict[str, dict[str, Any]] = {}
-                    names = []
-                    for index, configured in enumerate(configured_group):
-                        name = configured.tool_name_prefix or f"mcp_{index + 1}"
-                        if name in connections:
-                            raise ValueError(
-                                f"duplicate LangGraph MCP client name {name!r}"
-                            )
-                        names.append((name, configured))
-                        connections[name] = configured.to_langgraph_connection()
-
-                    client = MultiServerMCPClient(
-                        connections, tool_name_prefix=True
-                    )
-                    self._mcp_clients.append(client)
-                    tools = []
-                    for server_name, configured in names:
-                        discovered = await client.get_tools(
-                            server_name=server_name
-                        )
-                        tools.extend(
-                            _filtered_mcp_tools(
-                                discovered,
-                                server_name=server_name,
-                                allowed=configured.tool_filter,
-                            )
-                        )
-                    resolved_groups.append((configured_group, tools))
-                    tool_groups.append(tools)
-
-                self._target = (
-                    materialize_agent(plan, tool_groups[0])
-                    if isinstance(plan, ManagedAgentPlan)
-                    else materialize_graph(plan, tool_groups)
-                )
-            except BaseException:
-                for client in reversed(self._mcp_clients):
-                    await _close_resource(client)
-                self._mcp_clients.clear()
-                raise
+            await self._materialize_plan(plan)
             return self._target
+
+    async def _materialize_plan(self, plan: Any) -> None:
+        try:
+            from .backends.langgraph import (
+                ManagedAgentPlan, managed_graph_mcp_clients,
+                materialize_agent, materialize_graph,
+            )
+            configured = (
+                (tuple(plan.definition.mcp),)
+                if isinstance(plan, ManagedAgentPlan)
+                else managed_graph_mcp_clients(plan)
+            )
+            tool_groups = await self._resolve_tool_groups(configured)
+            self._target = (
+                materialize_agent(plan, tool_groups[0])
+                if isinstance(plan, ManagedAgentPlan)
+                else materialize_graph(plan, tool_groups)
+            )
+        except BaseException:
+            for client in reversed(self._mcp_clients):
+                await _close_resource(client)
+            self._mcp_clients.clear()
+            raise
+
+    async def _resolve_tool_groups(
+        self, configured_groups: Sequence[tuple[Any, ...]]
+    ) -> list[list[Any]]:
+        resolved: list[tuple[tuple[Any, ...], list[Any]]] = []
+        groups: list[list[Any]] = []
+        for configured in configured_groups:
+            # Reuse an identical MCP group so nested graph nodes do not open
+            # duplicate connections or repeat remote tool discovery.
+            shared = next((tools for existing, tools in resolved if existing == configured), None)
+            if shared is None:
+                shared = await self._resolve_tool_group(configured)
+                resolved.append((configured, shared))
+            groups.append(shared)
+        return groups
+
+    async def _resolve_tool_group(self, configured_group: tuple[Any, ...]) -> list[Any]:
+        client_type = _mcp_client_type()
+        connections, names = _mcp_connections(configured_group)
+        client = client_type(connections, tool_name_prefix=True)
+        self._mcp_clients.append(client)
+        tools: list[Any] = []
+        for server_name, configured in names:
+            discovered = await client.get_tools(server_name=server_name)
+            tools.extend(_filtered_mcp_tools(
+                discovered, server_name=server_name, allowed=configured.tool_filter
+            ))
+        return tools
 
     async def _session_for_request(
         self, request: InvocationRequest
@@ -430,6 +344,98 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("LangGraph runtime driver is closed")
+
+
+def _runtime_plan(application: Any, recursion_limit: int) -> Any | None:
+    if not isinstance(application, CompiledApplication):
+        raise TypeError("application must be a CompiledApplication")
+    if application.framework != "langgraph":
+        raise ValueError("LangGraphRuntimeDriver requires a LangGraph application")
+    if recursion_limit < 1:
+        raise ValueError("recursion_limit must be at least one")
+    from .backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
+
+    if isinstance(application.target, (ManagedAgentPlan, ManagedGraphPlan)):
+        return application.target
+    if not callable(getattr(application.target, "ainvoke", None)):
+        raise TypeError("compiled LangGraph target must expose ainvoke")
+    return None
+
+
+def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> AgentInfo:
+    return AgentInfo(
+        id=application.name,
+        name=str(card.get("name") or application.name),
+        description=str(card.get("description") or ""),
+        card=card,
+        framework="langgraph",
+        mode=application.mode,
+    )
+
+
+async def _target_stream(
+    target: Any, graph_input: Any, config: Mapping[str, Any], state: _StreamState
+) -> AsyncIterator[dict[str, Any]]:
+    stream = target.astream(graph_input, config=config, stream_mode=["messages", "values"])
+    async with aclosing(stream):
+        async for item in stream:
+            mode, value = _stream_item(item)
+            if mode == "values":
+                state.final_state = value
+                continue
+            message = value[0] if isinstance(value, tuple) else value
+            for event in _message_tool_events(message):
+                identity = _event_identity(event)
+                if identity not in state.tools:
+                    state.tools.add(identity)
+                    yield event
+            content = _message_text(message)
+            if content:
+                state.text += content
+                yield {"type": "message", "role": "assistant", "text": content}
+
+
+def _final_stream_events(
+    application: CompiledApplication, state: _StreamState
+) -> list[dict[str, Any]]:
+    final_text, public_result = _graph_output(application, state.final_state)
+    events: list[dict[str, Any]] = []
+    if final_text and final_text != state.text:
+        delta = final_text[len(state.text):] if final_text.startswith(state.text) else final_text
+        if delta:
+            events.append({"type": "message", "role": "assistant", "text": delta})
+    for event in _tool_events(state.final_state):
+        identity = _event_identity(event)
+        if identity not in state.tools:
+            state.tools.add(identity)
+            events.append(event)
+    if public_result is not None:
+        events.append({"type": "graph_output", "output": public_result, "result": public_result})
+    return events
+
+
+def _mcp_client_type() -> Any:
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+    except ImportError as exc:  # pragma: no cover - optional backend
+        raise RuntimeError(
+            "LangGraph MCP connections require langchain-mcp-adapters"
+        ) from exc
+    return MultiServerMCPClient
+
+
+def _mcp_connections(
+    configured_group: Sequence[Any],
+) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
+    connections: dict[str, dict[str, Any]] = {}
+    names: list[tuple[str, Any]] = []
+    for index, configured in enumerate(configured_group):
+        name = configured.tool_name_prefix or f"mcp_{index + 1}"
+        if name in connections:
+            raise ValueError(f"duplicate LangGraph MCP client name {name!r}")
+        names.append((name, configured))
+        connections[name] = configured.to_langgraph_connection()
+    return connections, names
 
 
 def _require_identifier(value: Any, field_name: str) -> None:
@@ -520,33 +526,37 @@ def _graph_input(
 def _graph_output(
     application: CompiledApplication, result: Any
 ) -> tuple[str, Any]:
-    adapted = result
-    if application.bridge is not None and application.bridge.output_adapter is not None:
-        adapted = application.bridge.output_adapter(result)
+    adapter = application.bridge.output_adapter if application.bridge is not None else None
+    adapted = adapter(result) if adapter is not None else result
     if adapted is not result:
-        if isinstance(adapted, str):
-            return adapted, adapted
-        return _visible_value(adapted), _json_value(adapted)
+        return _adapted_output(adapted)
     if isinstance(result, Mapping):
-        structured = {
-            str(key): _json_value(value)
-            for key, value in result.items()
-            if key != "messages"
-        }
-        public_result = structured or None
-        messages = result.get("messages")
-        if isinstance(messages, (list, tuple)) and messages:
-            content = _message_text(messages[-1])
-            if content:
-                return content, public_result
-        value = result.get("value")
-        if isinstance(value, str):
-            return value, public_result
-        if value is not None:
-            return _visible_value(value), public_result
+        return _mapping_output(result)
     if isinstance(result, str):
         return result, result
     return _visible_value(result), _json_value(result)
+
+
+def _adapted_output(adapted: Any) -> tuple[str, Any]:
+    if isinstance(adapted, str):
+        return adapted, adapted
+    return _visible_value(adapted), _json_value(adapted)
+
+
+def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
+    structured = {
+        str(key): _json_value(value) for key, value in result.items() if key != "messages"
+    }
+    public_result = structured or None
+    messages = result.get("messages")
+    if isinstance(messages, (list, tuple)) and messages:
+        content = _message_text(messages[-1])
+        if content:
+            return content, public_result
+    value = result.get("value")
+    if value is None:
+        return _visible_value(result), _json_value(result)
+    return (value if isinstance(value, str) else _visible_value(value)), public_result
 
 
 def _visible_value(value: Any) -> str:

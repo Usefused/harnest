@@ -62,27 +62,27 @@ def _result_with_events(
             if event.get("type") == "message"
         )
 
-    output_events = [
-        event
-        for event in events
-        if event.get("type") in {"graph_output", "output"}
-    ]
+    output_events = [event for event in events if _is_output_event(event)]
     original_has_output = any(
         event.get("type") in {"graph_output", "output"}
         for event in result.events
     )
     value = result.result
     if output_events:
-        final = output_events[-1]
-        if "result" in final:
-            value = final["result"]
-        elif final.get("type") == "graph_output":
-            value = final.get("output")
-        else:
-            value = final.get("value")
+        value = _output_event_value(output_events[-1])
     elif original_has_output:
         value = None
     return replace(result, text=text, events=tuple(events), result=value)
+
+
+def _is_output_event(event: RuntimeEvent) -> bool:
+    return event.get("type") in {"graph_output", "output"}
+
+
+def _output_event_value(event: RuntimeEvent) -> Any:
+    if "result" in event:
+        return event["result"]
+    return event.get("output" if event.get("type") == "graph_output" else "value")
 
 
 def _stream_result(
@@ -95,14 +95,9 @@ def _stream_result(
     )
     value: Any = None
     for event in reversed(events):
-        if event.get("type") not in {"graph_output", "output"}:
+        if not _is_output_event(event):
             continue
-        if "result" in event:
-            value = event["result"]
-        elif event.get("type") == "graph_output":
-            value = event.get("output")
-        else:
-            value = event.get("value")
+        value = _output_event_value(event)
         break
     return InvocationResult(
         text=text,

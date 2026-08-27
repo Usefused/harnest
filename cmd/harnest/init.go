@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -127,51 +128,70 @@ func createScaffoldForMode(directory, name, framework, mode string) (returnErr e
 		}
 	}()
 
-	directories := []string{
-		"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
-		"tests",
-		filepath.Join("tests", "unit"), filepath.Join("tests", "smoke"),
+	if err := createScaffoldDirectories(directory, mode, &created); err != nil {
+		return err
 	}
+	files := scaffoldFilesForMode(name, framework, mode, requirements)
+	return createScaffoldFiles(directory, files, &created)
+}
+
+func createScaffoldDirectories(root, mode string, created *[]string) error {
+	directories := []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals", "tests", filepath.Join("tests", "unit"), filepath.Join("tests", "smoke")}
 	if mode == "managed" {
-		directories = append(
-			directories,
-			filepath.Join("skills", "getting-started"),
-			filepath.Join("extensions", "starter"),
-			filepath.Join("plugins", "starter"),
-			filepath.Join("plugins", "starter", "mcp"),
-			filepath.Join("plugins", "starter", "skills"),
-			filepath.Join("plugins", "starter", "skills", "starter-guidance"),
-		)
+		directories = append(directories, filepath.Join("skills", "getting-started"), filepath.Join("extensions", "starter"), filepath.Join("plugins", "starter"), filepath.Join("plugins", "starter", "mcp"), filepath.Join("plugins", "starter", "skills"), filepath.Join("plugins", "starter", "skills", "starter-guidance"))
 	}
 	for _, relative := range directories {
-		path := filepath.Join(directory, relative)
+		path := filepath.Join(root, relative)
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("create scaffold directory %s: %w", path, err)
 		}
-		created = append(created, path)
+		*created = append(*created, path)
 	}
+	return nil
+}
 
-	files := scaffoldFilesForMode(name, framework, mode, requirements)
+func createScaffoldFiles(root string, files map[string]string, created *[]string) error {
 	paths := make([]string, 0, len(files))
 	for relative := range files {
 		paths = append(paths, relative)
 	}
 	sort.Strings(paths)
 	for _, relative := range paths {
-		path := filepath.Join(directory, filepath.FromSlash(relative))
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			return fmt.Errorf("create scaffold file %s: %w", path, err)
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		if err := createScaffoldFile(path, files[relative]); err != nil {
+			return err
 		}
-		created = append(created, path)
-		_, writeErr := file.WriteString(files[relative])
-		closeErr := file.Close()
-		if writeErr != nil {
-			return fmt.Errorf("write scaffold file %s: %w", path, writeErr)
+		*created = append(*created, path)
+	}
+	return nil
+}
+
+func createScaffoldFile(path, contents string) error {
+	return createScaffoldFileWith(path, contents, func(path string) (io.WriteCloser, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	})
+}
+
+func createScaffoldFileWith(path, contents string, open func(string) (io.WriteCloser, error)) (returnErr error) {
+	file, err := open(path)
+	if err != nil {
+		return fmt.Errorf("create scaffold file %s: %w", path, err)
+	}
+	// A failed write must not turn an existing empty target into a partially
+	// initialized project that the next init invocation refuses to repair.
+	defer func() {
+		if returnErr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
 		}
-		if closeErr != nil {
-			return fmt.Errorf("close scaffold file %s: %w", path, closeErr)
-		}
+	}()
+	_, writeErr := io.WriteString(file, contents)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return fmt.Errorf("write scaffold file %s: %w", path, writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close scaffold file %s: %w", path, closeErr)
 	}
 	return nil
 }

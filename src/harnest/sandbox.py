@@ -66,18 +66,9 @@ class Sandbox:
         requirements file: ``google-adk[extensions]``.
         """
 
-        if bool(image) == bool(docker_path):
-            raise ValueError("container sandbox requires exactly one of image or docker_path")
-        if image is not None and not image.strip():
-            raise ValueError("container sandbox image must not be blank")
-        if docker_path is not None and not docker_path.strip():
-            raise ValueError("container sandbox docker_path must not be blank")
-        if base_url is not None and not base_url.strip():
-            raise ValueError("container sandbox base_url must not be blank")
-        if not isinstance(network, bool):
-            raise TypeError("container sandbox network must be a boolean")
-        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
-            raise ValueError("container sandbox timeout_seconds must be positive")
+        _validate_container_options(
+            image, docker_path, base_url, network, timeout_seconds
+        )
         extra = dict(options or {})
         reserved = {
             "image",
@@ -160,3 +151,21 @@ class Sandbox:
 
 
 __all__ = ["Sandbox"]
+
+
+def _validate_container_options(
+    image: str | None,
+    docker_path: str | None,
+    base_url: str | None,
+    network: bool,
+    timeout_seconds: int,
+) -> None:
+    if bool(image) == bool(docker_path):
+        raise ValueError("container sandbox requires exactly one of image or docker_path")
+    for name, value in (("image", image), ("docker_path", docker_path), ("base_url", base_url)):
+        if value is not None and not value.strip():
+            raise ValueError(f"container sandbox {name} must not be blank")
+    if not isinstance(network, bool):
+        raise TypeError("container sandbox network must be a boolean")
+    if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+        raise ValueError("container sandbox timeout_seconds must be positive")

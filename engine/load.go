@@ -63,79 +63,54 @@ func (p DeploymentPlan) Validate() error {
 		return fmt.Errorf("deployment plan requires at least one source")
 	}
 	for sourceIndex, source := range p.Sources {
-		if strings.TrimSpace(source.Root) == "" {
-			return fmt.Errorf("deployment plan source %d root is required", sourceIndex)
+		if err := validatePlanSource(sourceIndex, source); err != nil {
+			return err
 		}
-		for _, patterns := range [][]string{source.Include, source.Exclude} {
-			for _, pattern := range patterns {
-				if pattern == "" {
-					return fmt.Errorf("deployment plan source %d contains an empty pattern", sourceIndex)
-				}
-				if filepath.Base(pattern) != pattern {
-					return fmt.Errorf("deployment plan source %d pattern %q must match a direct child name", sourceIndex, pattern)
-				}
-				if _, err := filepath.Match(pattern, "agent"); err != nil {
-					return fmt.Errorf("deployment plan source %d has invalid pattern %q: %w", sourceIndex, pattern, err)
-				}
-			}
+	}
+	return nil
+}
+
+func validatePlanSource(index int, source AgentSource) error {
+	if strings.TrimSpace(source.Root) == "" {
+		return fmt.Errorf("deployment plan source %d root is required", index)
+	}
+	for _, patterns := range [][]string{source.Include, source.Exclude} {
+		if err := validateSourcePatterns(index, patterns); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSourcePatterns(index int, patterns []string) error {
+	for _, pattern := range patterns {
+		if pattern == "" {
+			return fmt.Errorf("deployment plan source %d contains an empty pattern", index)
+		}
+		if filepath.Base(pattern) != pattern {
+			return fmt.Errorf("deployment plan source %d pattern %q must match a direct child name", index, pattern)
+		}
+		if _, err := filepath.Match(pattern, "agent"); err != nil {
+			return fmt.Errorf("deployment plan source %d has invalid pattern %q: %w", index, pattern, err)
 		}
 	}
 	return nil
 }
 
 func LoadBundle(directory string) (Bundle, error) {
-	directory, err := filepath.Abs(directory)
+	directory, err := resolveBundleDirectory(directory)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("resolve agent directory: %w", err)
+		return Bundle{}, err
 	}
-	directory, err = filepath.EvalSymlinks(directory)
+	configPath, cardPath, instructionsPath, err := requiredBundlePaths(directory)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("resolve agent directory symlinks: %w", err)
+		return Bundle{}, err
 	}
-	info, err := os.Stat(directory)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("stat agent directory: %w", err)
+	if err := validateInstructions(instructionsPath); err != nil {
+		return Bundle{}, err
 	}
-	if !info.IsDir() {
-		return Bundle{}, fmt.Errorf("agent directory %s is not a directory", directory)
-	}
-	configPath, err := containedRegularFile(directory, filepath.Join(directory, "config.yaml"))
-	if err != nil {
-		return Bundle{}, fmt.Errorf("invalid config.yaml: %w", err)
-	}
-	cardPath, err := containedRegularFile(directory, filepath.Join(directory, "agent-card.yaml"))
-	if err != nil {
-		return Bundle{}, fmt.Errorf("invalid agent-card.yaml: %w", err)
-	}
-	instructionsPath, err := containedRegularFile(directory, filepath.Join(directory, "instructions.md"))
-	if err != nil {
-		return Bundle{}, fmt.Errorf("invalid instructions.md: %w", err)
-	}
-	instructions, err := os.ReadFile(instructionsPath)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("read instructions.md: %w", err)
-	}
-	if !utf8.Valid(instructions) {
-		return Bundle{}, fmt.Errorf("invalid instructions.md: content must be UTF-8")
-	}
-	if strings.TrimSpace(string(instructions)) == "" {
-		return Bundle{}, fmt.Errorf("invalid instructions.md: content is empty")
-	}
-	legacyMCPPath := filepath.Join(directory, "mcp_servers")
-	if _, err := os.Lstat(legacyMCPPath); err == nil {
-		return Bundle{}, fmt.Errorf(
-			"unsupported legacy MCP directory %s; use mcp",
-			legacyMCPPath,
-		)
-	} else if !os.IsNotExist(err) {
-		return Bundle{}, fmt.Errorf("inspect legacy MCP directory %s: %w", legacyMCPPath, err)
-	}
-	for _, name := range []string{
-		"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
-	} {
-		if err := validateOptionalBundleDirectory(directory, name); err != nil {
-			return Bundle{}, err
-		}
+	if err := validateBundleResourceDirectories(directory); err != nil {
+		return Bundle{}, err
 	}
 
 	var config AgentConfig
@@ -157,6 +132,75 @@ func LoadBundle(directory string) (Bundle, error) {
 		Directory: directory, ConfigPath: configPath, CardPath: cardPath, InstructionsPath: instructionsPath,
 		Config: config, Card: card, Digest: digest, LoadedAt: nowUTC(),
 	}, nil
+}
+
+func resolveBundleDirectory(directory string) (string, error) {
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve agent directory: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve agent directory symlinks: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat agent directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("agent directory %s is not a directory", resolved)
+	}
+	return resolved, nil
+}
+
+func requiredBundlePaths(directory string) (string, string, string, error) {
+	config, err := requiredBundleFile(directory, "config.yaml")
+	if err != nil {
+		return "", "", "", err
+	}
+	card, err := requiredBundleFile(directory, "agent-card.yaml")
+	if err != nil {
+		return "", "", "", err
+	}
+	instructions, err := requiredBundleFile(directory, "instructions.md")
+	return config, card, instructions, err
+}
+
+func requiredBundleFile(directory, name string) (string, error) {
+	resolved, err := containedRegularFile(directory, filepath.Join(directory, name))
+	if err != nil {
+		return "", fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return resolved, nil
+}
+
+func validateInstructions(path string) error {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read instructions.md: %w", err)
+	}
+	if !utf8.Valid(contents) {
+		return fmt.Errorf("invalid instructions.md: content must be UTF-8")
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return fmt.Errorf("invalid instructions.md: content is empty")
+	}
+	return nil
+}
+
+func validateBundleResourceDirectories(directory string) error {
+	legacy := filepath.Join(directory, "mcp_servers")
+	if _, err := os.Lstat(legacy); err == nil {
+		return fmt.Errorf("unsupported legacy MCP directory %s; use mcp", legacy)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect legacy MCP directory %s: %w", legacy, err)
+	}
+	for _, name := range []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+		if err := validateOptionalBundleDirectory(directory, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func decodeYAMLFile(path string, target any) error {
@@ -181,6 +225,31 @@ func decodeYAMLFile(path string, target any) error {
 }
 
 func validateBundle(directory string, config AgentConfig, card AgentCard) error {
+	if err := validateAgentConfig(directory, config); err != nil {
+		return err
+	}
+	return validateAgentCard(directory, card)
+}
+
+func validateAgentConfig(directory string, config AgentConfig) error {
+	if err := validateConfigIdentity(directory, config); err != nil {
+		return err
+	}
+	if err := validateFrameworkAndResources(directory, config); err != nil {
+		return err
+	}
+	if err := validateRuntimeRequirements(directory, config); err != nil {
+		return err
+	}
+	for name := range config.Spec.Environment {
+		if !environmentNamePattern.MatchString(name) {
+			return fmt.Errorf("%s/config.yaml: invalid environment variable name %q", directory, name)
+		}
+	}
+	return validateSecrets(directory, config)
+}
+
+func validateConfigIdentity(directory string, config AgentConfig) error {
 	if config.APIVersion != APIVersion || config.Kind != "Agent" {
 		return fmt.Errorf("%s/config.yaml: unsupported apiVersion/kind %q/%q", directory, config.APIVersion, config.Kind)
 	}
@@ -195,33 +264,10 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 	if _, err := containedRegularFile(directory, modulePath); err != nil {
 		return fmt.Errorf("%s/config.yaml: entrypoint module does not exist: %w", directory, err)
 	}
-	if config.Spec.Framework.Name != "adk" && config.Spec.Framework.Name != "langgraph" {
-		return fmt.Errorf("%s/config.yaml: spec.framework.name must be adk or langgraph", directory)
-	}
-	if mode := config.Spec.Framework.EffectiveMode(); mode != "managed" && mode != "advanced" {
-		return fmt.Errorf("%s/config.yaml: spec.framework.mode must be managed or advanced", directory)
-	}
-	if !pythonPattern.MatchString(config.Spec.Runtime.Version) {
-		return fmt.Errorf("%s/config.yaml: unsupported Python version %q", directory, config.Spec.Runtime.Version)
-	}
-	if !cpuPattern.MatchString(config.Spec.Resources.CPU) {
-		return fmt.Errorf("%s/config.yaml: invalid CPU quantity %q", directory, config.Spec.Resources.CPU)
-	}
-	if !memoryPattern.MatchString(config.Spec.Resources.Memory) {
-		return fmt.Errorf("%s/config.yaml: invalid memory quantity %q", directory, config.Spec.Resources.Memory)
-	}
-	if config.Spec.Resources.EphemeralStorage != "" && !memoryPattern.MatchString(config.Spec.Resources.EphemeralStorage) {
-		return fmt.Errorf("%s/config.yaml: invalid ephemeral storage quantity %q", directory, config.Spec.Resources.EphemeralStorage)
-	}
-	if config.Spec.Resources.TimeoutSeconds < 0 || config.Spec.Resources.MaxConcurrentRequests < 0 {
-		return fmt.Errorf("%s/config.yaml: resource limits cannot be negative", directory)
-	}
-	if config.Spec.Scaling.MinReplicas < 0 || config.Spec.Scaling.MaxReplicas < 0 {
-		return fmt.Errorf("%s/config.yaml: replica counts cannot be negative", directory)
-	}
-	if config.Spec.Scaling.MaxReplicas > 0 && config.Spec.Scaling.MinReplicas > config.Spec.Scaling.MaxReplicas {
-		return fmt.Errorf("%s/config.yaml: minReplicas cannot exceed maxReplicas", directory)
-	}
+	return nil
+}
+
+func validateRuntimeRequirements(directory string, config AgentConfig) error {
 	if config.Spec.Runtime.RequirementsFile != "" {
 		if filepath.IsAbs(config.Spec.Runtime.RequirementsFile) {
 			return fmt.Errorf("%s/config.yaml: requirementsFile escapes the agent directory", directory)
@@ -231,11 +277,60 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 			return fmt.Errorf("%s/config.yaml: requirementsFile does not exist: %w", directory, err)
 		}
 	}
-	for name := range config.Spec.Environment {
-		if !environmentNamePattern.MatchString(name) {
-			return fmt.Errorf("%s/config.yaml: invalid environment variable name %q", directory, name)
-		}
+	return nil
+}
+
+func validateFrameworkAndResources(directory string, config AgentConfig) error {
+	if err := validateFrameworkRuntime(directory, config); err != nil {
+		return err
 	}
+	if err := validateResourceQuantities(directory, config.Spec.Resources); err != nil {
+		return err
+	}
+	return validateScaling(directory, config.Spec.Scaling)
+}
+
+func validateFrameworkRuntime(directory string, config AgentConfig) error {
+	framework := config.Spec.Framework
+	if framework.Name != "adk" && framework.Name != "langgraph" {
+		return fmt.Errorf("%s/config.yaml: spec.framework.name must be adk or langgraph", directory)
+	}
+	if mode := framework.EffectiveMode(); mode != "managed" && mode != "advanced" {
+		return fmt.Errorf("%s/config.yaml: spec.framework.mode must be managed or advanced", directory)
+	}
+	if !pythonPattern.MatchString(config.Spec.Runtime.Version) {
+		return fmt.Errorf("%s/config.yaml: unsupported Python version %q", directory, config.Spec.Runtime.Version)
+	}
+	return nil
+}
+
+func validateResourceQuantities(directory string, resources AgentResources) error {
+	if !cpuPattern.MatchString(resources.CPU) {
+		return fmt.Errorf("%s/config.yaml: invalid CPU quantity %q", directory, resources.CPU)
+	}
+	if !memoryPattern.MatchString(resources.Memory) {
+		return fmt.Errorf("%s/config.yaml: invalid memory quantity %q", directory, resources.Memory)
+	}
+	if resources.EphemeralStorage != "" && !memoryPattern.MatchString(resources.EphemeralStorage) {
+		return fmt.Errorf("%s/config.yaml: invalid ephemeral storage quantity %q", directory, resources.EphemeralStorage)
+	}
+	if resources.TimeoutSeconds < 0 || resources.MaxConcurrentRequests < 0 {
+		return fmt.Errorf("%s/config.yaml: resource limits cannot be negative", directory)
+	}
+	return nil
+}
+
+func validateScaling(directory string, scaling Scaling) error {
+	if scaling.MinReplicas < 0 || scaling.MaxReplicas < 0 {
+		return fmt.Errorf("%s/config.yaml: replica counts cannot be negative", directory)
+	}
+	if scaling.MaxReplicas > 0 && scaling.MinReplicas > scaling.MaxReplicas {
+		return fmt.Errorf("%s/config.yaml: minReplicas cannot exceed maxReplicas", directory)
+	}
+	return nil
+}
+
+func validateSecrets(directory string, config AgentConfig) error {
 	seenSecrets := make(map[string]struct{}, len(config.Spec.Secrets))
 	for _, secret := range config.Spec.Secrets {
 		if !secretEnvironmentNamePattern.MatchString(secret.EnvironmentVariable) || strings.TrimSpace(secret.SecretRef) == "" {
@@ -249,13 +344,27 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 		}
 		seenSecrets[secret.EnvironmentVariable] = struct{}{}
 	}
+	return nil
+}
+
+func validateAgentCard(directory string, card AgentCard) error {
 	if card.Name == "" || card.Description == "" || card.Version == "" {
 		return fmt.Errorf("%s/agent-card.yaml: name, description, and version are required", directory)
 	}
 	if len(card.SupportedInterfaces) == 0 || len(card.DefaultInputModes) == 0 || len(card.DefaultOutputModes) == 0 || len(card.Skills) == 0 {
 		return fmt.Errorf("%s/agent-card.yaml: supportedInterfaces, default modes, and skills are required", directory)
 	}
-	for _, supportedInterface := range card.SupportedInterfaces {
+	if err := validateSupportedInterfaces(directory, card.SupportedInterfaces); err != nil {
+		return err
+	}
+	if err := validateDefaultModes(directory, card); err != nil {
+		return err
+	}
+	return validateCardSkills(directory, card.Skills)
+}
+
+func validateSupportedInterfaces(directory string, interfaces []AgentInterface) error {
+	for _, supportedInterface := range interfaces {
 		if strings.TrimSpace(supportedInterface.ProtocolBinding) == "" || strings.TrimSpace(supportedInterface.ProtocolVersion) == "" {
 			return fmt.Errorf("%s/agent-card.yaml: every supported interface needs url, protocolBinding, and protocolVersion", directory)
 		}
@@ -264,6 +373,10 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 			return fmt.Errorf("%s/agent-card.yaml: invalid supported interface URL %q", directory, supportedInterface.URL)
 		}
 	}
+	return nil
+}
+
+func validateDefaultModes(directory string, card AgentCard) error {
 	for _, modes := range [][]string{card.DefaultInputModes, card.DefaultOutputModes} {
 		for _, mode := range modes {
 			if strings.TrimSpace(mode) == "" {
@@ -271,8 +384,12 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 			}
 		}
 	}
-	seenSkills := make(map[string]struct{}, len(card.Skills))
-	for _, skill := range card.Skills {
+	return nil
+}
+
+func validateCardSkills(directory string, skills []AgentSkill) error {
+	seenSkills := make(map[string]struct{}, len(skills))
+	for _, skill := range skills {
 		if skill.ID == "" || skill.Name == "" || skill.Description == "" || len(skill.Tags) == 0 {
 			return fmt.Errorf("%s/agent-card.yaml: every skill needs id, name, description, and tags", directory)
 		}
