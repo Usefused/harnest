@@ -22,6 +22,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     agent-card.yaml      discovery metadata and capabilities
     agent.py             root Agent with compiler-owned imports
     instructions.md      root instructions
+    lib/                 reusable Python helpers imported as harnest.lib.*
     tools/               discovered Python tools
     plugins/             reusable MCP-client-and-skill capability bundles
     extensions/          portable lifecycle plus framework-specific integration

@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "harnest mode advanced", "harnest test", "harnest compile", "harnest serve", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "harnest mode advanced", "harnest test", "harnest compile", "harnest serve", "lib/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -67,10 +67,11 @@ func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"# Getting started",
 	})
 	assertDirectories(t, target, []string{
-		"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
+		"lib", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
+		"lib/_README.md":                                   "from harnest.lib.audit import record_change",
 		"tools/echo.py":                                    "from harnest.tool import tool",
 		"subagents/__init__.py":                            "Add direct graph agents",
 		"mcp/_README.md":                                   "Add direct MCP client connections",
@@ -82,6 +83,18 @@ func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	})
 	if _, err := os.Stat(filepath.Join(target, "plugins", "starter", "agents")); !os.IsNotExist(err) {
 		t.Fatalf("generated plugin must not contain agents: %v", err)
+	}
+	assertIgnoredLibraryGuide(t, target)
+}
+
+func assertIgnoredLibraryGuide(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, "lib"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "_README.md" {
+		t.Fatalf("generated lib must contain only ignored guidance: %v", entries)
 	}
 }
 
@@ -230,12 +243,15 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
 	}
 	assertFilesExist(t, directory, []string{"tools/_README.md"})
+	assertFilesContain(t, directory, map[string]string{
+		"lib/_README.md": "from harnest.lib.audit import record_change",
+	})
 	assertOnlyPlaceholderResources(t, directory)
 }
 
 func assertOnlyPlaceholderResources(t *testing.T, root string) {
 	t.Helper()
-	for _, directory := range []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+	for _, directory := range append([]string{"lib"}, managedResourceDirectories...) {
 		entries, err := os.ReadDir(filepath.Join(root, directory))
 		if err != nil {
 			t.Fatalf("read advanced optional folder %s: %v", directory, err)

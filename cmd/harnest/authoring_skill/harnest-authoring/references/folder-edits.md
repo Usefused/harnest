@@ -38,6 +38,7 @@ and extended examples into that skill's linked `references/` files.
 | Add a simple subagent | Owning `subagents/<name>.py` | Export `AgentDefinition` as `<name>` with an explicit instruction. |
 | Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. |
 | Add invocation policy, persistence, guardrails, or event transforms | Root `extensions/<name>/lifecycle.py` | Export `extension`; add `adk.py` or `langgraph.py` only for tighter native control. |
+| Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
 | Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
 | Add offline behavior coverage | Root `tests/unit/test_*.py` | Use compiler fixtures; do not manually import the compiled agent. |
 | Add authorized live coverage | Root `tests/smoke/test_*.py` | Keep external calls behind the smoke lane. |
@@ -54,11 +55,18 @@ and extended examples into that skill's linked `references/` files.
   the relevant ownership scope or use a string node naming a discovered tool or
   subagent. Compilation rejects discovered resources that no graph node uses.
 - Use normal Python imports only for installed dependencies and stable authored
-  modules that are intentionally packages. A Harnest agent root is not itself a
-  Python package, and resource modules are loaded independently by the compiler.
-- Cross-cutting behavior shared by several tools usually belongs in a portable
-  lifecycle extension. This keeps tools single-purpose and avoids resource
-  modules importing each other merely to share audit or guardrail policy.
+  library modules. A Harnest agent root is not itself a Python package, and
+  resource modules are loaded independently by the compiler.
+- Put pure helpers, domain types, validation, and reusable clients in root
+  `lib/`, then import them below `harnest.lib`. For example,
+  `lib/storage/queries.py` is `harnest.lib.storage.queries`. Do not add
+  `__init__.py` just to form packages, import one discovered resource from
+  another, or place `lib/` beneath a subagent. The root library is available to
+  every bundle resource in managed and advanced mode during compile, tests,
+  evals, and standalone runs.
+- Cross-cutting invocation policy still belongs in a portable lifecycle
+  extension. Use `lib/` for implementation shared by resources, not to disguise
+  persistence, auditing, or guardrails that must surround every call.
 
 ## Treat advanced mode differently
 
@@ -86,6 +94,21 @@ project or move files until their new explicit owner is clear.
 Create the smallest public resource that owns the new behavior. Match the file
 stem, Python export, declared name, and skill frontmatter where required. Add a
 focused unit test before expanding into smoke or eval coverage.
+
+### Extract duplicated implementation
+
+Keep each discovered resource independently owned while sharing its ordinary
+implementation:
+
+1. Create the smallest root `lib/<path>.py` module that names the shared domain
+   responsibility, not the callers that happen to use it.
+2. Move only reusable functions, types, or clients. Leave `@tool`, `Agent`, MCP,
+   extension, and other resource declarations in their convention folders.
+3. Replace duplication with explicit `harnest.lib.<path>` imports. No
+   `__init__.py` is required because Harnest supplies namespace packages.
+4. Run the affected unit tests through `harnest test`, then compile. This proves
+   the compiler-mounted import works instead of relying on the current shell's
+   Python path.
 
 ### Rename or move
 

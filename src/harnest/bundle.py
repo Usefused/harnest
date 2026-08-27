@@ -9,10 +9,11 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .application import CompiledApplication
@@ -28,6 +29,11 @@ from .backends import (
 )
 from .graph import Graph
 from .extension_loader import ExtensionDiscoveryError, discover_extensions
+from ._library import (
+    LibraryConventionError,
+    LibraryImportError as AuthoredLibraryImportError,
+    authored_library,
+)
 from .mcp import MCPClient
 from .plugin import PluginConventionError, PluginResources, discover_plugins
 from .sandbox import Sandbox
@@ -157,15 +163,35 @@ def compile_application(
         raise BundleImportError(str(exc)) from exc
     anchor = _resolve_compile_anchor(source, entrypoint)
     export_name = entrypoint.partition(":")[2]
-    module, value = _load_export(anchor, export_name)
-
-    if mode == "advanced":
-        return _compile_advanced_application(
-            anchor, module, value, export_name, framework, backend, compatibility
+    with _bundle_library(anchor.parent):
+        module, value = _load_export(anchor, export_name)
+        if mode == "advanced":
+            return _compile_advanced_application(
+                anchor, module, value, export_name, framework, backend, compatibility
+            )
+        return _compile_managed_application(
+            anchor,
+            module,
+            value,
+            export_name,
+            framework,
+            mode,
+            backend,
+            compatibility,
         )
-    return _compile_managed_application(
-        anchor, module, value, export_name, framework, mode, backend, compatibility
-    )
+
+
+@contextmanager
+def _bundle_library(bundle_root: Path) -> Iterator[None]:
+    """Translate namespace validation failures into the compiler error model."""
+
+    try:
+        with authored_library(bundle_root):
+            yield
+    except LibraryConventionError as exc:
+        raise BundleConventionError(str(exc)) from exc
+    except AuthoredLibraryImportError as exc:
+        raise BundleImportError(str(exc)) from exc
 
 
 def _compile_advanced_application(
@@ -498,8 +524,10 @@ def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
 
     if not isinstance(root, AgentDefinition):
         raise TypeError("bundle_agent root must be an AgentDefinition")
-    definition = _compose_definition(_validate_anchor(anchor), root)
-    return definition.build()
+    validated_anchor = _validate_anchor(anchor)
+    with _bundle_library(validated_anchor.parent):
+        definition = _compose_definition(validated_anchor, root)
+        return definition.build()
 
 
 def discover_evals(anchor: str | Path) -> EvalSuite:
@@ -780,6 +808,7 @@ def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
     root_only_resources = (
         ("plugins", "capability plugins"),
         ("extensions", "runtime extensions"),
+        ("lib", "authored libraries"),
     )
     for directory, label in root_only_resources:
         path = bundle_root / directory

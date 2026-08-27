@@ -60,6 +60,36 @@ Place this in `tools/lookup_ticket.py`; the callable and file stem must match.
 A tool needs a docstring or `@tool(description="...")`. The decorator keeps the
 function directly callable for unit tests.
 
+## Reusable library modules
+
+Use root `lib/` for ordinary Python shared by tools, agents, graph callables,
+extensions, or other resources:
+
+```python
+# lib/validation.py
+def normalize_ticket_id(value: str) -> str:
+    return value.strip().upper()
+
+# tools/lookup_ticket.py
+from harnest.lib.validation import normalize_ticket_id
+from harnest.tool import tool
+
+
+@tool
+def lookup_ticket(ticket_id: str) -> str:
+    """Return the current ticket summary."""
+    return repository.lookup(normalize_ticket_id(ticket_id))
+```
+
+Harnest mounts `lib/<name>.py` as `harnest.lib.<name>` and nested paths such as
+`lib/storage/queries.py` as `harnest.lib.storage.queries`. It does not discover
+library callables, so helpers cannot become model tools accidentally. `lib/` is
+root-only and shared across managed and advanced bundles; do not add
+`__init__.py` merely for package discovery or create a nested agent `lib/`.
+Imports resolve during compile, tests, evals, and standalone serving.
+Third-party dependencies used by library code still belong in
+`requirements.txt`.
+
 ## Models
 
 `harnest.model.LiteLLMModel(provider/model, **completion_args)` is the default

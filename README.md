@@ -4,8 +4,9 @@ Harnest is a filesystem-first compiler and standalone runtime for self-serve
 agents. Its managed authoring layer supports Google ADK and LangGraph, lowers a
 small graph API to the selected framework, and serves both through the same
 HTTP/WebSocket contract. Agent authors put instructions, tools, plugins,
-extensions, subagents, MCP connections, skills, evals, and tests in conventional folders;
-the native CLI validates that source, compiles it, and runs the result.
+extensions, subagents, MCP connections, skills, evals, and tests in conventional
+folders; ordinary reusable Python lives under `lib/`. The native CLI validates
+that source, compiles it, and runs the result.
 
 The design borrows the useful part of Eve's developer experience: one agent is
 one inspectable directory, and optional capabilities are added conventionally as
@@ -123,6 +124,7 @@ examples/self-serve/
         ├── agent.py                 Root definition using harnest.* imports
         ├── instructions.md           Required root instructions
         ├── requirements.txt
+        ├── lib/                      Reusable Python under harnest.lib
         ├── tools/                    Decorated callable exports
         ├── subagents/                AgentDefinition exports
         ├── mcp/                      MCPClient connections
@@ -306,6 +308,32 @@ export an `@tool` callable named `lookup_order`;
 `subagents/order_specialist.py` must export an `AgentDefinition` named
 `order_specialist`; and `mcp/catalog.py` must export an `MCPClient` (or
 `None`) named `catalog`.
+
+### Reusable Python library
+
+Put ordinary shared implementation in root `lib/`. Harnest mounts
+`lib/audit.py` as `harnest.lib.audit` and nested modules such as
+`lib/storage/queries.py` as `harnest.lib.storage.queries`:
+
+```python
+from harnest.lib.storage.queries import load_order
+from harnest.tool import tool
+
+
+@tool
+def lookup_order(order_id: str) -> dict:
+    """Load one order."""
+    return load_order(order_id)
+```
+
+The library is root-only and global to the compiled bundle in managed and
+advanced mode. It is ordinary importable code, not a discovered capability:
+functions in `lib/` never become tools or agents unless an authored resource
+explicitly uses them. No `__init__.py` is needed; add one only for intentional
+library initialization. Do not create a nested agent `lib/` or import it as bare
+`lib.*`. The `harnest.lib.*` namespace works consistently in
+compilation, unit and smoke tests, evals, and the standalone server. Keep
+third-party library dependencies in `requirements.txt`.
 
 ### Folder-scoped agent ownership
 
@@ -504,6 +532,8 @@ Every deployable directory must contain:
   root-only `plugins/<name>/{mcp,skills}` capability bundles; and root-only
   `extensions/<name>/` runtime lifecycle directories. Folder-based nested
   subagents get their own supported sibling resource scope as described above.
+- optional root-only `lib/` containing ordinary reusable Python imported below
+  `harnest.lib`; it is global to the bundle and is not resource discovery.
 - non-empty UTF-8 `instructions.md` (also required as bundle metadata in advanced
   mode), plus optional `skills/`, ADK-only `evals/`, and
   test-only `tests/unit/` and `tests/smoke/` directories following the

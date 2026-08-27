@@ -23,6 +23,7 @@ from .bundle import (
 )
 from .runtime import create_fastapi_app, load_compiled_agent
 from .runtime_adk import _customer_facing_parts
+from ._library import release_authored_library
 
 
 class AgentTestError(RuntimeError):
@@ -298,24 +299,27 @@ def run_agent_tests(
         compile_artifact(
             source_directory, artifact, framework=framework, mode=mode
         )
-        selected = _selected_test_directories(artifact, include_smoke)
-        plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
-        args = _pytest_args(selected)
-        test_status = int(pytest.main(args, plugins=[plugin]))
-        if test_status != 0 or not include_evals:
-            return test_status
+        try:
+            selected = _selected_test_directories(artifact, include_smoke)
+            plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
+            args = _pytest_args(selected)
+            test_status = int(pytest.main(args, plugins=[plugin]))
+            if test_status != 0 or not include_evals:
+                return test_status
 
-        if framework != "adk":
-            raise AgentTestError(
-                "--evals currently supports ADK EvalSet files only; use authored "
-                "pytest evaluations for LangGraph"
-            )
-        suite = discover_evals(artifact / "source" / "agent.py")
-        if not suite.eval_sets:
-            raise AgentTestError(
-                "--evals requires evals/ with at least one *.evalset.json"
-            )
-        return _run_adk_evals(artifact, suite)
+            if framework != "adk":
+                raise AgentTestError(
+                    "--evals currently supports ADK EvalSet files only; use authored "
+                    "pytest evaluations for LangGraph"
+                )
+            suite = discover_evals(artifact / "source" / "agent.py")
+            if not suite.eval_sets:
+                raise AgentTestError(
+                    "--evals requires evals/ with at least one *.evalset.json"
+                )
+            return _run_adk_evals(artifact, suite)
+        finally:
+            release_authored_library(artifact / "source")
 
 
 def _selected_test_directories(artifact: Path, include_smoke: bool) -> list[Path]:

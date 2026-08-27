@@ -35,7 +35,9 @@ framework APIs.
 
 Before editing an existing project, inspect `config.yaml`, `agent.py`,
 `instructions.md`, `agent-card.yaml`, and only the resource folders relevant to
-the request. Preserve unrelated user changes.
+the request. Preserve unrelated user changes. If multiple resources need the
+same ordinary Python implementation, add it once under root `lib/` and import
+it below `harnest.lib`; do not turn a helper into a discovered resource.
 
 ## Audit an advanced-mode migration
 
@@ -105,7 +107,8 @@ Before finishing a modification:
    contain only MCP clients plus skills, and extensions contain lifecycle
    behavior.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
-   resources are not manually registered.
+   resources are not manually registered. Confirm reusable helpers live only in
+   root `lib/`, need no `__init__.py`, and are imported below `harnest.lib`.
 4. After a rename, move, or deletion, confirm graph strings, tests, skills,
    evals, export names, and declared identities no longer reference the old
    resource. Confirm every discovered graph resource is consumed.

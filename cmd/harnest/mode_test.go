@@ -12,6 +12,13 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 	if err := createScaffold(target, "managed-agent"); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(target, "lib", "shared.py"),
+		[]byte("def shared():\n    return 'shared'\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(target, "config.yaml")
 	agentPath := filepath.Join(target, "agent.py")
 	configBefore := mustReadTestFile(t, configPath)
@@ -37,7 +44,12 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		"spec.framework.mode to advanced",
 		"No files were changed.",
 	})
-	assertContainsNone(t, "advanced mode audit", stdout, []string{"  - subagents/", "  - mcp/", "  - sandbox/"})
+	assertContainsNone(t, "advanced mode audit", stdout, []string{
+		"  - lib/",
+		"  - subagents/",
+		"  - mcp/",
+		"  - sandbox/",
+	})
 
 	configAfter := mustReadTestFile(t, configPath)
 	agentAfter := mustReadTestFile(t, agentPath)

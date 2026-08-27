@@ -160,6 +160,24 @@ func TestLoadBundleRejectsSymlinksInConventionDirectories(t *testing.T) {
 	}
 }
 
+func TestLoadBundleRejectsSymlinksInLibraryDirectory(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "unsafe-library", true)
+	library := filepath.Join(directory, "lib")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "shared.py")
+	mustWrite(t, external, "def shared():\n    return 'external'\n")
+	if err := os.Symlink(external, filepath.Join(library, "shared.py")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadBundle(directory); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("got error %v, want library symlink validation error", err)
+	}
+}
+
 func TestLoadBundleRejectsLegacyMCPServersDirectory(t *testing.T) {
 	project := t.TempDir()
 	directory := writeAgent(t, project, "legacy-mcp", true)

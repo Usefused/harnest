@@ -30,6 +30,7 @@ authoring namespace:
 
 - provider-neutral graphs or a concise one-agent definition
 - local typed tools
+- ordinary reusable Python mounted below `harnest.lib`
 - MCP client connections and tool filtering
 - prompts and model configuration
 - the folders selected for a deployment run
@@ -171,8 +172,11 @@ import or register one another. For example, tools use
 `from harnest.tool import tool` and MCP client definitions use
 `from harnest.mcp import MCPClient`. The compiler/runtime owns this namespace,
 so agents do not declare Harnest in `requirements.txt`. Normal standard-library
-and third-party imports remain valid. Import-free source fails compilation;
-there is no implicit-global compatibility bridge. The bundle always requires a
+and third-party imports remain valid. Root `lib/` supplies the one intentional
+authored import namespace: `lib/audit.py` becomes `harnest.lib.audit`, and
+`lib/storage/queries.py` becomes `harnest.lib.storage.queries`. Namespace
+directories require no `__init__.py`. Import-free resource source fails
+compilation; there is no implicit-global compatibility bridge. The bundle always requires a
 non-empty UTF-8 sibling `instructions.md`. Managed `Agent` composition supplies
 it when the definition omits `instruction`; an explicit nonblank instruction
 wins without merging. For a managed `Graph` or advanced application the file
@@ -183,6 +187,7 @@ marked root-only:
 
 | Path | Required filename-matched export |
 | --- | --- |
+| `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
 | `subagents/<name>.py` | Exactly one `AgentDefinition` named `<name>`. |
 | `mcp/<name>.py` | An `MCPClient` or `None` named `<name>`. |
@@ -202,6 +207,15 @@ files. In those cases compilation moves on without creating a runtime resource.
 Once a public entry exists, its complete convention is enforced; populated but
 invalid resources are never silently skipped.
 
+The root library is not a resource root. Its modules are global to the compiled
+bundle in managed and advanced mode, while nested agent `lib/` folders are
+invalid. Library callables are never auto-registered as tools, nodes, agents, or
+lifecycle hooks. Entry points and discovered resources import them explicitly
+through `harnest.lib.*`, with identical resolution during compilation, unit and
+smoke tests, evals, and standalone serving. This boundary allows reuse without
+turning the authored root into an installable package or coupling independently
+discovered resource modules to each other.
+
 `None` is an intentional MCP state, not an error. Optional integrations should
 check all required environment variables in their definition module and export
 `None` when configuration is incomplete. This keeps importing, local runs, and
@@ -216,9 +230,10 @@ matching `langchain-mcp-adapters` connection dictionary. HTTP request timeouts
 and long-lived SSE idle-read timeouts are separate so quiet legacy servers do
 not disconnect at the normal request deadline.
 
-The compiler ignores `__init__.py`, dotfiles, cache directories, and files whose
-names start with `_`. It imports public resource files in deterministic filename
-order. Missing or wrongly typed exports are convention errors; module import
+Outside root `lib/`, the compiler ignores `__init__.py`, dotfiles, cache
+directories, and files whose names start with `_`. It imports public resource
+files in deterministic filename order. Missing or wrongly typed exports are
+convention errors; module import
 failures are reported with the resource path; duplicate tool names, subagent
 names, or identical MCP configurations fail rather than silently shadowing.
 Resources explicitly present on the root definition are kept first, followed by

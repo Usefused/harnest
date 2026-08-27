@@ -136,7 +136,13 @@ func createScaffoldForMode(directory, name, framework, mode string) (returnErr e
 }
 
 func createScaffoldDirectories(root, mode string, created *[]string) error {
-	directories := []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals", "tests", filepath.Join("tests", "unit"), filepath.Join("tests", "smoke")}
+	directories := append([]string{"lib"}, managedResourceDirectories...)
+	directories = append(
+		directories,
+		"tests",
+		filepath.Join("tests", "unit"),
+		filepath.Join("tests", "smoke"),
+	)
 	if mode == "managed" {
 		directories = append(directories, filepath.Join("skills", "getting-started"), filepath.Join("extensions", "starter"), filepath.Join("plugins", "starter"), filepath.Join("plugins", "starter", "mcp"), filepath.Join("plugins", "starter", "skills"), filepath.Join("plugins", "starter", "skills", "starter-guidance"))
 	}
@@ -314,6 +320,18 @@ def echo(message: str) -> str:
         logger.info("tool.echo.completed", message_length=len(message))
         return message
 `,
+		"lib/_README.md": `# Reusable Python helpers
+
+Add ordinary Python modules here when agent resources need the same
+implementation. Import a helper through the compiler-owned namespace:
+
+    from harnest.lib.audit import record_change
+
+Nested helper modules follow the same import path. The root-only lib/ directory
+is bundled but never discovered as tools or other agent resources. Keep resource
+declarations in their owning folders. Harnest ignores this underscore-prefixed
+guide; replace it with Python modules as needed.
+`,
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,
 		"mcp/_README.md": `Add direct MCP client connections here. Put an MCP client and the
@@ -447,9 +465,7 @@ description: Apply the agent's core instructions when answering a general reques
 		} {
 			delete(files, relative)
 		}
-		for _, directory := range []string{
-			"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
-		} {
+		for _, directory := range managedResourceDirectories {
 			files[directory+"/_README.md"] = "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
 		}
 		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_advanced_agent_name(agent):

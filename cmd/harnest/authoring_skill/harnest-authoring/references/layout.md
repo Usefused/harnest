@@ -17,6 +17,20 @@ file is the path and ownership contract it relies on.
 The usual entrypoint is `agent:root_agent`. Authored source is not a Python
 package and does not need `__init__.py`.
 
+## Reusable library
+
+| Path | Contract |
+| --- | --- |
+| root `lib/**/*.py` | Ordinary reusable Python imported below `harnest.lib`; never discovered as a tool, agent, MCP client, plugin, extension, or skill. |
+
+`lib/` is root-only and global to the compiled bundle in managed and advanced
+mode. `lib/audit.py` imports as `harnest.lib.audit`, while
+`lib/storage/queries.py` imports as `harnest.lib.storage.queries`. Namespace
+packages need no `__init__.py`; do not import helpers as bare `lib.*`. Add an
+initializer only when the library itself needs initialization. Entry points and
+resources at any ownership depth may use the library.
+The same imports work during compilation, tests, evals, and standalone serving.
+
 ## Discovered resource folders
 
 | Path | Contract |
@@ -52,6 +66,8 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 - An inline `Agent` graph node defined in the root `agent.py` is root-scoped and
   uses the root folder's discovered resources.
 - Plugins and extensions are root-only; nested instances fail compilation.
+- `lib/` is also root-only, but its modules are globally importable throughout
+  the bundle rather than attached to an agent's discovered resource scope.
 - Do not add `Agent` tool/skill name lists as access selectors. Location grants
   scope. There is no separate `SubAgent` class; nested definitions use `Agent`.
 - Keep executable eval assets at the root. Nested eval files may be validated
@@ -63,6 +79,8 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 - Once a public resource exists, the full convention is strict.
 - Resource discovery is deterministic by path name.
 - Duplicate tool, MCP configuration, subagent, or skill identities fail.
+- Library modules are copied and importable, but their callables are never
+  discovered or injected into an agent.
 - Public symlinks are rejected so compiled artifacts remain self-contained.
 - Do not edit or commit `.harnest/`; it is disposable compiler output.
 - Runtime `skills/` are not the same as `.agents/skills/harnest-authoring/`,

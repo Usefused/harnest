@@ -20,6 +20,13 @@ import tempfile
 from typing import Any, Mapping
 import uuid
 
+from ._library import (
+    LibraryConventionError,
+    LibraryImportError,
+    activate_authored_library,
+    release_authored_library,
+)
+
 _MAX_CARD_BYTES = 4 * 1024 * 1024
 _DIRECT_USER_ID = "_harnest_direct"
 
@@ -41,7 +48,7 @@ def _apply_observability_defaults(framework: str) -> None:
 
 
 def load_compiled_application(artifact: str | Path) -> Any:
-    """Load the portable application boundary from a compiled artifact."""
+    """Load the portable application and retain its library for lazy imports."""
 
     directory = Path(artifact).resolve()
     if directory.is_symlink() or not directory.is_dir():
@@ -49,6 +56,22 @@ def load_compiled_application(artifact: str | Path) -> Any:
     entrypoint = directory / "agent.py"
     if entrypoint.is_symlink() or not entrypoint.is_file():
         raise AgentRuntimeError(f"compiled artifact is missing agent.py: {directory}")
+    source_root = directory / "source"
+    try:
+        library_acquired = activate_authored_library(source_root)
+    except (LibraryConventionError, LibraryImportError) as exc:
+        raise AgentRuntimeError(f"invalid authored library: {exc}") from exc
+    try:
+        return _import_compiled_application(entrypoint)
+    except Exception:
+        if library_acquired:
+            release_authored_library(source_root)
+        raise
+
+
+def _import_compiled_application(entrypoint: Path) -> Any:
+    """Import an artifact entrypoint after its authored namespace is ready."""
+
     module_name = f"_harnest_compiled_agent_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, entrypoint)
     if spec is None or spec.loader is None:
@@ -80,6 +103,7 @@ def load_compiled_app(artifact: str | Path) -> Any:
     application = load_compiled_application(artifact)
     _apply_observability_defaults(application.framework)
     if application.framework != "adk" or application.native_app is None:
+        release_authored_library(Path(artifact).resolve() / "source")
         raise AgentRuntimeError("compiled application does not contain an ADK App")
     return application.native_app
 
@@ -187,6 +211,26 @@ async def run_agent_message(
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
     application = load_compiled_application(artifact)
+    try:
+        return await _run_agent_message(
+            artifact,
+            application,
+            message,
+            request_timeout=request_timeout,
+        )
+    finally:
+        release_authored_library(Path(artifact).resolve() / "source")
+
+
+async def _run_agent_message(
+    artifact: str | Path,
+    application: Any,
+    message: str,
+    *,
+    request_timeout: float,
+) -> dict[str, Any]:
+    """Run direct execution while the caller owns the library lifecycle."""
+
     _apply_observability_defaults(application.framework)
 
     from .neutral_runtime import InvocationRequest, require_customer_facing_output
@@ -341,6 +385,29 @@ def create_fastapi_app(
     if max_concurrency < 1:
         raise ValueError("max concurrency must be at least one")
     application = load_compiled_application(artifact)
+    try:
+        return _build_fastapi_app(
+            artifact,
+            application=application,
+            bind_host=bind_host,
+            request_timeout=request_timeout,
+            max_concurrency=max_concurrency,
+        )
+    except Exception:
+        release_authored_library(Path(artifact).resolve() / "source")
+        raise
+
+
+def _build_fastapi_app(
+    artifact: str | Path,
+    *,
+    application: Any,
+    bind_host: str,
+    request_timeout: float,
+    max_concurrency: int,
+) -> Any:
+    """Construct the server after its authored library has been acquired."""
+
     card = load_agent_card(artifact)
     _apply_observability_defaults(application.framework)
 
@@ -391,7 +458,26 @@ def create_fastapi_app(
             max_concurrency=max_concurrency,
         )
     instrument_fastapi(app, telemetry)
+    _attach_library_lifecycle(app, Path(artifact).resolve() / "source")
     return app
+
+
+def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
+    """Keep lazy imports valid through shutdown, including custom lifespans."""
+
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(application: Any):
+        try:
+            async with original_lifespan(application):
+                yield
+        finally:
+            release_authored_library(source_root)
+
+    # Wrapping the active lifespan works for neutral and native ADK apps;
+    # shutdown event handlers are skipped by frameworks with custom lifespans.
+    app.router.lifespan_context = lifespan
 
 
 def main(argv: list[str] | None = None) -> int:

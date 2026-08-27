@@ -195,7 +195,7 @@ func validateBundleResourceDirectories(directory string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect legacy MCP directory %s: %w", legacy, err)
 	}
-	for _, name := range []string{"tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+	for _, name := range []string{"lib", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
 		if err := validateOptionalBundleDirectory(directory, name); err != nil {
 			return err
 		}
