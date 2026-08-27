@@ -15,6 +15,17 @@ curl -fsSL \
   sh
 ```
 
+The installer prints the resolved version, CLI destination, and managed-runtime
+destination and requires an explicit `y` confirmation before downloading or
+installing anything. It fails closed when no terminal is available. CI and
+other deliberately non-interactive callers must opt in explicitly:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
+  HARNEST_YES=1 sh
+```
+
 For a pinned version or a fork, set variables on the `sh` process receiving the
 script:
 
@@ -116,3 +127,12 @@ The Go binary also embeds the `harnest-authoring` coding-agent skill. Run
 coding agent, or select `--target agents|codex|claude|cursor|copilot`. This
 project-local guidance is separate from runtime skills authored under an
 agent's `skills/` directory.
+
+## GitHub Actions
+
+`.github/workflows/release.yml` runs the full test suite on every push to
+`main`. It reads `project.version` from `pyproject.toml`, creates the matching
+`v<version>` tag when necessary, and uses GoReleaser to publish the actual
+GitHub Release with archives, the matching Python wheel, and checksums. If that
+version already has a release, the workflow leaves it unchanged; bump
+`project.version` before the next release-bearing push to `main`.

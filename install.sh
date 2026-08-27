@@ -82,6 +82,28 @@ case $(uname -m) in
   *) fail "unsupported architecture: $(uname -m)" ;;
 esac
 
+runtime_directory=${HARNEST_RUNTIME_DIR:-"${HOME}/.harnest/runtime"}
+install_directory=${HARNEST_INSTALL_DIR:-"${HOME}/.local/bin"}
+[ -n "$runtime_directory" ] || fail 'HARNEST_RUNTIME_DIR must not be empty'
+[ -n "$install_directory" ] || fail 'HARNEST_INSTALL_DIR must not be empty'
+
+case ${HARNEST_YES:-} in
+  1) ;;
+  '')
+    if ! (: 2>/dev/null < /dev/tty); then
+      fail 'confirmation requires a terminal; set HARNEST_YES=1 for non-interactive installation'
+    fi
+    printf 'Install Harnest %s?\n  CLI:     %s/harnest\n  Runtime: %s\nContinue? [y/N] ' \
+      "$version" "$install_directory" "$runtime_directory" > /dev/tty
+    IFS= read -r confirmation < /dev/tty || fail 'installation cancelled'
+    case $confirmation in
+      y | Y | yes | YES | Yes) ;;
+      *) fail 'installation cancelled' ;;
+    esac
+    ;;
+  *) fail 'HARNEST_YES must be 1 or unset' ;;
+esac
+
 archive="harnest_${version}_${target_os}_${target_arch}.tar.gz"
 release_base="https://github.com/${repo}/releases/download/${release_tag}"
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/harnest-install.XXXXXX")
@@ -124,11 +146,6 @@ need_command "$bootstrap_python"
 "$bootstrap_python" -c \
   'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || \
   fail 'Python 3.10 or newer is required'
-
-runtime_directory=${HARNEST_RUNTIME_DIR:-"${HOME}/.harnest/runtime"}
-install_directory=${HARNEST_INSTALL_DIR:-"${HOME}/.local/bin"}
-[ -n "$runtime_directory" ] || fail 'HARNEST_RUNTIME_DIR must not be empty'
-[ -n "$install_directory" ] || fail 'HARNEST_INSTALL_DIR must not be empty'
 
 mkdir -p "$runtime_directory" "$install_directory"
 "$bootstrap_python" -m venv "$runtime_directory"

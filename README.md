@@ -22,6 +22,17 @@ curl -fsSL \
   sh
 ```
 
+The installer displays the selected release and destination paths, then asks
+for confirmation before downloading or changing the system. For an explicitly
+authorized non-interactive installation, set `HARNEST_YES=1` on the `sh`
+process:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
+  HARNEST_YES=1 sh
+```
+
 The binary is installed at `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`;
 Python dependencies stay in the dedicated
 `${HARNEST_RUNTIME_DIR:-$HOME/.harnest/runtime}` virtual environment. Downloads
