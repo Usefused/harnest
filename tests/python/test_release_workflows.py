@@ -20,9 +20,14 @@ def workflow_events(workflow):
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_ci_validates_before_owning_the_release_tag(self):
         workflow = load_yaml(".github/workflows/ci.yml")
+        quality_job = workflow["jobs"]["quality"]
         tag_job = workflow["jobs"]["release-tag"]
+        quality_step = next(
+            step for step in quality_job["steps"] if step["name"] == "Run quality gates"
+        )
 
         self.assertEqual(workflow_events(workflow)["push"]["branches"], ["**"])
+        self.assertEqual(quality_step["run"], "make quality PYTHON=python")
         self.assertEqual(tag_job["needs"], "quality")
         self.assertEqual(tag_job["permissions"]["contents"], "write")
         self.assertIn("refs/heads/main", tag_job["if"])

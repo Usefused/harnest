@@ -35,7 +35,9 @@ jobs:
         run: python -m pip install --upgrade build ".[all,quality]"
 
       - name: Run quality gates
-        run: make quality
+        # setup-python owns `python`; distro-specific python3.x executables may
+        # point at a different environment without the dependencies above.
+        run: make quality PYTHON=python
 
       - name: Validate installer shell
         run: sh -n install.sh
