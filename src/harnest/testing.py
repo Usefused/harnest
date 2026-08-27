@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+import importlib
 import json
 import sys
 import tempfile
@@ -20,10 +22,54 @@ from .bundle import (
     discover_evals,
 )
 from .runtime import create_fastapi_app, load_compiled_agent
+from .runtime_adk import _customer_facing_parts
 
 
 class AgentTestError(RuntimeError):
     """An authored test suite does not follow the Harnest convention."""
+
+
+def _eval_output_filter_plugin() -> Any:
+    """Build an eval-only ADK plugin without importing ADK during test discovery."""
+
+    from google.adk.plugins import BasePlugin
+
+    class CustomerFacingEvalOutputPlugin(BasePlugin):
+        def __init__(self) -> None:
+            super().__init__(name="_harnest_customer_facing_eval_output")
+
+        async def on_event_callback(
+            self, *, invocation_context: Any, event: Any
+        ) -> None:
+            del invocation_context
+            content = getattr(event, "content", None)
+            parts = getattr(content, "parts", None)
+            if parts is None:
+                return
+            visible_parts = list(_customer_facing_parts(parts))
+            if len(visible_parts) != len(parts):
+                # Mutating and returning None lets authored ADK plugins continue
+                # while ensuring the official evaluator never sees hidden parts.
+                content.parts = visible_parts
+
+    return CustomerFacingEvalOutputPlugin()
+
+
+@contextmanager
+def _adk_eval_output_filter(module_name: str) -> Iterator[None]:
+    """Temporarily prepend customer-facing normalization to an ADK eval App."""
+
+    agent_module = importlib.import_module(module_name)
+    app = getattr(agent_module, "app", None)
+    plugins = getattr(app, "plugins", None)
+    if not isinstance(plugins, list):
+        raise AgentTestError("compiled ADK eval application has no plugin list")
+    plugin = _eval_output_filter_plugin()
+    plugins.insert(0, plugin)
+    try:
+        yield
+    finally:
+        plugins.remove(plugin)
 
 
 class SmokeClient:
@@ -212,11 +258,12 @@ def _run_adk_evals(artifact: Path, suite: EvalSuite) -> int:
     import_root = str(artifact.parent)
     sys.path.insert(0, import_root)
     try:
-        try:
-            asyncio.run(evaluate_all())
-        except AssertionError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+        with _adk_eval_output_filter(module_name):
+            try:
+                asyncio.run(evaluate_all())
+            except AssertionError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
         return 0
     finally:
         if sys.path and sys.path[0] == import_root:

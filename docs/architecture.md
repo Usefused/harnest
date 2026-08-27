@@ -543,3 +543,9 @@ server boundary, never per request.
 Prompt text, response text, metadata, credentials, headers, and raw session IDs
 are excluded from Harnest spans and logs. Scaffolds set GenAI and ADK content
 capture off. Collector credentials remain engine-resolved secrets.
+
+The ADK eval lane prepends an eval-only event filter before authored plugins.
+It removes parts marked as model thoughts using the same customer-facing rule
+as the neutral runtime, then lets the official ADK evaluator score the remaining
+visible text and tool trajectory. This compensates for ADK response matchers
+that otherwise concatenate every text part, including hidden reasoning.

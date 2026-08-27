@@ -292,13 +292,18 @@ def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
     parts = getattr(content, "parts", None) if content is not None else None
     text = "".join(
         part.text
-        for part in parts or ()
+        for part in _customer_facing_parts(parts)
         if isinstance(getattr(part, "text", None), str)
-        and not getattr(part, "thought", False)
     )
     if text:
         items.append({"type": "message", "role": "assistant", "text": text})
     return items, text
+
+
+def _customer_facing_parts(parts: Any) -> tuple[Any, ...]:
+    """Return parts safe for the public response and evaluation boundaries."""
+
+    return tuple(part for part in parts or () if not getattr(part, "thought", False))
 
 
 def _output_items(event: Any, text: str) -> list[dict[str, Any]]:

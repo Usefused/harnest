@@ -410,8 +410,11 @@ internal to `harnest test`; authors do not need to invoke ADK's evaluator CLI or
 reference generated artifact paths. Harnest fixes ADK evaluation to one run per
 case to avoid an implicit duplicate model charge. The compiled artifact is
 temporary and eval history is not persisted; CI should retain command output as
-its test record. `--evals` requires at least one validated eval-set file and is
-rejected for the LangGraph backend.
+its test record. Before ADK scores a response, Harnest removes parts marked as
+model thoughts using the same customer-facing rule as `/responses`; visible
+text and tool-call/tool-result events remain available to evaluation metrics.
+`--evals` requires at least one validated eval-set file and is rejected for the
+LangGraph backend.
 
 The eval runner discovers only the root agent folder's `evals/`. Eval files
 placed below a nested subagent may be encountered by compilation validation but

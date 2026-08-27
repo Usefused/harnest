@@ -33,7 +33,12 @@ from harnest import (
 )
 from harnest.cli import load_orchestrator, main as cli_main
 from harnest.runtime import create_fastapi_app, run_agent_message
-from harnest.testing import AgentTestError, run_agent_tests
+from harnest.testing import (
+    AgentTestError,
+    _adk_eval_output_filter,
+    _run_adk_evals,
+    run_agent_tests,
+)
 
 
 def _recording_class(name):
@@ -1042,6 +1047,97 @@ class AuthoringTests(unittest.TestCase):
             ["quality.evalset.json"],
         )
         self.assertEqual(suite.config.name, "test_config.json")
+
+    def test_adk_eval_filter_scores_only_customer_facing_parts(self):
+        authored_plugin = object()
+        app = types.SimpleNamespace(plugins=[authored_plugin])
+        module = types.SimpleNamespace(app=app)
+        event = types.SimpleNamespace(
+            content=types.SimpleNamespace(
+                parts=[
+                    types.SimpleNamespace(text="hidden reasoning", thought=True),
+                    types.SimpleNamespace(text="visible answer", thought=False),
+                    types.SimpleNamespace(text=None, thought=False, function_call=object()),
+                ]
+            )
+        )
+
+        with patch(
+            "harnest.testing.importlib.import_module", return_value=module
+        ), _adk_eval_output_filter("compiled.agent"):
+            eval_plugin = app.plugins[0]
+            self.assertIs(app.plugins[1], authored_plugin)
+            asyncio.run(
+                eval_plugin.on_event_callback(
+                    invocation_context=object(), event=event
+                )
+            )
+            evaluated_text = "\n".join(
+                part.text for part in event.content.parts if part.text
+            )
+
+        self.assertEqual(evaluated_text, "visible answer")
+        self.assertEqual(len(event.content.parts), 2)
+        self.assertEqual(app.plugins, [authored_plugin])
+
+    def test_official_adk_eval_scores_visible_answer_without_reasoning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            artifact = Path(directory) / "compiled"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "from google.adk.models import BaseLlm, LlmResponse\n"
+                "from google.genai import types\n\n"
+                "class ThoughtfulLlm(BaseLlm):\n"
+                "    async def generate_content_async(self, llm_request, stream=False):\n"
+                "        yield LlmResponse(content=types.Content(role='model', parts=[\n"
+                "            types.Part(text='hidden reasoning', thought=True),\n"
+                "            types.Part(text='visible answer', thought=False),\n"
+                "        ]))\n\n"
+                "root_agent = Agent(name='root', model=ThoughtfulLlm(model='test'))\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "evals" / "visible.evalset.json",
+                json.dumps(
+                    {
+                        "eval_set_id": "visible",
+                        "eval_cases": [
+                            {
+                                "evalId": "visible-only",
+                                "conversation": [
+                                    {
+                                        "userContent": {
+                                            "role": "user",
+                                            "parts": [{"text": "answer"}],
+                                        },
+                                        "finalResponse": {
+                                            "role": "model",
+                                            "parts": [{"text": "visible answer"}],
+                                        },
+                                    }
+                                ],
+                                "sessionInput": {
+                                    "appName": "root",
+                                    "userId": "eval-user",
+                                    "state": {},
+                                },
+                            }
+                        ],
+                    }
+                ),
+            )
+            self._write(
+                root / "evals" / "test_config.json",
+                json.dumps({"criteria": {"response_match_score": 1.0}}),
+            )
+            compile_artifact(root, artifact)
+            suite = discover_evals(artifact / "source" / "agent.py")
+
+            status = _run_adk_evals(artifact, suite)
+
+        self.assertEqual(status, 0)
 
     def test_orchestrator_loader_injects_import_free_prelude(self):
         with tempfile.TemporaryDirectory() as directory:

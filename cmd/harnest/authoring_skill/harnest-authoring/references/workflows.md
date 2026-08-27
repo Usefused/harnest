@@ -70,6 +70,8 @@ harnest test support-agent --smoke --evals
 - `--evals` runs validated eval assets after Python tests. ADK EvalSet JSON is
   ADK-specific; LangGraph can use authored pytest evaluations. Only root
   `evals/` assets are selected; nested eval files are not an executable lane.
+  ADK scoring receives visible response parts and tool trajectory, never parts
+  marked as hidden model thoughts.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
 
