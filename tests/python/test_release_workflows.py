@@ -59,6 +59,13 @@ def write_installer_fakes(directory: Path, version: str):
         """,
     )
     write_executable(
+        directory / "sha256sum",
+        """
+        #!/bin/sh
+        printf 'abc  %s\\n' "$1"
+        """,
+    )
+    write_executable(
         directory / "tar",
         f"""
         #!/bin/sh
