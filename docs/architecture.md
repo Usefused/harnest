@@ -277,6 +277,14 @@ artifact is temporary and no ADK eval history is persisted; external CI is
 responsible for retaining output. Selecting `--evals` without at least one
 validated eval set is a convention error.
 
+Harnest names two tool-trajectory policies. `business` is the default and maps
+to ADK `IN_ORDER`: every expected business call and argument must occur in
+order, while extra discovery or progressive skill calls are allowed. `strict`
+maps to `EXACT` and rejects any additional, missing, reordered, or changed call.
+The selected policy replaces only the tool trajectory match type; authored
+thresholds and other metrics remain intact. CI can run both commands as
+separate lanes when both behavioral intent and exact orchestration matter.
+
 The test runner discovers and executes eval assets only from the root bundle's
 `evals/`. Nested eval files can be reached by composition validation, but they
 are not a nested-agent test lane and are never selected by `harnest test
@@ -410,14 +418,23 @@ health and card discovery in both frameworks.
 
 This is a process boundary, not a deployment boundary: the interpreter still
 needs Harnest, the selected framework, model adapters, and agent dependencies.
-The standalone server does not interpret deployment resources, resolve secrets, enforce
-permissions, scale replicas, or add authentication, tenant isolation, and TLS.
-The neutral runtime has one session authority per backend driver. LangGraph
-stores returned graph state directly and does not install a second checkpointer;
-ADK uses the neutral driver's owned runner. In advanced mode, official ADK
-routes intentionally use ADK's separate native session namespace. Production
-exposure requires a trusted authenticated gateway. Those platform concerns
-remain the provisioner/engine's responsibility.
+The standalone server does not interpret deployment resources, resolve secrets,
+enforce permissions, scale replicas, or choose an identity provider. Session
+storage and authentication are separate injection boundaries. An
+`Authenticator` resolves HTTP and WebSocket connections to `AuthPrincipal`;
+the principal ID scopes all neutral execution and session operations. The
+middleware authenticates advanced ADK native routes, but deployment policy must
+still authorize their native user fields. Health and discovery remain public.
+
+LangGraph accepts a deployment-owned `SessionStore`. Its exclusive lease keeps
+one session execution serialized without turning a LangGraph checkpointer into
+a second authority. The development default is `InMemorySessionStore`.
+Production stores must use durable writes, set-based listing, distributed
+leases, and emit privacy-safe OTEL audit signals after committed mutations. ADK
+uses its native session abstraction through `ADKSessionStorage`, including its
+URI and database options; advanced native and neutral ADK routes point at that
+same durable backend. Authentication does not persist sessions, and session
+storage does not authenticate callers.
 
 The serving path is deliberately one-way:
 

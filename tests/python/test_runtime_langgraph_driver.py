@@ -10,6 +10,17 @@ from harnest.graph import START, Edge, Graph
 from harnest.mcp import MCPClient
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.session import InMemorySessionStore
+
+
+class _RecordingSessionStore(InMemorySessionStore):
+    def __init__(self):
+        super().__init__()
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+        await super().close()
 
 
 class _Message:
@@ -405,6 +416,25 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.target.closed, 1)
         with self.assertRaises(RuntimeError):
             await self.driver.list_sessions(user_id="user-1")
+
+    async def test_injected_session_store_is_authoritative_and_not_owned(self):
+        store = _RecordingSessionStore()
+        target = _Target()
+        driver = LangGraphRuntimeDriver(
+            _application(target),
+            session_store=store,
+        )
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={"counter": 4}
+        )
+
+        result = await driver.invoke(_request())
+        stored = await store.get(session_id="session-1", user_id="user-1")
+        await driver.close()
+
+        self.assertEqual(result.text, "answer-5")
+        self.assertEqual(stored.state["counter"], 5)
+        self.assertFalse(store.closed)
 
 
 if __name__ == "__main__":

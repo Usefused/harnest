@@ -9,7 +9,9 @@ import (
 
 func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "managed-agent")
-	if err := createScaffold(target, "managed-agent"); err != nil {
+	if err := createExampleScaffoldForMode(
+		target, "managed-agent", "adk", "managed",
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(

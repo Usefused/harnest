@@ -14,7 +14,6 @@ import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
 from .application import CompiledApplication
@@ -23,18 +22,9 @@ from .neutral_runtime import (
     InvocationRequest,
     InvocationResult,
     RuntimeDriver,
-    SessionConflictError,
     SessionRecord,
 )
-
-
-@dataclass(slots=True)
-class _StoredSession:
-    user_id: str
-    state: dict[str, Any]
-    created_at: str = field(default_factory=lambda: _timestamp())
-    updated_at: str = field(default_factory=lambda: _timestamp())
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+from .session import InMemorySessionStore, SessionLease, SessionStore
 
 
 @dataclass(slots=True)
@@ -47,9 +37,9 @@ class _StreamState:
 class LangGraphRuntimeDriver(RuntimeDriver):
     """Adapt one compiled LangGraph application to the neutral runtime.
 
-    The driver owns one explicit in-memory session map.  Every graph execution
-    receives a fresh internal ``thread_id`` so an optional LangGraph checkpointer
-    cannot silently become a second source of session truth.
+    The driver owns the development store or uses one injected production
+    store. Every graph execution receives a fresh internal ``thread_id`` so an
+    optional LangGraph checkpointer cannot become a second session authority.
     """
 
     def __init__(
@@ -58,6 +48,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         *,
         card: Mapping[str, Any] | None = None,
         recursion_limit: int = 64,
+        session_store: SessionStore | None = None,
     ) -> None:
         plan = _runtime_plan(application, recursion_limit)
         card_value = dict(card or {})
@@ -68,8 +59,10 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._materialize_lock = asyncio.Lock()
         self._recursion_limit = recursion_limit
         self._info = _agent_info(application, card_value)
-        self._sessions: dict[tuple[str, str], _StoredSession] = {}
-        self._sessions_lock = asyncio.Lock()
+        self._session_store = session_store or InMemorySessionStore()
+        self._owns_session_store = session_store is None
+        if not isinstance(self._session_store, SessionStore):
+            raise TypeError("session_store must implement SessionStore")
         self._closed = False
 
     @property
@@ -84,44 +77,24 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         state: Mapping[str, Any],
     ) -> SessionRecord:
         self._ensure_open()
-        _require_identifier(session_id, "session_id")
-        _require_identifier(user_id, "user_id")
-        if not isinstance(state, Mapping):
-            raise TypeError("state must be a mapping")
-        key = (user_id, session_id)
-        async with self._sessions_lock:
-            if key in self._sessions:
-                raise SessionConflictError("session already exists")
-            stored = _StoredSession(user_id=user_id, state=dict(state))
-            self._sessions[key] = stored
-        return _session_record(session_id, stored)
+        return await self._session_store.create(
+            session_id=session_id,
+            user_id=user_id,
+            state=state,
+        )
 
     async def get_session(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:
         self._ensure_open()
-        stored = self._sessions.get((user_id, session_id))
-        if stored is None:
-            return None
-        async with stored.lock:
-            return _session_record(session_id, stored)
+        return await self._session_store.get(
+            session_id=session_id,
+            user_id=user_id,
+        )
 
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
         self._ensure_open()
-        _require_identifier(user_id, "user_id")
-        pairs = sorted(
-            (
-                (session_id, stored)
-                for (owner, session_id), stored in self._sessions.items()
-                if owner == user_id
-            ),
-            key=lambda item: item[0],
-        )
-        records = []
-        for session_id, stored in pairs:
-            async with stored.lock:
-                records.append(_session_record(session_id, stored))
-        return tuple(records)
+        return await self._session_store.list(user_id=user_id)
 
     async def update_session(
         self,
@@ -131,34 +104,34 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         state_delta: Mapping[str, Any],
     ) -> SessionRecord | None:
         self._ensure_open()
-        if not isinstance(state_delta, Mapping):
-            raise TypeError("state_delta must be a mapping")
-        stored = self._sessions.get((user_id, session_id))
-        if stored is None:
-            return None
-        async with stored.lock:
-            stored.state.update(dict(state_delta))
-            stored.updated_at = _timestamp()
-            return _session_record(session_id, stored)
+        return await self._session_store.update(
+            session_id=session_id,
+            user_id=user_id,
+            state_delta=state_delta,
+        )
 
     async def delete_session(self, *, session_id: str, user_id: str) -> bool:
         self._ensure_open()
-        async with self._sessions_lock:
-            return self._sessions.pop((user_id, session_id), None) is not None
+        return await self._session_store.delete(
+            session_id=session_id,
+            user_id=user_id,
+        )
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         """Run one graph invocation and return canonical neutral events."""
 
-        stored, session_id = await self._session_for_request(request)
-        async with stored.lock:
-            self._apply_request_delta(stored, request)
+        session_id = await self._session_id_for_request(request)
+        async with self._session_store.acquire(
+            session_id=session_id, user_id=request.user_id
+        ) as session:
+            await self._apply_request_delta(session, request)
             graph_input = _graph_input(
-                self._application, request.input, stored.state
+                self._application, request.input, session.record.state
             )
             config = self._execution_config(session_id)
             target = await self._target_for_run()
             result = await target.ainvoke(graph_input, config=config)
-            self._store_result(stored, result)
+            await self._store_result(session, result)
 
         text_value, public_result = _graph_output(self._application, result)
         events = _result_events(result, text_value, public_result)
@@ -182,18 +155,20 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 yield dict(event)
             return
 
-        stored, session_id = await self._session_for_request(request)
-        async with stored.lock:
-            self._apply_request_delta(stored, request)
+        session_id = await self._session_id_for_request(request)
+        async with self._session_store.acquire(
+            session_id=session_id, user_id=request.user_id
+        ) as session:
+            await self._apply_request_delta(session, request)
             graph_input = _graph_input(
-                self._application, request.input, stored.state
+                self._application, request.input, session.record.state
             )
             config = self._execution_config(session_id)
             state = _StreamState()
             async for event in _target_stream(target, graph_input, config, state):
                 yield event
             state.final_state = state.final_state if state.final_state is not None else {}
-            self._store_result(stored, state.final_state)
+            await self._store_result(session, state.final_state)
 
         for event in _final_stream_events(self._application, state):
             yield event
@@ -222,8 +197,8 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                             failure = exc
                 self._mcp_clients.clear()
         finally:
-            async with self._sessions_lock:
-                self._sessions.clear()
+            if self._owns_session_store:
+                await self._session_store.close()
         if failure is not None:
             raise failure
 
@@ -294,42 +269,41 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             ))
         return tools
 
-    async def _session_for_request(
-        self, request: InvocationRequest
-    ) -> tuple[_StoredSession, str]:
+    async def _session_id_for_request(self, request: InvocationRequest) -> str:
         self._ensure_open()
         user_id = request.user_id
         _require_identifier(user_id, "request.user_id")
         requested_id = request.session_id
         if requested_id is not None:
             _require_identifier(requested_id, "request.session_id")
-            stored = self._sessions.get((user_id, requested_id))
+            stored = await self._session_store.get(
+                user_id=user_id, session_id=requested_id
+            )
             if stored is None:
                 raise KeyError("session not found")
-            return stored, requested_id
+            return requested_id
 
         session_id = uuid.uuid4().hex
-        stored = _StoredSession(user_id=user_id, state={})
-        async with self._sessions_lock:
-            self._sessions[(user_id, session_id)] = stored
-        return stored, session_id
+        await self._session_store.create(
+            user_id=user_id, session_id=session_id, state={}
+        )
+        return session_id
 
-    def _apply_request_delta(
-        self, stored: _StoredSession, request: InvocationRequest
+    async def _apply_request_delta(
+        self, session: SessionLease, request: InvocationRequest
     ) -> None:
         delta = request.state_delta
         if delta:
-            stored.state.update(dict(delta))
-            stored.updated_at = _timestamp()
+            await session.patch_state(delta)
 
-    def _store_result(self, stored: _StoredSession, result: Any) -> None:
+    async def _store_result(self, session: SessionLease, result: Any) -> None:
         if isinstance(result, Mapping):
             # ``ainvoke`` returns the complete graph state.  Replacing instead of
             # merging also removes transient keys intentionally cleared by a graph.
-            stored.state = dict(result)
+            state = dict(result)
         else:
-            stored.state = {"value": result}
-        stored.updated_at = _timestamp()
+            state = {"value": result}
+        await session.replace_state(state)
 
     def _execution_config(self, session_id: str) -> dict[str, Any]:
         return {
@@ -482,20 +456,6 @@ async def _close_resource(resource: Any) -> None:
     result = closer()
     if inspect.isawaitable(result):
         await result
-
-
-def _timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _session_record(session_id: str, stored: _StoredSession) -> SessionRecord:
-    return SessionRecord(
-        id=session_id,
-        user_id=stored.user_id,
-        state=_json_value(stored.state),
-        created_at=stored.created_at,
-        updated_at=stored.updated_at,
-    )
 
 
 def _graph_input(

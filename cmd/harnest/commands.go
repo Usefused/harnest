@@ -66,11 +66,15 @@ func (a *application) newCompileCommand() *cobra.Command {
 func (a *application) newTestCommand() *cobra.Command {
 	var includeSmoke bool
 	var includeEvals bool
+	var evalTrajectory string
 	command := &cobra.Command{
 		Use:   "test AGENT_DIR",
 		Short: "Compile an agent and run its authored tests",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
+			if evalTrajectory != "business" && evalTrajectory != "strict" {
+				return fmt.Errorf("--eval-trajectory must be business or strict")
+			}
 			bundle, err := loadAgentBundle(arguments[0])
 			if err != nil {
 				return err
@@ -89,7 +93,11 @@ func (a *application) newTestCommand() *cobra.Command {
 				pythonArguments = append(pythonArguments, "--smoke")
 			}
 			if includeEvals {
-				pythonArguments = append(pythonArguments, "--evals")
+				pythonArguments = append(
+					pythonArguments,
+					"--evals",
+					"--eval-trajectory", evalTrajectory,
+				)
 			}
 			return runPythonCLI(
 				command.Context(), a, python, pythonArguments,
@@ -100,6 +108,12 @@ func (a *application) newTestCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&includeSmoke, "smoke", false, "also run tests/smoke")
 	command.Flags().BoolVar(&includeEvals, "evals", false, "run evals after Python tests pass")
+	command.Flags().StringVar(
+		&evalTrajectory,
+		"eval-trajectory",
+		"business",
+		"eval tool trajectory: business or strict",
+	)
 	return command
 }
 

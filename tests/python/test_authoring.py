@@ -20,6 +20,7 @@ from harnest import (
     BundleExportError,
     BundleImportError,
     BundleSkillError,
+    EvalSuite,
     LiteLLMModel,
     MCPClient,
     OllamaModel,
@@ -36,6 +37,7 @@ from harnest.runtime import create_fastapi_app, run_agent_message
 from harnest.testing import (
     AgentTestError,
     _adk_eval_output_filter,
+    _eval_config,
     _run_adk_evals,
     run_agent_tests,
 )
@@ -1069,6 +1071,25 @@ class AuthoringTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentTestError, "tests/unit"):
                 run_agent_tests(root)
 
+    def test_authored_test_runner_accepts_placeholder_only_test_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n\n"
+                "root_agent = Agent(name='root', model='gemini-test')\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(root / "tests" / "unit" / "_README.md", "Add tests.\n")
+            self._write(root / "tests" / "smoke" / "_README.md", "Add smoke.\n")
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = run_agent_tests(root)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("no authored Python tests", output.getvalue())
+
     def test_authored_test_runner_runs_validated_evals_after_unit_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "authored"
@@ -1105,6 +1126,43 @@ class AuthoringTests(unittest.TestCase):
             ["quality.evalset.json"],
         )
         self.assertEqual(suite.config.name, "test_config.json")
+        self.assertEqual(
+            eval_runner.call_args.kwargs,
+            {"trajectory": "business"},
+        )
+
+    def test_named_eval_trajectories_override_only_tool_matching_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "test_config.json"
+            self._write(
+                config,
+                json.dumps(
+                    {
+                        "criteria": {
+                            "tool_trajectory_avg_score": {
+                                "threshold": 0.75,
+                                "matchType": "EXACT",
+                            },
+                            "response_match_score": 0.6,
+                        }
+                    }
+                ),
+            )
+            suite = EvalSuite((), config)
+
+            business = _eval_config(suite, "business")
+            strict = _eval_config(suite, "strict")
+
+        business_criterion = business.criteria["tool_trajectory_avg_score"]
+        strict_criterion = strict.criteria["tool_trajectory_avg_score"]
+        self.assertEqual(business_criterion.match_type.name, "IN_ORDER")
+        self.assertEqual(strict_criterion.match_type.name, "EXACT")
+        self.assertEqual(business_criterion.threshold, 0.75)
+        self.assertEqual(business.criteria["response_match_score"], 0.6)
+
+    def test_authored_test_runner_rejects_unknown_eval_trajectory(self):
+        with self.assertRaisesRegex(AgentTestError, "business or strict"):
+            run_agent_tests(".", eval_trajectory="approximate")
 
     def test_adk_eval_filter_scores_only_customer_facing_parts(self):
         authored_plugin = object()

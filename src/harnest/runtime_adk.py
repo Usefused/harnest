@@ -26,7 +26,7 @@ from .neutral_runtime import (
 
 
 class ADKRuntimeDriver(RuntimeDriver):
-    """Run one compiled ADK application through an owned in-memory runner."""
+    """Run ADK with its development runner or an injected session service."""
 
     framework = "adk"
 
@@ -36,16 +36,12 @@ class ADKRuntimeDriver(RuntimeDriver):
         *,
         card: Mapping[str, Any] | None = None,
         extra_endpoints: Mapping[str, str] | None = None,
+        session_service: Any | None = None,
     ) -> None:
         if application.framework != "adk":
             raise ValueError("ADKRuntimeDriver requires an ADK application")
         if application.native_app is None:
             raise ValueError("compiled ADK application does not contain an App")
-
-        try:
-            from google.adk.runners import InMemoryRunner
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("Google ADK is required to run an ADK agent") from exc
 
         self.application = application
         card_data = dict(card or {})
@@ -64,10 +60,7 @@ class ADKRuntimeDriver(RuntimeDriver):
             mode=application.mode,
             extra_endpoints=dict(extra_endpoints or {}),
         )
-        self._runner = InMemoryRunner(
-            app=application.native_app,
-            app_name=application.native_app.name,
-        )
+        self._runner = _create_runner(application, session_service)
         self._closed = False
         self._close_lock = asyncio.Lock()
 
@@ -378,6 +371,39 @@ def _timestamp(value: Any) -> str | None:
     if not isinstance(value, (int, float)) or value <= 0:
         return None
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def _create_runner(application: CompiledApplication, session_service: Any) -> Any:
+    try:
+        from google.adk.runners import InMemoryRunner, Runner
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("Google ADK is required to run an ADK agent") from exc
+    if session_service is None:
+        return InMemoryRunner(
+            app=application.native_app,
+            app_name=application.native_app.name,
+        )
+    _validate_session_service(session_service)
+    return Runner(
+        app=application.native_app,
+        app_name=application.native_app.name,
+        session_service=session_service,
+    )
+
+
+def _validate_session_service(session_service: Any) -> None:
+    required = (
+        "create_session",
+        "get_session",
+        "list_sessions",
+        "append_event",
+        "delete_session",
+        "flush",
+    )
+    if any(not callable(getattr(session_service, name, None)) for name in required):
+        raise TypeError(
+            "ADK session_service must implement BaseSessionService operations"
+        )
 
 
 def _json_value(value: Any) -> Any:

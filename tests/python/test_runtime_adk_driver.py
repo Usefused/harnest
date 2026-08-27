@@ -4,6 +4,7 @@ import unittest
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.models import BaseLlm, LlmResponse
+from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from harnest.application import CompiledApplication
@@ -111,6 +112,20 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1", user_id="test-user"
             )
         )
+
+    async def test_injected_adk_session_service_is_used_by_runner(self):
+        service = InMemorySessionService()
+        driver = ADKRuntimeDriver(_application(), session_service=service)
+        try:
+            await driver.create_session(
+                session_id="injected", user_id="test-user", state={"ready": True}
+            )
+            stored = await service.get_session(
+                app_name="root", user_id="test-user", session_id="injected"
+            )
+            self.assertEqual(stored.state, {"ready": True})
+        finally:
+            await driver.close()
 
     async def test_invoke_and_stream_use_the_same_normalized_events(self):
         await self.driver.create_session(

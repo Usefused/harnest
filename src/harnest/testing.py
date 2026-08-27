@@ -30,6 +30,9 @@ class AgentTestError(RuntimeError):
     """An authored test suite does not follow the Harnest convention."""
 
 
+_EVAL_TRAJECTORIES = frozenset({"business", "strict"})
+
+
 def _eval_output_filter_plugin() -> Any:
     """Build an eval-only ADK plugin without importing ADK during test discovery."""
 
@@ -225,29 +228,59 @@ class _HarnestPytestPlugin:
         return SmokeClient(client)
 
 
-def _run_adk_evals(artifact: Path, suite: EvalSuite) -> int:
+def _eval_config(suite: EvalSuite, trajectory: str) -> Any:
+    """Apply a named trajectory policy without replacing authored thresholds."""
+
+    _require_eval_trajectory(trajectory)
+    from google.adk.evaluation.eval_config import (
+        get_evaluation_criteria_or_default,
+    )
+
+    config = get_evaluation_criteria_or_default(
+        str(suite.config) if suite.config is not None else None
+    )
+    criterion = config.criteria.get("tool_trajectory_avg_score")
+    if criterion is None:
+        return config
+    from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
+
+    threshold = criterion if isinstance(criterion, float) else criterion.threshold
+    match_type = "IN_ORDER" if trajectory == "business" else "EXACT"
+    config.criteria["tool_trajectory_avg_score"] = ToolTrajectoryCriterion(
+        threshold=threshold,
+        match_type=match_type,
+    )
+    return config
+
+
+def _require_eval_trajectory(trajectory: str) -> None:
+    if trajectory not in _EVAL_TRAJECTORIES:
+        raise AgentTestError("eval trajectory must be business or strict")
+
+
+def _run_adk_evals(
+    artifact: Path,
+    suite: EvalSuite,
+    *,
+    trajectory: str = "business",
+) -> int:
     """Run validated eval sets through ADK's official evaluator."""
 
     try:
         from google.adk.evaluation.agent_evaluator import AgentEvaluator
-        from google.adk.evaluation.eval_config import (
-            get_evaluation_criteria_or_default,
-        )
         from google.adk.evaluation.eval_set import EvalSet
     except ImportError as exc:  # pragma: no cover - declared ADK eval extra
         raise AgentTestError(
             "Google ADK evaluation dependencies are required for --evals"
         ) from exc
 
-    config = get_evaluation_criteria_or_default(
-        str(suite.config) if suite.config is not None else None
-    )
+    config = _eval_config(suite, trajectory)
     module_name = f"{artifact.name}.agent"
 
     async def evaluate_all() -> None:
         for path in suite.eval_sets:
             eval_set = EvalSet.model_validate_json(path.read_text(encoding="utf-8"))
-            print(f"harnest eval: {path.name}")
+            print(f"harnest eval [{trajectory}]: {path.name}")
             await AgentEvaluator.evaluate_eval_set(
                 agent_module=module_name,
                 eval_set=eval_set,
@@ -284,11 +317,13 @@ def run_agent_tests(
     *,
     include_smoke: bool = False,
     include_evals: bool = False,
+    eval_trajectory: str = "business",
     framework: str = "adk",
     mode: str = "managed",
 ) -> int:
     """Compile an authored agent and run its convention-based pytest suites."""
 
+    _require_eval_trajectory(eval_trajectory)
     source_directory = Path(source)
     if source_directory.is_file():
         source_directory = source_directory.parent
@@ -301,9 +336,9 @@ def run_agent_tests(
         )
         try:
             selected = _selected_test_directories(artifact, include_smoke)
+            authored = _authored_test_directories(selected)
             plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
-            args = _pytest_args(selected)
-            test_status = int(pytest.main(args, plugins=[plugin]))
+            test_status = _run_pytest(plugin, authored)
             if test_status != 0 or not include_evals:
                 return test_status
 
@@ -317,7 +352,11 @@ def run_agent_tests(
                 raise AgentTestError(
                     "--evals requires evals/ with at least one *.evalset.json"
                 )
-            return _run_adk_evals(artifact, suite)
+            return _run_adk_evals(
+                artifact,
+                suite,
+                trajectory=eval_trajectory,
+            )
         finally:
             release_authored_library(artifact / "source")
 
@@ -334,6 +373,23 @@ def _selected_test_directories(artifact: Path, include_smoke: bool) -> list[Path
         )
         raise AgentTestError(f"missing authored test directory: {expected}")
     return selected
+
+
+def _authored_test_directories(selected: list[Path]) -> list[Path]:
+    """Skip placeholder-only suites while keeping missing folders actionable."""
+
+    return [
+        path
+        for path in selected
+        if any(candidate.is_file() for candidate in path.glob("test_*.py"))
+    ]
+
+
+def _run_pytest(plugin: Any, selected: list[Path]) -> int:
+    if not selected:
+        print("harnest test: no authored Python tests")
+        return 0
+    return int(pytest.main(_pytest_args(selected), plugins=[plugin]))
 
 
 def _pytest_args(selected: list[Path]) -> list[str]:

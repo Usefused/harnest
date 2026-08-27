@@ -76,6 +76,8 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 ## Discovery invariants
 
 - Missing, empty, ignored-only folders are skipped.
+- Default `harnest init` fills optional folders with ignored `_README.md`
+  guides; `--example` is the explicit working-sample scaffold.
 - Once a public resource exists, the full convention is strict.
 - Resource discovery is deterministic by path name.
 - Duplicate tool, MCP configuration, subagent, or skill identities fail.

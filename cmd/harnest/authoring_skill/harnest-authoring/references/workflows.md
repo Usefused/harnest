@@ -25,11 +25,15 @@ identify any remaining non-writable or unrelated command collision.
 harnest init support-agent --framework adk
 harnest init support-graph --framework langgraph
 harnest init direct-graph --framework langgraph --mode advanced
+harnest init example-agent --framework adk --example
 harnest doctor
 ```
 
 `init` refuses a non-empty destination. Treat generated source as editable
-starter material; treat `.harnest/` as disposable build output. Select
+starter material; treat `.harnest/` as disposable build output. By default,
+optional folders contain only ignored `_README.md` routing guides and the root
+is one simple agent. Add `--example` only when the user wants working graph,
+tool, plugin, skill, extension, eval, and test samples. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
 
@@ -60,6 +64,7 @@ mode.
 harnest test support-agent
 harnest test support-agent --smoke
 harnest test support-agent --evals
+harnest test support-agent --evals --eval-trajectory strict
 harnest test support-agent --smoke --evals
 ```
 
@@ -74,6 +79,11 @@ harnest test support-agent --smoke --evals
   `evals/` assets are selected; nested eval files are not an executable lane.
   ADK scoring receives visible response parts and tool trajectory, never parts
   marked as hidden model thoughts.
+- Eval trajectories default to `business`: required business calls must occur
+  in order, while skill discovery and other extra calls are allowed. Use
+  `--eval-trajectory strict` to require the exact authored call sequence.
+- Placeholder-only test folders are valid and report that no Python tests were
+  authored; compilation and opted-in evals still run.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
 

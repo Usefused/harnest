@@ -38,9 +38,11 @@ Typical workflow:
   harnest skills install
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
+  harnest init example-agent --framework adk --example
   harnest mode advanced my-agent --check
   harnest test my-agent
   harnest test my-agent --smoke --evals
+  harnest test my-agent --evals --eval-trajectory strict
   harnest compile my-agent --output .harnest/my-agent
   harnest serve my-agent
 

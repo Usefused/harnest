@@ -19,10 +19,17 @@ from starlette.responses import Response
 from starlette.exceptions import HTTPException
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .runtime_auth import (
+    ANONYMOUS_USER_ID,
+    Authenticator,
+    install_authentication,
+    principal_for,
+)
+
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_LIVE_FRAMES = 1024
-NEUTRAL_USER_ID = "_harnest_neutral"
+NEUTRAL_USER_ID = ANONYMOUS_USER_ID
 
 RuntimeEvent = dict[str, Any]
 
@@ -366,7 +373,9 @@ async def _serve_live_frame(
             "metadata": metadata,
         }
     )
-    run = invocation(frame["input"], session.id, response_id, metadata)
+    run = invocation(
+        frame["input"], session.id, response_id, metadata, session.user_id
+    )
     state = _LiveStreamState()
     try:
         async with semaphore:
@@ -471,7 +480,9 @@ def create_neutral_router(
             raise HTTPException(status_code=400, detail="metadata must be an object")
         return text, stream, metadata
 
-    async def response_session(payload: Mapping[str, Any]) -> SessionRecord:
+    async def response_session(
+        payload: Mapping[str, Any], user_id: str
+    ) -> SessionRecord:
         session_id = payload.get("sessionId")
         if session_id is not None and (
             not isinstance(session_id, str) or not session_id.strip()
@@ -479,10 +490,10 @@ def create_neutral_router(
             raise HTTPException(status_code=400, detail="sessionId must be non-empty")
         if session_id is None:
             return await driver.create_session(
-                session_id=uuid.uuid4().hex, user_id=NEUTRAL_USER_ID, state={}
+                session_id=uuid.uuid4().hex, user_id=user_id, state={}
             )
         session = await driver.get_session(
-            session_id=session_id, user_id=NEUTRAL_USER_ID
+            session_id=session_id, user_id=user_id
         )
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -493,10 +504,11 @@ def create_neutral_router(
         session_id: str,
         response_id: str,
         metadata: Mapping[str, Any],
+        user_id: str,
     ) -> InvocationRequest:
         return InvocationRequest(
             input=text,
-            user_id=NEUTRAL_USER_ID,
+            user_id=user_id,
             session_id=session_id,
             invocation_id=response_id,
             metadata=dict(metadata),
@@ -589,15 +601,19 @@ def create_neutral_router(
             raise HTTPException(status_code=400, detail="state must be an object")
         try:
             session = await driver.create_session(
-                session_id=session_id, user_id=NEUTRAL_USER_ID, state=state
+                session_id=session_id,
+                user_id=principal_for(request).user_id,
+                state=state,
             )
         except SessionConflictError as exc:
             raise HTTPException(status_code=409, detail="Session already exists") from exc
         return _session_payload(session)
 
     @router.get("/sessions")
-    async def list_sessions() -> dict[str, Any]:
-        sessions = await driver.list_sessions(user_id=NEUTRAL_USER_ID)
+    async def list_sessions(request: Request) -> dict[str, Any]:
+        sessions = await driver.list_sessions(
+            user_id=principal_for(request).user_id
+        )
         return {
             "sessions": [
                 _session_payload(session)
@@ -606,9 +622,10 @@ def create_neutral_router(
         }
 
     @router.get("/sessions/{session_id}")
-    async def get_session(session_id: str) -> dict[str, Any]:
+    async def get_session(session_id: str, request: Request) -> dict[str, Any]:
         session = await driver.get_session(
-            session_id=session_id, user_id=NEUTRAL_USER_ID
+            session_id=session_id,
+            user_id=principal_for(request).user_id,
         )
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -623,7 +640,7 @@ def create_neutral_router(
             raise HTTPException(status_code=400, detail="Expected stateDelta object")
         session = await driver.update_session(
             session_id=session_id,
-            user_id=NEUTRAL_USER_ID,
+            user_id=principal_for(request).user_id,
             state_delta=payload["stateDelta"],
         )
         if session is None:
@@ -631,9 +648,10 @@ def create_neutral_router(
         return _session_payload(session)
 
     @router.delete("/sessions/{session_id}", status_code=204)
-    async def delete_session(session_id: str) -> Response:
+    async def delete_session(session_id: str, request: Request) -> Response:
         deleted = await driver.delete_session(
-            session_id=session_id, user_id=NEUTRAL_USER_ID
+            session_id=session_id,
+            user_id=principal_for(request).user_id,
         )
         if not deleted:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -643,9 +661,10 @@ def create_neutral_router(
     async def responses(request: Request) -> Any:
         payload = await read_json(request)
         text, stream, metadata = parse_response(payload)
-        session = await response_session(payload)
+        user_id = principal_for(request).user_id
+        session = await response_session(payload, user_id)
         response_id = f"resp_{uuid.uuid4().hex}"
-        run = invocation(text, session.id, response_id, metadata)
+        run = invocation(text, session.id, response_id, metadata, user_id)
         if not stream:
             try:
                 async with semaphore:
@@ -738,7 +757,11 @@ def create_neutral_router(
     async def live(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
-            session = await _live_session(websocket, response_session)
+            user_id = principal_for(websocket).user_id
+            session = await _live_session(
+                websocket,
+                lambda payload: response_session(payload, user_id),
+            )
             if session is None:
                 return
             frame_count = 0
@@ -775,6 +798,7 @@ def create_neutral_app(
     *,
     request_timeout: float = 300,
     max_concurrency: int = 8,
+    authenticator: Authenticator | None = None,
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
 
@@ -797,6 +821,7 @@ def create_neutral_app(
             max_concurrency=max_concurrency,
         )
     )
+    install_authentication(app, authenticator)
     return app
 
 

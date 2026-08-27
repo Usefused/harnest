@@ -26,6 +26,8 @@ from ._library import (
     activate_authored_library,
     release_authored_library,
 )
+from .runtime_auth import Authenticator, install_authentication
+from .session import ADKSessionStorage, SessionStore
 
 _MAX_CARD_BYTES = 4 * 1024 * 1024
 _DIRECT_USER_ID = "_harnest_direct"
@@ -149,6 +151,8 @@ def _runtime_driver(
     *,
     card: Mapping[str, Any] | None = None,
     extra_endpoints: Mapping[str, str] | None = None,
+    adk_session_service: Any | None = None,
+    langgraph_session_store: SessionStore | None = None,
 ) -> Any:
     """Select a backend once, at the process boundary."""
 
@@ -156,12 +160,19 @@ def _runtime_driver(
         from .runtime_adk import ADKRuntimeDriver
 
         driver = ADKRuntimeDriver(
-            application, card=card, extra_endpoints=extra_endpoints
+            application,
+            card=card,
+            extra_endpoints=extra_endpoints,
+            session_service=adk_session_service,
         )
     elif application.framework == "langgraph":
         from .runtime_langgraph import LangGraphRuntimeDriver
 
-        driver = LangGraphRuntimeDriver(application, card=card)
+        driver = LangGraphRuntimeDriver(
+            application,
+            card=card,
+            session_store=langgraph_session_store,
+        )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
     if application.extensions:
@@ -295,6 +306,7 @@ def _create_adk_fastapi_app(
     *,
     application: Any,
     bind_host: str,
+    session_storage: ADKSessionStorage | None,
 ) -> Any:
     """Create ADK's official app without inspecting private route closures."""
 
@@ -345,7 +357,14 @@ def _create_adk_fastapi_app(
     kwargs: dict[str, Any] = {
         "agents_dir": str(agents_dir),
         "agent_loader": CompiledAgentLoader(),
-        "session_service_uri": "memory://",
+        "session_service_uri": (
+            session_storage.uri if session_storage is not None else "memory://"
+        ),
+        "session_db_kwargs": (
+            dict(session_storage.database_kwargs)
+            if session_storage is not None
+            else None
+        ),
         "artifact_service_uri": "memory://",
         "memory_service_uri": "memory://",
         "use_local_storage": False,
@@ -377,6 +396,9 @@ def create_fastapi_app(
     bind_host: str = "127.0.0.1",
     request_timeout: float = 300,
     max_concurrency: int = 8,
+    adk_session_storage: ADKSessionStorage | None = None,
+    langgraph_session_store: SessionStore | None = None,
+    authenticator: Authenticator | None = None,
 ) -> Any:
     """Build the neutral server and opt advanced ADK agents into native routes."""
 
@@ -392,6 +414,9 @@ def create_fastapi_app(
             bind_host=bind_host,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            adk_session_storage=adk_session_storage,
+            langgraph_session_store=langgraph_session_store,
+            authenticator=authenticator,
         )
     except Exception:
         release_authored_library(Path(artifact).resolve() / "source")
@@ -405,6 +430,9 @@ def _build_fastapi_app(
     bind_host: str,
     request_timeout: float,
     max_concurrency: int,
+    adk_session_storage: ADKSessionStorage | None,
+    langgraph_session_store: SessionStore | None,
+    authenticator: Authenticator | None,
 ) -> Any:
     """Construct the server after its authored library has been acquired."""
 
@@ -414,15 +442,28 @@ def _build_fastapi_app(
     from .neutral_runtime import create_neutral_app, create_neutral_router
     from .telemetry import configure_observability, instrument_fastapi
 
-    if _exposes_native_adk_api(application):
+    native_adk = _exposes_native_adk_api(application)
+    if native_adk:
         os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
         app = _create_adk_fastapi_app(
-            artifact, application=application, bind_host=bind_host
+            artifact,
+            application=application,
+            bind_host=bind_host,
+            session_storage=adk_session_storage,
         )
+
+    adk_session_service = _resolve_adk_session_service(
+        artifact,
+        application,
+        adk_session_storage,
+        langgraph_session_store,
+    )
+    if native_adk:
         driver = _runtime_driver(
             application,
             card=card,
             extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
+            adk_session_service=adk_session_service,
         )
         neutral_router = create_neutral_router(
             driver,
@@ -434,6 +475,7 @@ def _build_fastapi_app(
         # that contract when adding Harnest's dependency-free neutral routes.
         app.router.routes.extend(neutral_router.routes)
         app.router.add_event_handler("shutdown", driver.close)
+        install_authentication(app, authenticator)
         adk_owns_otel = any(
             os.getenv(name, "").strip()
             for name in (
@@ -453,13 +495,40 @@ def _build_fastapi_app(
             application.name, framework=application.framework
         )
         app = create_neutral_app(
-            _runtime_driver(application, card=card),
+            _runtime_driver(
+                application,
+                card=card,
+                adk_session_service=adk_session_service,
+                langgraph_session_store=langgraph_session_store,
+            ),
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            authenticator=authenticator,
         )
     instrument_fastapi(app, telemetry)
     _attach_library_lifecycle(app, Path(artifact).resolve() / "source")
     return app
+
+
+def _resolve_adk_session_service(
+    artifact: str | Path,
+    application: Any,
+    storage: ADKSessionStorage | None,
+    langgraph_store: SessionStore | None,
+) -> Any | None:
+    if application.framework == "adk":
+        if langgraph_store is not None:
+            raise AgentRuntimeError(
+                "langgraph_session_store cannot be used with an ADK agent"
+            )
+        if storage is None:
+            return None
+        return storage.create_service(str(Path(artifact).resolve() / "source"))
+    if storage is not None:
+        raise AgentRuntimeError(
+            "adk_session_storage cannot be used with a LangGraph agent"
+        )
+    return None
 
 
 def _attach_library_lifecycle(app: Any, source_root: Path) -> None:

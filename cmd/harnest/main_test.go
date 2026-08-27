@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "harnest mode advanced", "harnest test", "harnest compile", "harnest serve", "lib/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest mode advanced", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "lib/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -28,7 +28,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	}
 }
 
-func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
+func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "support-agent")
 	stdout, _, err := executeForTest(t, defaultSystem(), "init", target)
 	if err != nil {
@@ -54,37 +54,48 @@ func TestInitCreatesLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	assertContainsAll(t, "generated agent.py", string(agentSource), []string{
 		`name="support_agent"`,
 		"from harnest.agent import Agent",
-		"from harnest.graph import START, Edge, Graph",
-		`"respond": Agent(`,
+		"root_agent = Agent(",
 	})
-	skillManifest, err := os.ReadFile(filepath.Join(target, "skills", "getting-started", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
+	if strings.Contains(string(agentSource), "Graph(") {
+		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
 	}
-	assertContainsAll(t, "starter skill", string(skillManifest), []string{
-		"---\nname: getting-started\n",
-		"description: Apply the agent's core instructions",
-		"# Getting started",
-	})
 	assertDirectories(t, target, []string{
 		"lib", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
-		"lib/_README.md":                                   "from harnest.lib.audit import record_change",
+		"lib/_README.md":         "from harnest.lib.audit import record_change",
+		"tools/_README.md":       "Add one @tool callable",
+		"plugins/_README.md":     "capability bundles",
+		"extensions/_README.md":  "lifecycle extensions",
+		"tests/unit/_README.md":  "offline test_*.py",
+		"tests/smoke/_README.md": "opt-in test_*.py",
+	})
+	assertIgnoredLibraryGuide(t, target)
+	assertOnlyPlaceholderResources(t, target)
+}
+
+func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "example-agent")
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "init", target, "--example",
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFilesContain(t, target, map[string]string{
 		"tools/echo.py":                                    "from harnest.tool import tool",
-		"subagents/__init__.py":                            "Add direct graph agents",
-		"mcp/_README.md":                                   "Add direct MCP client connections",
+		"skills/getting-started/SKILL.md":                  "name: getting-started",
 		"extensions/starter/lifecycle.py":                  "extension = Extension(name=\"starter\")",
 		"plugins/starter/mcp/starter.py":                   "from harnest.mcp import MCPClient",
 		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
-		"sandbox/_README.md":                               "Sandbox.container",
-		"sandbox/_example.py":                              "from harnest.sandbox import Sandbox",
+		"evals/starter.evalset.json":                       "answers_greeting",
+		"tests/unit/test_agent.py":                         "tools[\"echo\"]",
 	})
-	if _, err := os.Stat(filepath.Join(target, "plugins", "starter", "agents")); !os.IsNotExist(err) {
-		t.Fatalf("generated plugin must not contain agents: %v", err)
-	}
-	assertIgnoredLibraryGuide(t, target)
+	agentSource := mustReadTestFile(t, filepath.Join(target, "agent.py"))
+	assertContainsAll(t, "example agent.py", string(agentSource), []string{
+		"from harnest.graph import START, Edge, Graph",
+		"root_agent = Graph(",
+	})
 }
 
 func assertIgnoredLibraryGuide(t *testing.T, root string) {
@@ -209,11 +220,12 @@ func assertManagedLangGraphScaffold(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "managed scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Graph(", `"respond": Agent(`})
+	assertContainsAll(t, "managed scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Agent("})
 	if _, err := os.Stat(filepath.Join(directory, "subagents", "helper.py")); !os.IsNotExist(err) {
 		t.Fatalf("managed LangGraph scaffold must not create an implicit subagent: %v", err)
 	}
 	assertFilesExist(t, directory, []string{"subagents/_README.md", "evals/_README.md"})
+	assertOnlyPlaceholderResources(t, directory)
 }
 
 func assertFilesExist(t *testing.T, root string, paths []string) {
@@ -244,7 +256,8 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 	}
 	assertFilesExist(t, directory, []string{"tools/_README.md"})
 	assertFilesContain(t, directory, map[string]string{
-		"lib/_README.md": "from harnest.lib.audit import record_change",
+		"lib/_README.md":   "from harnest.lib.audit import record_change",
+		"tools/_README.md": "Advanced mode owns framework wiring",
 	})
 	assertOnlyPlaceholderResources(t, directory)
 }
@@ -332,6 +345,36 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 		if !strings.Contains(string(arguments), expected) {
 			t.Fatalf("delegated arguments are missing %q:\n%s", expected, arguments)
 		}
+	}
+}
+
+func TestEvalTrajectoryIsValidatedAndDelegated(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "eval-agent")
+	if err := createScaffold(target, "eval-agent"); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "arguments.txt")
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	python := writeExecutable(t, `#!/bin/sh
+printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
+`)
+	_, _, err := executeForTest(
+		t, defaultSystem(), "--python", python, "test", target,
+		"--evals", "--eval-trajectory", "strict",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := mustReadTestFile(t, record)
+	assertContainsAll(t, "delegated eval arguments", string(arguments), []string{
+		"--evals\n--eval-trajectory\nstrict",
+	})
+	_, _, err = executeForTest(
+		t, defaultSystem(), "--python", python, "test", target,
+		"--eval-trajectory", "approximate",
+	)
+	if err == nil || !strings.Contains(err.Error(), "business or strict") {
+		t.Fatalf("got error %v, want trajectory validation", err)
 	}
 }
 

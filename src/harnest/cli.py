@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run validated evals after Python tests pass",
     )
+    test_parser.add_argument(
+        "--eval-trajectory",
+        choices=("business", "strict"),
+        default="business",
+        help="tool trajectory policy for evals (default: business)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -94,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.agent,
                 include_smoke=args.smoke,
                 include_evals=args.evals,
+                eval_trajectory=args.eval_trajectory,
                 framework=args.framework,
                 mode=args.mode,
             )

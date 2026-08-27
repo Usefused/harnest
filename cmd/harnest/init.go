@@ -20,6 +20,7 @@ var scaffoldNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 func (a *application) newInitCommand() *cobra.Command {
 	var framework string
 	var mode string
+	var example bool
 	command := &cobra.Command{
 		Use:   "init [directory]",
 		Short: "Scaffold a self-contained filesystem agent",
@@ -43,7 +44,9 @@ func (a *application) newInitCommand() *cobra.Command {
 			if mode != "managed" && mode != "advanced" {
 				return fmt.Errorf("--mode must be managed or advanced")
 			}
-			if err := createScaffoldForMode(absolute, name, framework, mode); err != nil {
+			if err := createScaffoldForModeProfile(
+				absolute, name, framework, mode, example,
+			); err != nil {
 				return err
 			}
 			fmt.Fprintf(command.OutOrStdout(), "Initialized agent %s in %s\n", name, absolute)
@@ -52,6 +55,12 @@ func (a *application) newInitCommand() *cobra.Command {
 	}
 	command.Flags().StringVar(&framework, "framework", "adk", "agent framework: adk or langgraph")
 	command.Flags().StringVar(&mode, "mode", "managed", "authoring mode: managed or advanced")
+	command.Flags().BoolVar(
+		&example,
+		"example",
+		false,
+		"include working tools, skills, plugins, extensions, evals, and tests",
+	)
 	return command
 }
 
@@ -106,6 +115,19 @@ func createScaffoldForFramework(directory, name, framework string) (returnErr er
 }
 
 func createScaffoldForMode(directory, name, framework, mode string) (returnErr error) {
+	return createScaffoldForModeProfile(directory, name, framework, mode, false)
+}
+
+func createExampleScaffoldForMode(
+	directory, name, framework, mode string,
+) (returnErr error) {
+	return createScaffoldForModeProfile(directory, name, framework, mode, true)
+}
+
+func createScaffoldForModeProfile(
+	directory, name, framework, mode string,
+	example bool,
+) (returnErr error) {
 	requirements, err := frameworkRequirements(framework)
 	if err != nil {
 		return err
@@ -128,14 +150,18 @@ func createScaffoldForMode(directory, name, framework, mode string) (returnErr e
 		}
 	}()
 
-	if err := createScaffoldDirectories(directory, mode, &created); err != nil {
+	if err := createScaffoldDirectories(directory, mode, example, &created); err != nil {
 		return err
 	}
-	files := scaffoldFilesForMode(name, framework, mode, requirements)
+	files := scaffoldFilesForMode(name, framework, mode, requirements, example)
 	return createScaffoldFiles(directory, files, &created)
 }
 
-func createScaffoldDirectories(root, mode string, created *[]string) error {
+func createScaffoldDirectories(
+	root, mode string,
+	example bool,
+	created *[]string,
+) error {
 	directories := append([]string{"lib"}, managedResourceDirectories...)
 	directories = append(
 		directories,
@@ -143,7 +169,7 @@ func createScaffoldDirectories(root, mode string, created *[]string) error {
 		filepath.Join("tests", "unit"),
 		filepath.Join("tests", "smoke"),
 	)
-	if mode == "managed" {
+	if mode == "managed" && example {
 		directories = append(directories, filepath.Join("skills", "getting-started"), filepath.Join("extensions", "starter"), filepath.Join("plugins", "starter"), filepath.Join("plugins", "starter", "mcp"), filepath.Join("plugins", "starter", "skills"), filepath.Join("plugins", "starter", "skills", "starter-guidance"))
 	}
 	for _, relative := range directories {
@@ -226,7 +252,10 @@ func prepareScaffoldDirectory(directory string) (bool, error) {
 	return false, nil
 }
 
-func scaffoldFilesForMode(name, framework, mode, requirements string) map[string]string {
+func scaffoldFilesForMode(
+	name, framework, mode, requirements string,
+	example bool,
+) map[string]string {
 	adkIdentifier := adkName(name)
 	title := displayName(name)
 	files := map[string]string{
@@ -514,5 +543,76 @@ root_agent = Agent.advanced(
 `, adkIdentifier, adkIdentifier)
 		}
 	}
+	if !example {
+		return minimalScaffoldFiles(files, adkIdentifier, framework, mode)
+	}
 	return files
+}
+
+func minimalScaffoldFiles(
+	files map[string]string,
+	agentName, framework, mode string,
+) map[string]string {
+	for _, relative := range []string{
+		"tools/echo.py",
+		"subagents/__init__.py",
+		"mcp/_README.md",
+		"extensions/starter/lifecycle.py",
+		"plugins/starter/mcp/starter.py",
+		"plugins/starter/skills/starter-guidance/SKILL.md",
+		"sandbox/_README.md",
+		"sandbox/_example.py",
+		"skills/getting-started/SKILL.md",
+		"evals/starter.evalset.json",
+		"tests/unit/test_agent.py",
+		"tests/smoke/test_health.py",
+	} {
+		delete(files, relative)
+	}
+	for _, directory := range managedResourceDirectories {
+		files[directory+"/_README.md"] = optionalFolderGuide(directory, mode)
+	}
+	files["tests/unit/_README.md"] = "Add offline test_*.py files for agent definitions and local tools.\n"
+	files["tests/smoke/_README.md"] = "Add opt-in test_*.py files for live models, MCP, and HTTP behavior.\n"
+	if mode == "managed" {
+		files["agent.py"] = minimalManagedAgentSource(agentName)
+	}
+	if framework == "langgraph" {
+		files["evals/_README.md"] = "Use authored pytest evaluations; ADK EvalSet JSON is not portable.\n"
+	}
+	return files
+}
+
+func optionalFolderGuide(directory, mode string) string {
+	if mode == "advanced" {
+		return "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
+	}
+	guides := map[string]string{
+		"tools":      "Add one @tool callable per public Python file.\n",
+		"subagents":  "Add subagent definitions here; use folders when they own resources.\n",
+		"mcp":        "Add direct MCPClient connections here.\n",
+		"extensions": "Add lifecycle extensions here.\n",
+		"plugins":    "Add capability bundles combining MCP clients and skills here.\n",
+		"sandbox":    "Add sandbox.py only when managed ADK needs code isolation.\n",
+		"skills":     "Add one Agent Skill directory per progressive instruction pack.\n",
+		"evals":      "Add ADK *.evalset.json files and optional test_config.json here.\n",
+	}
+	return guides[directory]
+}
+
+func minimalManagedAgentSource(agentName string) string {
+	return fmt.Sprintf(`import os
+
+from harnest.agent import Agent
+from harnest.model import LiteLLMModel
+
+
+root_agent = Agent(
+    name=%q,
+    model=LiteLLMModel(
+        model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
+        api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
+    ),
+)
+`, agentName)
 }

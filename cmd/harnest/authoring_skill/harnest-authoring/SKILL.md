@@ -17,6 +17,7 @@ teach the deployed agent how to perform tasks.
 1. Preserve unrelated changes. Read `config.yaml`, `agent.py`,
    `instructions.md`, and the affected folders before editing. Never run
    `harnest init` over an existing project.
+   New `init` projects use ignored guides; request `--example` for full samples.
 2. Preserve `spec.framework.name` and mode unless the user requests an
    architectural migration.
 3. Put each capability beside its owning `agent.py`. Managed resources are
@@ -50,6 +51,7 @@ teach the deployed agent how to perform tasks.
 ## Finish with evidence
 
 Run focused tests, then `harnest test AGENT_DIR` and compile after structural
-changes. Use `--evals` when eval assets changed and `--smoke` only for authorized
-live calls. Report the framework/mode, checks, live calls, and remaining
-provider requirements. Treat compiler diagnostics as authoritative.
+changes. Evals default to business trajectories; use strict when exact tool
+calls matter. Use smoke only for authorized live calls. Report the
+framework/mode, checks, live calls, and remaining provider requirements. Treat
+compiler diagnostics as authoritative.

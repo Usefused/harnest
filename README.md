@@ -62,6 +62,11 @@ harnest compile support-agent --output .harnest/support-agent
 harnest serve support-agent
 ```
 
+`init` is intentionally quiet: it creates one runnable agent and ignored
+`_README.md` guides in optional resource and test folders. Those guides are not
+compiled. Use `harnest init support-agent --example` when you want the complete
+working graph, tool, plugin, skill, extension, eval, and test examples.
+
 The runtime directory is internal to Harnest. Do not activate it or invoke its
 Python modules directly; the native `harnest` CLI selects it automatically. The
 installer replaces Harnest's retired Python launcher in place when possible. If
@@ -379,9 +384,9 @@ unsupported sandbox configuration instead of silently dropping it.
 
 Every optional resource directory may be absent or empty. Empty directories are
 ignored during compilation; once a public resource is present, its filename and
-export contract are validated strictly. `harnest init` creates starter content
-for every scaffolded resource directory so a new project demonstrates each
-convention immediately.
+export contract are validated strictly. Default `harnest init` creates ignored
+guides rather than active capabilities; `--example` opts into working starter
+resources that demonstrate each convention.
 
 Authored files are compiler input. Their `harnest.*` imports resolve while the
 compiler or compiled runtime is active; the agent's provider-specific
@@ -449,6 +454,15 @@ with:
 
 ```bash
 harnest test examples/self-serve/agents/helpdesk --evals
+```
+
+The default `business` trajectory requires authored business tool calls in
+order but permits extra discovery and progressive `load_skill` calls. Use the
+separate strict lane when every tool call must match exactly:
+
+```bash
+harnest test examples/self-serve/agents/helpdesk --evals \
+  --eval-trajectory strict
 ```
 
 The runner discovers sorted `evals/*.evalset.json` files, applies
@@ -643,7 +657,7 @@ Tool calls and results appear in `output` as ordered `tool_call` and
 `tool_result` items. Reuse the session ID for conversational continuity. Session
 CRUD is `GET /sessions`, `GET /sessions/{id}`, `PATCH /sessions/{id}` with the
 exact body `{"stateDelta": {...}}`, and `DELETE /sessions/{id}` (204). Sessions
-are process-local and disappear when the launcher stops.
+are process-local by default and disappear when the launcher stops.
 
 Set `stream: true` on the same endpoint for named Server-Sent Events:
 
@@ -674,8 +688,45 @@ message, tool-call, and tool-result items. Provider names, model versions,
 reasoning details, and framework bookkeeping are not exposed. Before a stream
 starts, request errors use FastAPI's JSON `{"detail":"..."}` shape with normal
 HTTP status codes; SSE and WebSocket execution errors use a typed `error` event.
-The server has no authentication or tenant boundary, so put authentication and
-TLS in front of any non-loopback deployment.
+The executable server has no configured identity provider by default. An
+embedding production host can inject authentication independently from session
+storage. `Authenticator.authenticate(connection)` returns an `AuthPrincipal`;
+that principal's `user_id` scopes every neutral session, response, SSE stream,
+and WebSocket. The middleware also requires authentication for advanced ADK
+native routes, but their native user fields still require deployment
+authorization. Health, Agent Card, and `/agent` discovery remain public. A
+missing authenticator preserves the local anonymous behavior.
+
+Session persistence is a separate injection. ADK hosts pass
+`ADKSessionStorage(uri=..., database_kwargs=...)`; LangGraph hosts pass a
+`SessionStore` implementation with durable CRUD and an exclusive execution
+lease. Harnest's `InMemorySessionStore` remains a development default, not a
+production database. Injected stores are deployment-owned and are not closed by
+the LangGraph driver:
+
+```python
+from harnest.runtime import create_fastapi_app
+from harnest.runtime_auth import AuthPrincipal, AuthenticationError
+from harnest.session import ADKSessionStorage
+
+
+class BearerAuthenticator:
+    async def authenticate(self, connection):
+        token = connection.headers.get("authorization")
+        if token != "Bearer deployment-validated-token":
+            raise AuthenticationError()
+        return AuthPrincipal("tenant-user-id")
+
+
+app = create_fastapi_app(
+    ".harnest/support-agent",
+    adk_session_storage=ADKSessionStorage("postgresql+asyncpg://..."),
+    authenticator=BearerAuthenticator(),
+)
+```
+
+Production authenticators should validate real bearer/OIDC credentials and
+derive stable, non-secret user IDs; the example only shows the injection shape.
 
 Equivalent helpers are `make demo-agent`, `make demo-session`,
 `make demo-response`, and `make demo-stream`; choose a new session with
@@ -703,8 +754,9 @@ secret resolution, permissions, scaling, authentication, or TLS. Set runtime
 environment variables explicitly. `python .harnest/helpdesk` starts the same server with default
 host and port. Non-loopback binds are rejected unless the launcher receives
 `--allow-remote` (for Make, set `SERVE_EXTRA_ARGS=--allow-remote`). Binding
-beyond loopback exposes an unauthenticated endpoint; add a trusted reverse proxy
-and transport security before doing so.
+beyond loopback exposes an unauthenticated endpoint unless an embedding host
+injects an authenticator; otherwise add a trusted reverse proxy and transport
+security before doing so.
 
 ## Logging and tracing
 

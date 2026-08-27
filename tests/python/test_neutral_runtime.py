@@ -5,6 +5,7 @@ import unittest
 
 try:
     from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
 
     FASTAPI_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional local dependency
@@ -20,6 +21,18 @@ from harnest.neutral_runtime import (
     SessionRecord,
     create_neutral_app,
 )
+from harnest.runtime_auth import (
+    AuthPrincipal,
+    AuthenticationError,
+)
+
+
+class HeaderAuthenticator:
+    async def authenticate(self, connection):
+        user_id = connection.headers.get("x-test-user")
+        if not user_id:
+            raise AuthenticationError()
+        return AuthPrincipal(user_id, {"source": "test"})
 
 
 class FakeDriver:
@@ -320,6 +333,44 @@ class NeutralRuntimeTests(unittest.TestCase):
             self.client.patch("/sessions/missing", json={"stateDelta": {}}).status_code,
             404,
         )
+
+    def test_injected_authentication_scopes_sessions_and_invocations(self):
+        driver = FakeDriver()
+        app = create_neutral_app(driver, authenticator=HeaderAuthenticator())
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/agent").status_code, 200)
+            self.assertEqual(client.get("/sessions").status_code, 401)
+            with self.assertRaises(WebSocketDisconnect) as rejected:
+                with client.websocket_connect("/live"):
+                    pass
+            self.assertEqual(rejected.exception.code, 4401)
+            alice = {"x-test-user": "alice"}
+            bob = {"x-test-user": "bob"}
+            created = client.post(
+                "/sessions",
+                headers=alice,
+                json={"id": "shared", "state": {"owner": "alice"}},
+            )
+            self.assertEqual(created.status_code, 201)
+            self.assertEqual(
+                client.get("/sessions/shared", headers=bob).status_code,
+                404,
+            )
+            response = client.post(
+                "/responses",
+                headers=alice,
+                json={"input": "hello", "sessionId": "shared"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(driver.invocations[-1].user_id, "alice")
+            with client.websocket_connect(
+                "/live", headers=alice
+            ) as websocket:
+                websocket.send_json({"type": "connect", "sessionId": "shared"})
+                self.assertEqual(
+                    websocket.receive_json()["type"], "session.connected"
+                )
+                websocket.send_json({"type": "session.close"})
 
 
 if __name__ == "__main__":

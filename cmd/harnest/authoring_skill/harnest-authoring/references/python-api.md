@@ -190,6 +190,21 @@ generator functions. `get_tracer` exposes a dynamic tracer and
 ADK code executors. A sandbox is an execution boundary, not merely a policy
 flag; provider packages and Docker requirements belong in `requirements.txt`.
 
+## Production runtime injection
+
+Keep identity and persistence as separate host concerns. Pass an
+`Authenticator` to `harnest.runtime.create_fastapi_app`; it must validate the
+HTTP or WebSocket connection and return `AuthPrincipal(user_id=...)`. The
+principal scopes neutral session and execution routes. Do not derive identity
+from session payloads or use a session store as an authenticator.
+
+For ADK, pass `ADKSessionStorage(uri=..., database_kwargs=...)`. For LangGraph,
+pass a deployment-owned `SessionStore` with tenant-scoped CRUD and an exclusive
+execution lease. Production stores must persist durably, list with set-based
+queries, coordinate leases across replicas, and emit privacy-safe OTEL audit
+signals after committed mutations. `InMemorySessionStore` is development-only.
+Injected stores remain owned by the deployment host.
+
 ## Advanced applications
 
 Use the same public `Agent` type in advanced mode:
