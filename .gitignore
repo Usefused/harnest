@@ -11,5 +11,6 @@ __pycache__/
 .cache/
 dist/
 build/
+internal/runtimewheel/assets/*.whl
 coverage.out
 bin/

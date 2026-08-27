@@ -13,7 +13,8 @@ the agent grows.
 
 ## Install
 
-GitHub Releases bundle the native `harnest` CLI with its matching Python wheel.
+GitHub Releases ship a native `harnest` CLI with its matching Python wheel
+embedded directly in the executable.
 On macOS or Linux, install the latest release into an isolated managed runtime:
 
 ```bash

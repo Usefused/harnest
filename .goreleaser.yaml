@@ -9,8 +9,8 @@ release:
 
 before:
   hooks:
-    - python3 -c "import shutil; shutil.rmtree('.harnest-release/python', ignore_errors=True)"
-    - env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir .harnest-release/python
+    - python3 -c "import pathlib; [item.unlink() for item in pathlib.Path('internal/runtimewheel/assets').glob('*.whl')]"
+    - env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir internal/runtimewheel/assets
 
 builds:
   - id: harnest
@@ -45,16 +45,13 @@ archives:
     files:
       - LICENSE
       - README.md
-      - src: .harnest-release/python/*.whl
-        dst: python
-        strip_parent: true
 
 checksum:
   name_template: checksums.txt
   algorithm: sha256
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}.dev0"
 
 changelog:
   sort: asc

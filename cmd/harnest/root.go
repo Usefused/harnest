@@ -7,6 +7,8 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+
+	"harnest.dev/harnest/internal/runtimewheel"
 )
 
 const rootDescription = `Harnest builds self-contained ADK or LangGraph agents from ordinary folders.
@@ -51,6 +53,7 @@ type system struct {
 	userHomeDir    func() (string, error)
 	lookPath       func(string) (string, error)
 	commandContext func(context.Context, string, ...string) *exec.Cmd
+	embeddedWheel  func(string) (runtimewheel.Artifact, error)
 }
 
 func defaultSystem() system {
@@ -59,6 +62,7 @@ func defaultSystem() system {
 		userHomeDir:    os.UserHomeDir,
 		lookPath:       exec.LookPath,
 		commandContext: exec.CommandContext,
+		embeddedWheel:  runtimewheel.Embedded,
 	}
 }
 
@@ -93,6 +97,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newTestCommand(),
 		app.newServeCommand(),
 		app.newDoctorCommand(),
+		app.newRuntimeCommand(),
 		app.newSkillsCommand(),
 		app.newModeCommand(),
 	)

@@ -46,16 +46,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("git tag --annotate", scripts)
         self.assertNotIn("git push origin", scripts)
 
-    def test_goreleaser_hook_uses_portable_environment_command(self):
+    def test_goreleaser_embeds_the_versioned_wheel_before_go_build(self):
         config = load_yaml(".goreleaser.yaml")
         wheel_hook = config["before"]["hooks"][1]
 
         self.assertEqual(
             wheel_hook,
             "env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel "
-            "--outdir .harnest-release/python",
+            "--outdir internal/runtimewheel/assets",
         )
         self.assertEqual(config["archives"][0]["ids"], ["harnest"])
+        self.assertEqual(config["archives"][0]["files"], ["LICENSE", "README.md"])
+        self.assertEqual(config["snapshot"]["version_template"], "{{ incpatch .Version }}.dev0")
+
+    def test_installer_bootstraps_the_runtime_from_the_binary(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('"${extract_directory}/harnest" runtime install', installer)
+        self.assertNotIn("python/harnest-", installer)
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

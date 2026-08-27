@@ -22,10 +22,10 @@ quality: test complexity format-check vet validate-examples
 
 complexity:
 	$(PYTHON) scripts/check_python_complexity.py --max 10 src scripts tests/python examples/self-serve
-	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine
+	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
 
 format-check:
-	@test -z "$$(gofmt -l cmd engine)" || (gofmt -l cmd engine; exit 1)
+	@test -z "$$(gofmt -l cmd engine internal)" || (gofmt -l cmd engine internal; exit 1)
 
 vet:
 	GOCACHE=$(GOCACHE) go vet ./...

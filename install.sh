@@ -132,31 +132,17 @@ mkdir -p "$extract_directory"
 tar -xzf "${temporary_directory}/${archive}" -C "$extract_directory"
 [ -f "${extract_directory}/harnest" ] || fail 'release archive has no harnest binary'
 
-set -- "${extract_directory}"/python/harnest-*.whl
-[ "$#" -eq 1 ] && [ -f "$1" ] || \
-  fail 'release archive must contain exactly one Harnest wheel'
-wheel=$1
-case $(basename "$wheel") in
-  "harnest-${version}-"*.whl) ;;
-  *) fail "wheel version does not match release ${version}" ;;
-esac
-
 bootstrap_python=${HARNEST_BOOTSTRAP_PYTHON:-python3}
-need_command "$bootstrap_python"
-"$bootstrap_python" -c \
-  'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || \
-  fail 'Python 3.10 or newer is required'
+chmod 0755 "${extract_directory}/harnest"
+"${extract_directory}/harnest" runtime install \
+  --bootstrap-python "$bootstrap_python" \
+  --directory "$runtime_directory"
 
-mkdir -p "$runtime_directory" "$install_directory"
-"$bootstrap_python" -m venv "$runtime_directory"
-"${runtime_directory}/bin/python" -m pip --disable-pip-version-check \
-  install --upgrade "${wheel}[all]"
-
+mkdir -p "$install_directory"
 binary_target="${install_directory}/harnest"
 binary_temporary="${install_directory}/.harnest.install.$$"
 trap 'rm -rf "$temporary_directory"; rm -f "$binary_temporary"' EXIT HUP INT TERM
 cp "${extract_directory}/harnest" "$binary_temporary"
-chmod 0755 "$binary_temporary"
 mv -f "$binary_temporary" "$binary_target"
 
 printf 'Installed Harnest %s\n' "$version"

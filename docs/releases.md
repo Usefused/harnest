@@ -2,10 +2,10 @@
 
 ## Install the standalone CLI
 
-Harnest releases contain a native `harnest` executable and the matching Python
-wheel. The installer supports macOS and Linux on AMD64 and ARM64. It requires
-Python 3.10 or newer only to create the managed environment; normal Harnest
-commands then use that environment automatically.
+Harnest releases contain a native `harnest` executable with the matching Python
+wheel embedded directly inside it. The installer supports macOS and Linux on
+AMD64 and ARM64. It requires Python 3.10 or newer only to create the managed
+environment; normal Harnest commands then use that environment automatically.
 
 Install the latest release from the canonical repository:
 
@@ -32,7 +32,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.1 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.2 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -42,13 +42,13 @@ When omitted, the installer follows the repository's latest GitHub Release.
 does not print it.
 
 The installer downloads the platform archive and `checksums.txt` from the same
-GitHub Release, requires a matching SHA-256 entry, verifies the archive before
-extracting it, and rejects a bundled wheel whose version differs from the
-release. It then:
+GitHub Release, requires a matching SHA-256 entry, and verifies the archive
+before extracting it. The executable rejects its embedded wheel if the wheel
+metadata differs from the CLI version. The installer then:
 
 - creates or updates a dedicated virtual environment at
   `${HARNEST_RUNTIME_DIR:-$HOME/.harnest/runtime}`;
-- installs the bundled wheel and its Python dependencies into that environment;
+- asks the executable to install its embedded wheel and Python dependencies;
   and
 - atomically installs the native executable at
   `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`.
@@ -66,9 +66,10 @@ harnest --version
 harnest doctor
 ```
 
-Rerunning the installer upgrades the managed wheel before atomically replacing
-the executable. For a review-first installation, download `install.sh`, inspect
-it, then execute the local file with the same environment variables.
+Rerunning the installer upgrades the managed runtime from the new executable
+before atomically replacing the installed executable. For a review-first
+installation, download `install.sh`, inspect it, then execute the local file
+with the same environment variables.
 
 Harnest releases also define the supported ADK and LangGraph version ranges.
 Those bounds are published in `pyproject.toml`, installed with the matching
@@ -82,8 +83,8 @@ Direct ADK or LangGraph imports in advanced mode do not bypass this check.
 
 Releases use GoReleaser v2.18 or newer. Each platform archive contains:
 
-- the native `harnest` executable built from `cmd/harnest`;
-- the matching universal Python wheel under `python/`;
+- the native `harnest` executable built from `cmd/harnest`, including its
+  version-matched universal Python wheel;
 - `README.md`; and
 - the Apache 2.0 `LICENSE`.
 
@@ -94,8 +95,9 @@ the installer's default source.
 Before tagging, ensure the static version in `pyproject.toml` exactly matches
 the tag without its leading `v`, and keep the source-tree fallback in
 `src/harnest/compatibility.py` aligned. The Go binary version comes from the
-tag, while the wheel version comes from `pyproject.toml`; the installer
-deliberately rejects a mismatch. Whenever framework support changes, update the
+tag, while the wheel version comes from `pyproject.toml`; GoReleaser builds the
+wheel before compiling it into the binary, which deliberately rejects a
+mismatch at runtime. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
 machine needs Go 1.24 or newer, Python 3.10 or
@@ -111,7 +113,8 @@ goreleaser check
 goreleaser release --snapshot --clean
 ```
 
-Inspect the snapshot archives under `dist/`, including the wheel in `python/`.
+Inspect the snapshot archives under `dist/` and run `harnest runtime install`
+from an extracted binary to verify its embedded wheel.
 To publish a clean `vX.Y.Z` tag:
 
 ```bash
@@ -138,6 +141,7 @@ next release-bearing push.
 
 `.github/workflows/release.yml` is a separate packaging pipeline. It runs after
 successful CI on `main`, verifies that CI's exact commit owns the version tag,
-and then uses GoReleaser to publish the platform archives, matching Python
-wheel, and checksums. Separating validation/tagging from packaging makes failed
+and then uses GoReleaser to publish the platform archives with the matching
+Python wheel embedded in each executable, plus checksums. Separating
+validation/tagging from packaging makes failed
 release builds rerunnable without weakening the immutable-tag check.

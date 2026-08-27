@@ -25,13 +25,7 @@ func (a *application) resolvePython() (pythonSelection, error) {
 		return a.resolvePythonCandidate(value, "HARNEST_PYTHON")
 	}
 
-	runtimeDirectory := strings.TrimSpace(a.system.getenv("HARNEST_RUNTIME_DIR"))
-	if runtimeDirectory == "" {
-		home, err := a.system.userHomeDir()
-		if err == nil {
-			runtimeDirectory = filepath.Join(home, ".harnest", "runtime")
-		}
-	}
+	runtimeDirectory, _ := a.runtimeDirectory("")
 	if runtimeDirectory != "" {
 		managed := filepath.Join(runtimeDirectory, "bin", "python")
 		if executable, err := a.system.lookPath(managed); err == nil {
@@ -44,6 +38,20 @@ func (a *application) resolvePython() (pythonSelection, error) {
 	return pythonSelection{}, fmt.Errorf(
 		"Python runtime not found; install Harnest, set HARNEST_PYTHON, or pass --python",
 	)
+}
+
+func (a *application) runtimeDirectory(requested string) (string, error) {
+	if value := strings.TrimSpace(requested); value != "" {
+		return value, nil
+	}
+	if value := strings.TrimSpace(a.system.getenv("HARNEST_RUNTIME_DIR")); value != "" {
+		return value, nil
+	}
+	home, err := a.system.userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for managed runtime: %w", err)
+	}
+	return filepath.Join(home, ".harnest", "runtime"), nil
 }
 
 func (a *application) resolvePythonCandidate(value, source string) (pythonSelection, error) {
