@@ -32,7 +32,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.0 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.1 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -130,9 +130,14 @@ agent's `skills/` directory.
 
 ## GitHub Actions
 
-`.github/workflows/release.yml` runs the full test suite on every push to
-`main`. It reads `project.version` from `pyproject.toml`, creates the matching
-`v<version>` tag when necessary, and uses GoReleaser to publish the actual
-GitHub Release with archives, the matching Python wheel, and checksums. If that
-version already has a release, the workflow leaves it unchanged; bump
-`project.version` before the next release-bearing push to `main`.
+`.github/workflows/ci.yml` runs the quality matrix for pull requests and branch
+pushes. After a successful `main` run, its release-tag job reads
+`project.version` from `pyproject.toml` and creates the matching `v<version>`
+tag. It refuses to move an existing tag, so bump `project.version` before the
+next release-bearing push.
+
+`.github/workflows/release.yml` is a separate packaging pipeline. It runs after
+successful CI on `main`, verifies that CI's exact commit owns the version tag,
+and then uses GoReleaser to publish the platform archives, matching Python
+wheel, and checksums. Separating validation/tagging from packaging makes failed
+release builds rerunnable without weakening the immutable-tag check.

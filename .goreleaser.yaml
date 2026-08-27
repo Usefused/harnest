@@ -10,7 +10,7 @@ release:
 before:
   hooks:
     - python3 -c "import shutil; shutil.rmtree('.harnest-release/python', ignore_errors=True)"
-    - HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir .harnest-release/python
+    - env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir .harnest-release/python
 
 builds:
   - id: harnest

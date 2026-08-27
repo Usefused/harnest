@@ -3,8 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches-ignore:
-      - main
+    branches:
+      - "**"
 
 permissions:
   contents: read
@@ -32,7 +32,56 @@ jobs:
           cache: pip
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade ".[all,quality]"
+        run: python -m pip install --upgrade build ".[all,quality]"
 
       - name: Run quality gates
         run: make quality
+
+      - name: Validate installer shell
+        run: sh -n install.sh
+
+  release-tag:
+    name: Tag release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: quality
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: Create version tag
+        shell: bash
+        run: |
+          version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          tag="v${version}"
+
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            tagged_sha=$(git rev-list -n 1 "${tag}")
+            if [ "${tagged_sha}" != "${GITHUB_SHA}" ]; then
+              echo "${tag} already points to ${tagged_sha}; bump project.version before releasing ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+            echo "${tag} already points to ${GITHUB_SHA}; leaving it unchanged."
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate "${tag}" --message "Harnest ${version}"
+          git push origin "${tag}"
