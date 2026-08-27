@@ -104,8 +104,8 @@ The compiled artifact runs without the Go provisioner. After running
 make serve-example
 ```
 
-`serve-example` compiles first and listens on `127.0.0.1:8080`. `SERVE_PORT`,
-`SERVE_REQUEST_TIMEOUT`, and `SERVE_MAX_CONCURRENCY` are configurable. In
+`serve-example` compiles first and reads host, port, timeout, concurrency,
+request size, and playground policy from the example's `server.yaml`. In
 another terminal, inspect the agent, create a session, and run an agent turn
 through Harnest's neutral API:
 
@@ -153,12 +153,10 @@ curl -sS http://127.0.0.1:8080/healthz
 curl -sS http://127.0.0.1:8080/.well-known/agent-card.json
 ```
 
-The generated app additionally mounts official ADK `/run`, `/run_sse`,
-`/run_live`, and `/apps/{app}/users/{user}/sessions` routes as a compatibility
-escape hatch. They expose ADK-native event types and may change with the
-installed ADK release; use the neutral API for new integrations. Run
-`make demo-adk-run` for a native example, or inspect `/docs` and
-`/openapi.json` for the installed route schemas.
+This managed example exposes only Harnest's neutral routes. Advanced-mode ADK
+artifacts additionally mount official ADK `/run`, `/run_sse`, `/run_live`, and
+`/apps/{app}/users/{user}/sessions` routes. Inspect `/docs` or `/openapi.json`
+for the exact compiled surface.
 
 The artifact is independently launchable, not dependency-free: its interpreter
 still needs Harnest, Google ADK, LiteLLM, and the agent's requirements, plus a
@@ -167,11 +165,11 @@ read deployment environment from `config.yaml` or provide the provisioner's
 secret resolution, resource enforcement, permissions, scaling, authentication,
 or TLS. The Make target exports the Ollama settings; export any optional MCP
 variables yourself. The authored Agent Card is served unchanged, including its
-deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent --host
-127.0.0.1 --port 8080`; `python .harnest/helpdesk` also starts the defaults.
-Do not bind it beyond loopback without adding authentication and TLS through a
-trusted proxy. The launcher also requires `--allow-remote`; with Make, pass it
-as `SERVE_EXTRA_ARGS=--allow-remote` alongside the non-loopback `SERVE_HOST`.
+deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent`; it reads
+the adjacent compiled `server.yaml` without flags. That file configures binding,
+timeout, concurrency, request size, and the playground. It does not inject auth,
+storage, or TLS. A non-loopback host requires `http.allowRemote: true`; still add
+authentication and TLS through a trusted proxy before exposing it.
 
 ## Filesystem composition contract
 
@@ -301,7 +299,7 @@ harnest compile examples/self-serve/agents/helpdesk \
 The source folder remains the self-serve ownership boundary. The generated
 folder contains a preserved `source/` tree, ADK-compatible `agent.py`,
 `__init__.py`, and `__main__.py` adapters, the executable `harnest-agent`
-launcher, and `harnest-manifest.json`. ADK tools or the standalone launcher
+launcher, mutable `server.yaml`, and `harnest-manifest.json`. ADK tools or the standalone launcher
 consume the generated folder; authors edit only source. `.harnest/` is ignored
 because the artifact is reproducible build output. The compiler also excludes VCS metadata,
 virtual environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode;

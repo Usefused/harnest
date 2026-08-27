@@ -14,7 +14,7 @@ teach the deployed agent how to perform tasks.
 
 ## Modify safely
 
-1. Preserve unrelated changes. Read `config.yaml`, `agent.py`,
+1. Preserve unrelated changes. Read `config.yaml`, `server.yaml`, `agent.py`,
    `instructions.md`, and the affected folders before editing. Never run
    `harnest init` over an existing project.
    New `init` projects use ignored guides; request `--example` for full samples.
@@ -30,9 +30,9 @@ teach the deployed agent how to perform tasks.
 6. Match required paths, exports, and declared names. Missing or empty optional
    folders are skipped; populated invalid folders fail compilation.
 7. Put dependencies in `requirements.txt`, deployment settings in `config.yaml`,
-   secrets in environment/secret references, and public identity in
-   `agent-card.yaml`. Keep framework versions within this Harnest release's
-   supported range.
+   standalone HTTP policy in `server.yaml`, secrets in environment/secret
+   references, and public identity in `agent-card.yaml`. Keep framework
+   versions within this Harnest release's supported range.
 
 ## Load only relevant guidance
 

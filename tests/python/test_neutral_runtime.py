@@ -209,6 +209,24 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertNotIn("localStorage", javascript.text)
         self.assertNotIn("sessionStorage", javascript.text)
 
+    def test_server_policy_controls_request_limit_and_playground(self):
+        app = create_neutral_app(
+            FakeDriver(),
+            max_request_bytes=1024,
+            playground_enabled=False,
+        )
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/").status_code, 404)
+            response = client.post(
+                "/sessions",
+                json={"id": "large", "state": {"value": "x" * 1024}},
+            )
+            self.assertEqual(response.status_code, 413)
+            self.assertEqual(
+                response.json()["detail"],
+                "Request body exceeds 1KiB",
+            )
+
     def test_json_response_preserves_the_public_envelope(self):
         session = self.client.post("/sessions", json={"id": "json"})
         self.assertEqual(session.status_code, 201)

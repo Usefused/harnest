@@ -19,6 +19,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
 
   my-agent/
     config.yaml          deployment resources and runtime policy
+    server.yaml          mutable compiled-server policy
     agent-card.yaml      discovery metadata and capabilities
     agent.py             root Agent with compiler-owned imports
     instructions.md      root instructions

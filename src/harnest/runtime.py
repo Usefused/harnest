@@ -28,6 +28,13 @@ from ._library import (
 )
 from .runtime_auth import Authenticator, install_authentication
 from .session import ADKSessionStorage, SessionStore
+from .server_config import (
+    DEFAULT_SERVER_CONFIG,
+    SERVER_CONFIG_FILENAME,
+    ServerConfigError,
+    load_server_config,
+    validate_max_request_bytes,
+)
 
 _MAX_CARD_BYTES = 4 * 1024 * 1024
 _DIRECT_USER_ID = "_harnest_direct"
@@ -396,6 +403,8 @@ def create_fastapi_app(
     bind_host: str = "127.0.0.1",
     request_timeout: float = 300,
     max_concurrency: int = 8,
+    max_request_bytes: int = DEFAULT_SERVER_CONFIG.limits.max_request_bytes,
+    playground_enabled: bool = True,
     adk_session_storage: ADKSessionStorage | None = None,
     langgraph_session_store: SessionStore | None = None,
     authenticator: Authenticator | None = None,
@@ -406,6 +415,9 @@ def create_fastapi_app(
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
         raise ValueError("max concurrency must be at least one")
+    max_request_bytes = validate_max_request_bytes(max_request_bytes)
+    if not isinstance(playground_enabled, bool):
+        raise TypeError("playground_enabled must be boolean")
     application = load_compiled_application(artifact)
     try:
         return _build_fastapi_app(
@@ -414,6 +426,8 @@ def create_fastapi_app(
             bind_host=bind_host,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            max_request_bytes=max_request_bytes,
+            playground_enabled=playground_enabled,
             adk_session_storage=adk_session_storage,
             langgraph_session_store=langgraph_session_store,
             authenticator=authenticator,
@@ -430,6 +444,8 @@ def _build_fastapi_app(
     bind_host: str,
     request_timeout: float,
     max_concurrency: int,
+    max_request_bytes: int,
+    playground_enabled: bool,
     adk_session_storage: ADKSessionStorage | None,
     langgraph_session_store: SessionStore | None,
     authenticator: Authenticator | None,
@@ -441,6 +457,7 @@ def _build_fastapi_app(
 
     from .neutral_runtime import create_neutral_app, create_neutral_router
     from .playground import create_playground_router
+    from .server_limits import install_request_size_limit
     from .telemetry import configure_observability, instrument_fastapi
 
     native_adk = _exposes_native_adk_api(application)
@@ -468,11 +485,13 @@ def _build_fastapi_app(
         )
         # ADK's generated FastAPI app owns a flat route table, so the bundled
         # playground follows the same mounting path as the neutral endpoints.
-        app.router.routes.extend(create_playground_router().routes)
+        if playground_enabled:
+            app.router.routes.extend(create_playground_router().routes)
         neutral_router = create_neutral_router(
             driver,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            max_request_bytes=max_request_bytes,
         )
         # FastAPI 0.135+ retains included routers as private lazy route-table
         # entries. ADK exposes its native routes as a flat public table, so keep
@@ -480,6 +499,7 @@ def _build_fastapi_app(
         app.router.routes.extend(neutral_router.routes)
         app.router.add_event_handler("shutdown", driver.close)
         install_authentication(app, authenticator)
+        install_request_size_limit(app, max_request_bytes)
         adk_owns_otel = any(
             os.getenv(name, "").strip()
             for name in (
@@ -507,6 +527,8 @@ def _build_fastapi_app(
             ),
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            max_request_bytes=max_request_bytes,
+            playground_enabled=playground_enabled,
             authenticator=authenticator,
         )
     instrument_fastapi(app, telemetry)
@@ -556,40 +578,60 @@ def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harnest-agent")
     parser.add_argument("--artifact", type=Path, required=True, help=argparse.SUPPRESS)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--request-timeout", type=float, default=300)
-    parser.add_argument("--max-concurrency", type=int, default=8)
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--request-timeout", type=float, default=None)
+    parser.add_argument("--max-concurrency", type=int, default=None)
     parser.add_argument(
         "--allow-remote",
         action="store_true",
+        default=None,
         help="allow a non-loopback bind; this server has no built-in authentication",
     )
     args = parser.parse_args(argv)
-    if not args.allow_remote and args.host not in {"127.0.0.1", "::1", "localhost"}:
-        print(
-            "harnest-agent: non-loopback binds require --allow-remote; "
-            "the server has no built-in authentication",
-            file=sys.stderr,
-        )
-        return 2
     try:
+        server = load_server_config(args.artifact / SERVER_CONFIG_FILENAME)
+        server = server.with_overrides(
+            host=args.host,
+            port=args.port,
+            request_timeout_seconds=args.request_timeout,
+            max_concurrent_requests=args.max_concurrency,
+            allow_remote=args.allow_remote,
+        )
+        http = server.http
+        if not http.allow_remote and http.host not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            raise ServerConfigError(
+                "non-loopback binds require http.allowRemote: true in server.yaml"
+            )
         app = create_fastapi_app(
             args.artifact,
-            bind_host=args.host,
-            request_timeout=args.request_timeout,
-            max_concurrency=args.max_concurrency,
+            bind_host=http.host,
+            request_timeout=http.request_timeout_seconds,
+            max_concurrency=http.max_concurrent_requests,
+            max_request_bytes=server.limits.max_request_bytes,
+            playground_enabled=server.playground.enabled,
         )
         import uvicorn
-    except (AgentRuntimeError, ImportError, OSError, TypeError, ValueError) as exc:
+    except (
+        AgentRuntimeError,
+        ImportError,
+        OSError,
+        ServerConfigError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(f"harnest-agent: {exc}", file=sys.stderr)
         return 2
     uvicorn.run(
         app,
-        host=args.host,
-        port=args.port,
+        host=http.host,
+        port=http.port,
         log_level="info",
-        limit_concurrency=args.max_concurrency,
+        limit_concurrency=http.max_concurrent_requests,
         timeout_keep_alive=10,
     )
     return 0

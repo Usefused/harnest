@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest mode advanced", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "lib/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest mode advanced", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "lib/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -70,6 +70,13 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"extensions/_README.md":  "lifecycle extensions",
 		"tests/unit/_README.md":  "offline test_*.py",
 		"tests/smoke/_README.md": "opt-in test_*.py",
+	})
+	serverConfig := string(mustReadTestFile(t, filepath.Join(target, "server.yaml")))
+	assertContainsAll(t, "generated server.yaml", serverConfig, []string{
+		"apiVersion: harnest.dev/v1alpha1", "kind: Server",
+		"host: 127.0.0.1", "port: 8080", "allowRemote: false",
+		"requestTimeoutSeconds: 300", "maxConcurrentRequests: 8",
+		"maxRequestBytes: 1MiB", "enabled: true",
 	})
 	assertIgnoredLibraryGuide(t, target)
 	assertOnlyPlaceholderResources(t, target)
@@ -379,6 +386,47 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 }
 
 func TestServeRunsGeneratedLauncherWithSelectedPython(t *testing.T) {
+	target, record, python := serveRecordingFixture(t)
+	artifact := filepath.Join(t.TempDir(), "artifact")
+	_, _, err := executeForTest(
+		t, defaultSystem(), "--python", python, "serve", target,
+		"--output", artifact, "--host", "0.0.0.0", "--port", "9090",
+		"--request-timeout", "30", "--max-concurrency", "4", "--allow-remote",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(mustReadTestFile(t, record))), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got calls %q, want compile and serve", lines)
+	}
+	want := "CALL\t" + filepath.Join(artifact, "harnest-agent") +
+		"\t--host\t0.0.0.0\t--port\t9090\t--request-timeout\t30" +
+		"\t--max-concurrency\t4\t--allow-remote"
+	if lines[1] != want {
+		t.Fatalf("selected Python got %q, want only explicit override %q", lines[1], want)
+	}
+}
+
+func TestServeUsesCompiledServerDefaultsWithoutOverrides(t *testing.T) {
+	target, record, python := serveRecordingFixture(t)
+	artifact := filepath.Join(t.TempDir(), "artifact")
+	_, _, err := executeForTest(
+		t, defaultSystem(), "--python", python, "serve", target,
+		"--output", artifact,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(mustReadTestFile(t, record))), "\n")
+	want := "CALL\t" + filepath.Join(artifact, "harnest-agent")
+	if len(lines) != 2 || lines[1] != want {
+		t.Fatalf("serve overrode compiled server.yaml defaults: %q", lines)
+	}
+}
+
+func serveRecordingFixture(t *testing.T) (string, string, string) {
+	t.Helper()
 	target := filepath.Join(t.TempDir(), "serve-agent")
 	if err := createScaffold(target, "serve-agent"); err != nil {
 		t.Fatal(err)
@@ -399,25 +447,7 @@ if [ "$1" = "-m" ]; then
   printf 'generated launcher\n' > "$output/harnest-agent"
 fi
 `)
-	artifact := filepath.Join(t.TempDir(), "artifact")
-	_, _, err := executeForTest(
-		t, defaultSystem(), "--python", python, "serve", target,
-		"--output", artifact, "--port", "9090",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("got calls %q, want compile and serve", calls)
-	}
-	if !strings.Contains(lines[1], filepath.Join(artifact, "harnest-agent")) || !strings.Contains(lines[1], "--port\t9090") {
-		t.Fatalf("selected Python did not run the generated launcher: %s", lines[1])
-	}
+	return target, record, python
 }
 
 func TestDoctorReportsReadyRuntime(t *testing.T) {

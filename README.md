@@ -120,11 +120,12 @@ harnest skills install --force
 ```text
 cmd/harnest/                         Native Cobra compiler CLI
 src/harnest/                         Python compiler and agent runtime
-schemas/                             Config, card, and plan JSON Schemas
+schemas/                             Config, card, server, and plan JSON Schemas
 examples/self-serve/
 └── agents/
     └── helpdesk/
         ├── config.yaml              Compute, scaling, env, secrets, permissions
+        ├── server.yaml              Standalone HTTP limits and playground policy
         ├── agent-card.yaml          A2A 1.0 discovery metadata
         ├── agent.py                 Root definition using harnest.* imports
         ├── instructions.md           Required root instructions
@@ -535,6 +536,9 @@ Every deployable directory must contain:
   default or `advanced`), resources, scaling,
   environment, secret references, and permissions. Secret values are never
   allowed; `secretRef` points at the engine's secret provider.
+- `server.yaml`: standalone compiled-server binding, request limits, and
+  playground policy. It does not contain deployment scaling, authentication,
+  session storage, TLS, or secrets.
 - `agent-card.yaml`: the public A2A 1.0-facing description, interfaces,
   modalities, capabilities, and skills supported by the current runtime.
 - the Python source module named by `spec.entrypoint` using `module:symbol`
@@ -607,13 +611,41 @@ the Python dependencies and signing Ollama in, start it in one terminal:
 harnest serve examples/self-serve/agents/helpdesk
 ```
 
-It listens on `127.0.0.1:8080` by default. Override the binding with
-`SERVE_HOST` and `SERVE_PORT`; `SERVE_MAX_CONCURRENCY` caps concurrent work and
-`SERVE_REQUEST_TIMEOUT` is the non-streaming response deadline. Or invoke the
-generated launcher directly:
+It reads the generated artifact's adjacent `server.yaml`; no server flags are
+required. Invoke the generated launcher directly the same way:
 
 ```bash
-.harnest/helpdesk/harnest-agent --host 127.0.0.1 --port 8080
+.harnest/helpdesk/harnest-agent
+```
+
+The authored file is validated during compilation and copied beside the
+launcher. Its `http` section controls host, port, remote-binding permission,
+response timeout, and concurrency. `limits.maxRequestBytes` accepts bytes or a
+binary unit such as `10MiB` (1 KiB through 1 GiB) and applies to every HTTP body
+and WebSocket frame, including advanced ADK-native routes.
+`playground.enabled` controls only Harnest's `/` and `/_harnest/` development
+UI; OpenAPI, docs, and agent APIs remain available when it is disabled.
+
+The adjacent compiled copy is deliberately mutable deployment policy, so it is
+the only runtime file outside the artifact digest. The authored copy remains
+hashed under `source/server.yaml`. Replace the adjacent copy to configure an
+already compiled artifact, then restart it; malformed, symlinked, or missing
+configuration fails closed. Explicit `harnest serve` or launcher flags remain
+temporary operator overrides, while the file is the durable source of truth.
+
+```yaml
+apiVersion: harnest.dev/v1alpha1
+kind: Server
+http:
+  host: 127.0.0.1
+  port: 8080
+  allowRemote: false
+  requestTimeoutSeconds: 300
+  maxConcurrentRequests: 8
+limits:
+  maxRequestBytes: 10MiB
+playground:
+  enabled: true
 ```
 
 The primary standalone API is Harnest's transport-neutral contract. Inspect the
@@ -761,14 +793,13 @@ cannot add arbitrary authorization headers to WebSocket handshakes, so protected
 
 This standalone path needs the artifact's Python dependencies and any model or
 MCP services used by the agent. A compiled folder is not a bundled Python
-environment, and the local server does not apply `config.yaml` resource limits,
-secret resolution, permissions, scaling, authentication, or TLS. Set runtime
-environment variables explicitly. `python .harnest/helpdesk` starts the same server with default
-host and port. Non-loopback binds are rejected unless the launcher receives
-`--allow-remote` (for Make, set `SERVE_EXTRA_ARGS=--allow-remote`). Binding
-beyond loopback exposes an unauthenticated endpoint unless an embedding host
-injects an authenticator; otherwise add a trusted reverse proxy and transport
-security before doing so.
+environment, and `server.yaml` does not apply `config.yaml` deployment
+resources, resolve secrets, enforce permissions, scale replicas, inject
+authentication/session storage, or terminate TLS. Set runtime environment
+variables explicitly. `python .harnest/helpdesk` reads the same adjacent
+configuration. A non-loopback `http.host` requires `http.allowRemote: true`.
+That permission does not add authentication; inject an authenticator or place a
+trusted TLS reverse proxy in front before exposing the process.
 
 ## Logging and tracing
 

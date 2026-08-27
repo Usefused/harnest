@@ -37,6 +37,7 @@ from ._library import (
 from .mcp import MCPClient
 from .plugin import PluginConventionError, PluginResources, discover_plugins
 from .sandbox import Sandbox
+from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
 
 _T = TypeVar("_T")
 _IGNORED_FILE_NAMES = {"__init__.py"}
@@ -356,6 +357,10 @@ def compile_artifact(
     )
     try:
         _copy_agent_source(source_directory, staging / "source")
+        materialize_server_config(
+            source_directory / SERVER_CONFIG_FILENAME,
+            staging / SERVER_CONFIG_FILENAME,
+        )
         _write_artifact_loader(staging, entrypoint, framework, mode)
         file_records = _artifact_file_records(staging)
         manifest = {
@@ -466,6 +471,10 @@ def _artifact_file_records(directory: Path) -> list[dict[str, Any]]:
     )
     for path in paths:
         if not path.is_file():
+            continue
+        if path == directory / SERVER_CONFIG_FILENAME:
+            # Deployment may replace server.yaml without changing compiled
+            # agent identity; authored policy remains hashed under source/.
             continue
         contents = path.read_bytes()
         records.append(

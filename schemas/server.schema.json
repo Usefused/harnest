@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/server.schema.json",
+  "title": "Harnest compiled agent server configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "http", "limits", "playground"],
+  "properties": {
+    "apiVersion": {
+      "const": "harnest.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "Server"
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "allowRemote",
+        "requestTimeoutSeconds",
+        "maxConcurrentRequests"
+      ],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "allowRemote": {"type": "boolean"},
+        "requestTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 86400
+        },
+        "maxConcurrentRequests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRequestBytes"],
+      "properties": {
+        "maxRequestBytes": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1024, "maximum": 1073741824},
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(B|KiB|MiB|GiB)?$"
+            }
+          ]
+        }
+      }
+    },
+    "playground": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -312,6 +312,7 @@ func TestLoadCompiledArtifactVerifiesManifestAndSource(t *testing.T) {
 	copyTree(t, source.Directory, filepath.Join(artifactDirectory, "source"))
 	mustWrite(t, filepath.Join(artifactDirectory, "__init__.py"), "from .agent import root_agent\n")
 	mustWrite(t, filepath.Join(artifactDirectory, "agent.py"), "root_agent = object()\n")
+	mustWrite(t, filepath.Join(artifactDirectory, compiledServerConfigFilename), "kind: Server\n")
 	manifest := compiledManifestForDirectory(t, artifactDirectory, source)
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
@@ -357,6 +358,7 @@ func TestCompiledArtifactAllowsDistinctDNSDeploymentAndADKNames(t *testing.T) {
 	copyTree(t, source.Directory, filepath.Join(artifactDirectory, "source"))
 	mustWrite(t, filepath.Join(artifactDirectory, "__init__.py"), "from .agent import root_agent\n")
 	mustWrite(t, filepath.Join(artifactDirectory, "agent.py"), "root_agent = object()\n")
+	mustWrite(t, filepath.Join(artifactDirectory, compiledServerConfigFilename), "kind: Server\n")
 	manifest := compiledManifestForDirectory(t, artifactDirectory, source)
 	manifest.Name = "support_agent"
 	manifestJSON, err := json.Marshal(manifest)
@@ -377,6 +379,80 @@ func TestCompiledArtifactAllowsDistinctDNSDeploymentAndADKNames(t *testing.T) {
 	if _, err := loadCompiledArtifact(artifactDirectory, source); err == nil || !strings.Contains(err.Error(), "valid agent runtime name") {
 		t.Fatalf("got error %v, want invalid runtime name rejection", err)
 	}
+}
+
+func TestCompiledArtifactAllowsReplacedServerConfig(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	mustWrite(t, filepath.Join(directory, compiledServerConfigFilename), "kind: Server\nhttp:\n  port: 9090\n")
+	if _, err := loadCompiledArtifact(directory, source); err != nil {
+		t.Fatalf("mutable server config invalidated artifact: %v", err)
+	}
+}
+
+func TestCompiledArtifactRequiresServerConfig(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	if err := os.Remove(filepath.Join(directory, compiledServerConfigFilename)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "server config") {
+		t.Fatalf("got error %v, want missing server config rejection", err)
+	}
+}
+
+func TestCompiledArtifactRejectsServerConfigSymlink(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	serverConfig := filepath.Join(directory, compiledServerConfigFilename)
+	if err := os.Remove(serverConfig); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, "source", "config.yaml")
+	if err := os.Symlink(target, serverConfig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("got error %v, want server config symlink rejection", err)
+	}
+}
+
+func TestCompiledArtifactRejectsNonRegularServerConfig(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	serverConfig := filepath.Join(directory, compiledServerConfigFilename)
+	if err := os.Remove(serverConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(serverConfig, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("got error %v, want non-regular server config rejection", err)
+	}
+}
+
+func TestCompiledArtifactRejectsOtherUnmanifestedFiles(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	mustWrite(t, filepath.Join(directory, "unexpected.txt"), "unexpected\n")
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unmanifested") {
+		t.Fatalf("got error %v, want unmanifested file rejection", err)
+	}
+}
+
+func compiledServerArtifactFixture(t *testing.T) (Bundle, string) {
+	t.Helper()
+	source, err := LoadBundle(writeAgent(t, t.TempDir(), "serverpolicy", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "artifact")
+	copyTree(t, source.Directory, filepath.Join(directory, "source"))
+	mustWrite(t, filepath.Join(directory, "__init__.py"), "from .agent import root_agent\n")
+	mustWrite(t, filepath.Join(directory, "agent.py"), "root_agent = object()\n")
+	mustWrite(t, filepath.Join(directory, compiledServerConfigFilename), "kind: Server\n")
+	manifestJSON, err := json.Marshal(compiledManifestForDirectory(t, directory, source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(directory, compiledManifestFilename), string(manifestJSON))
+	return source, directory
 }
 
 func TestDigestSeparatesFileBoundaries(t *testing.T) {
@@ -541,11 +617,15 @@ func compiledManifestForDirectory(t *testing.T, directory string, source Bundle)
 		if err != nil {
 			return err
 		}
+		relative = filepath.ToSlash(relative)
+		if relative == compiledServerConfigFilename {
+			return nil
+		}
 		digest, size, err := hashFile(filePath)
 		if err != nil {
 			return err
 		}
-		files = append(files, CompiledFile{Path: filepath.ToSlash(relative), SHA256: digest, Size: size})
+		files = append(files, CompiledFile{Path: relative, SHA256: digest, Size: size})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

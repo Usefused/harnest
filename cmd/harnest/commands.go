@@ -133,8 +133,18 @@ func (a *application) newServeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			options := serveOptions{output: output, host: host, port: port, requestTimeout: requestTimeout, maxConcurrency: maxConcurrency, allowRemote: allowRemote}
-			options.applyBundleDefaults(command, bundle)
+			options := serveOptions{
+				output: output, host: host, port: port,
+				requestTimeout: requestTimeout, maxConcurrency: maxConcurrency,
+				allowRemote: allowRemote,
+				overrides: serveOverrides{
+					host:           command.Flags().Changed("host"),
+					port:           command.Flags().Changed("port"),
+					requestTimeout: command.Flags().Changed("request-timeout"),
+					maxConcurrency: command.Flags().Changed("max-concurrency"),
+					allowRemote:    command.Flags().Changed("allow-remote"),
+				},
+			}
 			if err := options.validate(); err != nil {
 				return err
 			}
@@ -161,34 +171,24 @@ type serveOptions struct {
 	requestTimeout float64
 	maxConcurrency int
 	allowRemote    bool
+	overrides      serveOverrides
 }
 
-func (o *serveOptions) applyBundleDefaults(command *cobra.Command, bundle engine.Bundle) {
-	if !command.Flags().Changed("request-timeout") {
-		o.requestTimeout = float64(bundle.Config.Spec.Resources.TimeoutSeconds)
-		if o.requestTimeout == 0 {
-			o.requestTimeout = 300
-		}
-	}
-	if !command.Flags().Changed("max-concurrency") {
-		o.maxConcurrency = bundle.Config.Spec.Resources.MaxConcurrentRequests
-		if o.maxConcurrency == 0 {
-			o.maxConcurrency = 8
-		}
-	}
+type serveOverrides struct {
+	host, port, requestTimeout, maxConcurrency, allowRemote bool
 }
 
 func (o serveOptions) validate() error {
-	if strings.TrimSpace(o.host) == "" {
+	if o.overrides.host && strings.TrimSpace(o.host) == "" {
 		return fmt.Errorf("--host cannot be empty")
 	}
-	if o.port < 1 || o.port > 65535 {
+	if o.overrides.port && (o.port < 1 || o.port > 65535) {
 		return fmt.Errorf("--port must be between 1 and 65535")
 	}
-	if o.requestTimeout <= 0 {
+	if o.overrides.requestTimeout && o.requestTimeout <= 0 {
 		return fmt.Errorf("--request-timeout must be greater than zero")
 	}
-	if o.maxConcurrency < 1 {
+	if o.overrides.maxConcurrency && o.maxConcurrency < 1 {
 		return fmt.Errorf("--max-concurrency must be at least one")
 	}
 	return nil
@@ -212,7 +212,13 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 		return err
 	}
 	args := options.arguments(launcher)
-	fmt.Fprintf(command.ErrOrStderr(), "Serving %s on http://%s:%d using %s\n", bundle.Config.Metadata.Name, options.host, options.port, python.Executable)
+	// The mutable server.yaml is authoritative unless an operator explicitly
+	// supplied a serve flag, so the CLI must not advertise stale defaults.
+	fmt.Fprintf(
+		command.ErrOrStderr(),
+		"Serving %s using %s; compiled server.yaml supplies HTTP defaults\n",
+		bundle.Config.Metadata.Name, python.Executable,
+	)
 	server := a.system.commandContext(command.Context(), python.Executable, args...)
 	server.Env = configuredEnvironment(bundle)
 	if err := runCommand(server, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr()); err != nil {
@@ -251,8 +257,20 @@ func compiledLauncher(artifact string) (string, error) {
 }
 
 func (o serveOptions) arguments(launcher string) []string {
-	args := []string{launcher, "--host", o.host, "--port", strconv.Itoa(o.port), "--request-timeout", strconv.FormatFloat(o.requestTimeout, 'g', -1, 64), "--max-concurrency", strconv.Itoa(o.maxConcurrency)}
-	if o.allowRemote {
+	args := []string{launcher}
+	if o.overrides.host {
+		args = append(args, "--host", o.host)
+	}
+	if o.overrides.port {
+		args = append(args, "--port", strconv.Itoa(o.port))
+	}
+	if o.overrides.requestTimeout {
+		args = append(args, "--request-timeout", strconv.FormatFloat(o.requestTimeout, 'g', -1, 64))
+	}
+	if o.overrides.maxConcurrency {
+		args = append(args, "--max-concurrency", strconv.Itoa(o.maxConcurrency))
+	}
+	if o.overrides.allowRemote && o.allowRemote {
 		args = append(args, "--allow-remote")
 	}
 	return args

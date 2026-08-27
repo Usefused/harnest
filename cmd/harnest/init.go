@@ -288,6 +288,19 @@ spec:
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
 `, name, title, framework),
+		"server.yaml": `apiVersion: harnest.dev/v1alpha1
+kind: Server
+http:
+  host: 127.0.0.1
+  port: 8080
+  allowRemote: false
+  requestTimeoutSeconds: 300
+  maxConcurrentRequests: 8
+limits:
+  maxRequestBytes: 1MiB
+playground:
+  enabled: true
+`,
 		"agent-card.yaml": fmt.Sprintf(`name: %s
 description: A self-contained Harnest agent.
 version: 0.1.0

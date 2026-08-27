@@ -11,8 +11,8 @@ folder has different ownership or may not compile at all.
 2. Read `config.yaml` first. Record the selected framework and whether the mode
    is `managed` or `advanced`; that decision changes how capabilities are wired.
 3. Inventory authored files with `rg --files`, excluding `.harnest/`. Read the
-   root `agent.py`, `instructions.md`, and only the resource folders involved in
-   the requested change.
+   root `agent.py`, `instructions.md`, `server.yaml` when serving behavior is in
+   scope, and only the resource folders involved in the requested change.
 4. Identify the owning `agent.py`. The root owns root sibling resources. A
    folder agent at `subagents/<name>/agent.py` owns supported folders beside
    that file. A flat `subagents/<name>.py` cannot own private resources.
@@ -45,6 +45,7 @@ and extended examples into that skill's linked `references/` files.
 | Add ADK evaluations | Root `evals/` | Keep executable evals at root; expected responses contain visible output only. |
 | Change public identity or advertised capability | Root `agent-card.yaml` | Do not use the card as runtime wiring. |
 | Change resources, environment, framework, mode, or entrypoint | Root `config.yaml` | Treat framework/mode changes as migrations, not incidental edits. |
+| Change standalone host, request limits, concurrency, timeout, or playground | Root `server.yaml` | Keep auth, storage, TLS, secrets, and deployment scaling outside this file. |
 
 ## Wire managed resources correctly
 

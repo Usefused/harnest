@@ -3,12 +3,7 @@ GOCACHE ?= $(CURDIR)/.cache/go-build
 LITELLM_API_BASE ?= http://127.0.0.1:11434
 LITELLM_MODEL ?= ollama_chat/qwen3.5:cloud
 COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
-SERVE_HOST ?= 127.0.0.1
-SERVE_PORT ?= 8080
-SERVE_REQUEST_TIMEOUT ?= 300
-SERVE_MAX_CONCURRENCY ?= 8
-SERVE_EXTRA_ARGS ?=
-AGENT_URL ?= http://127.0.0.1:$(SERVE_PORT)
+AGENT_URL ?= http://127.0.0.1:8080
 DEMO_SESSION_ID ?= demo-session
 
 .PHONY: test quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
@@ -36,6 +31,7 @@ schemas:
 	$(PYTHON) -m json.tool schemas/config.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/agent-card.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/deployment-plan.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
 
 plan:
 	PYTHONPATH=src $(PYTHON) -m harnest.cli plan examples/self-serve/orchestrator.py
@@ -52,7 +48,7 @@ compile-example:
 	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli compile examples/self-serve/agents/helpdesk --output $(COMPILED_HELPDESK)
 
 serve-example: compile-example
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent --host $(SERVE_HOST) --port $(SERVE_PORT) --request-timeout $(SERVE_REQUEST_TIMEOUT) --max-concurrency $(SERVE_MAX_CONCURRENCY) $(SERVE_EXTRA_ARGS)
+	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent
 
 demo-agent:
 	curl -sS $(AGENT_URL)/agent

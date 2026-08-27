@@ -37,9 +37,9 @@ tool, plugin, skill, extension, eval, and test samples. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
 
-Before editing an existing project, inspect `config.yaml`, `agent.py`,
-`instructions.md`, `agent-card.yaml`, and only the resource folders relevant to
-the request. Preserve unrelated user changes. If multiple resources need the
+Before editing an existing project, inspect `config.yaml`, `server.yaml`,
+`agent.py`, `instructions.md`, `agent-card.yaml`, and only the resource folders
+relevant to the request. Preserve unrelated user changes. If multiple resources need the
 same ordinary Python implementation, add it once under root `lib/` and import
 it below `harnest.lib`; do not turn a helper into a discovered resource.
 
@@ -91,15 +91,22 @@ harnest test support-agent --smoke --evals
 
 ```bash
 harnest compile support-agent --output .harnest/support-agent
-harnest serve support-agent --host 127.0.0.1 --port 8080
+harnest serve support-agent
 ```
 
 The compiled artifact contains its source, generated adapters, manifest, and a
 small `harnest-agent` launcher. It runs without the external provisioner:
 
 ```bash
-.harnest/support-agent/harnest-agent --host 127.0.0.1 --port 8080
+.harnest/support-agent/harnest-agent
 ```
+
+The launcher automatically reads adjacent `server.yaml`. Edit the authored file
+before compiling, or replace the adjacent compiled copy and restart. Use it for
+host/port, remote-bind consent, timeout, concurrency, request size, and the
+playground toggle. It does not configure authentication, persistent sessions,
+TLS, secrets, or deployment resources. The request-size limit covers all HTTP
+bodies and WebSocket frames. Explicit serve flags are temporary overrides.
 
 The neutral server includes `/agent`, `/sessions`, `/responses`, and WebSocket
 `/live`; streaming `POST /responses` uses SSE. `/openapi.json`, `/docs`, and

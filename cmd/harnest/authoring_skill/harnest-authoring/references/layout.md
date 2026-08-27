@@ -9,6 +9,7 @@ file is the path and ownership contract it relies on.
 | Path | Purpose |
 | --- | --- |
 | `config.yaml` | Deployment resources, runtime environment, entrypoint, framework, and mode. |
+| `server.yaml` | Standalone server binding, request limits, and playground policy; never secrets, auth, storage, or TLS. |
 | `agent-card.yaml` | Public agent identity, interfaces, capabilities, and advertised A2A skills. |
 | `agent.py` | Exports a managed `Agent`/portable `Graph`, or an `Agent` created with `Agent.advanced(...)`. |
 | `instructions.md` | Non-empty root instructions. Managed `Agent` definitions may omit `instruction`; the compiler supplies this file. |
@@ -84,6 +85,8 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 - Library modules are copied and importable, but their callables are never
   discovered or injected into an agent.
 - Public symlinks are rejected so compiled artifacts remain self-contained.
+- Compilation validates `server.yaml` and copies a mutable operational copy
+  beside `harnest-agent`; the authored copy remains under `source/`.
 - Do not edit or commit `.harnest/`; it is disposable compiler output.
 - Runtime `skills/` are not the same as `.agents/skills/harnest-authoring/`,
   which teaches a coding agent how to modify this project.

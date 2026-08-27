@@ -34,6 +34,7 @@ from harnest import (
 )
 from harnest.cli import load_orchestrator, main as cli_main
 from harnest.runtime import create_fastapi_app, run_agent_message
+from harnest.server_config import DEFAULT_SERVER_YAML
 from harnest.testing import (
     AgentTestError,
     _adk_eval_output_filter,
@@ -723,6 +724,8 @@ class AuthoringTests(unittest.TestCase):
             self._write(root / "__pycache__" / "ignored.pyc", "ignored")
             self._write(root / ".adk" / "eval_history" / "run.json", "{}")
             self._write(root / ".env", "TOKEN=local-secret\n")
+            authored_server = DEFAULT_SERVER_YAML.replace("1MiB", "2MiB")
+            self._write(root / "server.yaml", authored_server)
 
             with patch.dict(sys.modules, _fake_adk_modules()):
                 first = compile_artifact(root, output)
@@ -739,6 +742,10 @@ class AuthoringTests(unittest.TestCase):
             )
             launcher_is_executable = bool(
                 (output / "harnest-agent").stat().st_mode & 0o111
+            )
+            compiled_server = (output / "server.yaml").read_text(encoding="utf-8")
+            copied_server = (output / "source" / "server.yaml").read_text(
+                encoding="utf-8"
             )
 
         self.assertEqual(first, second)
@@ -757,6 +764,13 @@ class AuthoringTests(unittest.TestCase):
             any(record["path"].endswith("/.env") for record in first["files"])
         )
         self.assertTrue(launcher_is_executable)
+        self.assertEqual(compiled_server, authored_server)
+        self.assertEqual(copied_server, authored_server)
+        self.assertNotIn("server.yaml", [record["path"] for record in first["files"]])
+        self.assertIn(
+            "source/server.yaml",
+            [record["path"] for record in first["files"]],
+        )
         self.assertIn(
             "harnest-agent",
             [record["path"] for record in first["files"]],
@@ -823,7 +837,11 @@ class AuthoringTests(unittest.TestCase):
                 json.dumps({"name": "Root", "description": "Test agent"}),
             )
             compile_artifact(root, output, mode="advanced")
-            app = create_fastapi_app(output, bind_host="testserver")
+            app = create_fastapi_app(
+                output,
+                bind_host="testserver",
+                max_request_bytes=1024,
+            )
             routes = {
                 (method, route.path)
                 for route in app.routes
@@ -876,6 +894,12 @@ class AuthoringTests(unittest.TestCase):
                 playground_response = client.get("/")
                 self.assertEqual(playground_response.status_code, 200)
                 self.assertIn("Harnest Playground", playground_response.text)
+                oversized_native = client.post(
+                    "/run",
+                    content=b"x" * 1025,
+                    headers={"content-type": "application/json"},
+                )
+                self.assertEqual(oversized_native.status_code, 413)
                 response = client.post(
                     "/apps/root/users/test-user/sessions",
                     json={"sessionId": "session-1", "state": {"ready": True}},

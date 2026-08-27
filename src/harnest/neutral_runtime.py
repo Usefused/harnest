@@ -25,6 +25,7 @@ from .runtime_auth import (
     install_authentication,
     principal_for,
 )
+from .server_config import format_byte_size, validate_max_request_bytes
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -304,7 +305,7 @@ async def _live_session(websocket: Any, response_session: Any) -> SessionRecord 
     return session
 
 
-def _live_frame_error(frame: Any) -> str | None:
+def _live_frame_error(frame: Any, max_request_bytes: int = MAX_REQUEST_BYTES) -> str | None:
     if (
         not isinstance(frame, dict)
         or not set(frame) <= {"type", "input", "requestId", "metadata"}
@@ -313,8 +314,8 @@ def _live_frame_error(frame: Any) -> str | None:
         or not frame["input"].strip()
     ):
         return "Invalid live input frame"
-    if len(frame["input"].encode("utf-8")) > MAX_REQUEST_BYTES:
-        return "Input exceeds 1 MiB"
+    if len(frame["input"].encode("utf-8")) > max_request_bytes:
+        return f"Input exceeds {format_byte_size(max_request_bytes)}"
     if not isinstance(frame.get("metadata", {}), dict):
         return "metadata must be an object"
     request_id = frame.get("requestId")
@@ -426,11 +427,29 @@ async def _serve_live_frame(
         )
 
 
+async def _read_request_body(request: Request, max_request_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > max_request_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "Request body exceeds "
+                    f"{format_byte_size(max_request_bytes)}"
+                ),
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def create_neutral_router(
     driver: RuntimeDriver,
     *,
     request_timeout: float = 300,
     max_concurrency: int = 8,
+    max_request_bytes: int = MAX_REQUEST_BYTES,
 ) -> Any:
     """Create the one Harnest router shared by every runtime backend."""
 
@@ -438,6 +457,7 @@ def create_neutral_router(
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
         raise ValueError("max concurrency must be at least one")
+    max_request_bytes = validate_max_request_bytes(max_request_bytes)
     try:
         from fastapi import APIRouter, HTTPException
         from fastapi.responses import StreamingResponse
@@ -453,9 +473,7 @@ def create_neutral_router(
             raise HTTPException(
                 status_code=415, detail="Content-Type must be application/json"
             )
-        body = await request.body()
-        if len(body) > MAX_REQUEST_BYTES:
-            raise HTTPException(status_code=413, detail="Request body exceeds 1 MiB")
+        body = await _read_request_body(request, max_request_bytes)
         try:
             value = json.loads(body)
         except (UnicodeDecodeError, ValueError) as exc:
@@ -470,8 +488,11 @@ def create_neutral_router(
         text = payload.get("input")
         if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=400, detail="input must be non-empty")
-        if len(text.encode("utf-8")) > MAX_REQUEST_BYTES:
-            raise HTTPException(status_code=413, detail="Input exceeds 1 MiB")
+        if len(text.encode("utf-8")) > max_request_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Input exceeds {format_byte_size(max_request_bytes)}",
+            )
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise HTTPException(status_code=400, detail="stream must be boolean")
@@ -774,7 +795,7 @@ def create_neutral_router(
                 if frame == {"type": "session.close"}:
                     await websocket.close(code=1000)
                     return
-                error = _live_frame_error(frame)
+                error = _live_frame_error(frame, max_request_bytes)
                 if error is not None:
                     await websocket.send_json({"type": "error", "error": error})
                     continue
@@ -798,6 +819,8 @@ def create_neutral_app(
     *,
     request_timeout: float = 300,
     max_concurrency: int = 8,
+    max_request_bytes: int = MAX_REQUEST_BYTES,
+    playground_enabled: bool = True,
     authenticator: Authenticator | None = None,
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
@@ -816,13 +839,17 @@ def create_neutral_app(
 
     app = FastAPI(title=f"Harnest: {driver.info.name}", lifespan=lifespan)
     from .playground import create_playground_router
+    from .server_limits import install_request_size_limit
 
-    app.include_router(create_playground_router())
+    install_request_size_limit(app, max_request_bytes)
+    if playground_enabled:
+        app.include_router(create_playground_router())
     app.include_router(
         create_neutral_router(
             driver,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
+            max_request_bytes=max_request_bytes,
         )
     )
     install_authentication(app, authenticator)

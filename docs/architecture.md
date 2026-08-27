@@ -349,7 +349,7 @@ graph/parent relationship.
 
 Compilation writes a separate runtime directory containing the preserved source
 tree, generated `agent.py`, `__init__.py`, and `__main__.py` adapters, the
-`harnest-agent` launcher, and `harnest-manifest.json`. This output is the
+`harnest-agent` launcher, mutable `server.yaml`, and `harnest-manifest.json`. This output is the
 selected framework's runtime package. Generated `agent.py` exports the neutral
 `CompiledApplication` as `application`, the provider application as `app`, and
 the provider target as `root_agent`; its manifest records `framework.name` and
@@ -359,6 +359,20 @@ content is disposable and must not be edited or committed. VCS data, virtual
 environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode are
 excluded. Source symlinks are rejected, keeping artifacts self-contained and
 preventing credentials or external files from being pulled in accidentally.
+
+The compiler validates authored `server.yaml` and copies it beside the launcher;
+if an older source tree omits it, the compiler materializes the safe loopback
+default. The adjacent copy is runtime policy and may be replaced after compile,
+so it is the sole regular artifact file excluded from the manifest digest. The
+authored copy under `source/` remains hashed, and the Go loader rejects a missing,
+symlinked, or non-regular adjacent file plus every other unmanifested file.
+
+The launcher reads this file without required arguments. `http` controls binding,
+remote-bind consent, timeout, and concurrency; `limits.maxRequestBytes` is
+enforced across neutral and advanced-native HTTP bodies and WebSocket frames;
+and `playground.enabled` controls the bundled UI. Explicit launcher flags are
+short-lived operator overrides. Authentication, session storage, TLS, secrets,
+and deployment scaling remain separate injection or hosting boundaries.
 
 The artifact can be served without the Go provisioner. Harnest's primary public
 surface is deliberately transport- and provider-neutral:

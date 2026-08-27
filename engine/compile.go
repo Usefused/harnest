@@ -19,7 +19,10 @@ import (
 	"strings"
 )
 
-const compiledManifestFilename = "harnest-manifest.json"
+const (
+	compiledManifestFilename     = "harnest-manifest.json"
+	compiledServerConfigFilename = "server.yaml"
+)
 
 type Compiler interface {
 	Compile(context.Context, Bundle) (CompiledArtifact, error)
@@ -166,6 +169,9 @@ func loadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, er
 }
 
 func validateCompiledManifest(directory string, source Bundle, manifest CompiledManifest) error {
+	if err := validateCompiledServerConfig(directory); err != nil {
+		return err
+	}
 	if err := validateCompiledIdentity(source, manifest); err != nil {
 		return err
 	}
@@ -183,6 +189,14 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expected)
 	}
 	return validateCompiledFileSet(directory, seen)
+}
+
+func validateCompiledServerConfig(directory string) error {
+	serverConfig := filepath.Join(directory, compiledServerConfigFilename)
+	if _, err := containedRegularFile(directory, serverConfig); err != nil {
+		return fmt.Errorf("invalid compiled server config: %w", err)
+	}
+	return nil
 }
 
 func validateCompiledIdentity(source Bundle, manifest CompiledManifest) error {
@@ -328,7 +342,8 @@ func compiledManifestDigest(files []CompiledFile) string {
 
 func validCompiledPath(value string) bool {
 	return value != "" && value != "." && !path.IsAbs(value) && path.Clean(value) == value &&
-		!strings.HasPrefix(value, "../") && !strings.Contains(value, "\\") && value != compiledManifestFilename
+		!strings.HasPrefix(value, "../") && !strings.Contains(value, "\\") &&
+		value != compiledManifestFilename && value != compiledServerConfigFilename
 }
 
 func hashFile(filePath string) (string, int64, error) {
@@ -353,9 +368,6 @@ func validateCompiledFileSet(directory string, expected map[string]struct{}) err
 	err := filepath.WalkDir(directory, collectCompiledFile(directory, actual))
 	if err != nil {
 		return fmt.Errorf("inspect compiled artifact: %w", err)
-	}
-	if len(actual) != len(expected) {
-		return fmt.Errorf("compiled artifact file set does not match manifest")
 	}
 	for filePath := range actual {
 		if _, exists := expected[filePath]; !exists {
@@ -388,7 +400,9 @@ func collectCompiledFile(directory string, actual map[string]struct{}) fs.WalkDi
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if relative != compiledManifestFilename {
+		// server.yaml is intentionally mutable deployment policy. Every other
+		// runtime file remains immutable and covered by the manifest digest.
+		if relative != compiledManifestFilename && relative != compiledServerConfigFilename {
 			actual[relative] = struct{}{}
 		}
 		return nil
