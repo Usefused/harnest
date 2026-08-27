@@ -1,4 +1,7 @@
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -15,6 +18,58 @@ def load_yaml(relative_path: str):
 def workflow_events(workflow):
     # PyYAML follows YAML 1.1 and may decode GitHub's `on` key as boolean true.
     return workflow.get("on", workflow.get(True))
+
+
+def write_executable(path: Path, source: str):
+    path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+    path.chmod(0o755)
+
+
+def write_installer_fakes(directory: Path, version: str):
+    write_executable(
+        directory / "uname",
+        """
+        #!/bin/sh
+        case "$1" in
+          -s) printf 'Darwin\\n' ;;
+          -m) printf 'arm64\\n' ;;
+        esac
+        """,
+    )
+    write_executable(
+        directory / "curl",
+        f"""
+        #!/bin/sh
+        output=
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--output" ]; then shift; output=$1; fi
+          shift
+        done
+        case "$output" in
+          *checksums.txt) printf 'abc harnest_{version}_darwin_arm64.tar.gz\\n' > "$output" ;;
+          *) printf 'archive' > "$output" ;;
+        esac
+        """,
+    )
+    write_executable(
+        directory / "shasum",
+        """
+        #!/bin/sh
+        printf 'abc  %s\\n' "$3"
+        """,
+    )
+    write_executable(
+        directory / "tar",
+        f"""
+        #!/bin/sh
+        destination=
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "-C" ]; then shift; destination=$1; fi
+          shift
+        done
+        printf '%s\\n' '#!/bin/sh' 'printf "harnest version {version}\\n"' > "$destination/harnest"
+        """,
+    )
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -85,7 +140,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)
         self.assertNotIn("python/harnest-", installer)
         self.assertIn("Warning: harnest currently resolves to", installer)
-        self.assertIn("init my-agent --framework adk", installer)
+        self.assertIn("is_legacy_python_launcher", installer)
+        self.assertIn("install_directory=$existing_directory", installer)
+        self.assertIn("replaced the legacy Python launcher", installer)
+        self.assertIn("harnest init my-agent --framework adk", installer)
+        self.assertNotIn("%s init my-agent", installer)
         self.assertIn("managed internally by Harnest", installer)
         self.assertIn("does not require a preinstalled Python", readme)
 
@@ -94,6 +153,49 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         # The Go binary owns `harnest`; the bundled wheel is an internal runtime.
         self.assertNotIn("[project.scripts]", project)
+
+    def test_installer_replaces_a_writable_legacy_python_launcher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_bin = root / "fake-bin"
+            legacy_bin = root / "legacy-bin"
+            test_version = "9.8.7"
+            fake_bin.mkdir()
+            legacy_bin.mkdir()
+            write_installer_fakes(fake_bin, test_version)
+            write_executable(
+                legacy_bin / "harnest",
+                """
+                #!/usr/bin/env python3
+                from harnest.cli import main
+                """,
+            )
+            environment = {
+                "PATH": f"{fake_bin}:{legacy_bin}:/usr/bin:/bin",
+                "HOME": str(root / "home"),
+                "HARNEST_VERSION": test_version,
+                "HARNEST_YES": "1",
+            }
+
+            result = subprocess.run(
+                ["/bin/sh", str(ROOT / "install.sh")],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"CLI:     {legacy_bin}/harnest", result.stdout)
+            self.assertIn("Migrated: replaced the legacy Python launcher", result.stdout)
+            self.assertNotIn("Warning:", result.stdout)
+            self.assertIn("\n  harnest doctor\n", result.stdout)
+            self.assertNotIn(f"\n  {legacy_bin}/harnest doctor\n", result.stdout)
+            self.assertIn(
+                f"harnest version {test_version}",
+                (legacy_bin / "harnest").read_text(),
+            )
+            self.assertFalse((root / "home" / ".local/bin/harnest").exists())
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

@@ -62,10 +62,10 @@ harnest serve support-agent
 ```
 
 The runtime directory is internal to Harnest. Do not activate it or invoke its
-Python modules directly; the native `harnest` CLI selects it automatically. If
-`harnest --version` does not print `harnest version ...`, run `type -a harnest`
-and put the installation directory before any older Python entrypoint on
-`PATH`.
+Python modules directly; the native `harnest` CLI selects it automatically. The
+installer replaces Harnest's retired Python launcher in place when possible. If
+`harnest --version` still does not print `harnest version ...`, run
+`type -a harnest` to identify a non-writable or unrelated command collision.
 
 ## Coding-agent authoring skill
 

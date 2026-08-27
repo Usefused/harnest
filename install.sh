@@ -11,6 +11,13 @@ need_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
+is_legacy_python_launcher() {
+  launcher_path=$1
+  [ -f "$launcher_path" ] && grep -Eq \
+    '^[[:space:]]*from[[:space:]]+harnest\.cli[[:space:]]+import[[:space:]]+main[[:space:]]*$' \
+    "$launcher_path"
+}
+
 download() {
   source_url=$1
   destination=$2
@@ -84,9 +91,27 @@ case $(uname -m) in
 esac
 
 runtime_directory=${HARNEST_RUNTIME_DIR:-"${HOME}/.harnest/runtime"}
-install_directory=${HARNEST_INSTALL_DIR:-"${HOME}/.local/bin"}
+existing_cli=$(command -v harnest 2>/dev/null || true)
+if [ "${HARNEST_INSTALL_DIR+x}" = x ]; then
+  install_directory=$HARNEST_INSTALL_DIR
+else
+  install_directory="${HOME}/.local/bin"
+  if [ -n "$existing_cli" ] && is_legacy_python_launcher "$existing_cli"; then
+    existing_directory=$(dirname "$existing_cli")
+    if [ -w "$existing_directory" ]; then
+      # Reusing the retired launcher's location makes the native CLI effective
+      # immediately without silently rewriting the user's shell configuration.
+      install_directory=$existing_directory
+    fi
+  fi
+fi
 [ -n "$runtime_directory" ] || fail 'HARNEST_RUNTIME_DIR must not be empty'
 [ -n "$install_directory" ] || fail 'HARNEST_INSTALL_DIR must not be empty'
+legacy_launcher_target=
+if [ "$existing_cli" = "${install_directory}/harnest" ] && \
+    is_legacy_python_launcher "$existing_cli"; then
+  legacy_launcher_target=$existing_cli
+fi
 
 case ${HARNEST_YES:-} in
   1) ;;
@@ -153,28 +178,30 @@ mv -f "$binary_temporary" "$binary_target"
 printf 'Installed Harnest %s\n' "$version"
 printf '  CLI:     %s\n' "$binary_target"
 printf '  Runtime: %s\n' "$runtime_directory"
+if [ -n "$legacy_launcher_target" ]; then
+  printf '  Migrated: replaced the legacy Python launcher with the native CLI\n'
+fi
 
 resolved_cli=$(command -v harnest 2>/dev/null || true)
-command_name=harnest
 if [ "$resolved_cli" != "$binary_target" ]; then
-  command_name=$binary_target
   if [ -n "$resolved_cli" ]; then
     printf '\nWarning: harnest currently resolves to %s, not the native CLI above.\n' \
       "$resolved_cli"
-    printf 'Place %s before %s on PATH, or use the full native CLI path shown below.\n' \
+    printf 'Place %s before %s on PATH before continuing.\n' \
       "$install_directory" "$(dirname "$resolved_cli")"
   else
-    printf '\nAdd %s to PATH, or use the full native CLI path shown below.\n' \
+    printf '\nAdd %s to PATH before continuing.\n' \
       "$install_directory"
   fi
+  printf '  export PATH="%s:$PATH"\n' "$install_directory"
 fi
 
 printf '\nNext steps:\n'
-printf '  %s doctor\n' "$command_name"
-printf '  %s skills install\n' "$command_name"
-printf '  %s init my-agent --framework adk\n' "$command_name"
+printf '  harnest doctor\n'
+printf '  harnest skills install\n'
+printf '  harnest init my-agent --framework adk\n'
 printf '  cd my-agent\n'
-printf '  %s test .\n' "$command_name"
-printf '  %s serve .\n' "$command_name"
+printf '  harnest test .\n'
+printf '  harnest serve .\n'
 printf '\nThe runtime at %s is managed internally by Harnest; do not activate or invoke it directly.\n' \
   "$runtime_directory"

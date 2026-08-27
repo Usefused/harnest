@@ -33,7 +33,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.7 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.8 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -75,10 +75,12 @@ harnest doctor
 ```
 
 The managed runtime is private implementation state. Users run the native CLI;
-they do not activate the runtime or call `python -m harnest.cli`. The installer
-checks whether `harnest` resolves to the native executable it just installed.
-If an older Python console script shadows it, the installer prints both paths,
-an ordering fix, and commands that use the unambiguous native path immediately.
+they do not activate the runtime or call `python -m harnest.cli`. When the
+installer finds Harnest's retired Python launcher in a writable directory, it
+replaces that launcher in place so `harnest` resolves correctly immediately.
+An explicit `HARNEST_INSTALL_DIR` is always respected. For other collisions or
+non-writable locations, the installer prints one PATH setup command before the
+normal, portable `harnest ...` workflow.
 
 Rerunning the installer upgrades the managed runtime from the new executable
 before atomically replacing the installed executable. For a review-first

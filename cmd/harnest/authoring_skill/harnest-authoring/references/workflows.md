@@ -15,9 +15,9 @@ requires the named host interpreter. After installation, use `harnest doctor`
 to inspect the exact managed interpreter and packages selected by the CLI.
 The runtime is private implementation state; do not activate it or invoke
 `python -m harnest.cli` as the user workflow. If the visible command lacks
-`init`, `serve`, `doctor`, or `skills`, run `type -a harnest` and select the
-native CLI path printed by the installer instead of an obsolete Python console
-entrypoint.
+`init`, `serve`, `doctor`, or `skills`, rerun the current installer so it can
+replace Harnest's retired Python launcher in place. Use `type -a harnest` to
+identify any remaining non-writable or unrelated command collision.
 
 ## Initialize and inspect
 
