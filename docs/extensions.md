@@ -102,10 +102,11 @@ WebSocket. Extension failures follow the runtime's normal request or terminal
 stream error behavior; persistence integrations should use the invocation ID
 as an idempotency key when retries are possible.
 
-ADK's official native endpoints bypass the portable Harnest transport layer.
-An extension that must also cover those routes should provide `adk.py`.
-Advanced `Agent.advanced(...)` applications own their framework wiring, so they
-add lifecycle integration or middleware directly in `agent.py`.
+Advanced ADK's official native endpoints bypass the portable Harnest transport
+layer; managed mode does not expose them. An extension that must also cover the
+advanced native routes should provide `adk.py`. Advanced
+`Agent.advanced(...)` applications own their framework wiring, so they add
+lifecycle integration or middleware directly in `agent.py`.
 
 Use [plugins](plugins.md) when the goal is to package MCP client connections
 with skills that teach the host agent how to use their tools.

@@ -631,13 +631,15 @@ curl -sS http://127.0.0.1:8080/healthz
 curl -sS http://127.0.0.1:8080/.well-known/agent-card.json
 ```
 
-For ADK applications only, the launcher also mounts ADK's official routes as an
-advanced native surface:
+Every standalone server keeps FastAPI's generated `/openapi.json`, `/docs`, and
+`/redoc` endpoints. In managed mode that schema contains only the stable Harnest
+HTTP API. For advanced-mode ADK applications only, the launcher also mounts
+ADK's official routes as a native surface:
 ADK session paths under `/apps/{app}/users/{user}/sessions`, JSON Event arrays
 from `/run`, Event streams from `/run_sse`, and `/run_live`. Those routes expose
 ADK-native types and can vary with the installed ADK version; new integrations
-should use the neutral routes above. `make demo-adk-run` shows the native JSON
-path. Inspect `/docs` or `/openapi.json` for the exact installed ADK surface.
+should use the neutral routes above. Inspect `/docs` or `/openapi.json` for the
+exact surface compiled for the selected mode.
 
 This standalone path needs the artifact's Python dependencies and any model or
 MCP services used by the agent. A compiled folder is not a bundled Python

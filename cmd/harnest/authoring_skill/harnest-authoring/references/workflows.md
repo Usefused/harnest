@@ -88,8 +88,9 @@ small `harnest-agent` launcher. It runs without the external provisioner:
 ```
 
 The neutral server includes `/agent`, `/sessions`, `/responses`, and WebSocket
-`/live`; streaming `POST /responses` uses SSE. An ADK artifact may additionally
-expose ADK-native endpoints.
+`/live`; streaming `POST /responses` uses SSE. `/openapi.json`, `/docs`, and
+`/redoc` describe that surface in every mode. Only an advanced-mode ADK artifact
+additionally exposes ADK-native endpoints.
 
 ## Change checklist
 

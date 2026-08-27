@@ -46,6 +46,33 @@ def _recording_class(name):
     return RecordingClass
 
 
+def _deterministic_adk_source(*, advanced):
+    if advanced:
+        root = (
+            "Agent.advanced(LlmAgent("
+            "name='root', model=DeterministicLlm(model='deterministic'), "
+            "instruction='Answer clearly.'))"
+        )
+    else:
+        root = (
+            "Agent(name='root', "
+            "model=DeterministicLlm(model='deterministic'))"
+        )
+    return (
+        "from harnest.agent import Agent\n"
+        "from google.adk.agents import LlmAgent\n"
+        "from google.adk.models import BaseLlm, LlmResponse\n"
+        "from google.genai import types\n\n"
+        "class DeterministicLlm(BaseLlm):\n"
+        "    async def generate_content_async(self, llm_request, stream=False):\n"
+        "        yield LlmResponse(content=types.Content(\n"
+        "            role='model',\n"
+        "            parts=[types.Part(text='official response')],\n"
+        "        ))\n\n"
+        f"root_agent = {root}\n"
+    )
+
+
 def _fake_adk_modules(*, public_mcp_exports=True):
     google = types.ModuleType("google")
     google.__path__ = []
@@ -670,27 +697,14 @@ class AuthoringTests(unittest.TestCase):
             [record["path"] for record in first["files"]],
         )
 
-    def test_fastapi_runtime_reuses_official_adk_route_surface(self):
+    def test_managed_adk_fastapi_hides_native_routes_and_keeps_openapi(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             root = workspace / "authored"
             output = workspace / "compiled"
             self._write(
                 root / "agent.py",
-                "from harnest.agent import Agent\n"
-                "from google.adk.models import BaseLlm, LlmResponse\n"
-                "from google.genai import types\n\n"
-                "class DeterministicLlm(BaseLlm):\n"
-                "    async def generate_content_async(self, llm_request, "
-                "stream=False):\n"
-                "        yield LlmResponse(content=types.Content(\n"
-                "            role='model',\n"
-                "            parts=[types.Part(text='official response')],\n"
-                "        ))\n\n"
-                "root_agent = Agent(\n"
-                "    name='root',\n"
-                "    model=DeterministicLlm(model='deterministic'),\n"
-                ")\n",
+                _deterministic_adk_source(advanced=False),
             )
             self._write(root / "instructions.md", "Answer clearly.\n")
             self._write(
@@ -698,6 +712,48 @@ class AuthoringTests(unittest.TestCase):
                 json.dumps({"name": "Root", "description": "Test agent"}),
             )
             compile_artifact(root, output)
+            app = create_fastapi_app(output, bind_host="testserver")
+
+            from fastapi.testclient import TestClient
+
+            with TestClient(app) as client:
+                schema_response = client.get("/openapi.json")
+                docs_response = client.get("/docs")
+                redoc_response = client.get("/redoc")
+                agent_response = client.get("/agent")
+                native_response = client.post("/run", json={})
+                native_health = client.get("/health")
+
+            self.assertEqual(schema_response.status_code, 200)
+            self.assertEqual(docs_response.status_code, 200)
+            self.assertEqual(redoc_response.status_code, 200)
+            schema_paths = schema_response.json()["paths"]
+            self.assertIn("/responses", schema_paths)
+            self.assertFalse(
+                {"/health", "/version", "/list-apps", "/run", "/run_sse"}
+                & set(schema_paths)
+            )
+            self.assertFalse(any(path.startswith("/apps/") for path in schema_paths))
+            self.assertEqual(agent_response.json()["mode"], "managed")
+            self.assertNotIn("adkRun", agent_response.json()["endpoints"])
+            self.assertEqual(native_response.status_code, 404)
+            self.assertEqual(native_health.status_code, 404)
+
+    def test_advanced_adk_fastapi_reuses_official_route_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "authored"
+            output = workspace / "compiled"
+            self._write(
+                root / "agent.py",
+                _deterministic_adk_source(advanced=True),
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "agent-card.yaml",
+                json.dumps({"name": "Root", "description": "Test agent"}),
+            )
+            compile_artifact(root, output, mode="advanced")
             app = create_fastapi_app(output, bind_host="testserver")
             routes = {
                 (method, route.path)
@@ -784,6 +840,13 @@ class AuthoringTests(unittest.TestCase):
                 agent_response = client.get("/agent")
                 self.assertEqual(agent_response.status_code, 200)
                 self.assertEqual(agent_response.json()["id"], "root")
+                self.assertEqual(agent_response.json()["mode"], "advanced")
+                self.assertEqual(
+                    agent_response.json()["endpoints"]["adkRun"], "/run"
+                )
+                openapi_paths = client.get("/openapi.json").json()["paths"]
+                self.assertIn("/run", openapi_paths)
+                self.assertIn("/responses", openapi_paths)
 
                 neutral_session = client.post(
                     "/sessions",

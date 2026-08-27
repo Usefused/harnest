@@ -375,10 +375,12 @@ neutral tool calls/results. Provider/model identifiers, reasoning details, and
 framework bookkeeping are intentionally omitted. Pre-stream HTTP errors retain
 FastAPI's `{"detail":"..."}` shape and normal 4xx/5xx status semantics.
 
-ADK applications additionally mount official ADK session paths, `/run`,
-`/run_sse`, and `/run_live` as an advanced native surface. Those expose
-ADK-native models and track the installed ADK version; LangGraph applications
-do not emulate them. They are not the stable Harnest integration boundary.
+Every mode retains FastAPI's generated `/openapi.json`, `/docs`, and `/redoc`
+surface. Managed ADK exposes only the neutral Harnest routes in that schema.
+Advanced ADK additionally mounts official ADK session paths, `/run`, `/run_sse`,
+and `/run_live`. Those expose ADK-native models and track the installed ADK
+version; LangGraph applications do not emulate them. They are not the stable
+Harnest integration boundary.
 `GET /healthz` and `GET /.well-known/agent-card.json` remain available for
 health and card discovery in both frameworks.
 
@@ -388,10 +390,10 @@ The standalone server does not interpret deployment resources, resolve secrets, 
 permissions, scale replicas, or add authentication, tenant isolation, and TLS.
 The neutral runtime has one session authority per backend driver. LangGraph
 stores returned graph state directly and does not install a second checkpointer;
-ADK uses the neutral driver's owned runner. Official ADK routes intentionally
-use ADK's separate native session namespace. Production exposure requires a
-trusted authenticated gateway. Those platform concerns remain the
-provisioner/engine's responsibility.
+ADK uses the neutral driver's owned runner. In advanced mode, official ADK
+routes intentionally use ADK's separate native session namespace. Production
+exposure requires a trusted authenticated gateway. Those platform concerns
+remain the provisioner/engine's responsibility.
 
 The serving path is deliberately one-way:
 
@@ -523,11 +525,12 @@ filesystem mutations are currently excluded from OTEL auditing; this avoids
 creating a second telemetry lifecycle before that boundary is designed.
 
 The compiled runtime exposes `harnest.logging` and `harnest.tracing` to authored
-code and owns the default OpenTelemetry bootstrap. LangGraph uses one
-process-global Harnest provider when OTLP is enabled. ADK initializes its own
-global providers while creating the official FastAPI surface, so Harnest adopts
-those providers and does not add a duplicate exporter. Externally installed
-global providers are adopted without mutation or shutdown.
+code and owns the default OpenTelemetry bootstrap. Managed ADK and LangGraph use
+one process-global Harnest provider when OTLP is enabled. Advanced ADK may
+initialize its own global providers while creating the official FastAPI
+surface, so Harnest adopts those providers and does not add a duplicate
+exporter. Externally installed global providers are adopted without mutation or
+shutdown.
 
 Every execution transport creates a low-cardinality
 `harnest.agent.invoke` span. SSE spans remain open for the generator lifetime;

@@ -320,6 +320,12 @@ def _create_adk_fastapi_app(
         raise
 
 
+def _exposes_native_adk_api(application: Any) -> bool:
+    """Keep framework-owned HTTP contracts behind the advanced-mode boundary."""
+
+    return application.framework == "adk" and application.mode == "advanced"
+
+
 def create_fastapi_app(
     artifact: str | Path,
     *,
@@ -327,7 +333,7 @@ def create_fastapi_app(
     request_timeout: float = 300,
     max_concurrency: int = 8,
 ) -> Any:
-    """Build one neutral server, retaining official ADK routes."""
+    """Build the neutral server and opt advanced ADK agents into native routes."""
 
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
@@ -340,7 +346,7 @@ def create_fastapi_app(
     from .neutral_runtime import create_neutral_app, create_neutral_router
     from .telemetry import configure_observability, instrument_fastapi
 
-    if application.framework == "adk":
+    if _exposes_native_adk_api(application):
         os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
         app = _create_adk_fastapi_app(
             artifact, application=application, bind_host=bind_host

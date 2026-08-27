@@ -10,9 +10,8 @@ SERVE_MAX_CONCURRENCY ?= 8
 SERVE_EXTRA_ARGS ?=
 AGENT_URL ?= http://127.0.0.1:$(SERVE_PORT)
 DEMO_SESSION_ID ?= demo-session
-ADK_DEMO_USER_ID ?= demo-user
 
-.PHONY: test quality complexity format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream demo-adk-run example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test quality complexity format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
 
 test: schemas
 	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests/python -v
@@ -63,10 +62,6 @@ demo-response:
 
 demo-stream:
 	curl -N -sS -X POST $(AGENT_URL)/responses -H 'Content-Type: application/json' --data '{"input":"What should I collect next?","sessionId":"$(DEMO_SESSION_ID)","stream":true}'
-
-demo-adk-run:
-	curl -sS -X POST $(AGENT_URL)/apps/helpdesk/users/$(ADK_DEMO_USER_ID)/sessions -H 'Content-Type: application/json' --data '{"sessionId":"$(DEMO_SESSION_ID)-adk","state":{}}'
-	curl -sS -X POST $(AGENT_URL)/run -H 'Content-Type: application/json' --data '{"appName":"helpdesk","userId":"$(ADK_DEMO_USER_ID)","sessionId":"$(DEMO_SESSION_ID)-adk","newMessage":{"role":"user","parts":[{"text":"Triage a fictional production API authentication outage."}]}}'
 
 live-run: compile-example
 	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
