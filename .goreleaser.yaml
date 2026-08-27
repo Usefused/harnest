@@ -54,6 +54,7 @@ snapshot:
   version_template: "{{ incpatch .Version }}.dev0"
 
 changelog:
+  format: "{{ .Message }}"
   sort: asc
   filters:
     exclude:

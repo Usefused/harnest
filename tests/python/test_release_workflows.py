@@ -64,6 +64,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(config["archives"][0]["files"], ["LICENSE", "README.md"])
         self.assertEqual(config["snapshot"]["version_template"], "{{ incpatch .Version }}.dev0")
 
+    def test_goreleaser_changelog_omits_commit_identity(self):
+        config = load_yaml(".goreleaser.yaml")
+
+        # Release notes should describe changes without exposing implementation IDs.
+        self.assertEqual(config["changelog"]["format"], "{{ .Message }}")
+
     def test_installer_bootstraps_the_runtime_from_the_binary(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
 
