@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "harnest"
-version = "0.1.6"
+version = "0.1.7"
 description = "Filesystem-first Python authoring SDK for ADK and LangGraph agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,9 +39,6 @@ all = [
   "langchain-litellm>=0.7,<1",
   "langchain-mcp-adapters>=0.3,<1",
 ]
-
-[project.scripts]
-harnest = "harnest.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/harnest"]

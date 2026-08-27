@@ -51,6 +51,7 @@ need_command mktemp
 need_command tar
 need_command grep
 need_command awk
+need_command dirname
 
 repo=${HARNEST_REPO:-creativeJoe007/harnest}
 printf '%s\n' "$repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || \
@@ -152,7 +153,28 @@ mv -f "$binary_temporary" "$binary_target"
 printf 'Installed Harnest %s\n' "$version"
 printf '  CLI:     %s\n' "$binary_target"
 printf '  Runtime: %s\n' "$runtime_directory"
-case ":${PATH}:" in
-  *:"${install_directory}":*) ;;
-  *) printf 'Add %s to PATH to run harnest.\n' "$install_directory" ;;
-esac
+
+resolved_cli=$(command -v harnest 2>/dev/null || true)
+command_name=harnest
+if [ "$resolved_cli" != "$binary_target" ]; then
+  command_name=$binary_target
+  if [ -n "$resolved_cli" ]; then
+    printf '\nWarning: harnest currently resolves to %s, not the native CLI above.\n' \
+      "$resolved_cli"
+    printf 'Place %s before %s on PATH, or use the full native CLI path shown below.\n' \
+      "$install_directory" "$(dirname "$resolved_cli")"
+  else
+    printf '\nAdd %s to PATH, or use the full native CLI path shown below.\n' \
+      "$install_directory"
+  fi
+fi
+
+printf '\nNext steps:\n'
+printf '  %s doctor\n' "$command_name"
+printf '  %s skills install\n' "$command_name"
+printf '  %s init my-agent --framework adk\n' "$command_name"
+printf '  cd my-agent\n'
+printf '  %s test .\n' "$command_name"
+printf '  %s serve .\n' "$command_name"
+printf '\nThe runtime at %s is managed internally by Harnest; do not activate or invoke it directly.\n' \
+  "$runtime_directory"

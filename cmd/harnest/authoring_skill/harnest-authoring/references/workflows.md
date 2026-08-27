@@ -13,6 +13,11 @@ when one exists and otherwise installs pinned managed CPython into the Harnest
 data directory. `HARNEST_BOOTSTRAP_PYTHON` opts out of that fallback and
 requires the named host interpreter. After installation, use `harnest doctor`
 to inspect the exact managed interpreter and packages selected by the CLI.
+The runtime is private implementation state; do not activate it or invoke
+`python -m harnest.cli` as the user workflow. If the visible command lacks
+`init`, `serve`, `doctor`, or `skills`, run `type -a harnest` and select the
+native CLI path printed by the installer instead of an obsolete Python console
+entrypoint.
 
 ## Initialize and inspect
 

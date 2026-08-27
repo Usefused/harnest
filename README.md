@@ -61,6 +61,12 @@ harnest compile support-agent --output .harnest/support-agent
 harnest serve support-agent
 ```
 
+The runtime directory is internal to Harnest. Do not activate it or invoke its
+Python modules directly; the native `harnest` CLI selects it automatically. If
+`harnest --version` does not print `harnest version ...`, run `type -a harnest`
+and put the installation directory before any older Python entrypoint on
+`PATH`.
+
 ## Coding-agent authoring skill
 
 Harnest embeds a separate `harnest-authoring` Agent Skill for coding agents that

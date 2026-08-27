@@ -84,7 +84,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('[ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]', installer)
         self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)
         self.assertNotIn("python/harnest-", installer)
+        self.assertIn("Warning: harnest currently resolves to", installer)
+        self.assertIn("init my-agent --framework adk", installer)
+        self.assertIn("managed internally by Harnest", installer)
         self.assertIn("does not require a preinstalled Python", readme)
+
+    def test_python_wheel_does_not_publish_the_native_cli_name(self):
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        # The Go binary owns `harnest`; the bundled wheel is an internal runtime.
+        self.assertNotIn("[project.scripts]", project)
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
