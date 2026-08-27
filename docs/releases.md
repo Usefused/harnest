@@ -32,7 +32,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.3 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.4 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -53,11 +53,18 @@ metadata differs from the CLI version. The installer then:
 - atomically installs the native executable at
   `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`.
 
-`HARNEST_BOOTSTRAP_PYTHON` selects the Python used to create the environment.
-The selected interpreter must be Python 3.10 or newer. `HARNEST_PYTHON` is
-different: it overrides the interpreter used later by the `harnest` command.
-The CLI normally resolves Python in this order: `--python`, `HARNEST_PYTHON`,
-the managed `HARNEST_RUNTIME_DIR`, then `python3` on `PATH`.
+The installer automatically checks versioned Python commands from 3.14 down to
+3.10, then `python3` and `python`, and uses the first interpreter that actually
+reports Python 3.10 or newer. This avoids selecting an older operating-system
+`python3` when a supported Homebrew, pyenv, or other installation is present.
+`HARNEST_BOOTSTRAP_PYTHON` selects an exact interpreter when an override is
+needed. The installer does not silently install or modify a system Python; if
+none qualifies, it reports the discovered unsupported versions and asks for a
+supported installation or override.
+
+`HARNEST_PYTHON` is different: it overrides the interpreter used later by the
+`harnest` command. The CLI normally resolves Python in this order: `--python`,
+`HARNEST_PYTHON`, the managed `HARNEST_RUNTIME_DIR`, then `python3` on `PATH`.
 
 Add the install directory to `PATH` if necessary, then verify both layers:
 

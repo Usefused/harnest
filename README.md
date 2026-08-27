@@ -38,7 +38,9 @@ The binary is installed at `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`;
 Python dependencies stay in the dedicated
 `${HARNEST_RUNTIME_DIR:-$HOME/.harnest/runtime}` virtual environment. Downloads
 must match the release's published SHA-256 checksum before anything is
-installed. The managed runtime installs both supported compiler backends;
+installed. The installer finds a Python 3.10+ interpreter even when the system
+`python3` is older; set `HARNEST_BOOTSTRAP_PYTHON` only to choose an exact
+interpreter. The managed runtime installs both supported compiler backends;
 model-provider and agent-specific packages remain declared by each agent. Pin
 or redirect the source with `HARNEST_VERSION` and
 `HARNEST_REPO=owner/repository`. See [Installation and

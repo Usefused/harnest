@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,47 @@ import (
 
 	"harnest.dev/harnest/internal/runtimewheel"
 )
+
+func TestRuntimeInstallAutoDiscoversSupportedPython(t *testing.T) {
+	binDirectory := t.TempDir()
+	writeNamedExecutable(t, binDirectory, "python3", `#!/bin/sh
+printf '%s\n' '3.9.6'
+exit 1
+`)
+	supported := writeNamedExecutable(t, binDirectory, "python3.11", `#!/bin/sh
+printf '%s\n' '3.11.9'
+`)
+	t.Setenv("PATH", binDirectory)
+	app := application{system: defaultSystem()}
+
+	executable, err := app.resolveBootstrapPython(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executable != supported {
+		t.Fatalf("selected %q, want supported interpreter %q", executable, supported)
+	}
+}
+
+func TestRuntimeInstallReportsDiscoveredUnsupportedPython(t *testing.T) {
+	binDirectory := t.TempDir()
+	unsupported := writeNamedExecutable(t, binDirectory, "python3", `#!/bin/sh
+printf '%s\n' '3.9.6'
+exit 1
+`)
+	t.Setenv("PATH", binDirectory)
+	app := application{system: defaultSystem()}
+
+	_, err := app.resolveBootstrapPython(context.Background(), "")
+	if err == nil {
+		t.Fatal("unsupported Python unexpectedly passed discovery")
+	}
+	assertContainsAll(t, "Python discovery error", err.Error(), []string{
+		"Python 3.10 or newer was not found",
+		"Python 3.9.6 at " + unsupported + " is unsupported",
+		"HARNEST_BOOTSTRAP_PYTHON",
+	})
+}
 
 func TestRuntimeInstallBootstrapsFromEmbeddedWheel(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "runtime-calls.txt")
@@ -51,7 +93,7 @@ fi
 		t.Fatal(err)
 	}
 	assertContainsAll(t, "runtime install calls", string(calls), []string{
-		"BOOTSTRAP\t-c import sys;",
+		"BOOTSTRAP\t-c import platform, sys;",
 		"BOOTSTRAP\t-m venv " + runtimeDirectory,
 		"RUNTIME\t-m pip --disable-pip-version-check install --upgrade ",
 		"harnest-test-version-py3-none-any.whl[all]",
@@ -71,4 +113,13 @@ func assertStagedWheelRemoved(t *testing.T, calls string) {
 		}
 	}
 	t.Fatal("pip invocation did not include a staged wheel")
+}
+
+func writeNamedExecutable(t *testing.T, directory, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(directory, name)
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

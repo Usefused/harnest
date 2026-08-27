@@ -132,11 +132,15 @@ mkdir -p "$extract_directory"
 tar -xzf "${temporary_directory}/${archive}" -C "$extract_directory"
 [ -f "${extract_directory}/harnest" ] || fail 'release archive has no harnest binary'
 
-bootstrap_python=${HARNEST_BOOTSTRAP_PYTHON:-python3}
 chmod 0755 "${extract_directory}/harnest"
-"${extract_directory}/harnest" runtime install \
-  --bootstrap-python "$bootstrap_python" \
-  --directory "$runtime_directory"
+if [ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]; then
+  "${extract_directory}/harnest" runtime install \
+    --bootstrap-python "$HARNEST_BOOTSTRAP_PYTHON" \
+    --directory "$runtime_directory"
+else
+  "${extract_directory}/harnest" runtime install \
+    --directory "$runtime_directory"
+fi
 
 mkdir -p "$install_directory"
 binary_target="${install_directory}/harnest"

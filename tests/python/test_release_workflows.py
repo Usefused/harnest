@@ -74,6 +74,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
 
         self.assertIn('"${extract_directory}/harnest" runtime install', installer)
+        self.assertIn('[ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]', installer)
+        self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)
         self.assertNotIn("python/harnest-", installer)
 
     def test_source_fallback_matches_project_version(self):

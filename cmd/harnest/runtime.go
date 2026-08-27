@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -19,6 +20,18 @@ type runtimeInstallOptions struct {
 	bootstrapPython string
 }
 
+// Versioned commands come first because macOS may keep an older system
+// python3 ahead of a supported package-manager installation on PATH.
+var bootstrapPythonCandidates = []string{
+	"python3.14",
+	"python3.13",
+	"python3.12",
+	"python3.11",
+	"python3.10",
+	"python3",
+	"python",
+}
+
 func (a *application) newRuntimeCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "runtime",
@@ -31,9 +44,6 @@ func (a *application) newRuntimeCommand() *cobra.Command {
 func (a *application) newRuntimeInstallCommand() *cobra.Command {
 	options := runtimeInstallOptions{
 		bootstrapPython: strings.TrimSpace(a.system.getenv("HARNEST_BOOTSTRAP_PYTHON")),
-	}
-	if options.bootstrapPython == "" {
-		options.bootstrapPython = "python3"
 	}
 	command := &cobra.Command{
 		Use:   "install",
@@ -65,7 +75,7 @@ func (a *application) newRuntimeInstallCommand() *cobra.Command {
 		&options.bootstrapPython,
 		"bootstrap-python",
 		options.bootstrapPython,
-		"Python 3.10+ executable used to create the managed environment",
+		"Python 3.10+ executable used to create the managed environment (default: auto-detect)",
 	)
 	return command
 }
@@ -76,11 +86,8 @@ func (a *application) installRuntime(
 	bootstrapPython string,
 	artifact runtimewheel.Artifact,
 ) error {
-	bootstrap, err := a.system.lookPath(bootstrapPython)
+	bootstrap, err := a.resolveBootstrapPython(command.Context(), bootstrapPython)
 	if err != nil {
-		return fmt.Errorf("bootstrap Python executable %q is unavailable: %w", bootstrapPython, err)
-	}
-	if err := a.validateBootstrapPython(command.Context(), bootstrap); err != nil {
 		return err
 	}
 	wheelPath, cleanup, err := stageRuntimeWheel(artifact)
@@ -102,17 +109,72 @@ func (a *application) installRuntime(
 	return nil
 }
 
+func (a *application) resolveBootstrapPython(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return a.resolveRequestedBootstrapPython(ctx, requested)
+	}
+	problems := make([]string, 0, len(bootstrapPythonCandidates))
+	seen := make(map[string]struct{})
+	for _, candidate := range bootstrapPythonCandidates {
+		executable, err := a.system.lookPath(candidate)
+		if err != nil || executableAlreadyChecked(seen, executable) {
+			continue
+		}
+		if err := a.validateBootstrapPython(ctx, executable); err == nil {
+			return executable, nil
+		} else {
+			problems = append(problems, err.Error())
+		}
+	}
+	return "", unsupportedPythonError(problems)
+}
+
+func (a *application) resolveRequestedBootstrapPython(ctx context.Context, requested string) (string, error) {
+	executable, err := a.system.lookPath(requested)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap Python executable %q is unavailable: %w", requested, err)
+	}
+	if err := a.validateBootstrapPython(ctx, executable); err != nil {
+		return "", err
+	}
+	return executable, nil
+}
+
+func executableAlreadyChecked(seen map[string]struct{}, executable string) bool {
+	if _, exists := seen[executable]; exists {
+		return true
+	}
+	seen[executable] = struct{}{}
+	return false
+}
+
+func unsupportedPythonError(problems []string) error {
+	detail := "no Python executable was found on PATH"
+	if len(problems) != 0 {
+		detail = strings.Join(problems, "; ")
+	}
+	return fmt.Errorf(
+		"Python 3.10 or newer was not found: %s; install a supported Python or set HARNEST_BOOTSTRAP_PYTHON",
+		detail,
+	)
+}
+
 func (a *application) validateBootstrapPython(ctx context.Context, executable string) error {
 	process := a.system.commandContext(
 		ctx,
 		executable,
 		"-c",
-		"import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+		"import platform, sys; print(platform.python_version()); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
 	)
-	process.Stdout = io.Discard
+	var stdout bytes.Buffer
+	process.Stdout = &stdout
 	process.Stderr = io.Discard
 	if err := process.Run(); err != nil {
-		return fmt.Errorf("Python 3.10 or newer is required: %w", err)
+		version := strings.TrimSpace(stdout.String())
+		if version != "" {
+			return fmt.Errorf("Python %s at %s is unsupported", version, executable)
+		}
+		return fmt.Errorf("inspect Python at %s: %w", executable, err)
 	}
 	return nil
 }
