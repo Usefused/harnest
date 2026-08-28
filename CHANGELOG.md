@@ -125,6 +125,14 @@ when applications need them.
   custom retrieval results portable across ADK, LangGraph, and Harnest
   transports.
 
+## [0.4.0](https://github.com/creativeJoe007/harnest/compare/v0.3.0...v0.4.0) (2026-08-28)
+
+
+### Features
+
+* expand and stabilize portable runtime ([f94f613](https://github.com/creativeJoe007/harnest/commit/f94f613813fc258b12bbaccc302e5480c18e6f07))
+* support dynamic human approval ([b30f96d](https://github.com/creativeJoe007/harnest/commit/b30f96da24144d1630a451348a034d4d4ed3a83b))
+
 ## [0.3.0](https://github.com/creativeJoe007/harnest/compare/v0.2.0...v0.3.0) (2026-08-28)
 
 
