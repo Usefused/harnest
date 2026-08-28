@@ -600,8 +600,13 @@ harnest test examples/self-serve/agents/helpdesk --smoke
 FastAPI `client` and a higher-level `smoke` fixture. Use
 `smoke.respond(input, session_id=None, metadata=None)` for one neutral JSON
 response, or `smoke.stream(...)` for the ordered neutral SSE data objects. The
-command exits nonzero if compilation, collection, unit tests, or opted-in smoke
-tests fail. Smoke tests may consume live model and MCP credentials, so CI should
+compiled server and its lifecycle-owned stores remain open across the selected
+smoke suite and close once after it. Do not close the injected `client` or a
+store from a test. Omit `session_id` for an isolated single-turn check; reuse an
+explicit ID only to test a multi-turn conversation, and keep that ID unique to
+the test because `MemoryStore` state persists across the suite. The command
+exits nonzero if compilation, collection, unit tests, or opted-in smoke tests
+fail. Smoke tests may consume live model and MCP credentials, so CI should
 enable them deliberately and inject the same runtime environment as the agent.
 
 For an ADK agent, run all validated official ADK eval sets after the unit suite

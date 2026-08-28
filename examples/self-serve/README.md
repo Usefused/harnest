@@ -95,6 +95,9 @@ tests may request either the high-level `smoke` helper or a raw FastAPI `client`
 Unit tests are offline by convention—the runner withholds HTTP fixtures but does
 not install an operating-system network sandbox. Neither test directory is
 composed into agent instructions, resources, or advertised capabilities.
+All smoke tests share one server and `MemoryStore` lifecycle. Do not close the
+fixtures yourself. Omit `session_id` for an isolated request, or use a unique
+explicit ID within one test when verifying multi-turn behavior.
 
 ## Standalone HTTP server
 

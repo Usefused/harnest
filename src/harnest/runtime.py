@@ -668,7 +668,7 @@ def _build_native_adk_app(
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.
     app.router.routes.extend(neutral.routes)
-    app.router.add_event_handler("shutdown", driver.close)
+    _attach_driver_lifecycle(app, driver)
     install_authentication(app, authenticator)
     install_request_size_limit(app, max_request_bytes)
     telemetry = configure_observability(
@@ -677,6 +677,24 @@ def _build_native_adk_app(
         use_global_providers=_adk_owns_otel(),
     )
     return app, telemetry
+
+
+def _attach_driver_lifecycle(app: Any, driver: Any) -> None:
+    """Close the neutral driver inside ADK's active custom lifespan."""
+
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(application: Any):
+        async with original_lifespan(application):
+            try:
+                yield
+            finally:
+                # FastAPI skips shutdown handlers when a custom lifespan owns
+                # the app, so driver cleanup must participate in that lifespan.
+                await driver.close()
+
+    app.router.lifespan_context = lifespan
 
 
 def _adk_owns_otel() -> bool:

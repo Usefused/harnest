@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -5,7 +7,11 @@ from unittest.mock import AsyncMock, Mock, patch
 from harnest.application import CompiledApplication
 from harnest.checkpoint import ADKStore
 from harnest.neutral_runtime import AgentInfo, SessionRecord
-from harnest.runtime import AgentRuntimeError, _runtime_driver
+from harnest.runtime import (
+    AgentRuntimeError,
+    _attach_driver_lifecycle,
+    _runtime_driver,
+)
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
 
@@ -68,6 +74,36 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "backend failed"):
             await driver.close()
         self.assertEqual(store.closed, 1)
+
+
+class NativeADKLifespanOwnershipTests(unittest.TestCase):
+    def test_custom_lifespan_closes_owned_storage_once(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        events = []
+        store = RecordingStore()
+        inner = _driver()
+        driver = StorageRuntimeDriver(inner, store)
+
+        @asynccontextmanager
+        async def adk_lifespan(_app):
+            events.append("adk-start")
+            try:
+                yield
+            finally:
+                events.append(f"adk-stop:{inner.close.await_count}")
+
+        app = FastAPI(lifespan=adk_lifespan)
+        _attach_driver_lifecycle(app, driver)
+
+        with TestClient(app):
+            self.assertEqual(events, ["adk-start"])
+        asyncio.run(driver.close())
+
+        self.assertEqual(events, ["adk-start", "adk-stop:1"])
+        self.assertEqual(store.closed, 1)
+        inner.close.assert_awaited_once()
 
 
 class SessionStoreRuntimeSelectionTests(unittest.TestCase):

@@ -383,6 +383,13 @@ The runner supplies these fixtures:
 | `client` | smoke only | A raw FastAPI `TestClient` for the compiled standalone app. |
 | `smoke` | smoke only | Neutral helpers: `.respond(input, session_id=None, metadata=None) -> dict` and `.stream(...) -> list[dict]`. |
 
+One compiled server lifecycle is shared by all selected smoke tests. This keeps
+lifecycle-owned session and checkpoint stores available for the entire suite;
+Harnest closes them once after pytest finishes. Tests must not close the
+injected client or stores. An omitted session ID creates an isolated session;
+an explicit ID intentionally carries state and should be unique to one test
+so test order cannot change outcomes.
+
 Unit tests are an offline contract: they should exercise definitions and local
 tool functions without calling a model, MCP server, or HTTP endpoint. Harnest
 reinforces the boundary by withholding HTTP/smoke fixtures, but it does not

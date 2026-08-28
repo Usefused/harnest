@@ -1,9 +1,12 @@
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from fastapi import FastAPI
 
 from harnest._library import release_authored_library
 from harnest.bundle import (
@@ -166,6 +169,128 @@ class AuthoredLibraryTests(unittest.TestCase):
             self._write(root / "tests" / "smoke" / "test_smoke_lib.py", test_source)
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 exit_code = run_agent_tests(root, include_smoke=True)
+
+        self.assertEqual(exit_code, 0)
+
+    def test_smoke_tests_share_one_compiled_server_lifecycle(self):
+        lifecycle = {"started": 0, "closed": 0}
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            lifecycle["started"] += 1
+            yield
+            lifecycle["closed"] += 1
+
+        app = FastAPI(lifespan=lifespan)
+
+        @app.get("/health")
+        async def health():
+            return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            self._write(
+                root / "tests/unit/test_shared_smoke_lifecycle_unit.py",
+                "def test_agent(agent):\n    assert agent.name == 'root'\n",
+            )
+            first_smoke_test = (
+                "def test_server(client):\n"
+                "    assert client.get('/health').json() == {'status': 'ok'}\n"
+                "    client.headers['x-test-user'] = 'first'\n"
+                "    client.cookies.set('test-session', 'first')\n"
+            )
+            second_smoke_test = (
+                "def test_server(client):\n"
+                "    assert client.get('/health').json() == {'status': 'ok'}\n"
+                "    assert 'x-test-user' not in client.headers\n"
+                "    assert client.cookies.get('test-session') is None\n"
+            )
+            self._write(
+                root / "tests/smoke/test_shared_smoke_lifecycle_first.py",
+                first_smoke_test,
+            )
+            self._write(
+                root / "tests/smoke/test_shared_smoke_lifecycle_second.py",
+                second_smoke_test,
+            )
+            with (
+                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.testing.create_fastapi_app", return_value=app),
+            ):
+                exit_code = run_agent_tests(root, include_smoke=True)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(lifecycle, {"started": 1, "closed": 1})
+
+    def test_unit_client_fixture_rejection_does_not_start_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            self._write(
+                root / "tests/unit/test_invalid_client.py",
+                "def test_client_is_smoke_only(client):\n"
+                "    raise AssertionError('the fixture should reject first')\n"
+                "def test_smoke_is_smoke_only(smoke):\n"
+                "    raise AssertionError('the fixture should reject first')\n",
+            )
+            with (
+                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.testing.create_fastapi_app") as create_app,
+            ):
+                exit_code = run_agent_tests(root)
+
+        self.assertNotEqual(exit_code, 0)
+        create_app.assert_not_called()
+
+    def test_smoke_tests_keep_shared_memory_store_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write(
+                root / "agent.py",
+                "from harnest.graph import START, Edge, Event, Graph\n"
+                "def answer(value):\n"
+                "    return Event(output=f'{value}:ok', message=f'{value}:ok')\n"
+                "root_agent = Graph(\n"
+                "    name='shared_store', nodes={'answer': answer},\n"
+                "    edges=(Edge(START, 'answer'),),\n"
+                ")\n",
+            )
+            self._write(root / "instructions.md", "Respond deterministically.\n")
+            self._write(
+                root / "agent-card.yaml",
+                "name: Shared store\n"
+                "description: Verifies smoke-test storage ownership.\n"
+                "version: 0.1.0\n",
+            )
+            self._write(
+                root / "lib/storage.py",
+                "from harnest.store import MemoryStore\n"
+                "store = MemoryStore()\n",
+            )
+            self._write(
+                root / "extensions/storage.py",
+                "from harnest.lib.storage import store\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.session_store\n"
+                "def sessions(): return store\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpoints(): return store\n",
+            )
+            self._write(
+                root / "tests/unit/test_shared_memory_store_agent.py",
+                "def test_agent(agent):\n"
+                "    assert agent.name == 'shared_store'\n",
+            )
+            for name, value in (("first", "one"), ("second", "two")):
+                self._write(
+                    root / f"tests/smoke/test_{name}.py",
+                    "def test_response(smoke):\n"
+                    f"    result = smoke.respond({value!r})\n"
+                    f"    assert result['outputText'] == {f'{value}:ok'!r}\n",
+                )
+
+            exit_code = run_agent_tests(root, include_smoke=True)
 
         self.assertEqual(exit_code, 0)
 

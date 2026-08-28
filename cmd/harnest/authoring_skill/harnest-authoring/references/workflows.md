@@ -130,6 +130,11 @@ harnest test support-agent --smoke --evals
   authored; compilation and opted-in evals still run.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
+  The smoke fixtures share one compiled server lifecycle and close its stores
+  once after the selected suite. Do not close the injected client or stores.
+  Omit `session_id` for an isolated single-turn check. Reuse an explicit ID for
+  intentional multi-turn behavior, and keep it unique to that test because the
+  development `MemoryStore` preserves state across the suite.
 
 ## Compile and serve
 

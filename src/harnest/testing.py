@@ -245,6 +245,26 @@ class _HarnestPytestPlugin:
                 pytrace=False,
             )
 
+    @contextmanager
+    def _isolated_smoke_client(
+        self, request: Any, fixture_name: str
+    ) -> Iterator[Any]:
+        """Expose shared server ownership without sharing per-test HTTP state."""
+
+        # Resolve the session fixture only after validating the test location;
+        # otherwise an invalid unit test could start user-owned resources.
+        self._require_smoke(request, fixture_name)
+        client = request.getfixturevalue("_harnest_smoke_client")
+        headers = client.headers.copy()
+        cookies = type(client.cookies)(client.cookies)
+        try:
+            yield client
+        finally:
+            # The application lifespan is suite-scoped, but request defaults are
+            # test-owned so authentication state cannot influence the next test.
+            client.headers = headers
+            client.cookies = cookies
+
     def pytest_configure(self, config: Any) -> None:
         config.addinivalue_line(
             "markers",
@@ -270,23 +290,27 @@ class _HarnestPytestPlugin:
     def tools(self) -> Mapping[str, Any]:
         return self.discovered_tools
 
-    @pytest.fixture
-    def client(self, request: Any) -> Iterator[Any]:
-        self._require_smoke(request, "client")
+    @pytest.fixture(scope="session")
+    def _harnest_smoke_client(self) -> Iterator[Any]:
+        """Keep one server lifecycle around every selected smoke test."""
+
         from fastapi.testclient import TestClient
 
         app = create_fastapi_app(self.artifact, bind_host="testserver")
+        # The compiled application owns shared lifecycle resources. Closing an
+        # app per test would close those resources while later tests still use it.
         with TestClient(app) as test_client:
             yield test_client
 
     @pytest.fixture
-    def smoke(
-        self,
-        request: Any,
-        client: Any,
-    ) -> SmokeClient:
-        self._require_smoke(request, "smoke")
-        return SmokeClient(client)
+    def client(self, request: Any) -> Iterator[Any]:
+        with self._isolated_smoke_client(request, "client") as test_client:
+            yield test_client
+
+    @pytest.fixture
+    def smoke(self, request: Any) -> Iterator[SmokeClient]:
+        with self._isolated_smoke_client(request, "smoke") as test_client:
+            yield SmokeClient(test_client)
 
 
 def _eval_config(suite: EvalSuite, trajectory: str) -> Any:
