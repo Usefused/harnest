@@ -285,6 +285,14 @@ class NeutralRuntimeTests(unittest.TestCase):
             self.assertIn(endpoint, javascript.text)
         self.assertIn("/approvals/", javascript.text)
         self.assertIn("Human approval required", javascript.text)
+        self.assertIn(
+            'approvalButton("Approve", "approve", "approval-button approval-button-approve")',
+            javascript.text,
+        )
+        self.assertIn(
+            'approvalButton("Deny", "deny", "approval-button approval-button-deny")',
+            javascript.text,
+        )
         self.assertIn('id="session-state-empty"', page.text)
         self.assertIn('id="session-menu"', page.text)
         self.assertIn('id="trace-timeline"', page.text)
@@ -295,6 +303,11 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn('data-level="warning"', page.text)
         self.assertIn('aria-haspopup="listbox"', page.text)
         self.assertIn('data-active="stream"', page.text)
+        self.assertIn('id="theme-trigger"', page.text)
+        self.assertIn('id="theme-menu"', page.text)
+        self.assertIn('data-theme-option="system"', page.text)
+        self.assertIn('role="menuitemradio"', page.text)
+        self.assertIn('data-theme-icon="system"', page.text)
         self.assertLess(
             page.text.index('id="session-select"'),
             page.text.index('<main class="workspace">'),
@@ -302,6 +315,11 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("height: 100dvh", stylesheet.text)
         self.assertIn("overscroll-behavior: contain", stylesheet.text)
         self.assertIn("typing-bubble", stylesheet.text)
+        self.assertIn(".send-button { position: absolute", stylesheet.text)
+        self.assertIn(".approval-button-approve", stylesheet.text)
+        self.assertIn(".composer textarea::placeholder", stylesheet.text)
+        self.assertIn("font-size: 14px; font-weight: 400", stylesheet.text)
+        self.assertIn(':root[data-theme="light"]', stylesheet.text)
         self.assertIn(".trace-entry", stylesheet.text)
         self.assertIn(".log-entry", stylesheet.text)
         self.assertIn(".log-level.active", stylesheet.text)
@@ -312,6 +330,9 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("syncSessionPicker()", javascript.text)
         self.assertIn('traces: "/_harnest/traces"', javascript.text)
         self.assertIn("function renderLogs()", javascript.text)
+        self.assertIn('"harnest.playground.theme"', javascript.text)
+        self.assertIn("function selectTheme(theme, persist = true)", javascript.text)
+        self.assertIn("function toggleThemeMenu(force)", javascript.text)
         self.assertIn('entry.category !== "log"', javascript.text)
         self.assertIn('selectInspectorView("logs")', javascript.text)
         self.assertIn('logging ? "Logs" : tracing ? "Trace" : "State"', javascript.text)
@@ -320,7 +341,9 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("showTypingIndicator()", javascript.text)
         for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
             self.assertNotIn(native_endpoint, javascript.text)
-        self.assertNotIn("localStorage", javascript.text)
+        self.assertEqual(javascript.text.count("window.localStorage"), 2)
+        self.assertNotIn('localStorage.setItem("session', javascript.text)
+        self.assertNotIn('localStorage.setItem("bearer', javascript.text)
         self.assertNotIn("sessionStorage", javascript.text)
 
     def test_playground_renders_nested_application_state_updates(self):

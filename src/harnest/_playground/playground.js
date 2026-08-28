@@ -46,7 +46,14 @@ const ui = {
   logLevels: document.querySelector("#log-levels"),
   logsEmpty: document.querySelector("#logs-empty"),
   logsList: document.querySelector("#logs-list"),
+  appearancePanel: document.querySelector("#appearance-panel"),
+  themeTrigger: document.querySelector("#theme-trigger"),
+  themeMenu: document.querySelector("#theme-menu"),
 };
+
+const themeStorageKey = "harnest.playground.theme";
+const supportedThemes = new Set(["dark", "light", "system"]);
+const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
 const runtime = {
   sessionId: "",
@@ -627,8 +634,8 @@ function appendApproval(action) {
   message.textContent = action.message || "Approve this protected action?";
   const controls = document.createElement("div");
   controls.className = "approval-actions";
-  const deny = approvalButton("Deny", "deny", "secondary-button");
-  const approve = approvalButton("Approve", "approve", "send-button");
+  const deny = approvalButton("Deny", "deny", "approval-button approval-button-deny");
+  const approve = approvalButton("Approve", "approve", "approval-button approval-button-approve");
   for (const button of [deny, approve]) {
     button.addEventListener("click", () => decideApproval(action.id, button.dataset.decision, panel));
   }
@@ -868,6 +875,61 @@ function selectTransport(button) {
   setStatus(`${button.textContent.trim()} mode ready`, "ok");
 }
 
+function storedTheme() {
+  try {
+    const theme = window.localStorage.getItem(themeStorageKey);
+    return supportedThemes.has(theme) ? theme : "system";
+  } catch (_error) {
+    // Privacy modes may block storage, but appearance must remain usable in-page.
+    return "system";
+  }
+}
+
+function selectTheme(theme, persist = true) {
+  const selectedTheme = supportedThemes.has(theme) ? theme : "system";
+  document.documentElement.dataset.theme = selectedTheme;
+  ui.themeTrigger.dataset.theme = selectedTheme;
+  ui.themeTrigger.setAttribute("aria-label", `Appearance: ${themeNames[selectedTheme]}`);
+  ui.themeTrigger.title = `Appearance: ${themeNames[selectedTheme]}`;
+  for (const button of ui.themeMenu.querySelectorAll(".theme-option")) {
+    const active = button.dataset.themeOption === selectedTheme;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  }
+  toggleThemeMenu(false);
+  if (!persist) return;
+  try {
+    window.localStorage.setItem(themeStorageKey, selectedTheme);
+  } catch (_error) {
+    // The selected theme still applies for this page when persistence is unavailable.
+  }
+}
+
+function toggleThemeMenu(force) {
+  const open = force ?? ui.themeMenu.hidden;
+  ui.themeMenu.hidden = !open;
+  ui.themeTrigger.setAttribute("aria-expanded", String(open));
+  if (open) ui.themeMenu.querySelector('[aria-checked="true"]')?.focus();
+}
+
+function closeThemeMenu() {
+  toggleThemeMenu(false);
+  ui.themeTrigger.focus();
+}
+
+function moveThemeFocus(event, index) {
+  const options = [...ui.themeMenu.querySelectorAll(".theme-option")];
+  let target = index;
+  if (event.key === "ArrowDown") target = (index + 1) % options.length;
+  else if (event.key === "ArrowUp") target = (index - 1 + options.length) % options.length;
+  else if (event.key === "Home") target = 0;
+  else if (event.key === "End") target = options.length - 1;
+  else if (event.key === "Escape") return closeThemeMenu();
+  else return;
+  event.preventDefault();
+  options[target].focus();
+}
+
 function bindEvents() {
   ui.composer.addEventListener("submit", submitMessage);
   ui.input.addEventListener("input", resizeComposer);
@@ -899,10 +961,24 @@ function bindEvents() {
   });
   document.addEventListener("pointerdown", (event) => {
     if (!ui.sessionPicker.contains(event.target)) toggleSessionMenu(false);
+    if (!ui.appearancePanel.contains(event.target)) toggleThemeMenu(false);
   });
   ui.sessionSelect.addEventListener("change", () => changeSession(ui.sessionSelect.value));
   for (const button of document.querySelectorAll(".transport")) {
     button.addEventListener("click", () => selectTransport(button));
+  }
+  ui.themeTrigger.addEventListener("click", () => toggleThemeMenu());
+  ui.themeTrigger.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    toggleThemeMenu(true);
+  });
+  for (const [index, button] of [...ui.themeMenu.querySelectorAll(".theme-option")].entries()) {
+    button.addEventListener("click", () => {
+      selectTheme(button.dataset.themeOption);
+      ui.themeTrigger.focus();
+    });
+    button.addEventListener("keydown", (event) => moveThemeFocus(event, index));
   }
 }
 
@@ -936,6 +1012,7 @@ async function changeSession(sessionId) {
 }
 
 async function initialize() {
+  selectTheme(storedTheme(), false);
   bindEvents();
   resizeComposer();
   try {
