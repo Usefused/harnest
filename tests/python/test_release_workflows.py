@@ -1,5 +1,7 @@
+import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -84,6 +86,19 @@ def write_installer_fakes(directory: Path, version: str):
     )
 
 
+def run_git(directory: Path, *arguments: str) -> str:
+    """Run isolated repository operations without inheriting user Git settings."""
+
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_ci_validates_before_owning_the_release_tag(self):
         workflow = load_yaml(".github/workflows/ci.yml")
@@ -102,6 +117,67 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "git push origin",
             tag_job["steps"][-1]["run"],
         )
+        tag_script = tag_job["steps"][-1]["run"]
+        self.assertIn('git tag --points-at "${GITHUB_SHA}"', tag_script)
+        self.assertIn("patch=$((patch + 1))", tag_script)
+        self.assertIn("for attempt in 1 2 3", tag_script)
+        self.assertNotIn("bump project.version", tag_script)
+
+    def test_ci_allocates_next_patch_and_is_idempotent(self):
+        workflow = load_yaml(".github/workflows/ci.yml")
+        tag_script = workflow["jobs"]["release-tag"]["steps"][-1]["run"]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin = root / "origin.git"
+            checkout = root / "checkout"
+            run_git(root, "init", "--bare", str(origin))
+            run_git(root, "init", str(checkout))
+            run_git(checkout, "config", "user.name", "Release Test")
+            run_git(checkout, "config", "user.email", "release@example.test")
+            run_git(checkout, "remote", "add", "origin", str(origin))
+            (checkout / "pyproject.toml").write_text(
+                '[project]\nversion = "1.2.3"\n', encoding="utf-8"
+            )
+            marker = checkout / "marker.txt"
+            marker.write_text("first\n", encoding="utf-8")
+            run_git(checkout, "add", ".")
+            run_git(checkout, "commit", "-m", "first")
+
+            first_sha = run_git(checkout, "rev-parse", "HEAD")
+            self._run_tag_script(checkout, tag_script, first_sha)
+            marker.write_text("second\n", encoding="utf-8")
+            run_git(checkout, "add", "marker.txt")
+            run_git(checkout, "commit", "-m", "second")
+            second_sha = run_git(checkout, "rev-parse", "HEAD")
+            self._run_tag_script(checkout, tag_script, second_sha)
+            self._run_tag_script(checkout, tag_script, second_sha)
+
+            tags = run_git(origin, "tag", "--list", "--sort=version:refname").splitlines()
+            self.assertEqual(tags, ["v1.2.3", "v1.2.4"])
+            self.assertEqual(run_git(origin, "rev-list", "-n", "1", "v1.2.3"), first_sha)
+            self.assertEqual(run_git(origin, "rev-list", "-n", "1", "v1.2.4"), second_sha)
+
+    def _run_tag_script(self, checkout: Path, script: str, commit: str):
+        python_directory = checkout.parent / "python-bin"
+        python_directory.mkdir(exist_ok=True)
+        python_command = python_directory / "python"
+        if not python_command.exists():
+            python_command.symlink_to(sys.executable)
+        environment = dict(
+            os.environ,
+            GITHUB_SHA=commit,
+            PATH=f"{python_directory}:{os.environ.get('PATH', '')}",
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-u", "-o", "pipefail", "-c", script],
+            cwd=checkout,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_release_runs_after_ci_and_never_creates_tags(self):
         workflow = load_yaml(".github/workflows/release.yml")
@@ -114,7 +190,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
         self.assertNotIn("push", events)
         self.assertIn("workflow_run.head_sha", release_job["env"]["RELEASE_SHA"])
+        self.assertIn('git tag --points-at "${RELEASE_SHA}"', scripts)
         self.assertIn('tagged_sha=$(git rev-list -n 1 "${tag}")', scripts)
+        self.assertNotIn('pathlib.Path("pyproject.toml")', scripts)
         self.assertNotIn("git tag --annotate", scripts)
         self.assertNotIn("git push origin", scripts)
 

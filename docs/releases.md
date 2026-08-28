@@ -139,12 +139,12 @@ GoReleaser also publishes `checksums.txt` with SHA-256 checksums for every
 archive. Releases are explicitly targeted at `creativeJoe007/harnest`, matching
 the installer's default source.
 
-Before tagging, ensure the static version in `pyproject.toml` exactly matches
-the tag without its leading `v`, and keep the source-tree fallback in
-`src/harnest/compatibility.py` aligned. The Go binary version comes from the
-tag, while the wheel version comes from `pyproject.toml`; GoReleaser builds the
-wheel before compiling it into the binary, which deliberately rejects a
-mismatch at runtime. Whenever framework support changes, update the
+The static version in `pyproject.toml` establishes the release-line baseline;
+keep the source-tree fallback in `src/harnest/compatibility.py` aligned with it.
+CI uses that exact version when available and advances only the patch component
+when an immutable tag already owns it. GoReleaser supplies the selected tag to
+both the Go build and Python wheel build, so every published binary embeds a
+wheel with the same effective version. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
 machine needs Go 1.24 or newer, Python 3.10 or newer, the Python `build`
@@ -185,12 +185,13 @@ when the project should receive the release's updated authoring guidance.
 
 `.github/workflows/ci.yml` runs the quality matrix for pull requests and branch
 pushes. After a successful `main` run, its release-tag job reads
-`project.version` from `pyproject.toml` and creates the matching `v<version>`
-tag. It refuses to move an existing tag, so bump `project.version` before the
-next release-bearing push.
+`project.version` from `pyproject.toml`. It creates that tag when available or
+selects the next unused patch tag when the baseline is already released.
+Existing tags are never moved. Concurrent successful runs refetch and retry so
+ordinary pushes do not require manual patch bumps.
 
 `.github/workflows/release.yml` is a separate packaging pipeline. It runs after
-successful CI on `main`, verifies that CI's exact commit owns the version tag,
+successful CI on `main`, discovers the tag owned by CI's exact validated commit,
 and then uses GoReleaser to publish the platform archives with the matching
 Python wheel embedded in each executable, plus checksums. Separating
 validation/tagging from packaging makes failed

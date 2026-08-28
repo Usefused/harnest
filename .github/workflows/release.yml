@@ -53,11 +53,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
-          tag="v${version}"
-
-          if ! git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
-            echo "${tag} does not exist; CI must create it before release packaging." >&2
+          tag=$(git tag --points-at "${RELEASE_SHA}" --list 'v[0-9]*' | sort -V | tail -n 1)
+          if [ -z "${tag}" ]; then
+            echo "No release tag points to validated commit ${RELEASE_SHA}." >&2
             exit 1
           fi
 
