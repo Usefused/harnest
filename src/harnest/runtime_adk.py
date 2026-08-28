@@ -17,6 +17,8 @@ from typing import Any
 
 from ._json import json_value
 from .application import CompiledApplication
+from .assets import AssetScope, AssetStore
+from .asset_inspection import inspect_asset
 from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp_lifecycle import (
@@ -24,7 +26,7 @@ from .mcp_lifecycle import (
     mcp_lifecycle_bindings,
     start_mcp_lifecycles,
 )
-from .neutral_runtime import (
+from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
@@ -40,12 +42,110 @@ from .structured import (
 )
 
 
+_CONTENT_KINDS = frozenset(
+    {"text", "image", "audio", "video", "file", "data", "asset"}
+)
+_CONTENT_MARKER = "harnestContent"
+
+
 def _model_input_text(value: Any) -> str:
     """Render validated structured input for ADK's text content boundary."""
 
     if isinstance(value, str):
         return value
     return json.dumps(json_value(value), ensure_ascii=False)
+
+
+async def _adk_input_parts(value: Any, store: AssetStore | None, types: Any) -> list[Any]:
+    """Build reference-only ADK input and retain authored content ordering."""
+
+    payload = json_value(value)
+    direct = _direct_content_sequence(payload)
+    if direct is not None:
+        return [await _adk_reference_part(item, store, types) for item in direct]
+    skeleton, content = _extract_content(payload)
+    if not content:
+        return [types.Part(text=_model_input_text(value))]
+    # The structural JSON keeps field names meaningful while opaque markers
+    # prevent model prompts and ADK sessions from acquiring asset identifiers.
+    parts = [types.Part(text=json.dumps(skeleton, ensure_ascii=False))]
+    parts.extend(
+        [await _adk_reference_part(item, store, types) for item in content]
+    )
+    return parts
+
+
+def _direct_content_sequence(value: Any) -> list[Mapping[str, Any]] | None:
+    """Recognize a root content sequence without imposing a field name."""
+
+    candidate = value
+    if isinstance(value, Mapping) and len(value) == 1:
+        candidate = next(iter(value.values()))
+    if isinstance(candidate, list) and candidate and all(
+        _is_content_part(item) for item in candidate
+    ):
+        return list(candidate)
+    if _is_content_part(candidate):
+        return [candidate]
+    return None
+
+
+def _extract_content(value: Any) -> tuple[Any, list[Mapping[str, Any]]]:
+    """Replace nested portable parts with ordered non-sensitive placeholders."""
+
+    content: list[Mapping[str, Any]] = []
+
+    def walk(item: Any) -> Any:
+        if _is_content_part(item):
+            content.append(item)
+            return {"contentPart": len(content)}
+        if isinstance(item, Mapping):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        return item
+
+    return walk(value), content
+
+
+def _is_content_part(value: Any) -> bool:
+    """Identify the strict discriminated content dictionaries emitted by Pydantic."""
+
+    return (
+        isinstance(value, Mapping)
+        and isinstance(value.get("type"), str)
+        and value["type"] in _CONTENT_KINDS
+    )
+
+
+async def _adk_reference_part(
+    part: Mapping[str, Any], store: AssetStore | None, types: Any
+) -> Any:
+    """Translate one portable part without reading asset bytes."""
+
+    kind = part["type"]
+    if kind == "text":
+        return types.Part(text=part["text"])
+    if kind == "data":
+        marker = {"type": "data", "value": part.get("value")}
+        return _marker_part(marker, types)
+    asset_id = part.get("assetId")
+    if not isinstance(asset_id, str) or store is None:
+        raise RuntimeError("referenced ADK content requires an asset store")
+    # Metadata is re-read from the scoped store at the model boundary. The
+    # request marker deliberately contains no client-claimed MIME or size data.
+    marker = {"type": kind, "assetId": asset_id}
+    return _marker_part(marker, types)
+
+
+def _marker_part(marker: Mapping[str, Any], types: Any) -> Any:
+    """Create an ADK-session-safe placeholder understood by Harnest's plugin."""
+
+    kind = marker.get("type", "asset")
+    return types.Part(
+        text=f"[Harnest {kind} content]",
+        part_metadata={_CONTENT_MARKER: dict(marker)},
+    )
 
 
 def _validated_output_event(
@@ -82,7 +182,7 @@ class _ADKTurnOutput:
         """Retain native events only when the authored result requests them."""
 
         if self.enriches_metadata:
-            self.native_events.append(json_value(event))
+            self.native_events.append(_safe_adk_value(json_value(event)))
 
     def accept(self, item: dict[str, Any]) -> dict[str, Any] | None:
         """Return an immediately public item or buffer runtime-owned output."""
@@ -131,6 +231,7 @@ class ADKRuntimeDriver(RuntimeDriver):
         card: Mapping[str, Any] | None = None,
         extra_endpoints: Mapping[str, str] | None = None,
         session_service: Any | None = None,
+        asset_store: AssetStore | None = None,
     ) -> None:
         if application.framework != "adk":
             raise ValueError("ADKRuntimeDriver requires an ADK application")
@@ -156,7 +257,16 @@ class ADKRuntimeDriver(RuntimeDriver):
             input_schema=application.input_schema,
             output_schema=application.output_schema,
         )
-        self._runner = _create_runner(application, session_service)
+        self._asset_store = (
+            asset_store
+            if asset_store is not None
+            else getattr(application, "asset_store", None)
+        )
+        self._runner = _create_runner(
+            application,
+            session_service,
+            asset_store=self._asset_store,
+        )
         self._closed = False
         self._close_lock = asyncio.Lock()
 
@@ -209,13 +319,36 @@ class ADKRuntimeDriver(RuntimeDriver):
         )
         return None if session is None else _session_record(session)
 
-    async def list_sessions(self, *, user_id: str) -> list[SessionRecord]:
+    async def list_sessions(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> list[SessionRecord]:
+        """Use Harnest store pagination or bound ADK's complete session list."""
+
         self._ensure_open()
+        paged = getattr(self._runner.session_service, "list_sessions_page", None)
+        if callable(paged):
+            sessions = await paged(
+                app_name=self.app_name,
+                user_id=user_id,
+                after=after,
+                limit=limit,
+            )
+            return [_session_record(session) for session in sessions]
         response = await self._runner.session_service.list_sessions(
             app_name=self.app_name,
             user_id=user_id,
         )
-        return [_session_record(session) for session in response.sessions]
+        records = sorted(
+            (_session_record(session) for session in response.sessions),
+            key=lambda item: item.id,
+        )
+        if after is not None:
+            records = [item for item in records if item.id > after]
+        return records if limit is None else records[:limit]
 
     async def get_session_messages(
         self, *, session_id: str, user_id: str
@@ -368,9 +501,8 @@ class ADKRuntimeDriver(RuntimeDriver):
             mcp_lifecycle_bindings(self.application.target)
         )
 
-        message = types.Content(
-            role="user", parts=[types.Part(text=_model_input_text(request.input))]
-        )
+        parts = await _adk_input_parts(request.input, self._asset_store, types)
+        message = types.Content(role="user", parts=parts)
         metadata = dict(request.metadata)
         run_config = RunConfig(custom_metadata=metadata) if metadata else None
         return message, run_config
@@ -437,7 +569,8 @@ class ADKRuntimeDriver(RuntimeDriver):
         if not callable(dump):
             return
         payload = json.dumps(
-            dump(mode="json", by_alias=True), separators=(",", ":")
+            _safe_adk_value(dump(mode="json", by_alias=True)),
+            separators=(",", ":"),
         ).encode("utf-8")
         checkpoint_id = getattr(event, "id", None) or uuid.uuid4().hex
         existing = await store.get_checkpoint(
@@ -728,7 +861,7 @@ def _adk_session_messages(session: Any) -> list[SessionMessage]:
                 role=role,
                 content=_adk_message_content(content, role=role),
                 created_at=_timestamp(record.get("timestamp")),
-                metadata={"adk": record},
+                metadata={"adk": _safe_adk_value(record)},
             )
         )
     return messages
@@ -754,15 +887,49 @@ def _adk_message_role(
 
 
 def _adk_message_content(content: Mapping[str, Any], *, role: str) -> Any:
-    """Expose visible text or structured tool output as portable content."""
+    """Expose text, reference parts, or structured tool output portably."""
 
     parts = content.get("parts")
     if not isinstance(parts, list):
         return None
+    portable = _adk_portable_content(parts)
+    if portable is not None:
+        return portable
     text = _adk_visible_text(parts)
     if text:
         return text
     return _adk_tool_response(parts) if role == "tool" else None
+
+
+def _adk_portable_content(parts: list[Any]) -> list[dict[str, Any]] | None:
+    """Restore ordered Harnest markers and their neighboring visible text."""
+
+    if not any(_record_marker(part) is not None for part in parts):
+        return None
+    result: list[dict[str, Any]] = []
+    for part in parts:
+        if not isinstance(part, Mapping) or part.get("thought") is True:
+            continue
+        marker = _record_marker(part)
+        if marker is not None:
+            result.append(dict(marker))
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            result.append({"type": "text", "text": text})
+    return result
+
+
+def _record_marker(part: Any) -> Mapping[str, Any] | None:
+    """Read a serialized marker without accepting provider-owned metadata."""
+
+    if not isinstance(part, Mapping):
+        return None
+    metadata = part.get("partMetadata")
+    marker = metadata.get(_CONTENT_MARKER) if isinstance(metadata, Mapping) else None
+    if not isinstance(marker, Mapping) or marker.get("type") not in _CONTENT_KINDS:
+        return None
+    return marker
 
 
 def _adk_visible_text(parts: list[Any]) -> str:
@@ -799,7 +966,7 @@ def _adk_turn_metadata(events: list[Any]) -> dict[str, Any]:
 def _adk_session_metadata(session: Any) -> dict[str, Any]:
     """Keep ADK-owned fields opaque while avoiding duplicate public state."""
 
-    record = json_value(session)
+    record = _safe_adk_value(json_value(session))
     if not isinstance(record, Mapping):
         return {"adk": record}
     return {
@@ -817,7 +984,44 @@ def _timestamp(value: Any) -> str | None:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
-def _create_runner(application: CompiledApplication, session_service: Any) -> Any:
+def _safe_adk_value(value: Any) -> Any:
+    """Remove provider bytes, URIs, and private marker data from native metadata."""
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    if isinstance(value, list):
+        return [_safe_adk_value(item) for item in value]
+    return _safe_adk_mapping(value) if isinstance(value, Mapping) else value
+
+
+def _safe_adk_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Sanitize one native mapping while preserving non-content ADK fields."""
+
+    safe: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"data", "fileData", "fileUri", "thoughtSignature"}:
+            continue
+        if key == "partMetadata" and isinstance(item, Mapping):
+            # Portable content is already exposed through SessionMessage.content;
+            # duplicating it in opaque native metadata risks accidental logging.
+            filtered = {
+                name: _safe_adk_value(child)
+                for name, child in item.items()
+                if name != _CONTENT_MARKER
+            }
+            if filtered:
+                safe[key] = filtered
+            continue
+        safe[key] = _safe_adk_value(item)
+    return safe
+
+
+def _create_runner(
+    application: CompiledApplication,
+    session_service: Any,
+    *,
+    asset_store: AssetStore | None = None,
+) -> Any:
     """Create ADK's runner while preserving actionable advanced-mode logs."""
 
     try:
@@ -836,20 +1040,193 @@ def _create_runner(application: CompiledApplication, session_service: Any) -> An
     if application.mode == "managed":
         # Managed authors cannot configure ADK's provider-specific App cache.
         with suppress_managed_transfer_cache_warning():
-            return _build_adk_runner(
+            result = _build_adk_runner(
                 application,
                 session_service,
                 credential_service,
                 InMemoryRunner,
                 Runner,
             )
-    return _build_adk_runner(
-        application,
-        session_service,
-        credential_service,
-        InMemoryRunner,
-        Runner,
+    else:
+        result = _build_adk_runner(
+            application,
+            session_service,
+            credential_service,
+            InMemoryRunner,
+            Runner,
+        )
+    _register_asset_plugin(result.plugin_manager, asset_store)
+    return result
+
+
+def _register_asset_plugin(manager: Any, store: AssetStore | None) -> None:
+    """Put the reference boundary ahead of callbacks that may short-circuit."""
+
+    plugin = _asset_content_plugin(store)
+    if any(item.name == plugin.name for item in manager.plugins):
+        raise ValueError("ADK application reserves the harnest_asset_content plugin")
+    # ADK stops callback traversal at the first replacement. Running this
+    # boundary first guarantees no authored callback can persist inline bytes.
+    manager.plugins.insert(0, plugin)
+
+
+def _asset_content_plugin(store: AssetStore | None) -> Any:
+    """Create the optional ADK plugin that materializes only model requests."""
+
+    from google.adk.plugins import BasePlugin
+
+    class _AssetContentPlugin(BasePlugin):
+        """Keep ADK history reference-only while serving scoped model bytes."""
+
+        def __init__(self) -> None:
+            super().__init__(name="harnest_asset_content")
+
+        async def before_model_callback(
+            self, *, callback_context: Any, llm_request: Any
+        ) -> None:
+            """Replace reference markers on a detached model-request copy."""
+
+            scope = AssetScope(
+                user_id=callback_context.user_id,
+                session_id=callback_context.session.id,
+            )
+            llm_request.contents = [
+                await _materialized_content(item, store, scope)
+                for item in llm_request.contents
+            ]
+            return None
+
+        async def on_event_callback(
+            self, *, invocation_context: Any, event: Any
+        ) -> Any | None:
+            """Replace terminal model blobs before ADK persists or yields them."""
+
+            if getattr(event, "partial", False):
+                return None
+            if store is None:
+                return None
+            scope = AssetScope(
+                user_id=invocation_context.user_id,
+                session_id=invocation_context.session.id,
+            )
+            return await _reference_only_event(event, store, scope)
+
+    return _AssetContentPlugin()
+
+
+async def _materialized_content(
+    content: Any, store: AssetStore | None, scope: AssetScope
+) -> Any:
+    """Copy one ADK content value and resolve its Harnest reference markers."""
+
+    parts = getattr(content, "parts", None) or ()
+    materialized = [
+        await _materialized_part(part, store, scope) for part in parts
+    ]
+    if all(left is right for left, right in zip(parts, materialized)):
+        return content
+    return content.model_copy(update={"parts": materialized})
+
+
+async def _materialized_part(
+    part: Any, store: AssetStore | None, scope: AssetScope
+) -> Any:
+    """Load bytes only for the detached part passed to the ADK model adapter."""
+
+    marker = _part_marker(part)
+    if marker is None:
+        return part
+    kind = marker["type"]
+    from google.genai import types
+
+    if kind == "data":
+        return types.Part(
+            text=json.dumps(marker.get("value"), ensure_ascii=False)
+        )
+    asset_id = marker.get("assetId")
+    if not isinstance(asset_id, str) or store is None:
+        raise RuntimeError("ADK content reference is invalid")
+    record = await store.stat(scope=scope, asset_id=asset_id)
+    if record is None:
+        raise RuntimeError("ADK content asset is unavailable")
+    data = bytearray()
+    async for chunk in store.open(scope=scope, asset_id=asset_id):
+        data.extend(chunk)
+        if len(data) > record.size_bytes:
+            raise RuntimeError("ADK content asset changed while reading")
+    if len(data) != record.size_bytes:
+        raise RuntimeError("ADK content asset changed while reading")
+    return types.Part(
+        inline_data=types.Blob(
+            mime_type=record.media_type,
+            data=bytes(data),
+        )
     )
+
+
+async def _reference_only_event(
+    event: Any, store: AssetStore, scope: AssetScope
+) -> Any | None:
+    """Stage final ADK media output and return a reference-only event copy."""
+
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None) if content is not None else None
+    if not parts or not any(getattr(part, "inline_data", None) for part in parts):
+        return None
+    replaced = [await _stored_output_part(part, store, scope) for part in parts]
+    return event.model_copy(
+        update={"content": content.model_copy(update={"parts": replaced})}
+    )
+
+
+async def _stored_output_part(part: Any, store: AssetStore, scope: AssetScope) -> Any:
+    """Persist one output blob and replace it with an opaque Harnest marker."""
+
+    blob = getattr(part, "inline_data", None)
+    data = getattr(blob, "data", None) if blob is not None else None
+    media_type = getattr(blob, "mime_type", None) if blob is not None else None
+    if not isinstance(data, bytes) or not isinstance(media_type, str):
+        return part
+    metadata, inspected_type = inspect_asset(data, media_type)
+    record = await store.save(
+        scope=scope,
+        media_type=inspected_type,
+        chunks=_one_chunk(data),
+        metadata=metadata,
+    )
+    kind = _kind_for_media_type(record.media_type)
+    marker = {
+        "type": kind,
+        "assetId": record.asset_id,
+        "mediaType": record.media_type,
+        "sizeBytes": record.size_bytes,
+    }
+    from google.genai import types
+
+    return _marker_part(marker, types)
+
+
+async def _one_chunk(data: bytes) -> AsyncIterator[bytes]:
+    """Adapt one provider blob to the AssetStore streaming write contract."""
+
+    yield data
+
+
+def _kind_for_media_type(media_type: str) -> str:
+    """Map a concrete MIME family onto one portable content discriminator."""
+
+    family = media_type.partition("/")[0]
+    return family if family in {"image", "audio", "video"} else "file"
+
+
+def _part_marker(part: Any) -> Mapping[str, Any] | None:
+    """Read only the private marker shape created by this adapter."""
+
+    metadata = getattr(part, "part_metadata", None)
+    marker = metadata.get(_CONTENT_MARKER) if isinstance(metadata, Mapping) else None
+    if not isinstance(marker, Mapping) or marker.get("type") not in _CONTENT_KINDS:
+        return None
+    return marker
 
 
 def _build_adk_runner(

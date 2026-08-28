@@ -21,7 +21,8 @@ Each smoke run calls the neutral `/responses` API and checks that:
 - exactly one of `metadata.adk` or `metadata.langgraph` is populated; and
 - the active namespace retains native events or messages for that turn; and
 - `GET /sessions/{id}/messages` exposes an ordered portable transcript while
-  retaining the active native record under each message's `metadata`.
+  retaining the active native record under each message's `metadata`; responses
+  are capped at 100 messages and expose `nextCursor` for subsequent pages.
 
 The `metadata` field is absent from the provider-owned portion of the output
 contract and is filled by Harnest only after framework execution completes.

@@ -20,6 +20,7 @@ from harnest.telemetry import (
     _exporter_name,
     _reset_for_testing,
     configure_observability,
+    instrument_fastapi,
 )
 from harnest.tracing import current_trace_ids, span, traced
 
@@ -104,6 +105,20 @@ class TelemetryTests(unittest.TestCase):
             )
             self.assertEqual(_exporter_name("traces"), "none")
             self.assertEqual(_exporter_name("logs"), "otlp")
+
+    def test_default_http_spans_exclude_private_dynamic_identifiers(self):
+        app = SimpleNamespace(
+            router=SimpleNamespace(lifespan_context=lambda _app: None)
+        )
+        state = SimpleNamespace(enabled=True, tracer_provider=object())
+        target = "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app"
+        with patch.dict(os.environ, {}, clear=True), patch(target) as instrument:
+            instrument_fastapi(app, state)
+
+        excluded = instrument.call_args.kwargs["excluded_urls"]
+        self.assertIn("/sessions/.*", excluded)
+        self.assertIn("/approvals/.*", excluded)
+        self.assertIn("/client-tools/.*", excluded)
 
     def test_manual_spans_and_logs_share_trace_context_and_export(self):
         spans = InMemorySpanExporter()

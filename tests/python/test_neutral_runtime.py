@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any
+from typing import Annotated, Any
 import unittest
 from dataclasses import replace
 
@@ -26,6 +26,8 @@ from harnest.neutral_runtime import (
     SessionRecord,
     create_neutral_app,
 )
+from harnest.assets import MemoryAssetStore
+from harnest.content import Image, ImageConstraints
 from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
@@ -80,6 +82,7 @@ class FakeDriver:
         self.sessions: dict[tuple[str, str], SessionRecord] = {}
         self.session_messages: dict[tuple[str, str], list[SessionMessage]] = {}
         self.invocations: list[InvocationRequest] = []
+        self.session_list_requests: list[tuple[str, str | None, int | None]] = []
         self.closed = False
         self.fail_stream = False
         self.empty_output = False
@@ -104,12 +107,23 @@ class FakeDriver:
     ) -> SessionRecord | None:
         return self.sessions.get((user_id, session_id))
 
-    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
-        return [
-            session
-            for (owner, _), session in self.sessions.items()
-            if owner == user_id
-        ]
+    async def list_sessions(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        self.session_list_requests.append((user_id, after, limit))
+        sessions = sorted(
+            (
+                session
+                for (owner, _), session in self.sessions.items()
+                if owner == user_id and (after is None or session.id > after)
+            ),
+            key=lambda item: item.id,
+        )
+        return sessions if limit is None else sessions[:limit]
 
     async def get_session_messages(
         self, *, session_id: str, user_id: str
@@ -216,6 +230,41 @@ class StructuredInputDriver(FakeDriver):
     def __init__(self) -> None:
         super().__init__()
         self.info = replace(self.info, input_schema=StructuredInput)
+
+
+class MediaInput(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    prompt: str
+    image: Annotated[
+        Image,
+        ImageConstraints(
+            media_types=frozenset({"image/png"}),
+            max_width=4,
+            max_height=4,
+        ),
+    ]
+
+
+class MediaInputDriver(FakeDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.info = replace(self.info, input_schema=MediaInput)
+
+
+def _png(width: int, height: int) -> bytes:
+    """Build the parser fixture without adding an imaging dependency."""
+
+    ihdr = (
+        width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00"
+    )
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return len(data).to_bytes(4, "big") + kind + data + b"\x00\x00\x00\x00"
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IEND", b"")
 
 
 class ApprovalDriver(FakeDriver):
@@ -397,10 +446,132 @@ class NeutralRuntimeTests(unittest.TestCase):
                     "updatedAt": None,
                     "metadata": {},
                 }
-            ]
+            ],
+            "nextCursor": None,
         })
         self.assertEqual(self.client.delete("/sessions/one").status_code, 204)
         self.assertEqual(self.client.get("/sessions/one").status_code, 404)
+
+    def test_assets_are_session_scoped_streamable_and_deletable(self):
+        self.client.post("/sessions", json={"id": "assets"})
+        self.client.post("/sessions", json={"id": "other"})
+        payload = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+
+        uploaded = self.client.post(
+            "/sessions/assets/assets",
+            content=payload,
+            headers={"Content-Type": "application/pdf"},
+        )
+
+        self.assertEqual(uploaded.status_code, 201)
+        asset_id = uploaded.json()["assetId"]
+        path = f"/sessions/assets/assets/{asset_id}"
+        self.assertEqual(
+            self.client.head(path).headers["content-length"], str(len(payload))
+        )
+        self.assertEqual(self.client.get(path).content, payload)
+        selected = self.client.get(path, headers={"Range": "bytes=5-9"})
+        self.assertEqual(selected.status_code, 206)
+        self.assertEqual(selected.content, payload[5:10])
+        self.assertEqual(
+            self.client.get(f"/sessions/other/assets/{asset_id}").status_code,
+            404,
+        )
+        self.assertEqual(self.client.delete(path).status_code, 204)
+        self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_annotated_media_input_uses_inspected_asset_metadata(self):
+        driver = MediaInputDriver()
+        store = MemoryAssetStore(max_asset_bytes=1024, max_total_bytes=4096)
+        with TestClient(create_neutral_app(driver, asset_store=store)) as client:
+            client.post("/sessions", json={"id": "media"})
+            uploaded = client.post(
+                "/sessions/media/assets",
+                content=_png(3, 4),
+                headers={"Content-Type": "image/png"},
+            )
+            response = client.post(
+                "/responses",
+                json={
+                    "sessionId": "media",
+                    "input": {
+                        "prompt": "inspect",
+                        "image": {
+                            "assetId": uploaded.json()["assetId"],
+                            "width": 999,
+                            "height": 999,
+                        },
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        image = driver.invocations[-1].input["image"]
+        self.assertEqual((image["width"], image["height"]), (3, 4))
+        self.assertEqual(image["mediaType"], "image/png")
+
+    def test_session_listing_supports_optional_keyset_pagination(self):
+        for session_id in ("delta", "bravo", "alpha", "charlie"):
+            response = self.client.post("/sessions", json={"id": session_id})
+            self.assertEqual(response.status_code, 201)
+
+        complete = self.client.get("/sessions")
+        self.assertIsNone(complete.json()["nextCursor"])
+        self.assertEqual(
+            [item["id"] for item in complete.json()["sessions"]],
+            ["alpha", "bravo", "charlie", "delta"],
+        )
+        first = self.client.get("/sessions", params={"limit": 2})
+        self.assertEqual(
+            [item["id"] for item in first.json()["sessions"]],
+            ["alpha", "bravo"],
+        )
+        cursor = first.json()["nextCursor"]
+        self.assertIsInstance(cursor, str)
+        self.assertEqual(
+            self.driver.session_list_requests[-1],
+            (NEUTRAL_USER_ID, None, 3),
+        )
+        final = self.client.get("/sessions", params={"cursor": cursor})
+        self.assertEqual(
+            [item["id"] for item in final.json()["sessions"]],
+            ["charlie", "delta"],
+        )
+        self.assertIsNone(final.json()["nextCursor"])
+        self.assertEqual(
+            self.driver.session_list_requests[-1],
+            (NEUTRAL_USER_ID, "bravo", 101),
+        )
+        self.assertEqual(
+            self.client.get("/sessions", params={"cursor": "invalid"}).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get("/sessions", params={"limit": 101}).status_code,
+            422,
+        )
+
+    def test_default_session_page_is_bounded(self):
+        for index in range(102):
+            session_id = f"session-{index:03d}"
+            key = (NEUTRAL_USER_ID, session_id)
+            self.driver.sessions[key] = SessionRecord(
+                id=session_id, user_id=NEUTRAL_USER_ID, state={}
+            )
+            self.driver.session_messages[key] = []
+
+        first = self.client.get("/sessions").json()
+        self.assertEqual(len(first["sessions"]), 100)
+        self.assertEqual(first["sessions"][-1]["id"], "session-099")
+        self.assertIsInstance(first["nextCursor"], str)
+        final = self.client.get(
+            "/sessions", params={"cursor": first["nextCursor"]}
+        ).json()
+        self.assertEqual(
+            [item["id"] for item in final["sessions"]],
+            ["session-100", "session-101"],
+        )
+        self.assertIsNone(final["nextCursor"])
 
     def test_development_playground_is_bundled_and_framework_neutral(self):
         page = self.client.get("/")
@@ -636,6 +807,7 @@ class NeutralRuntimeTests(unittest.TestCase):
                         "metadata": {"fake": {"kind": "output"}},
                     },
                 ],
+                "nextCursor": None,
             },
         )
         self.assertEqual(
@@ -655,6 +827,159 @@ class NeutralRuntimeTests(unittest.TestCase):
         detail = self.client.get(f"/_harnest/traces/{body['id']}")
         self.assertEqual(detail.status_code, 200)
         self.assertNotIn("userId", detail.json())
+
+    def test_session_messages_support_optional_cursor_pagination(self):
+        created = self.client.post("/sessions", json={"id": "paginated"})
+        self.assertEqual(created.status_code, 201)
+        self.driver.session_messages[(NEUTRAL_USER_ID, "paginated")] = [
+            SessionMessage(
+                id=f"message-{index}",
+                role="assistant",
+                content=f"content-{index}",
+            )
+            for index in range(4)
+        ]
+
+        complete = self.client.get("/sessions/paginated/messages")
+        self.assertEqual(complete.status_code, 200)
+        self.assertIsNone(complete.json()["nextCursor"])
+        self.assertEqual(len(complete.json()["messages"]), 4)
+
+        first = self.client.get(
+            "/sessions/paginated/messages", params={"limit": 2}
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in first.json()["messages"]],
+            ["message-0", "message-1"],
+        )
+        first_cursor = first.json()["nextCursor"]
+        self.assertIsInstance(first_cursor, str)
+
+        second = self.client.get(
+            "/sessions/paginated/messages",
+            params={"limit": 1, "cursor": first_cursor},
+        )
+        self.assertEqual(
+            [item["id"] for item in second.json()["messages"]],
+            ["message-2"],
+        )
+        second_cursor = second.json()["nextCursor"]
+        self.assertIsInstance(second_cursor, str)
+
+        final = self.client.get(
+            "/sessions/paginated/messages", params={"cursor": second_cursor}
+        )
+        self.assertEqual(
+            [item["id"] for item in final.json()["messages"]],
+            ["message-3"],
+        )
+        self.assertIsNone(final.json()["nextCursor"])
+        self.assertEqual(
+            self.client.get(
+                "/sessions/paginated/messages", params={"cursor": "invalid"}
+            ).status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/sessions/paginated/messages", params={"limit": 101}
+            ).status_code,
+            422,
+        )
+
+    def test_default_message_page_is_bounded(self):
+        created = self.client.post("/sessions", json={"id": "bounded"})
+        self.assertEqual(created.status_code, 201)
+        self.driver.session_messages[(NEUTRAL_USER_ID, "bounded")] = [
+            SessionMessage(
+                id=f"message-{index:03d}",
+                role="assistant",
+                content=f"content-{index}",
+            )
+            for index in range(102)
+        ]
+
+        first = self.client.get("/sessions/bounded/messages").json()
+        self.assertEqual(len(first["messages"]), 100)
+        self.assertEqual(first["messages"][-1]["id"], "message-099")
+        self.assertIsInstance(first["nextCursor"], str)
+        final = self.client.get(
+            "/sessions/bounded/messages",
+            params={"cursor": first["nextCursor"]},
+        ).json()
+        self.assertEqual(
+            [item["id"] for item in final["messages"]],
+            ["message-100", "message-101"],
+        )
+        self.assertIsNone(final["nextCursor"])
+
+    def test_message_cursor_is_resource_bound_and_detects_prefix_mutation(self):
+        for session_id in ("source", "other"):
+            created = self.client.post("/sessions", json={"id": session_id})
+            self.assertEqual(created.status_code, 201)
+            self.driver.session_messages[(NEUTRAL_USER_ID, session_id)] = [
+                SessionMessage(id="shared-0", role="user", content="first"),
+                SessionMessage(id="shared-1", role="assistant", content="second"),
+                SessionMessage(id="shared-2", role="assistant", content="third"),
+            ]
+
+        first = self.client.get(
+            "/sessions/source/messages", params={"limit": 2}
+        ).json()
+        cursor = first["nextCursor"]
+        cross_session = self.client.get(
+            "/sessions/other/messages", params={"limit": 1, "cursor": cursor}
+        )
+        self.assertEqual(cross_session.status_code, 400)
+
+        self.driver.session_messages[(NEUTRAL_USER_ID, "source")][0] = (
+            SessionMessage(id="changed", role="user", content="first")
+        )
+        stale = self.client.get(
+            "/sessions/source/messages", params={"limit": 1, "cursor": cursor}
+        )
+        self.assertEqual(stale.status_code, 400)
+
+    def test_message_cursor_handles_duplicate_ids_append_and_empty_transcript(self):
+        created = self.client.post("/sessions", json={"id": "changing"})
+        self.assertEqual(created.status_code, 201)
+        messages = [
+            SessionMessage(id="duplicate", role="user", content="first"),
+            SessionMessage(id="duplicate", role="assistant", content="second"),
+            SessionMessage(id="third", role="assistant", content="third"),
+        ]
+        self.driver.session_messages[(NEUTRAL_USER_ID, "changing")] = messages
+
+        first = self.client.get(
+            "/sessions/changing/messages", params={"limit": 1}
+        ).json()
+        second = self.client.get(
+            "/sessions/changing/messages",
+            params={"limit": 1, "cursor": first["nextCursor"]},
+        ).json()
+        self.assertEqual(second["messages"][0]["content"], "second")
+
+        messages.append(
+            SessionMessage(id="fourth", role="assistant", content="fourth")
+        )
+        remaining = self.client.get(
+            "/sessions/changing/messages",
+            params={"cursor": second["nextCursor"]},
+        ).json()
+        self.assertEqual(
+            [item["id"] for item in remaining["messages"]],
+            ["third", "fourth"],
+        )
+        self.assertIsNone(remaining["nextCursor"])
+
+        empty = self.client.post("/sessions", json={"id": "empty"})
+        self.assertEqual(empty.status_code, 201)
+        empty_page = self.client.get(
+            "/sessions/empty/messages", params={"limit": 10}
+        ).json()
+        self.assertEqual(empty_page["messages"], [])
+        self.assertIsNone(empty_page["nextCursor"])
 
     def test_playground_trace_captures_structured_agent_logs(self):
         class LoggingDriver(FakeDriver):
@@ -897,6 +1222,18 @@ class NeutralRuntimeTests(unittest.TestCase):
                 json={"id": "shared", "state": {"owner": "alice"}},
             )
             self.assertEqual(created.status_code, 201)
+            client.post("/sessions", headers=alice, json={"id": "shared-2"})
+            alice_page = client.get(
+                "/sessions", headers=alice, params={"limit": 1}
+            ).json()
+            self.assertEqual(
+                client.get(
+                    "/sessions",
+                    headers=bob,
+                    params={"cursor": alice_page["nextCursor"]},
+                ).status_code,
+                400,
+            )
             self.assertEqual(
                 client.get("/sessions/shared", headers=bob).status_code,
                 404,

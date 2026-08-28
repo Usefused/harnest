@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -345,7 +346,7 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(string_agent.kwargs["model"], "gemini-test")
         self.assertIs(custom_agent.kwargs["model"], custom_model)
 
-    def test_agent_passes_pydantic_input_and_output_schemas_to_adk(self):
+    def test_agent_keeps_portable_input_validation_outside_adk(self):
         from pydantic import BaseModel
 
         class Question(BaseModel):
@@ -364,7 +365,9 @@ class AuthoringTests(unittest.TestCase):
                 output_schema=Answer,
             ).build()
 
-        self.assertIs(built.kwargs["input_schema"], Question)
+        # Harnest owns request validation because ADK flattens multipart input
+        # before applying its node schema, which would reject portable media.
+        self.assertNotIn("input_schema", built.kwargs)
         self.assertIs(built.kwargs["output_schema"], Answer)
         with self.assertRaisesRegex(TypeError, "Pydantic BaseModel class"):
             Agent(
@@ -373,6 +376,31 @@ class AuthoringTests(unittest.TestCase):
                 instruction="Answer.",
                 output_schema=dict,  # type: ignore[arg-type]
             )
+
+    def test_agent_serializes_validated_tool_models_before_adk(self):
+        from pydantic import BaseModel
+
+        class Count(BaseModel):
+            value: int
+
+        @tool
+        def count() -> Count:
+            """Return a validated count."""
+
+            return Count(value=3)
+
+        with patch.dict(sys.modules, _fake_adk_modules()):
+            built = Agent(
+                name="structured_tool",
+                model="gemini-test",
+                instruction="Count.",
+                tools=[count],
+            ).build()
+
+        runtime_tool = built.kwargs["tools"][0]
+        self.assertEqual(runtime_tool(), {"value": 3})
+        self.assertEqual(count(), Count(value=3))
+        self.assertIs(inspect.signature(runtime_tool).return_annotation, Count)
 
     def test_agent_keeps_runtime_metadata_out_of_adk_output_schema(self):
         from pydantic import BaseModel
@@ -1162,6 +1190,47 @@ class AuthoringTests(unittest.TestCase):
                         live_events[-1]["outputText"], "official response"
                     )
                     websocket.send_json({"type": "session.close"})
+
+    def test_advanced_adk_custom_route_invokes_the_wrapped_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "authored"
+            output = workspace / "compiled"
+            self._write(root / "agent.py", _deterministic_adk_source(advanced=True))
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "agent-card.yaml",
+                json.dumps({"name": "Root", "description": "Test agent"}),
+            )
+            self._write(
+                root / "extensions" / "http.py",
+                "from fastapi import APIRouter, Request\n"
+                "from harnest import lifecycle\n\n"
+                "@lifecycle.http_routes\n"
+                "def routes(agent):\n"
+                "    router = APIRouter()\n"
+                "    @router.post('/custom/adk')\n"
+                "    async def invoke(request: Request):\n"
+                "        response = await agent.invoke(\n"
+                "            connection=request, input='hello'\n"
+                "        )\n"
+                "        return response.as_dict()\n"
+                "    return router\n",
+            )
+            compile_artifact(root, output, mode="advanced")
+
+            from fastapi.testclient import TestClient
+
+            with TestClient(
+                create_fastapi_app(output, bind_host="testserver")
+            ) as client:
+                response = client.post("/custom/adk")
+                schema = client.get("/openapi.json")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["outputText"], "official response")
+            self.assertEqual(schema.status_code, 200, schema.text)
+            self.assertIn("/custom/adk", schema.json()["paths"])
 
     def test_advanced_native_and_neutral_transports_use_discovered_auth_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -55,6 +55,15 @@ class ExtensionContractTests(unittest.TestCase):
 
         self.assertIsNotNone(registration)
         self.assertEqual(registration.phase, "checkpointer")
+
+    def test_asset_store_decorator_registers_a_root_factory(self):
+        @lifecycle.asset_store
+        def asset_store():
+            return object()
+
+        registration = registration_for(asset_store)
+        self.assertIsNotNone(registration)
+        self.assertEqual(registration.phase, "asset_store")
         self.assertIsNone(registration.framework)
 
     def test_output_policy_decorator_registers_an_optional_root_factory(self):
@@ -66,6 +75,17 @@ class ExtensionContractTests(unittest.TestCase):
 
         self.assertIsNotNone(registration)
         self.assertEqual(registration.phase, "output_policy")
+        self.assertIsNone(registration.framework)
+
+    def test_http_routes_decorator_registers_a_portable_root_factory(self):
+        @lifecycle.http_routes
+        def routes(_agent):
+            return object()
+
+        registration = registration_for(routes)
+
+        self.assertIsNotNone(registration)
+        self.assertEqual(registration.phase, "http_routes")
         self.assertIsNone(registration.framework)
 
     def test_resource_decorator_registers_a_runtime_only_factory(self):

@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Mapping
 from urllib.parse import urlparse
 import uuid
 
-from .neutral_runtime import SessionConflictError, SessionRecord
+from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, SessionStore
 
 
@@ -73,6 +73,21 @@ def create_adk_session_service(store: SessionStore) -> Any:
             sessions = [_adk_session(item, app_name) for item in records]
             sessions.sort(key=lambda item: item.last_update_time)
             return ListSessionsResponse(sessions=sessions)
+
+        async def list_sessions_page(
+            self,
+            *,
+            app_name: str,
+            user_id: str,
+            after: str | None,
+            limit: int | None,
+        ) -> Any:
+            """Expose Harnest keyset pagination beyond ADK's list contract."""
+
+            records = await store.list(
+                user_id=user_id, after=after, limit=limit
+            )
+            return [_adk_session(item, app_name) for item in records]
 
         async def delete_session(
             self, *, app_name: str, user_id: str, session_id: str

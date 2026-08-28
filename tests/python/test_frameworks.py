@@ -94,6 +94,33 @@ class FrameworkArtifactTests(unittest.TestCase):
         )
         self._card(root)
 
+    def _http_route_source(self, root: Path) -> None:
+        """Add a portable business endpoint backed by the compiled root agent."""
+
+        self._write(
+            root / "extensions" / "http.py",
+            """
+            from fastapi import APIRouter, Request
+            from harnest import lifecycle
+
+
+            @lifecycle.http_routes
+            def http_routes(agent):
+                router = APIRouter(prefix="/custom")
+
+                @router.post("/invoke")
+                async def invoke(request: Request):
+                    response = await agent.invoke(
+                        connection=request,
+                        input="hello",
+                        metadata={"source": "custom"},
+                    )
+                    return response.as_dict()
+
+                return router
+            """,
+        )
+
     def _approval_source(self, root: Path) -> None:
         self._write(
             root / "agent.py",
@@ -418,6 +445,35 @@ class FrameworkArtifactTests(unittest.TestCase):
                     structured,
                     {"hits": [{"document_id": "guide", "score": 0.95}]},
                 )
+
+    def test_compiled_frameworks_mount_custom_routes_that_invoke_root(self):
+        from fastapi.testclient import TestClient
+
+        frameworks = (
+            ("adk", ADK_AVAILABLE),
+            ("langgraph", LANGGRAPH_AVAILABLE),
+        )
+        for framework, available in frameworks:
+            if not available:
+                continue
+            with self.subTest(
+                framework=framework
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "source"
+                output = Path(directory) / "artifact"
+                root.mkdir()
+                self._managed_source(root)
+                self._http_route_source(root)
+
+                compile_artifact(root, output, framework=framework)
+                with TestClient(create_fastapi_app(output)) as client:
+                    response = client.post("/custom/invoke")
+                    paths = client.get("/openapi.json").json()["paths"]
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], "completed")
+                self.assertEqual(response.json()["outputText"], "compiled-graph")
+                self.assertIn("/custom/invoke", paths)
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_managed_adk_http_pauses_and_resumes_protected_tool(self):

@@ -33,6 +33,28 @@ asynchronous, incorrectly typed, or missing factories fail compilation.
 Session storage cannot also be injected by the host because that would create
 competing authorities. See [checkpoints.md](checkpoints.md).
 
+## Asset storage
+
+Multimodal content uses one optional root `@lifecycle.asset_store` factory. It
+must be synchronous, zero-argument, unique, and return an `AssetStore`:
+
+```python
+from harnest.assets import MemoryAssetStore
+from harnest.lifecycle import lifecycle
+
+
+@lifecycle.asset_store
+def asset_store():
+    return MemoryAssetStore()
+```
+
+Without the factory, the standalone runtime installs the bounded process-local
+store. Production implementations must preserve opaque identifiers,
+authenticated user-and-session isolation, atomic streamed writes, bounded
+reads, retention, and deletion. ADK and LangGraph receive media bytes only
+inside their model-call adapters; their session and checkpoint stores retain
+references. See [multimodal-content.md](multimodal-content.md).
+
 ## Output policy
 
 `OutputPolicy` controls which model messages become public Harnest events; it

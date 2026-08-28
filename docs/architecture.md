@@ -536,8 +536,8 @@ surface is deliberately transport- and provider-neutral:
 | --- | --- |
 | `GET /agent` | Returns `{id,name,description,card,endpoints}` for the compiled agent. |
 | `POST /sessions` | Create a session from `{id?,state?}`; returns 201 with the complete neutral session record. |
-| `GET /sessions`, `GET /sessions/{id}` | Return self-describing records containing `id`, `userId`, `state`, `createdAt`, `updatedAt`, and namespaced framework `metadata`. |
-| `GET /sessions/{id}/messages` | Return the self-describing ordered transcript as `{sessionId,userId,messages}`; every message has `id`, `role`, `content`, `createdAt`, and complete namespaced framework `metadata`. |
+| `GET /sessions`, `GET /sessions/{id}` | Return self-describing records containing `id`, `userId`, `state`, `createdAt`, `updatedAt`, and namespaced framework `metadata`. Session listing always returns a bounded page with `nextCursor`, defaults to 100 records, and accepts `limit` plus a user-bound opaque keyset `cursor`. |
+| `GET /sessions/{id}/messages` | Return a bounded self-describing ordered transcript page as `{sessionId,userId,messages,nextCursor}`; the default and maximum page size is 100, with optional `limit` and a resource-bound opaque `cursor`. Every message has `id`, `role`, `content`, `createdAt`, and complete namespaced framework `metadata`. |
 | `PATCH /sessions/{id}` | Apply the exact `{"stateDelta": {...}}` body. |
 | `DELETE /sessions/{id}` | Delete a session and return 204. |
 | `POST /responses` | Run `input` against an optional `sessionId`; return neutral JSON, or named SSE when `stream` is true. |
@@ -598,6 +598,17 @@ Advanced ADK additionally mounts official ADK session paths, `/run`, `/run_sse`,
 and `/run_live`. Those expose ADK-native models and track the installed ADK
 version; LangGraph applications do not emulate them. They are not the stable
 Harnest integration boundary.
+
+Root extensions may add application routes through repeatable
+`@lifecycle.http_routes` factories. Compilation calls each synchronous factory
+once with an unbound `AgentInvoker`, validates its FastAPI `APIRouter`, and
+rejects duplicate or Harnest-owned paths. Server composition then binds that
+same invoker to the final wrapped driver and shared approval/client-tool stores
+before mounting the router. Consequently custom routes use the authenticated
+principal, session authority, lifecycle hooks, credentials, limits, telemetry,
+and continuation semantics shared by ADK and LangGraph; they cannot supply a
+separate `user_id` or call the native target directly.
+
 `GET /healthz` and `GET /.well-known/agent-card.json` remain available for
 health and card discovery in both frameworks.
 
@@ -653,14 +664,26 @@ authenticate callers.
 The serving path is deliberately one-way:
 
 ```text
-compiled application -> ADKRuntimeDriver | LangGraphRuntimeDriver
-                     -> one neutral FastAPI router
-                     -> /agent /sessions /responses /live
+CompiledApplication
+  ├─ framework target -> ADKRuntimeDriver | LangGraphRuntimeDriver
+  └─ RuntimeCapabilities
+         -> storage wrapper -> lifecycle/context/credential wrapper
+         -> InvocationCoordinator
+         -> JSON | SSE | WebSocket | custom HTTP adapters
 ```
 
-Only drivers translate native sessions, inputs, and events. Validation,
-deadlines, concurrency, JSON envelopes, SSE sequencing, WebSocket framing, and
-shutdown behavior are implemented once by the neutral router.
+`RuntimeCapabilities` validates and freezes application-owned stores,
+credentials, context resources, telemetry exporters, output policy, and custom
+routers while `CompiledApplication` retains its established flat attribute
+aliases. One runtime-pipeline builder owns wrapper ordering. Only drivers
+translate native sessions, inputs, and events.
+
+`InvocationCoordinator` owns caller-scoped session resolution, input/content
+validation, request limits, concurrency, deadlines, and non-streaming
+continuations. `/responses` and custom `AgentInvoker` endpoints call that same
+coordinator. Dedicated continuation, SSE, WebSocket, and session-wire modules
+own their respective framing without duplicating invocation policy. The neutral
+router assembles these components and owns route registration and shutdown.
 
 Go owns platform behavior:
 

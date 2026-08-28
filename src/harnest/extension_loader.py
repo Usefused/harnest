@@ -10,6 +10,7 @@ import sys
 from typing import Any
 import uuid
 
+from .assets import AssetStore
 from .checkpoint import (
     ADKStore,
     CheckpointAuthority,
@@ -18,6 +19,12 @@ from .checkpoint import (
 )
 from .context import ContextValue, registration_for as context_registration_for
 from .credentials import CredentialProvider
+from .http_routes import (
+    HTTPRouteError,
+    HTTPRouteExtension,
+    create_http_route_extension,
+    validate_http_route_extensions,
+)
 from .lifecycle import LifecycleListener, registration_for
 from .output import OutputPolicy
 from .session import SessionStore
@@ -39,7 +46,9 @@ class DiscoveredExtensions:
     native: tuple[Any, ...] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
+    asset_store: AssetStore | None = field(default=None, repr=False)
     credential_provider: CredentialProvider | None = field(default=None, repr=False)
+    http_routes: tuple[HTTPRouteExtension, ...] = field(default=(), repr=False)
     output_policy: OutputPolicy = OutputPolicy()
     telemetry_exporters: tuple[LifecycleListener, ...] = ()
     context_values: tuple[ContextValue, ...] = ()
@@ -62,7 +71,9 @@ def discover_extensions(
     checkpointer, checkpoint_listener, remaining = _create_checkpointer(
         remaining, framework
     )
+    asset_store, asset_listener, remaining = _create_asset_store(remaining)
     credential_provider, remaining = _create_credential_provider(remaining)
+    http_routes, remaining = _create_http_routes(remaining)
     output_policy, remaining = _create_output_policy(remaining)
     telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
     _validate_storage_ownership(session_store, checkpointer)
@@ -72,17 +83,66 @@ def discover_extensions(
     context_values = _factory_context_values(
         (session_listener, session_store),
         (checkpoint_listener, checkpointer),
+        (asset_listener, asset_store),
     )
     return DiscoveredExtensions(
         listeners=portable,
         native=native,
         session_store=session_store,
         checkpointer=checkpointer,
+        asset_store=asset_store,
         credential_provider=credential_provider,
+        http_routes=http_routes,
         output_policy=output_policy,
         telemetry_exporters=telemetry_exporters,
         context_values=context_values,
     )
+
+
+def _create_http_routes(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[tuple[HTTPRouteExtension, ...], tuple[LifecycleListener, ...]]:
+    """Materialize repeatable root routers while invocation remains deferred."""
+
+    factories = tuple(item for item in listeners if item.phase == "http_routes")
+    remaining = tuple(item for item in listeners if item.phase != "http_routes")
+    try:
+        extensions = tuple(
+            create_http_route_extension(item.callback, identity=item.identity)
+            for item in factories
+        )
+        validate_http_route_extensions(extensions)
+    except HTTPRouteError as error:
+        message = str(error)
+    else:
+        return extensions, remaining
+    # Convert outside the route-validation handler so authored failures do not
+    # remain reachable from the compiler's public exception context.
+    raise ExtensionDiscoveryError(message)
+
+
+def _create_asset_store(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[AssetStore | None, LifecycleListener | None, tuple[LifecycleListener, ...]]:
+    """Instantiate the optional root authority for scoped binary content."""
+
+    factories = tuple(item for item in listeners if item.phase == "asset_store")
+    if len(factories) > 1:
+        raise ExtensionDiscoveryError(
+            "root extensions may declare at most one @lifecycle.asset_store "
+            f"factory; found {len(factories)}"
+        )
+    remaining = tuple(item for item in listeners if item.phase != "asset_store")
+    if not factories:
+        return None, None, remaining
+    factory = factories[0]
+    value = _call_factory(factory, label="asset store")
+    if not isinstance(value, AssetStore):
+        raise ExtensionDiscoveryError(
+            f"asset store lifecycle factory {factory.identity} must return "
+            f"AssetStore; got {type(value).__name__}"
+        )
+    return value, factory, remaining
 
 
 def _extract_telemetry_exporters(
@@ -229,14 +289,14 @@ def _create_session_store(
 
 
 def _factory_context_values(
-    *factories: tuple[LifecycleListener, Any],
+    *factories: tuple[LifecycleListener | None, Any],
 ) -> tuple[ContextValue, ...]:
     """Expose only storage factories explicitly marked for agent context."""
 
     return tuple(
         ContextValue(listener.context_name, value, listener.identity)
         for listener, value in factories
-        if listener.context_name is not None
+        if listener is not None and listener.context_name is not None
     )
 
 
@@ -386,7 +446,13 @@ def _validate_context_provider(
         raise ExtensionDiscoveryError(
             f"context provider {relative}:{name} cannot also be a tool"
         )
-    allowed = {"context", "resource", "session_store", "checkpointer"}
+    allowed = {
+        "context",
+        "resource",
+        "session_store",
+        "checkpointer",
+        "asset_store",
+    }
     if phase not in allowed:
         raise ExtensionDiscoveryError(
             f"context provider {relative}:{name} cannot also use "
@@ -404,12 +470,17 @@ def _validate_listener_signature(
         "langgraph_middleware",
         "session_store",
         "checkpointer",
+        "asset_store",
         "credential_provider",
+        "http_routes",
         "output_policy",
         "telemetry_exporter",
         "resource",
         "context",
     }
+    if phase == "http_routes":
+        _validate_http_route_factory_signature(relative, name, function)
+        return
     if phase in factory_phases:
         _validate_factory_signature(relative, name, function, phase)
         return
@@ -421,6 +492,27 @@ def _validate_listener_signature(
     if len(parameters) != 2 or any(item.kind not in positional for item in parameters):
         raise ExtensionDiscoveryError(
             f"lifecycle listener {relative}:{name} must accept exactly two arguments"
+        )
+
+
+def _validate_http_route_factory_signature(
+    relative: str, name: str, function: Any
+) -> None:
+    """Require one injected invoker without accepting ambiguous parameters."""
+
+    parameters = tuple(inspect.signature(function).parameters.values())
+    positional = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    if len(parameters) != 1 or parameters[0].kind not in positional:
+        raise ExtensionDiscoveryError(
+            f"HTTP route factory {relative}:{name} must accept exactly one "
+            "AgentInvoker argument"
+        )
+    if inspect.iscoroutinefunction(function):
+        raise ExtensionDiscoveryError(
+            f"HTTP route factory {relative}:{name} must be synchronous"
         )
 
 

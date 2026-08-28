@@ -22,7 +22,7 @@ from .credentials import (
     CredentialProviderError,
     _activate_credential_provider,
 )
-from .neutral_runtime import (
+from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
@@ -267,9 +267,21 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             session_id=session_id, user_id=user_id
         )
 
-    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
+    async def list_sessions(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        """Forward optional keyset bounds after starting application resources."""
+
         await self._start_resources()
-        return await self._driver.list_sessions(user_id=user_id)
+        if after is None and limit is None:
+            return await self._driver.list_sessions(user_id=user_id)
+        return await self._driver.list_sessions(
+            user_id=user_id, after=after, limit=limit
+        )
 
     async def get_session_messages(
         self, *, session_id: str, user_id: str

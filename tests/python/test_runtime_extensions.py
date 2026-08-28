@@ -57,7 +57,14 @@ class FakeDriver:
     ) -> SessionRecord | None:
         return SessionRecord(id=session_id, user_id=user_id, state={})
 
-    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
+    async def list_sessions(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        del after, limit
         return [SessionRecord(id="session-1", user_id=user_id, state={})]
 
     async def update_session(

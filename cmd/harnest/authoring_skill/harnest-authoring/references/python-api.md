@@ -70,6 +70,25 @@ model in `models/support.py` imports as `harnest.models.support`; no
 `__init__.py` is required. The same namespace is available from `agent.py`,
 tools, client tools, extensions, subagents, tests, and compiled runtime code.
 
+### Multimodal content
+
+Use reference-only types from `harnest.content` inside those Pydantic models:
+`Text`, `Image`, `Audio`, `Video`, `File`, `AssetRef`, and typed `Data[T]`.
+Define reusable policies with `Annotated`, for example
+`Annotated[Image, ImageConstraints(media_types=frozenset({"image/png"}),
+max_bytes=5 * 1024 * 1024, max_width=4096, max_height=4096)]`. Audio, video,
+file, and custom data have corresponding constraint classes. The constraints
+appear as `x-harnest-media` in JSON Schema.
+
+Media values carry `assetId`, never URLs, base64, bytes, or provider IDs. A
+client uploads bytes to `POST /sessions/{sessionId}/assets`, then uses the
+returned reference in `/responses` or `/live`. Harnest discards client-claimed
+metadata, resolves trusted store metadata, and applies the authored field
+constraints. The same reference-only parts appear in session messages and
+structured output. ADK and LangGraph materialize bytes only around model calls;
+checkpoints, traces, audits, and native transcript metadata remain content-free.
+See `docs/multimodal-content.md` for the complete request and asset lifecycle.
+
 `Graph` nodes may be `Agent` definitions, typed callables, nested `Graph`
 objects, `Join()` nodes, accepted backend-native nodes, or strings naming
 filesystem-discovered tools and subagents. String references are how a graph
@@ -386,6 +405,19 @@ managed model boundaries. Portable v1 changes visible text or short-circuits;
 structural message/model control requires zero-argument `@lifecycle.adk_plugin` or
 `@lifecycle.langgraph_middleware` factories for native framework callbacks.
 Read `docs/extensions.md` for phase and advanced-mode guarantees.
+
+### Custom HTTP routes
+
+Use a root `@lifecycle.http_routes` factory when the application needs a
+business-specific FastAPI contract. The synchronous factory accepts exactly one
+injected `AgentInvoker` and returns an `APIRouter`. Inside a route, call
+`agent.invoke(connection=request, input=..., session_id=..., metadata=...)`.
+Never accept `user_id`; Harnest derives identity from the authenticated
+connection and uses the same sessions, approvals, client tools, lifecycle,
+credentials, limits, and telemetry as `/responses`. Compilation rejects
+duplicate and Harnest-owned paths. Subagents cannot own routes. See
+`https://docs.usefused.com/harnest/runtime/custom-http-endpoints` for the public
+contract and example.
 
 ### Public output policy
 

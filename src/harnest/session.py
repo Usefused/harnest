@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncContextManager, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
 
 from ._json import json_value
-from .neutral_runtime import SessionConflictError, SessionRecord
+from .runtime_contract import SessionConflictError, SessionRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +65,13 @@ class SessionStore(Protocol):
 
     async def get(self, *, session_id: str, user_id: str) -> SessionRecord | None: ...
 
-    async def list(self, *, user_id: str) -> Sequence[SessionRecord]: ...
+    async def list(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]: ...
 
     async def update(
         self,
@@ -143,16 +149,27 @@ class InMemorySessionStore:
         async with stored.lock:
             return _record(session_id, stored)
 
-    async def list(self, *, user_id: str) -> Sequence[SessionRecord]:
+    async def list(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        """List an ordered keyset page without materializing unrelated users."""
+
         _require_text(user_id, "user_id")
+        _require_list_options(after, limit)
         pairs = sorted(
             (
                 (session_id, stored)
                 for (owner, session_id), stored in self._sessions.items()
-                if owner == user_id
+                if owner == user_id and (after is None or session_id > after)
             ),
             key=lambda item: item[0],
         )
+        if limit is not None:
+            pairs = pairs[:limit]
         return tuple(_record(session_id, stored) for session_id, stored in pairs)
 
     async def update(
@@ -215,6 +232,15 @@ def _record(
 def _require_text(value: Any, name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
+
+
+def _require_list_options(after: str | None, limit: int | None) -> None:
+    """Validate optional keyset bounds shared by session-store implementations."""
+
+    if after is not None:
+        _require_text(after, "after")
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise ValueError("limit must be a positive integer")
 
 
 def _timestamp() -> str:

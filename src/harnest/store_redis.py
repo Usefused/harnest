@@ -30,8 +30,8 @@ from .checkpoint import (
     _validate_transition,
 )
 from .logging import get_logger
-from .neutral_runtime import SessionConflictError, SessionRecord
-from .session import SessionLease
+from .runtime_contract import SessionConflictError, SessionRecord
+from .session import SessionLease, _require_list_options
 
 
 _SCHEMA_VERSION = "1"
@@ -130,18 +130,31 @@ class RedisStore(HarnestStore):
         )
         return None if raw is None else _session_load(raw)
 
-    async def list(self, *, user_id: str) -> Sequence[SessionRecord]:
-        """Load one user's indexed sessions with a single set-based MGET."""
+    async def list(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        """Read one lexicographically ordered keyset page with one MGET."""
 
         _require_text(user_id, "user_id")
-        session_ids = await self._require_client().zrange(
-            self._user_key(user_id), 0, -1
-        )
+        _require_list_options(after, limit)
+        client = self._require_client()
+        if after is None and limit is None:
+            session_ids = await client.zrange(self._user_key(user_id), 0, -1)
+        else:
+            minimum = "-" if after is None else f"({after}"
+            options = {} if limit is None else {"start": 0, "num": limit}
+            session_ids = await client.zrangebylex(
+                self._user_key(user_id), minimum, "+", **options
+            )
         if not session_ids:
             return ()
         keys = [self._session_key(user_id, _text(item)) for item in session_ids]
         # MGET keeps this set-based even when a user owns many sessions.
-        values = await self._require_client().mget(keys)
+        values = await client.mget(keys)
         return tuple(_session_load(raw) for raw in values if raw is not None)
 
     async def update(

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harnest.assets import MemoryAssetStore
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.output import OutputPolicy
 from harnest.session import InMemorySessionStore
@@ -75,6 +76,33 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             result = discover_extensions(root, framework="langgraph")
 
         self.assertIsInstance(result.checkpointer, MemoryStore)
+
+    def test_asset_store_is_optional_and_must_implement_the_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            self.assertIsNone(
+                discover_extensions(root, framework="langgraph").asset_store
+            )
+            (root / "assets.py").write_text(
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.asset_store\n"
+                "def asset_store(): return MemoryAssetStore()\n",
+                encoding="utf-8",
+            )
+
+            configured = discover_extensions(root, framework="langgraph")
+
+            self.assertIsInstance(configured.asset_store, MemoryAssetStore)
+            (root / "assets.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.asset_store\n"
+                "def asset_store(): return object()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "AssetStore"):
+                discover_extensions(root, framework="langgraph")
 
     def test_telemetry_exporter_factories_are_repeatable_and_runtime_only(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -25,8 +25,8 @@ from .checkpoint import (
     _validate_transition,
 )
 from .logging import get_logger
-from .neutral_runtime import SessionConflictError, SessionRecord
-from .session import SessionLease
+from .runtime_contract import SessionConflictError, SessionRecord
+from .session import SessionLease, _require_list_options
 from .store_postgres_schema import SCHEMA_LOCK, SCHEMA_SQL, SCHEMA_VERSION
 
 
@@ -105,17 +105,29 @@ class PostgresStore(HarnestStore):
             )
         return None if row is None else _session_from_row(row)
 
-    async def list(self, *, user_id: str) -> Sequence[SessionRecord]:
-        """List one user's sessions with filtering and ordering in PostgreSQL."""
+    async def list(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        """Apply tenant filtering and optional keyset pagination in PostgreSQL."""
 
         _require_text(user_id, "user_id")
+        _require_list_options(after, limit)
         async with self._connection() as connection:
             rows = await connection.fetch(
                 """
                 SELECT * FROM harnest_sessions
-                WHERE user_id=$1 ORDER BY session_id
+                WHERE user_id=$1
+                  AND ($2::text IS NULL OR session_id > $2)
+                ORDER BY session_id
+                LIMIT $3
                 """,
                 user_id,
+                after,
+                limit,
             )
         return tuple(_session_from_row(row) for row in rows)
 

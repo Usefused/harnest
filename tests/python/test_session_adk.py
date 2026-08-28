@@ -45,6 +45,16 @@ class ADKSessionStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
             app_name="support", user_id="user-1"
         )
         self.assertEqual([item.id for item in listed.sessions], ["session-1"])
+        await self.service.create_session(
+            app_name="support", user_id="user-1", session_id="session-2"
+        )
+        page = await self.service.list_sessions_page(
+            app_name="support",
+            user_id="user-1",
+            after="session-1",
+            limit=1,
+        )
+        self.assertEqual([item.id for item in page], ["session-2"])
         await self.service.delete_session(
             app_name="support", user_id="user-1", session_id="session-1"
         )

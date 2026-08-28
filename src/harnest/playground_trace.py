@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ._json import json_value
-from .neutral_runtime import (
+from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
@@ -39,17 +39,35 @@ def _event_detail(event: RuntimeEvent) -> dict[str, Any]:
         return {"characters": len(str(event.get("text", "")))}
     if event_type == "tool_call":
         return {
-            "id": event.get("id"),
             "name": event.get("name"),
-            "arguments": event.get("arguments"),
+            "argumentFields": _mapping_field_count(event.get("arguments")),
         }
     if event_type == "tool_result":
         return {
-            "callId": event.get("id", event.get("callId")),
             "name": event.get("name"),
-            "output": event.get("result", event.get("output")),
+            "outputType": _value_shape(
+                event.get("result", event.get("output"))
+            ),
         }
     return {"kind": event_type}
+
+
+def _mapping_field_count(value: Any) -> int | None:
+    """Describe tool arguments without retaining their names or values."""
+
+    return len(value) if isinstance(value, Mapping) else None
+
+
+def _value_shape(value: Any) -> str:
+    """Classify a tool result without retaining custom type or content data."""
+
+    if value is None:
+        return "null"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return "array"
+    return "scalar"
 
 
 class PlaygroundTraceStore:
@@ -210,8 +228,20 @@ class PlaygroundTraceRuntimeDriver(RuntimeDriver):
     ) -> SessionRecord | None:
         return await self._driver.get_session(session_id=session_id, user_id=user_id)
 
-    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
-        return await self._driver.list_sessions(user_id=user_id)
+    async def list_sessions(
+        self,
+        *,
+        user_id: str,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Sequence[SessionRecord]:
+        """Delegate session keyset bounds without adding trace observations."""
+
+        if after is None and limit is None:
+            return await self._driver.list_sessions(user_id=user_id)
+        return await self._driver.list_sessions(
+            user_id=user_id, after=after, limit=limit
+        )
 
     async def get_session_messages(
         self, *, session_id: str, user_id: str

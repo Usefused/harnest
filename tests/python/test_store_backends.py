@@ -105,6 +105,7 @@ class _RedisClient:
         self.session_ids = []
         self.multi_values = []
         self.mget_calls = 0
+        self.zrangebylex_calls = []
 
     async def set(self, key, value, **_options):
         self.values.setdefault(key, value)
@@ -115,6 +116,15 @@ class _RedisClient:
 
     async def zrange(self, _key, _start, _end):
         return list(self.session_ids)
+
+    async def zrangebylex(self, key, minimum, maximum, **options):
+        self.zrangebylex_calls.append((key, minimum, maximum, options))
+        values = list(self.session_ids)
+        if minimum.startswith("("):
+            boundary = minimum[1:].encode("utf-8")
+            values = [item for item in values if item > boundary]
+        limit = options.get("num")
+        return values if limit is None else values[:limit]
 
     async def mget(self, keys):
         self.mget_calls += 1
@@ -182,6 +192,10 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
         await store.start()
         session = await store.create(session_id="s-1", user_id="u-1", state={})
         self.assertEqual(session.id, "s-1")
+        await store.create(session_id="s-2", user_id="u-1", state={})
+        await store.create(session_id="s-3", user_id="u-1", state={})
+        page = await store.list(user_id="u-1", after="s-1", limit=1)
+        self.assertEqual([item.id for item in page], ["s-2"])
         run = await store.begin_run(
             application_id="app",
             user_id="u-1",
@@ -223,8 +237,15 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item.id for item in sessions], ["a", "b"])
         query, arguments = connection.fetched[-1]
-        self.assertIn("WHERE user_id=$1 ORDER BY session_id", query)
-        self.assertEqual(arguments, ("u-1",))
+        self.assertIn("WHERE user_id=$1", query)
+        self.assertIn("session_id > $2", query)
+        self.assertIn("ORDER BY session_id", query)
+        self.assertIn("LIMIT $3", query)
+        self.assertEqual(arguments, ("u-1", None, None))
+
+        await store.list(user_id="u-1", after="a", limit=2)
+        _, arguments = connection.fetched[-1]
+        self.assertEqual(arguments, ("u-1", "a", 2))
 
     async def test_checkpoint_list_pushes_filter_cursor_and_limit_to_sql(self):
         connection = _PostgresConnection()
@@ -325,6 +346,24 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item in sessions], ["a", "b"])
         self.assertEqual(client.mget_calls, 1)
         self.assertTrue(all("u-1" not in key for key in client.last_mget_keys))
+
+        client.session_ids = [b"a", b"b", b"c"]
+        client.multi_values = [
+            json.dumps(
+                {
+                    "id": "c",
+                    "user_id": "u-1",
+                    "state": {},
+                    "created_at": "now",
+                    "updated_at": "now",
+                }
+            )
+        ]
+        page = await store.list(user_id="u-1", after="b", limit=1)
+        self.assertEqual([item.id for item in page], ["c"])
+        _, minimum, maximum, options = client.zrangebylex_calls[-1]
+        self.assertEqual((minimum, maximum), ("(b", "+"))
+        self.assertEqual(options, {"start": 0, "num": 1})
 
     async def test_mutation_audit_excludes_tenant_identifiers_and_state(self):
         store = RedisStore("redis://example", _client=_RedisClient())

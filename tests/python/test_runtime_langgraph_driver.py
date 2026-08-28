@@ -1,15 +1,19 @@
+import base64
 import sys
 import unittest
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from pydantic import BaseModel
 
 from harnest.agent import Agent, AgentDefinition
 from harnest.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
+from harnest.assets import AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
+from harnest.content import ContentPart, Image, Text
 from harnest.graph import START, Edge, Graph
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
@@ -19,8 +23,18 @@ from harnest.mcp_lifecycle import (
 )
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
 from harnest.output import OutputPolicy
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.runtime_langgraph import (
+    LangGraphRuntimeDriver,
+    _MODEL_ASSET_SCOPE,
+    _langgraph_asset_middleware,
+)
 from harnest.session import InMemorySessionStore
+
+
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class _RecordingSessionStore(InMemorySessionStore):
@@ -67,6 +81,17 @@ class _HumanMessage:
 
     def model_dump(self, **_kwargs):
         return {"type": self.type, "content": self.content}
+
+
+class _CopyMessage(_HumanMessage):
+    def model_copy(self, *, update):
+        return _CopyMessage(update.get("content", self.content))
+
+
+@dataclass
+class _ModelResponse:
+    result: list
+    structured_response: object = None
 
 
 class _Target:
@@ -120,6 +145,15 @@ class _Target:
 
     async def aclose(self):
         self.closed += 1
+
+
+class _ContentRequest(BaseModel):
+    prompt: str
+    parts: list[ContentPart]
+
+
+async def _chunks(value):
+    yield value
 
 
 class _MCPAdapterClient:
@@ -255,6 +289,10 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             [item.id for item in await self.driver.list_sessions(user_id="user-1")],
             ["session-1", "session-2"],
         )
+        page = await self.driver.list_sessions(
+            user_id="user-1", after="session-1", limit=1
+        )
+        self.assertEqual([item.id for item in page], ["session-2"])
         self.assertIsNone(
             await self.driver.get_session(
                 session_id="session-2", user_id="another-user"
@@ -312,7 +350,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("messages", session.state)
         self.assertIn("messages", session.metadata["langgraph"])
         self.assertEqual(
-            session.metadata["langgraph"]["messages"][-1]["content"][1]["text"],
+            session.metadata["langgraph"]["messages"][-1]["content"][0]["text"],
             "answer-2",
         )
         messages = await self.driver.get_session_messages(
@@ -372,6 +410,135 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             target.inputs[0]["_harnest_state"], {"count": 2, "tenant": "one"}
         )
         await driver.close()
+
+    async def test_content_input_stays_reference_only_in_graph_and_history(self):
+        class EchoTarget(_Target):
+            def _result(self, graph_input):
+                return {
+                    "messages": [*graph_input["messages"], _Message("done")],
+                    "value": "done",
+                }
+
+        store = MemoryAssetStore(token_factory=lambda: "a" * 24)
+        scope = AssetScope(user_id="user-1", session_id="content-session")
+        record = await store.save(
+            scope=scope,
+            media_type="image/png",
+            chunks=_chunks(b"private-image"),
+        )
+        target = EchoTarget()
+        application = replace(
+            _application(target), input_schema=_ContentRequest
+        )
+        driver = LangGraphRuntimeDriver(application, asset_store=store)
+        await driver.create_session(
+            session_id="content-session", user_id="user-1", state={}
+        )
+        request = InvocationRequest(
+            input=_ContentRequest(
+                prompt="inspect",
+                parts=[
+                    Text(text="ordered"),
+                    Image(assetId=record.asset_id),
+                ],
+            ).model_dump(mode="json", by_alias=True),
+            user_id="user-1",
+            session_id="content-session",
+            invocation_id="content-invocation",
+            metadata={},
+            state_delta={},
+        )
+
+        await driver.invoke(request)
+
+        blocks = target.inputs[0]["messages"][-1].content
+        self.assertEqual(
+            [block["type"] for block in blocks],
+            ["text", "text", "image"],
+        )
+        self.assertEqual(blocks[-1], {"type": "image", "assetId": record.asset_id})
+        self.assertNotIn("base64", repr(target.inputs[0]))
+        messages = await driver.get_session_messages(
+            session_id="content-session", user_id="user-1"
+        )
+        self.assertEqual(messages[0].role, "user")
+        self.assertEqual(messages[0].content[-1]["assetId"], record.asset_id)
+        self.assertEqual(messages[0].metadata, {"langgraph": {"type": "human"}})
+        self.assertNotIn("base64", repr(messages))
+        await driver.close()
+
+    async def test_model_middleware_materializes_then_stages_media(self):
+        store = MemoryAssetStore(
+            token_factory=iter(("a" * 24, "b" * 24)).__next__
+        )
+        scope = AssetScope(user_id="user-1", session_id="session-1")
+        input_record = await store.save(
+            scope=scope,
+            media_type="image/png",
+            chunks=_chunks(b"input-image"),
+        )
+        original = _CopyMessage(
+            content=[{"type": "image", "assetId": input_record.asset_id}]
+        )
+
+        class Request:
+            messages = [original]
+
+            def override(self, **values):
+                return SimpleNamespace(**values)
+
+        seen = []
+
+        async def handler(request):
+            seen.append(request.messages[0].content)
+            return _ModelResponse(
+                result=[
+                    _CopyMessage(
+                        content=[
+                            {"type": "text", "text": "rendered"},
+                            {
+                                "type": "image",
+                                "base64": base64.b64encode(_PNG).decode(),
+                                "mime_type": "image/png",
+                            },
+                        ]
+                    )
+                ]
+            )
+
+        langchain = ModuleType("langchain")
+        langchain.__path__ = []
+        agents = ModuleType("langchain.agents")
+        agents.__path__ = []
+        middleware_module = ModuleType("langchain.agents.middleware")
+        middleware_module.AgentMiddleware = type("AgentMiddleware", (), {})
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain": langchain,
+                "langchain.agents": agents,
+                "langchain.agents.middleware": middleware_module,
+            },
+        ):
+            middleware = _langgraph_asset_middleware(store)
+            token = _MODEL_ASSET_SCOPE.set(scope)
+            try:
+                response = await middleware.awrap_model_call(Request(), handler)
+            finally:
+                _MODEL_ASSET_SCOPE.reset(token)
+
+        self.assertEqual(
+            base64.b64decode(seen[0][0]["base64"]), b"input-image"
+        )
+        self.assertEqual(original.content[0]["assetId"], input_record.asset_id)
+        output = response.result[0].content
+        self.assertEqual(output[0], {"type": "text", "text": "rendered"})
+        self.assertEqual(output[1]["type"], "image")
+        self.assertIn("assetId", output[1])
+        self.assertNotIn("base64", repr(response))
+        self.assertIsNotNone(
+            await store.stat(scope=scope, asset_id=output[1]["assetId"])
+        )
 
     async def test_stream_emits_only_canonical_events_and_updates_state(self):
         await self.driver.create_session(

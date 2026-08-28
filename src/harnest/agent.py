@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
+
+from pydantic import BaseModel
 
 from .mcp import MCPClient
 from .mcp_lifecycle import propagate_mcp_lifecycles
@@ -159,7 +163,10 @@ class AgentDefinition:
         """Translate the portable definition into ADK constructor arguments."""
 
         children = [_build_adk_subagent(child) for child in self.subagents]
-        runtime_tools = [*self.tools, *(client.to_adk_toolset() for client in self.mcp)]
+        runtime_tools = [
+            *(_adk_runtime_tool(tool) for tool in self.tools),
+            *(client.to_adk_toolset() for client in self.mcp),
+        ]
         kwargs: dict[str, Any] = {
             "name": self.name,
             "model": resolve_model(self.model),
@@ -188,12 +195,17 @@ class AgentDefinition:
         return kwargs
 
     def _schema_kwargs(self) -> dict[str, PydanticModel]:
-        """Expose only provider-owned fields to the native model boundary."""
+        """Expose only provider-owned output fields to the ADK node boundary.
+
+        Harnest validates portable request models before framework lowering.
+        Passing that schema to ADK would make ADK concatenate multipart content
+        into text and reject otherwise-valid media references before its model
+        callback can materialize them.
+        """
 
         return {
             name: schema
             for name, schema in (
-                ("input_schema", self.input_schema),
                 (
                     "output_schema",
                     provider_output_schema(self.output_schema)
@@ -217,6 +229,34 @@ class AgentDefinition:
                 "google-genai is required for generate_content_config"
             ) from exc
         return types.GenerateContentConfig(**dict(config))
+
+
+def _adk_runtime_tool(tool: Tool) -> Tool:
+    """Serialize validated Pydantic tool values before ADK wraps responses."""
+
+    if not callable(tool) or getattr(tool, "__harnest_output_schema__", None) is None:
+        return tool
+    if inspect.iscoroutinefunction(tool):
+
+        @functools.wraps(tool)
+        async def async_call(*args: Any, **kwargs: Any) -> Any:
+            return _adk_tool_result(await tool(*args, **kwargs))
+
+        return async_call
+
+    @functools.wraps(tool)
+    def sync_call(*args: Any, **kwargs: Any) -> Any:
+        return _adk_tool_result(tool(*args, **kwargs))
+
+    return sync_call
+
+
+def _adk_tool_result(value: Any) -> Any:
+    """Avoid ADK's generic ``result`` envelope for Pydantic model values."""
+
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=True)
+    return value
 
 
 @dataclass(frozen=True, slots=True)

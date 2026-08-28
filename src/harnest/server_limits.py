@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Mapping
 
+from .assets import DEFAULT_MAX_ASSET_BYTES
 from .server_config import format_byte_size, validate_max_request_bytes
 
 
@@ -15,9 +16,16 @@ class _PayloadTooLarge(Exception):
 class RequestSizeLimitMiddleware:
     """Reject oversized HTTP bodies and WebSocket frames before routing."""
 
-    def __init__(self, app: Any, *, max_request_bytes: int) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        max_request_bytes: int,
+        max_asset_bytes: int = DEFAULT_MAX_ASSET_BYTES,
+    ) -> None:
         self._app = app
         self._max_bytes = validate_max_request_bytes(max_request_bytes)
+        self._max_asset_bytes = max_asset_bytes
 
     async def __call__(self, scope: Mapping[str, Any], receive: Any, send: Any) -> None:
         scope_type = scope.get("type")
@@ -30,14 +38,19 @@ class RequestSizeLimitMiddleware:
         await self._app(scope, receive, send)
 
     async def _serve_http(self, scope: Mapping[str, Any], receive: Any, send: Any) -> None:
-        if _content_length(scope) > self._max_bytes:
-            await _reject_http(send, self._max_bytes)
+        maximum = _http_maximum(
+            scope,
+            request_maximum=self._max_bytes,
+            asset_maximum=self._max_asset_bytes,
+        )
+        if _content_length(scope) > maximum:
+            await _reject_http(send, maximum)
             return
-        limited_receive = _limited_http_receive(receive, self._max_bytes)
+        limited_receive = _limited_http_receive(receive, maximum)
         try:
             await self._app(scope, limited_receive, send)
         except _PayloadTooLarge:
-            await _reject_http(send, self._max_bytes)
+            await _reject_http(send, maximum)
 
     async def _serve_websocket(
         self, scope: Mapping[str, Any], receive: Any, send: Any
@@ -65,6 +78,22 @@ def _content_length(scope: Mapping[str, Any]) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _http_maximum(
+    scope: Mapping[str, Any], *, request_maximum: int, asset_maximum: int
+) -> int:
+    """Use the fixed upload ceiling only for the binary collection route."""
+
+    path = str(scope.get("path", "")).strip("/").split("/")
+    is_asset_upload = (
+        str(scope.get("method", "")).upper() == "POST"
+        and len(path) == 3
+        and path[0] == "sessions"
+        and bool(path[1])
+        and path[2] == "assets"
+    )
+    return asset_maximum if is_asset_upload else request_maximum
 
 
 def _limited_http_receive(receive: Any, maximum: int) -> Callable[[], Awaitable[Any]]:

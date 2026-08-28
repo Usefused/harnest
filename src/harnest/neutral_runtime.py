@@ -8,1057 +8,103 @@ wire protocol lives here so ADK and LangGraph cannot drift independently.
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing, asynccontextmanager
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
 import json
-from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, AsyncIterator, Mapping, Sequence
 import uuid
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    create_model,
-    field_validator,
-)
+from pydantic import BaseModel, ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.exceptions import HTTPException
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .assets import (
+    DEFAULT_MAX_ASSET_BYTES,
+    AssetNotFoundError,
+    AssetQuotaError,
+    AssetRecord,
+    AssetScope,
+    AssetStore,
+    MemoryAssetStore,
+)
 from .runtime_auth import (
     ANONYMOUS_USER_ID,
     Authenticator,
+    _active_authenticated_principal,
     install_authentication,
     principal_for,
 )
 from .approval import (
     ApprovalDenied,
     ApprovalEnforcementError,
-    ApprovalExecution,
     ApprovalExpired,
-    ApprovalRun,
     InMemoryApprovalStore,
-    PendingApproval,
-    approval_execution,
 )
 from .client_tool import (
     ClientToolError,
-    ClientToolExecution,
     InMemoryClientToolStore,
-    PendingClientTool,
-    client_tool_execution,
 )
 from .server_config import format_byte_size, validate_max_request_bytes
+from .http_routes import (
+    HTTPRouteExtension,
+    mount_http_route_extensions,
+)
+from .runtime_contract import (
+    AgentInfo,
+    InvocationRequest,
+    InvocationResult,
+    NoCustomerFacingOutputError,
+    ResponseRequest,
+    RuntimeDriver,
+    RuntimeEvent,
+    SessionConflictError,
+    SessionMessage,
+    SessionRecord,
+    require_customer_facing_output,
+    response_request_model as _response_request_model,
+)
+from .runtime_continuation import (
+    completed_payload as _completed_payload,
+    json_client_requires_action as _json_client_requires_action,
+    json_requires_action as _json_requires_action,
+    next_non_event as _next_non_event,
+)
+from .runtime_invocation import (
+    InvocationCoordinator,
+    resolved_transport_input as _resolved_transport_input,
+)
+from .runtime_session_wire import (
+    decode_session_cursor as _decode_session_cursor,
+    encode_session_cursor as _encode_session_cursor,
+    paginate_session_messages as _paginate_session_messages,
+    session_message_payload as _session_message_payload,
+    session_payload as _session_payload,
+)
+from .runtime_live import (
+    live_session as _live_session,
+    serve_live_frame as _serve_live_frame,
+    validated_live_frame as _validated_live_frame,
+)
+from .runtime_sse import (
+    commit_approval_decision as _commit_approval_decision,
+    parse_approval_decision as _parse_approval_decision,
+    resume_approval_run as _resume_approval_run,
+    resumed_action_payload as _resumed_action_payload,
+    sse_approval_run as _sse_approval_run,
+)
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_LIVE_FRAMES = 1024
+MAX_SESSION_PAGE_SIZE = 100
+MAX_TRANSCRIPT_PAGE_SIZE = 100
 NEUTRAL_USER_ID = ANONYMOUS_USER_ID
-
-RuntimeEvent = dict[str, Any]
-
-
-class _ResponseEnvelope(BaseModel):
-    """Fields shared by text and user-configured response request models."""
-
-    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
-
-    session_id: str | None = Field(default=None, alias="sessionId")
-    stream: bool = False
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("session_id")
-    @classmethod
-    def _non_empty_session_id(cls, value: str | None) -> str | None:
-        """Keep explicitly selected sessions unambiguous."""
-
-        if value is not None and not value.strip():
-            raise ValueError("sessionId must be non-empty")
-        return value
-
-
-class ResponseRequest(_ResponseEnvelope):
-    """Strict Pydantic body accepted by default by ``POST /responses``."""
-
-    input: str
-
-    @field_validator("input")
-    @classmethod
-    def _non_empty_input(cls, value: str) -> str:
-        """Reject input that cannot produce a meaningful model turn."""
-
-        if not value.strip():
-            raise ValueError("input must be non-empty")
-        return value
-
-
-def _response_request_model(input_schema: Any) -> type[BaseModel]:
-    """Create the transport envelope around one authored Pydantic input model."""
-
-    if input_schema is None:
-        return ResponseRequest
-    # A per-application model makes the user's contract visible under `input`
-    # in OpenAPI without turning session and streaming controls into model data.
-    return create_model(
-        "ResponseRequest",
-        __base__=_ResponseEnvelope,
-        input=(input_schema, ...),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class AgentInfo:
-    """Portable metadata needed by the neutral server."""
-
-    id: str
-    name: str
-    description: str
-    card: Mapping[str, Any]
-    framework: str | None = None
-    mode: str | None = None
-    extra_endpoints: Mapping[str, str] = field(default_factory=dict)
-    input_schema: Any = None
-    output_schema: Any = None
-
-
-@dataclass(frozen=True, slots=True)
-class SessionRecord:
-    """A backend-independent view of a persisted agent session."""
-
-    id: str
-    user_id: str
-    state: Mapping[str, Any]
-    created_at: str | None = None
-    updated_at: str | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class SessionMessage:
-    """One portable transcript item with lossless framework-owned metadata."""
-
-    id: str
-    role: str
-    content: Any
-    created_at: str | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class InvocationRequest:
-    """The complete input passed from a transport to a runtime driver."""
-
-    input: Any
-    user_id: str
-    session_id: str
-    invocation_id: str
-    metadata: Mapping[str, Any]
-    state_delta: Mapping[str, Any]
-    transport: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class InvocationResult:
-    """The normalized result of a non-streaming invocation."""
-
-    text: str
-    events: Sequence[RuntimeEvent]
-    result: Any
-    session_id: str
-    metadata: Mapping[str, Any]
-
-
-@runtime_checkable
-class RuntimeDriver(Protocol):
-    """The only interface the neutral server requires from a framework."""
-
-    @property
-    def info(self) -> AgentInfo: ...
-
-    async def create_session(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        state: Mapping[str, Any],
-    ) -> SessionRecord: ...
-
-    async def get_session(
-        self, *, session_id: str, user_id: str
-    ) -> SessionRecord | None: ...
-
-    async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]: ...
-
-    async def get_session_messages(
-        self, *, session_id: str, user_id: str
-    ) -> Sequence[SessionMessage] | None: ...
-
-    async def update_session(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        state_delta: Mapping[str, Any],
-    ) -> SessionRecord | None: ...
-
-    async def delete_session(self, *, session_id: str, user_id: str) -> bool: ...
-
-    async def invoke(self, request: InvocationRequest) -> InvocationResult: ...
-
-    def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]: ...
-
-    async def close(self) -> None: ...
-
-
-class SessionConflictError(RuntimeError):
-    """Raised by a driver when a requested session id already exists."""
-
-
-class NoCustomerFacingOutputError(RuntimeError):
-    """Raised when a completed invocation contains no public answer or result."""
-
-
-def require_customer_facing_output(text: str, result: Any) -> None:
-    """Reject reasoning-only completions without exposing their hidden content."""
-
-    if text.strip() or result is not None:
-        return
-    # Returning an empty successful response makes provider failures look like
-    # valid agent behavior. The error remains provider-neutral and keeps hidden
-    # chain-of-thought out of every public transport.
-    raise NoCustomerFacingOutputError(
-        "Agent completed without customer-facing output"
-    )
-
-
-def _session_payload(session: SessionRecord) -> dict[str, Any]:
-    """Render the complete neutral record without flattening native metadata."""
-
-    return {
-        "id": session.id,
-        "userId": session.user_id,
-        "state": dict(session.state),
-        "createdAt": session.created_at,
-        "updatedAt": session.updated_at,
-        "metadata": dict(session.metadata),
-    }
-
-
-def _session_message_payload(message: SessionMessage) -> dict[str, Any]:
-    """Render one stable transcript item without flattening native metadata."""
-
-    return {
-        "id": message.id,
-        "role": message.role,
-        "content": message.content,
-        "createdAt": message.created_at,
-        "metadata": dict(message.metadata),
-    }
-
-
-def _public_output_item(event: RuntimeEvent) -> dict[str, Any]:
-    event_type = event.get("type")
-    if event_type == "message":
-        return {
-            "type": "message",
-            "role": event.get("role", "assistant"),
-            "content": [{"type": "output_text", "text": event.get("text", "")}],
-        }
-    if event_type == "tool_call":
-        return {
-            "type": "tool_call",
-            "id": event.get("id"),
-            "name": event.get("name"),
-            "arguments": event.get("arguments"),
-        }
-    if event_type == "tool_result":
-        return {
-            "type": "tool_result",
-            "callId": event.get("id", event.get("callId")),
-            "name": event.get("name"),
-            "output": event.get("result", event.get("output")),
-        }
-    if event_type == "graph_output":
-        return {"type": "output", "value": event.get("output")}
-    if event_type == "output":
-        return {"type": "output", "value": event.get("value")}
-    raise ValueError(f"unsupported runtime event type: {event_type!r}")
-
-
-def _public_output(events: Sequence[RuntimeEvent]) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    for event in events:
-        item = _public_output_item(event)
-        if item["type"] == "message" and output and output[-1]["type"] == "message":
-            output[-1]["content"][0]["text"] += item["content"][0]["text"]
-        else:
-            output.append(item)
-    return output
-
-
-def _stream_frame(
-    event: RuntimeEvent,
-    *,
-    sequence: int,
-    response_id: str,
-    session_id: str,
-    request_id: str | None = None,
-) -> tuple[str, dict[str, Any]] | None:
-    common: dict[str, Any] = {
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-    }
-    if request_id is not None:
-        common["requestId"] = request_id
-    event_type = event.get("type")
-    if event_type == "message":
-        return "response.text.delta", {
-            **common,
-            "type": "response.text.delta",
-            "delta": event.get("text", ""),
-        }
-    if event_type == "tool_call":
-        return "response.tool_call", {
-            **common,
-            "type": "response.tool_call",
-            "id": event.get("id"),
-            "name": event.get("name"),
-            "arguments": event.get("arguments"),
-        }
-    if event_type == "tool_result":
-        return "response.tool_result", {
-            **common,
-            "type": "response.tool_result",
-            "callId": event.get("id", event.get("callId")),
-            "name": event.get("name"),
-            "output": event.get("result", event.get("output")),
-        }
-    # Graph/output events belong in the completed response, not a transport-
-    # specific incremental frame.
-    if event_type in {"graph_output", "output"}:
-        return None
-    raise ValueError(f"unsupported runtime event type: {event_type!r}")
-
-
-def _completed_payload(
-    *,
-    response_id: str,
-    session_id: str,
-    sequence: int,
-    events: Sequence[RuntimeEvent],
-    text: str,
-    metadata: Mapping[str, Any],
-    result: Any = None,
-    request_id: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "type": "response.completed",
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-        "status": "completed",
-        "outputText": text,
-        "output": _public_output(events),
-        "metadata": dict(metadata),
-    }
-    if request_id is not None:
-        payload["requestId"] = request_id
-    if result is not None:
-        payload["result"] = result
-    return payload
-
-
-def _approval_payload(
-    pending: PendingApproval,
-    *,
-    response_id: str,
-    session_id: str,
-    sequence: int,
-    request_id: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "type": "approval.requested",
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-        "approval": pending.public(),
-    }
-    if request_id is not None:
-        payload["requestId"] = request_id
-    return payload
-
-
-def _requires_action_payload(
-    pending: PendingApproval,
-    *,
-    response_id: str,
-    session_id: str,
-    sequence: int,
-    request_id: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "type": "response.completed",
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-        "status": "requires_action",
-        "requiredAction": {"type": "human_approval", **pending.public()},
-        "outputText": "",
-        "output": [],
-        "metadata": {},
-    }
-    if request_id is not None:
-        payload["requestId"] = request_id
-    return payload
-
-
-def _client_tool_payload(
-    pending: PendingClientTool,
-    *,
-    response_id: str,
-    session_id: str,
-    sequence: int,
-    request_id: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "type": "client_tool.requested",
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-        "clientTool": pending.public(),
-    }
-    if request_id is not None:
-        payload["requestId"] = request_id
-    return payload
-
-
-def _client_requires_action_payload(
-    pending: PendingClientTool,
-    *,
-    response_id: str,
-    session_id: str,
-    sequence: int,
-) -> dict[str, Any]:
-    return {
-        "type": "response.completed",
-        "sequence": sequence,
-        "responseId": response_id,
-        "sessionId": session_id,
-        "status": "requires_action",
-        "requiredAction": {"type": "client_tool", **pending.public()},
-        "outputText": "",
-        "output": [],
-        "metadata": {},
-    }
-
-
-def _start_approval_run(
-    store: InMemoryApprovalStore,
-    client_tools: InMemoryClientToolStore,
-    driver: RuntimeDriver,
-    request: InvocationRequest,
-    *,
-    stream: bool,
-) -> ApprovalRun:
-    run = store.create_run(
-        user_id=request.user_id,
-        session_id=request.session_id,
-        call_id=request.invocation_id,
-    )
-
-    async def execute() -> None:
-        await run.activation.wait()
-        try:
-            with client_tool_execution(ClientToolExecution(client_tools, run)):
-                with approval_execution(
-                    ApprovalExecution(
-                        user_id=request.user_id,
-                        session_id=request.session_id,
-                        call_id=request.invocation_id,
-                        store=store,
-                        run=run,
-                    )
-                ):
-                    result = (
-                        await _collect_stream(driver, request, run)
-                        if stream
-                        else await driver.invoke(request)
-                    )
-        except BaseException as exc:
-            run.notifications.put_nowait(("error", exc))
-        else:
-            run.notifications.put_nowait(("result", result))
-
-    run.task = asyncio.create_task(execute())
-    return run
-
-
-async def _collect_stream(
-    driver: RuntimeDriver, request: InvocationRequest, run: ApprovalRun
-) -> InvocationResult:
-    events: list[RuntimeEvent] = []
-    async with aclosing(driver.stream(request)) as source:
-        async for event in source:
-            events.append(event)
-            run.notifications.put_nowait(("event", event))
-    text = "".join(
-        str(event.get("text", ""))
-        for event in events
-        if event.get("type") == "message"
-    )
-    return InvocationResult(
-        text=text,
-        events=tuple(events),
-        result=_final_event_result(events),
-        session_id=request.session_id,
-        metadata=dict(request.metadata),
-    )
-
-
-async def _next_run_boundary(
-    run: ApprovalRun, *, timeout: float
-) -> tuple[str, Any]:
-    return await asyncio.wait_for(run.notifications.get(), timeout=timeout)
-
-
-async def _next_non_event(run: ApprovalRun, *, deadline: float) -> tuple[str, Any]:
-    while True:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        kind, value = await _next_run_boundary(run, timeout=remaining)
-        if kind != "event":
-            return kind, value
-
-
-def _json_requires_action(
-    pending: PendingApproval, *, response_id: str, session_id: str
-) -> dict[str, Any]:
-    required = _requires_action_payload(
-        pending,
-        response_id=response_id,
-        session_id=session_id,
-        sequence=0,
-    )
-    required.pop("type")
-    required.pop("sequence")
-    required["id"] = required.pop("responseId")
-    return required
-
-
-def _json_client_requires_action(
-    pending: PendingClientTool, *, response_id: str, session_id: str
-) -> dict[str, Any]:
-    required = _client_requires_action_payload(
-        pending,
-        response_id=response_id,
-        session_id=session_id,
-        sequence=0,
-    )
-    required.pop("type")
-    required.pop("sequence")
-    required["id"] = required.pop("responseId")
-    return required
-
-
-def _resumed_action_payload(
-    kind: str,
-    value: Any,
-    *,
-    response_id: str,
-    session_id: str,
-    client_tool_id: str,
-) -> dict[str, Any]:
-    if kind == "approval":
-        payload = _json_requires_action(
-            value, response_id=response_id, session_id=session_id
-        )
-        payload["approvalId"] = value.id
-        return payload
-    if kind == "client_tool":
-        return _json_client_requires_action(
-            value, response_id=response_id, session_id=session_id
-        )
-    if kind == "error":
-        raise value
-    if kind != "result":
-        raise RuntimeError("unexpected runtime action notification")
-    require_customer_facing_output(value.text, value.result)
-    payload = _completed_payload(
-        response_id=response_id,
-        session_id=value.session_id,
-        sequence=0,
-        events=value.events,
-        text=value.text,
-        metadata=value.metadata,
-        result=value.result,
-    )
-    payload.pop("type")
-    payload.pop("sequence")
-    payload["id"] = payload.pop("responseId")
-    payload["clientToolId"] = client_tool_id
-    return payload
-
-
-async def _sse_approval_run(
-    *,
-    store: InMemoryApprovalStore,
-    client_tools: InMemoryClientToolStore,
-    driver: RuntimeDriver,
-    request: InvocationRequest,
-    semaphore: asyncio.Semaphore,
-    request_timeout: float,
-    response_id: str,
-    session_id: str,
-    metadata: Mapping[str, Any],
-) -> AsyncIterator[str]:
-    sequence = 0
-    yield _sse(
-        "response.created",
-        {
-            "type": "response.created",
-            "sequence": sequence,
-            "responseId": response_id,
-            "sessionId": session_id,
-            "metadata": dict(metadata),
-        },
-    )
-    sequence += 1
-    run = _start_approval_run(store, client_tools, driver, request, stream=True)
-    deadline = asyncio.get_running_loop().time() + request_timeout
-    try:
-        async with semaphore:
-            run.activation.set()
-            async for frame in _sse_run_frames(
-                run,
-                deadline=deadline,
-                response_id=response_id,
-                session_id=session_id,
-                start_sequence=sequence,
-                metadata=metadata,
-            ):
-                yield frame
-    except asyncio.CancelledError:
-        store.cancel_run(run)
-        raise
-    except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            store.cancel_run(run)
-        yield _sse(
-            "error",
-            {
-                "type": "error",
-                "sequence": sequence,
-                "responseId": response_id,
-                "sessionId": session_id,
-                "error": "Response timed out"
-                if isinstance(exc, asyncio.TimeoutError)
-                else str(exc),
-            },
-        )
-
-
-async def _sse_run_frames(
-    run: ApprovalRun,
-    *,
-    deadline: float,
-    response_id: str,
-    session_id: str,
-    start_sequence: int,
-    metadata: Mapping[str, Any],
-) -> AsyncIterator[str]:
-    sequence = start_sequence
-    events: list[RuntimeEvent] = []
-    while True:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        kind, value = await _next_run_boundary(run, timeout=remaining)
-        if kind == "event":
-            events.append(value)
-            frame = _stream_frame(
-                value,
-                sequence=sequence,
-                response_id=response_id,
-                session_id=session_id,
-            )
-            if frame is not None:
-                yield _sse(*frame)
-                sequence += 1
-            continue
-        if kind == "approval":
-            yield _sse(
-                "approval.requested",
-                _approval_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence,
-                ),
-            )
-            yield _sse(
-                "response.completed",
-                _requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                ),
-            )
-            return
-        if kind == "client_tool":
-            yield _sse(
-                "client_tool.requested",
-                _client_tool_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence,
-                ),
-            )
-            yield _sse(
-                "response.completed",
-                _client_requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                ),
-            )
-            return
-        if kind == "error":
-            raise value
-        if kind != "result":
-            raise RuntimeError("unexpected approval run notification")
-        require_customer_facing_output(value.text, value.result)
-        yield _sse(
-            "response.completed",
-            _completed_payload(
-                response_id=response_id,
-                session_id=session_id,
-                sequence=sequence,
-                events=events,
-                text=value.text,
-                metadata=metadata,
-                result=value.result,
-            ),
-        )
-        return
-
-
-async def _resume_approval_run(
-    store: InMemoryApprovalStore,
-    pending: PendingApproval,
-    run: ApprovalRun,
-    *,
-    semaphore: asyncio.Semaphore,
-    request_timeout: float,
-) -> tuple[str, Any]:
-    async with semaphore:
-        store.deliver_decision(pending, "approve")
-        deadline = asyncio.get_running_loop().time() + request_timeout
-        return await _next_non_event(run, deadline=deadline)
-
-
-def _parse_approval_decision(payload: Mapping[str, Any]) -> str:
-    if set(payload) != {"decision"}:
-        raise HTTPException(status_code=400, detail="Expected approval decision")
-    decision = payload.get("decision")
-    if decision not in {"approve", "deny"}:
-        raise HTTPException(status_code=400, detail="decision must be approve or deny")
-    return decision
-
-
-def _commit_approval_decision(
-    store: InMemoryApprovalStore,
-    approval_id: str,
-    *,
-    user_id: str,
-    decision: str,
-) -> PendingApproval:
-    try:
-        return store.decide(
-            approval_id,
-            user_id=user_id,
-            decision=decision,  # type: ignore[arg-type]
-            deliver=decision == "deny",
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Approval not found") from exc
-    except ApprovalEnforcementError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-def _final_event_result(events: Sequence[RuntimeEvent]) -> Any:
-    """Read the portable result carried by the final output event."""
-
-    for event in reversed(events):
-        event_type = event.get("type")
-        if event_type not in {"graph_output", "output"}:
-            continue
-        if "result" in event:
-            return event["result"]
-        return event.get("output") if event_type == "graph_output" else event.get("value")
-    return None
-
-
-def _sse(event_name: str, payload: Mapping[str, Any]) -> str:
-    return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-@dataclass(slots=True)
-class _LiveStreamState:
-    """Retain sequence progress so mid-stream errors keep the wire contract."""
-
-    events: list[RuntimeEvent] = field(default_factory=list)
-    sequence: int = 1
-
-
-async def _consume_live_run(
-    websocket: Any,
-    run: ApprovalRun,
-    state: _LiveStreamState,
-    *,
-    client_tools: InMemoryClientToolStore,
-    deadline: float,
-    response_id: str,
-    session_id: str,
-    request_id: str | None,
-) -> InvocationResult | None:
-    while True:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        kind, value = await _next_run_boundary(run, timeout=remaining)
-        if kind == "event":
-            state.events.append(value)
-            normalized = _stream_frame(
-                value,
-                sequence=state.sequence,
-                response_id=response_id,
-                session_id=session_id,
-                request_id=request_id,
-            )
-            if normalized is not None:
-                await websocket.send_json(normalized[1])
-                state.sequence += 1
-            continue
-        if kind == "approval":
-            await websocket.send_json(
-                _approval_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence,
-                    request_id=request_id,
-                )
-            )
-            await websocket.send_json(
-                _requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence + 1,
-                    request_id=request_id,
-                )
-            )
-            return None
-        if kind == "client_tool":
-            await websocket.send_json(
-                _client_tool_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence,
-                    request_id=request_id,
-                )
-            )
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise asyncio.TimeoutError
-            frame = await asyncio.wait_for(
-                websocket.receive_json(), timeout=remaining
-            )
-            output = _live_client_tool_result(frame, value.id)
-            client_tools.submit(value.id, user_id=value.user_id, output=output)
-            state.sequence += 1
-            continue
-        if kind == "error":
-            raise value
-        if kind == "result":
-            return value
-        raise RuntimeError("unexpected approval run notification")
-
-
-def _live_client_tool_result(frame: Any, request_id: str) -> Any:
-    if (
-        not isinstance(frame, dict)
-        or set(frame) != {"type", "requestId", "output"}
-        or frame.get("type") != "client_tool.result"
-        or frame.get("requestId") != request_id
-    ):
-        raise ClientToolError(
-            "Expected client_tool.result for the pending client tool request"
-        )
-    return frame["output"]
-
-
-async def _live_session(websocket: Any, response_session: Any) -> SessionRecord | None:
-    envelope = await websocket.receive_json()
-    if (
-        not isinstance(envelope, dict)
-        or not set(envelope) <= {"type", "sessionId"}
-        or envelope.get("type") != "connect"
-    ):
-        await websocket.send_json(
-            {"type": "error", "error": "First frame must be a connect request"}
-        )
-        await websocket.close(code=1008)
-        return None
-    try:
-        session = await response_session(envelope)
-    except HTTPException as exc:
-        await websocket.send_json({"type": "error", "error": exc.detail})
-        await websocket.close(code=1008)
-        return None
-    await websocket.send_json({"type": "session.connected", "sessionId": session.id})
-    return session
-
-
-def _validated_live_frame(
-    frame: Any,
-    max_request_bytes: int = MAX_REQUEST_BYTES,
-    input_schema: Any = None,
-) -> tuple[Mapping[str, Any] | None, str | None]:
-    """Validate and normalize one WebSocket request with the HTTP input contract."""
-
-    if (
-        not isinstance(frame, dict)
-        or not set(frame) <= {"type", "input", "requestId", "metadata"}
-        or frame.get("type") != "response.create"
-    ):
-        return None, "Invalid live input frame"
-    normalized_input = _validated_live_input(frame.get("input"), input_schema)
-    if normalized_input is None:
-        return None, "Invalid live input frame"
-    encoded_input = json.dumps(normalized_input, ensure_ascii=False).encode("utf-8")
-    if len(encoded_input) > max_request_bytes:
-        return None, f"Input exceeds {format_byte_size(max_request_bytes)}"
-    if not isinstance(frame.get("metadata", {}), dict):
-        return None, "metadata must be an object"
-    request_id = frame.get("requestId")
-    if request_id is not None and not isinstance(request_id, str):
-        return None, "requestId must be a string"
-    return {**frame, "input": normalized_input}, None
-
-
-def _validated_live_input(value: Any, input_schema: Any) -> Any | None:
-    """Apply the configured input model without exposing validation details."""
-
-    if input_schema is None:
-        return value if isinstance(value, str) and value.strip() else None
-    try:
-        return input_schema.model_validate(value).model_dump(
-            mode="json", by_alias=True
-        )
-    except (ValidationError, ValueError, TypeError):
-        return None
-
-
-async def _serve_live_frame(
-    websocket: Any,
-    frame: Mapping[str, Any],
-    session: SessionRecord,
-    *,
-    invocation: Any,
-    semaphore: asyncio.Semaphore,
-    driver: RuntimeDriver,
-    approval_store: InMemoryApprovalStore,
-    client_tool_store: InMemoryClientToolStore,
-    request_timeout: float,
-) -> None:
-    response_id = f"resp_{uuid.uuid4().hex}"
-    request_id = frame.get("requestId")
-    metadata = frame.get("metadata", {})
-    await websocket.send_json(
-        {
-            "type": "response.created",
-            "sequence": 0,
-            "responseId": response_id,
-            "sessionId": session.id,
-            "requestId": request_id,
-            "metadata": metadata,
-        }
-    )
-    run = invocation(
-        frame["input"],
-        session.id,
-        response_id,
-        metadata,
-        session.user_id,
-        transport="live",
-    )
-    state = _LiveStreamState()
-    approval_run = _start_approval_run(
-        approval_store, client_tool_store, driver, run, stream=True
-    )
-    deadline = asyncio.get_running_loop().time() + request_timeout
-    try:
-        async with semaphore:
-            approval_run.activation.set()
-            result = await _consume_live_run(
-                websocket,
-                approval_run,
-                state,
-                client_tools=client_tool_store,
-                deadline=deadline,
-                response_id=response_id,
-                session_id=session.id,
-                request_id=request_id,
-            )
-            if result is None:
-                return
-        text_output = result.text
-        result_value = result.result
-        require_customer_facing_output(text_output, result_value)
-        await websocket.send_json(
-            _completed_payload(
-                response_id=response_id,
-                session_id=session.id,
-                sequence=state.sequence,
-                events=state.events,
-                text=text_output,
-                metadata=metadata,
-                result=result_value,
-                request_id=request_id,
-            )
-        )
-    except asyncio.CancelledError:
-        approval_store.cancel_run(approval_run)
-        raise
-    except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            approval_store.cancel_run(approval_run)
-        await websocket.send_json(
-            {
-                "type": "error",
-                "sequence": state.sequence,
-                "responseId": response_id,
-                "sessionId": session.id,
-                "requestId": request_id,
-                "error": (
-                    "Response timed out"
-                    if isinstance(exc, asyncio.TimeoutError)
-                    else str(exc)
-                ),
-            }
-        )
 
 
 async def _read_request_body(request: Request, max_request_bytes: int) -> bytes:
+    """Read a request incrementally and stop before an oversized body lands."""
+
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
@@ -1075,6 +121,78 @@ async def _read_request_body(request: Request, max_request_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def _asset_record_payload(record: AssetRecord) -> dict[str, Any]:
+    """Render only reference and trusted metadata after a successful upload."""
+
+    metadata = record.metadata
+    value: dict[str, Any] = {
+        "assetId": record.asset_id,
+        "mediaType": record.media_type,
+        "sizeBytes": record.size_bytes,
+    }
+    if metadata is not None:
+        for public, internal in (
+            ("width", "width"),
+            ("height", "height"),
+            ("durationSeconds", "duration_seconds"),
+            ("pageCount", "page_count"),
+            ("frameCount", "frame_count"),
+            ("channels", "channel_count"),
+            ("sampleRateHz", "sample_rate_hz"),
+        ):
+            item = getattr(metadata, internal, None)
+            if item is not None:
+                value[public] = item
+    return value
+
+
+def _parse_byte_range(value: str | None, size: int) -> tuple[int, int] | None:
+    """Parse one bounded inclusive byte range or reject ambiguous forms."""
+
+    if value is None:
+        return None
+    if not _single_byte_range(value):
+        raise ValueError("invalid asset range")
+    start_text, separator, end_text = value[6:].partition("-")
+    if not separator or not start_text.isdigit() or (
+        end_text and not end_text.isdigit()
+    ):
+        raise ValueError("invalid asset range")
+    start = int(start_text)
+    end = size - 1 if not end_text else int(end_text)
+    if start >= size or end < start:
+        raise ValueError("invalid asset range")
+    return start, min(end, size - 1)
+
+
+def _single_byte_range(value: str) -> bool:
+    """Reject range units and multipart forms the endpoint does not support."""
+
+    return value.startswith("bytes=") and "," not in value
+
+
+async def _asset_stream(
+    store: AssetStore,
+    scope: AssetScope,
+    asset_id: str,
+    *,
+    start: int,
+    end: int,
+) -> AsyncIterator[bytes]:
+    """Yield only the selected range without exposing identifiers on failure."""
+
+    offset = 0
+    async for chunk in store.open(scope=scope, asset_id=asset_id):
+        chunk_end = offset + len(chunk) - 1
+        if chunk_end >= start and offset <= end:
+            local_start = max(0, start - offset)
+            local_end = min(len(chunk), end - offset + 1)
+            yield chunk[local_start:local_end]
+        offset += len(chunk)
+        if offset > end:
+            return
+
+
 def create_neutral_router(
     driver: RuntimeDriver,
     *,
@@ -1083,6 +201,8 @@ def create_neutral_router(
     max_request_bytes: int = MAX_REQUEST_BYTES,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
+    asset_store: AssetStore | None = None,
+    http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
     """Create the one Harnest router shared by every runtime backend."""
 
@@ -1092,7 +212,7 @@ def create_neutral_router(
         raise ValueError("max concurrency must be at least one")
     max_request_bytes = validate_max_request_bytes(max_request_bytes)
     try:
-        from fastapi import APIRouter, HTTPException
+        from fastapi import APIRouter, HTTPException, Query
         from fastapi.responses import StreamingResponse
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("The neutral runtime requires FastAPI") from exc
@@ -1101,9 +221,24 @@ def create_neutral_router(
     semaphore = asyncio.Semaphore(max_concurrency)
     approvals = approval_store or InMemoryApprovalStore()
     client_tools = client_tool_store or InMemoryClientToolStore()
+    assets = asset_store or MemoryAssetStore()
+    from .runtime_content import ContentRuntimeDriver
+
+    driver = ContentRuntimeDriver(driver, assets)
     response_request_model = _response_request_model(driver.info.input_schema)
+    coordinator = InvocationCoordinator(
+        driver=driver,
+        approvals=approvals,
+        client_tools=client_tools,
+        assets=assets,
+        semaphore=semaphore,
+        request_timeout=request_timeout,
+        max_request_bytes=max_request_bytes,
+    )
 
     async def read_json(request: Request) -> dict[str, Any]:
+        """Read one bounded request body as a strict JSON object."""
+
         content_type = request.headers.get("content-type", "").partition(";")[0]
         if content_type.strip().lower() != "application/json":
             raise HTTPException(
@@ -1127,34 +262,18 @@ def create_neutral_router(
             raise HTTPException(
                 status_code=400, detail="Invalid response request"
             ) from exc
-        input_value = parsed.input
-        if isinstance(input_value, str) and len(input_value.encode("utf-8")) > max_request_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Input exceeds {format_byte_size(max_request_bytes)}",
-            )
         return parsed
 
-    async def response_session(
-        payload: Mapping[str, Any], user_id: str
-    ) -> SessionRecord:
-        session_id = payload.get("sessionId")
-        if session_id is not None and (
-            not isinstance(session_id, str) or not session_id.strip()
-        ):
-            raise HTTPException(status_code=400, detail="sessionId must be non-empty")
-        if session_id is None:
-            return await driver.create_session(
-                session_id=uuid.uuid4().hex, user_id=user_id, state={}
-            )
-        session = await driver.get_session(
-            session_id=session_id, user_id=user_id
-        )
-        if session is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return session
+    async def asset_scope(session_id: str, request: Request) -> AssetScope:
+        """Authorize an asset route through the same session ownership boundary."""
 
-    def invocation(
+        user_id = principal_for(request).user_id
+        session = await driver.get_session(session_id=session_id, user_id=user_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return AssetScope(user_id=user_id, session_id=session_id)
+
+    def streaming_invocation(
         text: str,
         session_id: str,
         response_id: str,
@@ -1162,26 +281,60 @@ def create_neutral_router(
         user_id: str,
         transport: str | None = None,
     ) -> InvocationRequest:
-        return InvocationRequest(
-            input=text,
+        """Adapt legacy streaming call sites to the shared request factory."""
+
+        return coordinator.create_request(
+            text,
             user_id=user_id,
             session_id=session_id,
             invocation_id=response_id,
-            metadata=dict(metadata),
-            state_delta={},
-            transport=transport,
+            metadata=metadata,
+            transport=transport or "response",
         )
+
+    async def invoke_from_http_route(
+        connection: Any,
+        input_value: Any,
+        session_id: str | None,
+        metadata: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Invoke custom routes through the same policy path as `/responses`."""
+
+        principal = principal_for(connection)
+        active_principal = _active_authenticated_principal()
+        if principal.user_id != ANONYMOUS_USER_ID and active_principal is not principal:
+            # Request.state outlives authentication's revocable ContextVar. Do
+            # not let detached tasks retain authority by holding the Request.
+            raise HTTPException(
+                status_code=401, detail="Authentication context is no longer active"
+            )
+        user_id = principal.user_id
+        run = await coordinator.prepare_request(
+            input_value,
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata,
+            transport="custom_http",
+            validate_before_session=False,
+        )
+        return await coordinator.invoke_json(run)
 
     @router.get("/healthz", include_in_schema=False)
     async def health() -> dict[str, str]:
+        """Expose a dependency-free process liveness signal."""
+
         return {"status": "ok"}
 
     @router.get("/.well-known/agent-card.json", include_in_schema=False)
     async def agent_card() -> Mapping[str, Any]:
+        """Return the compiled agent card without framework translation."""
+
         return driver.info.card
 
     @router.get("/agent")
     async def agent_info() -> dict[str, Any]:
+        """Describe the portable agent and its enabled transport endpoints."""
+
         info = driver.info
         value: dict[str, Any] = {
             "id": info.id,
@@ -1192,6 +345,8 @@ def create_neutral_router(
                 "responses": "/responses",
                 "sessions": "/sessions",
                 "sessionMessages": "/sessions/{sessionId}/messages",
+                "assets": "/sessions/{sessionId}/assets",
+                "asset": "/sessions/{sessionId}/assets/{assetId}",
                 "live": "/live",
                 "approvals": "/approvals/{approvalId}",
                 "clientTools": "/client-tools/{requestId}",
@@ -1206,6 +361,8 @@ def create_neutral_router(
 
     @router.post("/sessions", status_code=201)
     async def create_session(request: Request) -> dict[str, Any]:
+        """Create one caller-owned session with optional initial state."""
+
         payload = await read_json(request)
         if not set(payload) <= {"id", "state"}:
             raise HTTPException(status_code=400, detail="Invalid session request")
@@ -1226,19 +383,47 @@ def create_neutral_router(
         return _session_payload(session)
 
     @router.get("/sessions")
-    async def list_sessions(request: Request) -> dict[str, Any]:
+    async def list_sessions(
+        request: Request,
+        limit: int | None = Query(
+            default=None, ge=1, le=MAX_SESSION_PAGE_SIZE
+        ),
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one bounded user-scoped session keyset page."""
+
+        user_id = principal_for(request).user_id
+        try:
+            after = (
+                None
+                if cursor is None
+                else _decode_session_cursor(cursor, user_id=user_id)
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid session cursor"
+            ) from exc
+        page_size = limit or MAX_SESSION_PAGE_SIZE
         sessions = await driver.list_sessions(
-            user_id=principal_for(request).user_id
+            user_id=user_id,
+            after=after,
+            limit=page_size + 1,
         )
+        page = tuple(sessions[:page_size])
+        next_cursor = None
+        if len(sessions) > page_size:
+            next_cursor = _encode_session_cursor(
+                after=page[-1].id, user_id=user_id
+            )
         return {
-            "sessions": [
-                _session_payload(session)
-                for session in sorted(sessions, key=lambda item: item.id)
-            ]
+            "sessions": [_session_payload(session) for session in page],
+            "nextCursor": next_cursor,
         }
 
     @router.get("/sessions/{session_id}")
     async def get_session(session_id: str, request: Request) -> dict[str, Any]:
+        """Return a session only when it belongs to the active principal."""
+
         session = await driver.get_session(
             session_id=session_id,
             user_id=principal_for(request).user_id,
@@ -1249,9 +434,14 @@ def create_neutral_router(
 
     @router.get("/sessions/{session_id}/messages")
     async def get_session_messages(
-        session_id: str, request: Request
+        session_id: str,
+        request: Request,
+        limit: int | None = Query(
+            default=None, ge=1, le=MAX_TRANSCRIPT_PAGE_SIZE
+        ),
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Return a self-describing transcript within the caller's scope."""
+        """Return one bounded, cursor-based transcript page."""
 
         principal = principal_for(request)
         messages = await driver.get_session_messages(
@@ -1260,14 +450,120 @@ def create_neutral_router(
         )
         if messages is None:
             raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            page, next_cursor = _paginate_session_messages(
+                messages,
+                limit=limit or MAX_TRANSCRIPT_PAGE_SIZE,
+                cursor=cursor,
+                session_id=session_id,
+                user_id=principal.user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid transcript cursor"
+            ) from exc
         return {
             "sessionId": session_id,
             "userId": principal.user_id,
-            "messages": [_session_message_payload(message) for message in messages],
+            "messages": [_session_message_payload(message) for message in page],
+            "nextCursor": next_cursor,
         }
+
+    @router.post("/sessions/{session_id}/assets", status_code=201)
+    async def upload_asset(session_id: str, request: Request) -> dict[str, Any]:
+        """Inspect and atomically store one authenticated session asset."""
+
+        scope = await asset_scope(session_id, request)
+        media_type = request.headers.get("content-type", "").partition(";")[0].strip()
+        if not media_type:
+            raise HTTPException(status_code=415, detail="Asset Content-Type is required")
+        body = await _read_request_body(request, DEFAULT_MAX_ASSET_BYTES)
+        try:
+            from .asset_inspection import inspect_asset
+
+            inspected_metadata, inspected_type = inspect_asset(body, media_type)
+
+            async def chunks() -> AsyncIterator[bytes]:
+                """Yield the inspected body once to the streaming store API."""
+
+                yield body
+
+            record = await assets.save(
+                scope=scope,
+                media_type=inspected_type,
+                chunks=chunks(),
+                metadata=inspected_metadata,
+            )
+        except AssetQuotaError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        return _asset_record_payload(record)
+
+    @router.head("/sessions/{session_id}/assets/{asset_id}")
+    async def stat_asset(session_id: str, asset_id: str, request: Request) -> Response:
+        """Return trusted asset metadata without reading its content."""
+
+        scope = await asset_scope(session_id, request)
+        record = await assets.stat(scope=scope, asset_id=asset_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return Response(
+            status_code=200,
+            media_type=record.media_type,
+            headers={
+                "Content-Length": str(record.size_bytes),
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.get("/sessions/{session_id}/assets/{asset_id}")
+    async def download_asset(session_id: str, asset_id: str, request: Request) -> Any:
+        """Stream one authenticated asset with single-range support."""
+
+        scope = await asset_scope(session_id, request)
+        record = await assets.stat(scope=scope, asset_id=asset_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        try:
+            selected = _parse_byte_range(request.headers.get("range"), record.size_bytes)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=416,
+                detail="Invalid asset range",
+                headers={"Content-Range": f"bytes */{record.size_bytes}"},
+            ) from exc
+        start, end = selected or (0, record.size_bytes - 1)
+        headers = {
+            "Content-Length": str(end - start + 1),
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if selected is not None:
+            headers["Content-Range"] = f"bytes {start}-{end}/{record.size_bytes}"
+        return StreamingResponse(
+            _asset_stream(assets, scope, asset_id, start=start, end=end),
+            status_code=206 if selected is not None else 200,
+            media_type=record.media_type,
+            headers=headers,
+        )
+
+    @router.delete("/sessions/{session_id}/assets/{asset_id}", status_code=204)
+    async def delete_asset(session_id: str, asset_id: str, request: Request) -> Response:
+        """Delete one owned asset without revealing cross-scope existence."""
+
+        scope = await asset_scope(session_id, request)
+        if not await assets.delete(scope=scope, asset_id=asset_id):
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return Response(status_code=204)
 
     @router.patch("/sessions/{session_id}")
     async def update_session(session_id: str, request: Request) -> dict[str, Any]:
+        """Apply one state delta within the caller's session scope."""
+
         payload = await read_json(request)
         if set(payload) != {"stateDelta"} or not isinstance(
             payload.get("stateDelta"), dict
@@ -1284,12 +580,16 @@ def create_neutral_router(
 
     @router.delete("/sessions/{session_id}", status_code=204)
     async def delete_session(session_id: str, request: Request) -> Response:
+        """Delete a caller-owned session and its scoped assets together."""
+
+        user_id = principal_for(request).user_id
         deleted = await driver.delete_session(
             session_id=session_id,
-            user_id=principal_for(request).user_id,
+            user_id=user_id,
         )
         if not deleted:
             raise HTTPException(status_code=404, detail="Session not found")
+        await assets.delete_scope(scope=AssetScope(user_id, session_id))
         return Response(status_code=204)
 
     @router.post(
@@ -1306,79 +606,21 @@ def create_neutral_router(
         },
     )
     async def responses(request: Request) -> Any:
+        """Adapt one public response request to the shared invocation coordinator."""
+
         payload = await read_json(request)
         parsed = parse_response(payload)
-        text = parsed.input
-        if driver.info.input_schema is not None:
-            text = text.model_dump(mode="json", by_alias=True)
         stream, metadata = parsed.stream, parsed.metadata
         user_id = principal_for(request).user_id
-        session = await response_session(payload, user_id)
-        response_id = f"resp_{uuid.uuid4().hex}"
-        run = invocation(
-            text,
-            session.id,
-            response_id,
-            metadata,
-            user_id,
+        run = await coordinator.prepare_request(
+            parsed.input,
+            user_id=user_id,
+            session_id=parsed.session_id,
+            metadata=metadata,
             transport="stream" if stream else "response",
         )
         if not stream:
-            approval_run = _start_approval_run(
-                approvals, client_tools, driver, run, stream=False
-            )
-            try:
-                async with semaphore:
-                    approval_run.activation.set()
-                    kind, value = await _next_run_boundary(
-                        approval_run, timeout=request_timeout
-                    )
-                    if kind == "approval":
-                        required = _requires_action_payload(
-                            value,
-                            response_id=response_id,
-                            session_id=session.id,
-                            sequence=0,
-                        )
-                        required.pop("type")
-                        required.pop("sequence")
-                        required["id"] = required.pop("responseId")
-                        return required
-                    if kind == "client_tool":
-                        required = _client_requires_action_payload(
-                            value,
-                            response_id=response_id,
-                            session_id=session.id,
-                            sequence=0,
-                        )
-                        required.pop("type")
-                        required.pop("sequence")
-                        required["id"] = required.pop("responseId")
-                        return required
-                    if kind == "error":
-                        raise value
-                    if kind != "result":
-                        raise RuntimeError("unexpected approval run notification")
-                    result = value
-                    require_customer_facing_output(result.text, result.result)
-            except asyncio.TimeoutError as exc:
-                approvals.cancel_run(approval_run)
-                raise HTTPException(status_code=504, detail="Response timed out") from exc
-            except NoCustomerFacingOutputError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            completed = _completed_payload(
-                response_id=response_id,
-                session_id=result.session_id,
-                sequence=0,
-                events=result.events,
-                text=result.text,
-                metadata=result.metadata,
-                result=result.result,
-            )
-            completed.pop("type")
-            completed.pop("sequence")
-            completed["id"] = completed.pop("responseId")
-            return completed
+            return await coordinator.invoke_json(run)
 
         return StreamingResponse(
             _sse_approval_run(
@@ -1388,8 +630,8 @@ def create_neutral_router(
                 request=run,
                 semaphore=semaphore,
                 request_timeout=request_timeout,
-                response_id=response_id,
-                session_id=session.id,
+                response_id=run.invocation_id,
+                session_id=run.session_id,
                 metadata=metadata,
             ),
             media_type="text/event-stream",
@@ -1397,6 +639,8 @@ def create_neutral_router(
 
     @router.post("/client-tools/{tool_request_id}")
     async def submit_client_tool(tool_request_id: str, request: Request) -> Any:
+        """Resume the suspended run owning one client-tool request."""
+
         payload = await read_json(request)
         if set(payload) != {"output"}:
             raise HTTPException(status_code=400, detail="Expected client tool output")
@@ -1427,6 +671,8 @@ def create_neutral_router(
 
     @router.post("/approvals/{approval_id}")
     async def decide_approval(approval_id: str, request: Request) -> Any:
+        """Record one approval decision and resume its exact suspended run."""
+
         payload = await read_json(request)
         decision = _parse_approval_decision(payload)
         pending = _commit_approval_decision(
@@ -1493,12 +739,17 @@ def create_neutral_router(
 
     @router.websocket("/live")
     async def live(websocket: WebSocket) -> None:
+        """Serve live frames through the coordinator's shared request contract."""
+
         await websocket.accept()
         try:
             user_id = principal_for(websocket).user_id
             session = await _live_session(
                 websocket,
-                lambda payload: response_session(payload, user_id),
+                lambda payload: coordinator.resolve_session(
+                    user_id=user_id,
+                    session_id=payload.get("sessionId"),
+                ),
             )
             if session is None:
                 return
@@ -1520,11 +771,24 @@ def create_neutral_router(
                 if error is not None:
                     await websocket.send_json({"type": "error", "error": error})
                     continue
+                try:
+                    resolved_input = await _resolved_transport_input(
+                        validated_frame["input"],
+                        driver.info.input_schema,
+                        assets,
+                        AssetScope(user_id=user_id, session_id=session.id),
+                    )
+                except HTTPException:
+                    await websocket.send_json(
+                        {"type": "error", "error": "Invalid content input"}
+                    )
+                    continue
+                validated_frame = {**validated_frame, "input": resolved_input}
                 await _serve_live_frame(
                     websocket,
                     validated_frame,
                     session,
-                    invocation=invocation,
+                    invocation=streaming_invocation,
                     semaphore=semaphore,
                     driver=driver,
                     approval_store=approvals,
@@ -1534,6 +798,9 @@ def create_neutral_router(
         except WebSocketDisconnect:
             pass
 
+    # Factories capture an unbound invoker during compilation. Bind only after
+    # the final wrapped driver and shared continuation stores are available.
+    mount_http_route_extensions(router, http_routes, invoke_from_http_route)
     return router
 
 
@@ -1547,6 +814,8 @@ def create_neutral_app(
     authenticator: Authenticator | None = None,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
+    asset_store: AssetStore | None = None,
+    http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
 
@@ -1557,6 +826,8 @@ def create_neutral_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any) -> AsyncIterator[None]:
+        """Close the fully wrapped runtime when the server lifespan ends."""
+
         try:
             yield
         finally:
@@ -1588,6 +859,8 @@ def create_neutral_app(
             max_request_bytes=max_request_bytes,
             approval_store=approval_store,
             client_tool_store=client_tool_store,
+            asset_store=asset_store,
+            http_routes=http_routes,
         )
     )
     install_authentication(app, authenticator)

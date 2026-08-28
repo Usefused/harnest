@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import importlib.util
 import inspect
 import json
@@ -198,17 +199,18 @@ def _adk_runtime_driver(
     from .checkpoint import ADKStore
     from .runtime_adk import ADKRuntimeDriver
 
-    provider = application.checkpointer
+    capabilities = application.runtime_capabilities
+    provider = capabilities.checkpointer
     if isinstance(provider, ADKStore):
         if session_service is not None:
             raise AgentRuntimeError(
                 "ADKStore cannot be combined with an injected ADK session service"
             )
         session_service = provider.session_service
-    if application.session_store is not None and session_service is None:
+    if capabilities.session_store is not None and session_service is None:
         from .session_adk import create_adk_session_service
 
-        session_service = create_adk_session_service(application.session_store)
+        session_service = create_adk_session_service(capabilities.session_store)
     return ADKRuntimeDriver(
         application,
         card=card,
@@ -227,7 +229,7 @@ def _langgraph_runtime_driver(
 
     from .runtime_langgraph import LangGraphRuntimeDriver
 
-    lifecycle_store = application.session_store
+    lifecycle_store = application.runtime_capabilities.session_store
     if lifecycle_store is not None and session_store is not None:
         raise AgentRuntimeError(
             "@lifecycle.session_store cannot be combined with an injected "
@@ -248,31 +250,16 @@ def _wrap_runtime_driver(
     *,
     manage_credential_provider: bool = True,
 ) -> Any:
-    """Place storage lifecycle outside framework execution and inside extensions."""
+    """Delegate all capability wrapper ordering to the runtime pipeline."""
 
-    if application.session_store is not None or application.checkpointer is not None:
-        from .runtime_session import StorageRuntimeDriver
+    from .runtime_pipeline import build_runtime_pipeline
 
-        driver = StorageRuntimeDriver(
-            driver,
-            application.session_store,
-            application.checkpointer,
-        )
-    if (
-        application.extensions
-        or application.context_values
-        or application.credential_provider is not None
-    ):
-        from .runtime_extensions import ExtensionRuntimeDriver
-
-        return ExtensionRuntimeDriver(
-            driver,
-            application.extensions,
-            context_values=application.context_values,
-            credential_provider=application.credential_provider,
-            manage_credential_provider=manage_credential_provider,
-        )
-    return driver
+    return build_runtime_pipeline(
+        driver,
+        application.runtime_capabilities,
+        application.extensions,
+        manage_credential_provider=manage_credential_provider,
+    )
 
 
 def _direct_result(result: Any) -> dict[str, Any]:
@@ -337,7 +324,7 @@ async def _run_agent_message(
 
     _apply_observability_defaults(application.framework)
 
-    from .neutral_runtime import InvocationRequest, require_customer_facing_output
+    from .runtime_contract import InvocationRequest, require_customer_facing_output
     from .telemetry import configure_observability
 
     telemetry = configure_observability(
@@ -598,6 +585,19 @@ def _exposes_native_adk_api(application: Any) -> bool:
     return application.framework == "adk" and application.mode == "advanced"
 
 
+def _application_with_asset_store(application: Any) -> Any:
+    """Install the fixed-ceiling development store when none was authored."""
+
+    if application.asset_store is not None:
+        return application
+    from .assets import MemoryAssetStore
+
+    return replace(
+        application,
+        asset_store=MemoryAssetStore(),
+    )
+
+
 def create_fastapi_app(
     artifact: str | Path,
     *,
@@ -620,6 +620,7 @@ def create_fastapi_app(
     if not isinstance(playground_enabled, bool):
         raise TypeError("playground_enabled must be boolean")
     application = load_compiled_application(artifact)
+    application = _application_with_asset_store(application)
     try:
         return _build_fastapi_app(
             artifact,
@@ -705,6 +706,8 @@ def _build_fastapi_app(
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
+            asset_store=application.asset_store,
+            http_routes=application.http_routes,
             playground_enabled=playground_enabled,
             authenticator=authenticator,
         )
@@ -808,6 +811,8 @@ def _build_native_adk_app(
         request_timeout=request_timeout,
         max_concurrency=max_concurrency,
         max_request_bytes=max_request_bytes,
+        asset_store=application.asset_store,
+        http_routes=application.http_routes,
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.
     app.router.routes.extend(neutral.routes)
@@ -961,6 +966,9 @@ def main(argv: list[str] | None = None) -> int:
         log_level="info",
         limit_concurrency=http.max_concurrent_requests,
         timeout_keep_alive=10,
+        # Dynamic session and asset paths contain opaque private identifiers;
+        # Harnest's structured telemetry remains the privacy-safe request signal.
+        access_log=False,
     )
     return 0
 

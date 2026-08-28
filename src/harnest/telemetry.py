@@ -659,7 +659,10 @@ def instrument_fastapi(app: Any, state: TelemetryState) -> None:
     if excluded_urls is None:
         excluded_urls = os.getenv(
             "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
-            "/healthz,/.well-known/agent-card.json",
+            (
+                "/healthz,/.well-known/agent-card.json,"
+                "/sessions/.*,/approvals/.*,/client-tools/.*"
+            ),
         )
     FastAPIInstrumentor.instrument_app(
         app,
