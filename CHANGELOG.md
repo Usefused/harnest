@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/creativeJoe007/harnest/compare/v0.2.0...v0.3.0) (2026-08-28)
+
+
+### Features
+
+* expand agent runtime integrations ([221a7b8](https://github.com/creativeJoe007/harnest/commit/221a7b842806f1d83538a3331696d00bc707ed48))
+
+
+### Fixes
+
+* package published releases independently ([f37f6b5](https://github.com/creativeJoe007/harnest/commit/f37f6b59572abc80cda7d1794d63aa1cb5e20543))
+
 ## [0.2.0](https://github.com/creativeJoe007/harnest/compare/v0.1.21...v0.2.0) (2026-08-28)
 
 
