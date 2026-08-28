@@ -1,4 +1,4 @@
-name: Release Please
+name: Prepare Release
 
 on:
   workflow_run:
@@ -25,27 +25,24 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      release_sha: ${{ steps.release.outputs.sha }}
     steps:
+      - name: Require release automation token
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${RELEASE_PLEASE_TOKEN}" ]; then
+            echo "Add the RELEASE_PLEASE_TOKEN repository secret before preparing releases." >&2
+            exit 1
+          fi
+
       - name: Propose or create release
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          # A PAT lets the generated release PR receive normal CI checks. The
-          # repository token remains useful for installations without one.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          # The user token lets both release PR validation and the published
+          # release event start their independent workflows.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  package:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      tag_name: ${{ needs.release-please.outputs.tag_name }}
-      release_sha: ${{ needs.release-please.outputs.release_sha }}
-    secrets: inherit

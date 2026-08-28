@@ -194,13 +194,12 @@ pushes but never changes versions or tags commits. After a successful `main`
 run, `.github/workflows/release-please.yml` opens or updates the release PR. Set
 the `RELEASE_PLEASE_TOKEN` repository secret to a fine-grained token with
 contents, issues, and pull-request write access so GitHub runs normal CI on that
-generated PR. The workflow falls back to `GITHUB_TOKEN`, but GitHub suppresses
-workflows caused by that token, so repositories requiring PR checks should
-configure the dedicated token.
+generated PR. The token is required because GitHub suppresses workflows caused
+by `GITHUB_TOKEN`, including the published-release event that starts packaging.
 
 When the release PR is merged and its `main` CI run succeeds, Release Please
-creates the version tag and GitHub Release. It then calls the separate reusable
-`.github/workflows/release.yml` packaging workflow with the exact tag and SHA.
-That workflow verifies the tag, source versions, and existing release before
-GoReleaser attaches platform archives and checksums. A manual dispatch reruns
-packaging without moving the tag or replacing Release Please's release notes.
+creates the version tag and GitHub Release. That published Release independently
+starts `.github/workflows/release.yml`, which verifies the tag, source versions,
+and existing release before GoReleaser attaches platform archives and checksums.
+A manual dispatch reruns packaging without moving the tag or replacing Release
+Please's release notes.

@@ -105,19 +105,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow = load_yaml(".github/workflows/release-please.yml")
         events = workflow_events(workflow)
         release_job = workflow["jobs"]["release-please"]
-        release_step = release_job["steps"][0]
-        package_job = workflow["jobs"]["package"]
+        token_step, release_step = release_job["steps"]
 
+        self.assertEqual(workflow["name"], "Prepare Release")
         self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
         self.assertIn("workflow_run.conclusion == 'success'", release_job["if"])
         self.assertIn("workflow_run.head_branch == 'main'", release_job["if"])
+        self.assertIn("RELEASE_PLEASE_TOKEN", token_step["run"])
         self.assertEqual(
             release_step["uses"], "googleapis/release-please-action@v4"
         )
         self.assertEqual(workflow["permissions"]["issues"], "write")
-        self.assertIn("RELEASE_PLEASE_TOKEN", release_step["with"]["token"])
-        self.assertEqual(package_job["needs"], "release-please")
-        self.assertEqual(package_job["uses"], "./.github/workflows/release.yml")
+        self.assertEqual(
+            release_step["with"]["token"],
+            "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+        )
+        self.assertEqual(tuple(workflow["jobs"]), ("release-please",))
 
     def test_release_please_updates_both_source_versions(self):
         config = json.loads((ROOT / "release-please-config.json").read_text())
@@ -149,8 +152,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         release_job = workflow["jobs"]["goreleaser"]
         scripts = "\n".join(step.get("run", "") for step in release_job["steps"])
 
-        self.assertIn("workflow_call", events)
-        self.assertEqual(release_job["env"]["RELEASE_TAG"], "${{ inputs.tag_name }}")
+        self.assertEqual(events["release"]["types"], ["published"])
+        self.assertNotIn("workflow_call", events)
+        self.assertEqual(
+            release_job["env"]["RELEASE_TAG"],
+            "${{ github.event.release.tag_name || inputs.tag_name }}",
+        )
         self.assertIn('tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")', scripts)
         self.assertIn('pathlib.Path("pyproject.toml")', scripts)
         self.assertIn("src/harnest/compatibility.py", scripts)

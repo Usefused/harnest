@@ -1,16 +1,9 @@
 name: Release
 
 on:
-  workflow_call:
-    inputs:
-      tag_name:
-        description: Release Please tag to package
-        required: true
-        type: string
-      release_sha:
-        description: Commit selected by Release Please
-        required: true
-        type: string
+  release:
+    types:
+      - published
   workflow_dispatch:
     inputs:
       tag_name:
@@ -26,14 +19,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.tag_name }}
+  group: release-${{ github.event.release.tag_name || inputs.tag_name }}
   cancel-in-progress: false
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
     env:
-      RELEASE_TAG: ${{ inputs.tag_name }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name }}
       EXPECTED_SHA: ${{ inputs.release_sha }}
     steps:
       - name: Check out repository
