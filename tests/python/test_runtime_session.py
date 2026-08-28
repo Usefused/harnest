@@ -3,9 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.application import CompiledApplication
+from harnest.checkpoint import ADKStore
 from harnest.neutral_runtime import AgentInfo, SessionRecord
 from harnest.runtime import AgentRuntimeError, _runtime_driver
-from harnest.runtime_session import SessionStoreRuntimeDriver
+from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
 
 
@@ -45,7 +46,7 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_owned_store_starts_once_and_closes_once(self):
         store = RecordingStore()
         inner = _driver()
-        driver = SessionStoreRuntimeDriver(inner, store)
+        driver = StorageRuntimeDriver(inner, store)
 
         for _ in range(2):
             await driver.create_session(
@@ -62,7 +63,7 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         store = RecordingStore()
         inner = _driver()
         inner.close.side_effect = RuntimeError("backend failed")
-        driver = SessionStoreRuntimeDriver(inner, store)
+        driver = StorageRuntimeDriver(inner, store)
 
         with self.assertRaisesRegex(RuntimeError, "backend failed"):
             await driver.close()
@@ -86,7 +87,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
         ) as constructor:
             selected = _runtime_driver(application)
 
-        self.assertIsInstance(selected, SessionStoreRuntimeDriver)
+        self.assertIsInstance(selected, StorageRuntimeDriver)
         self.assertIs(selected._driver, backend)
         self.assertIs(constructor.call_args.kwargs["session_store"], store)
 
@@ -114,8 +115,30 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
         ):
             selected = _runtime_driver(application)
 
-        self.assertIsInstance(selected, SessionStoreRuntimeDriver)
+        self.assertIsInstance(selected, StorageRuntimeDriver)
         adapt.assert_called_once_with(store)
+        self.assertIs(constructor.call_args.kwargs["session_service"], service)
+
+    def test_native_adk_store_uses_one_service_and_one_owned_resource(self):
+        service = object()
+        store = ADKStore(service)
+        application = CompiledApplication(
+            name="root",
+            framework="adk",
+            mode="advanced",
+            target=object(),
+            native_app=object(),
+            session_store=store,
+            checkpointer=store,
+        )
+        backend = _driver()
+        with patch(
+            "harnest.runtime_adk.ADKRuntimeDriver",
+            return_value=backend,
+        ) as constructor:
+            selected = _runtime_driver(application)
+
+        self.assertEqual(selected._resources, (store,))
         self.assertIs(constructor.call_args.kwargs["session_service"], service)
 
     def test_lifecycle_store_conflicts_with_host_injection(self):

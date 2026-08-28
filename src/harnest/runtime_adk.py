@@ -8,13 +8,16 @@ wire formats belong to :mod:`harnest.neutral_runtime`.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+from ._json import json_value
 from .application import CompiledApplication
+from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore
 from .model_lifecycle import close_litellm_lifecycles
 from .neutral_runtime import (
     AgentInfo,
@@ -218,19 +221,29 @@ class ADKRuntimeDriver(RuntimeDriver):
             user_id=request.user_id,
             session_id=request.session_id,
         ):
+            await self._begin_checkpoint(request)
             native_events = self._runner.run_async(
                 user_id=request.user_id,
                 session_id=request.session_id,
-                invocation_id=request.invocation_id,
+                # ADK interprets an explicit id as a request to resume an
+                # existing invocation. New Harnest runs let ADK allocate its
+                # native id, which is persisted in the checkpointed events.
+                invocation_id=None,
                 new_message=message,
                 state_delta=dict(request.state_delta),
                 run_config=run_config,
             )
             normalizer = _ADKEventNormalizer()
-            async with aclosing(native_events):
-                async for event in native_events:
-                    for item in normalizer.feed(event):
-                        yield item
+            try:
+                async with aclosing(native_events):
+                    async for event in native_events:
+                        await self._save_checkpoint_event(request, event)
+                        for item in normalizer.feed(event):
+                            yield item
+            except BaseException:
+                await self._finish_checkpoint(request.invocation_id, "failed")
+                raise
+            await self._finish_checkpoint(request.invocation_id, "completed")
 
     async def close(self) -> None:
         """Close ADK resources exactly once."""
@@ -247,6 +260,82 @@ class ADKRuntimeDriver(RuntimeDriver):
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("ADK runtime driver is closed")
+
+    async def _begin_checkpoint(self, request: InvocationRequest) -> None:
+        """Claim portable run ownership before ADK begins producing events."""
+
+        store = self._portable_checkpoints()
+        if store is None:
+            return
+        await store.begin_run(
+            application_id=self.application.name,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=request.invocation_id,
+            framework="adk",
+        )
+
+    async def _save_checkpoint_event(
+        self, request: InvocationRequest, event: Any
+    ) -> None:
+        """Persist complete ADK events while excluding unstable partial output."""
+
+        store = self._portable_checkpoints()
+        if store is None or getattr(event, "partial", False):
+            return
+        dump = getattr(event, "model_dump", None)
+        if not callable(dump):
+            return
+        payload = json.dumps(
+            dump(mode="json", by_alias=True), separators=(",", ":")
+        ).encode("utf-8")
+        checkpoint_id = getattr(event, "id", None) or uuid.uuid4().hex
+        existing = await store.get_checkpoint(
+            run_id=request.invocation_id,
+            checkpoint_id=checkpoint_id,
+            namespace="events",
+        )
+        if existing is not None:
+            return
+        previous = await store.get_checkpoint(
+            run_id=request.invocation_id, namespace="events"
+        )
+        record = CheckpointRecord(
+            run_id=request.invocation_id,
+            checkpoint_id=checkpoint_id,
+            namespace="events",
+            framework="adk",
+            type_name="json",
+            payload=payload,
+            metadata_type="json",
+            metadata=b"{}",
+            versions_type="json",
+            versions=b"{}",
+            parent_checkpoint_id=(
+                None if previous is None else previous.checkpoint_id
+            ),
+        )
+        await store.put(record, expected_revision=None)
+
+    async def _finish_checkpoint(self, run_id: str, status: str) -> None:
+        """Release portable run ownership after ADK reaches a terminal outcome."""
+
+        store = self._portable_checkpoints()
+        if store is None:
+            return
+        record = await store.get_run(run_id=run_id)
+        if record is not None and record.status == "running":
+            await store.transition(
+                run_id=run_id,
+                expected_status="running",
+                status=status,
+            )
+
+    def _portable_checkpoints(self) -> CheckpointStore | None:
+        """Use portable checkpoints only when Harnest, not ADK, owns storage."""
+
+        provider = self.application.checkpointer
+        return provider if isinstance(provider, HarnestStore) else None
 
 
 class _ADKEventNormalizer:
@@ -317,7 +406,7 @@ def _output_items(event: Any, text: str) -> list[dict[str, Any]]:
                 items.append(
                     {"type": "message", "role": "assistant", "text": output}
                 )
-        normalized_output = _json_value(output)
+        normalized_output = json_value(output)
         items.append(
             {
                 "type": "graph_output",
@@ -337,7 +426,7 @@ def _function_call_items(event: Any) -> list[dict[str, Any]]:
                 "type": "tool_call",
                 "id": getattr(call, "id", None),
                 "name": getattr(call, "name", None),
-                "arguments": _json_value(getattr(call, "args", None)),
+                "arguments": json_value(getattr(call, "args", None)),
             }
         )
     return items
@@ -352,7 +441,7 @@ def _function_response_items(event: Any) -> list[dict[str, Any]]:
                 "type": "tool_result",
                 "id": getattr(response, "id", None),
                 "name": getattr(response, "name", None),
-                "result": _json_value(getattr(response, "response", None)),
+                "result": json_value(getattr(response, "response", None)),
             }
         )
     return items
@@ -371,7 +460,7 @@ def _session_record(session: Any) -> SessionRecord:
     return SessionRecord(
         id=session.id,
         user_id=session.user_id,
-        state=_json_value(session.state),
+        state=json_value(session.state),
         updated_at=updated_at,
     )
 
@@ -425,19 +514,6 @@ async def _session_execution_lease(
         return
     async with acquire(user_id=user_id, session_id=session_id):
         yield
-
-
-def _json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _json_value(model_dump(mode="json", by_alias=True))
-    return str(value)
 
 
 __all__ = ["ADKRuntimeDriver"]

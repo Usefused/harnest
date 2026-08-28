@@ -11,3 +11,10 @@ def write_session_store(root: Path) -> None:
         "def session_store(): return InMemorySessionStore()\n",
         encoding="utf-8",
     )
+    (extensions / "checkpoints.py").write_text(
+        "from harnest.checkpoint import MemoryStore\n"
+        "from harnest.lifecycle import lifecycle\n"
+        "@lifecycle.checkpointer\n"
+        "def checkpointer(): return MemoryStore()\n",
+        encoding="utf-8",
+    )

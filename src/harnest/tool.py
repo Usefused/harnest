@@ -29,6 +29,13 @@ def tool(function: F | None = None, *, description: str | None = None):
     def decorate(fn: F) -> F:
         if not callable(fn):
             raise TypeError("@tool can only decorate callables")
+        from .context import registration_for as context_registration_for
+        from .lifecycle import registration_for as lifecycle_registration_for
+
+        if context_registration_for(fn) is not None:
+            raise TypeError("context providers cannot also be tools")
+        if lifecycle_registration_for(fn) is not None:
+            raise TypeError("lifecycle extensions cannot also be tools")
         if description:
             fn.__doc__ = description
         if not (fn.__doc__ or "").strip():

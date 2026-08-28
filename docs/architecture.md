@@ -151,13 +151,14 @@ A callable that declares `context` receives a framework-neutral
 `Event.state_delta` is the only managed graph write path. ADK commits that
 delta through event actions, while LangGraph merges it into an internal
 namespaced channel and Harnest exposes only public state through session CRUD.
-Stateful orchestration therefore needs neither an ADK plugin nor a LangGraph
-checkpointer.
+Stateful orchestration therefore needs no ADK plugin. The lifecycle-owned
+checkpoint adapter persists execution progress while `SessionStore` remains
+the committed public state authority.
 
 The ADK backend lowers this IR to `google.adk.workflow.Workflow`, `Edge`, and
 `JoinNode`. The LangGraph backend lowers it to a `StateGraph` with message,
-value, route, and namespaced session state, no checkpointer, conditional edges, and
-LangGraph joins. Nested graph cycles and framework-invalid native nodes are
+value, route, namespaced session state, a per-invocation native checkpoint
+adapter, conditional edges, and LangGraph joins. Nested graph cycles and framework-invalid native nodes are
 rejected during lowering.
 
 Advanced source still exports the public `Agent` type:
@@ -172,8 +173,12 @@ Advanced ADK mode accepts an `App`, `BaseAgent`, or workflow `BaseNode`.
 Advanced LangGraph mode accepts a validated compiled `Pregel`. Conventional
 LangGraph `messages` state works without adapters; custom state supplies
 `Agent.advanced(..., input_adapter=..., output_adapter=...)`. Advanced source
-owns framework composition, lifecycle, persistence, and provider-specific
-dependencies.
+owns framework composition, native lifecycle, and provider-specific
+dependencies. Harnest continues to own configured session persistence and the
+neutral invocation governance boundary. The same wrapper may appear inside a
+managed ADK agent's `subagents` or as a native ADK/LangGraph graph node; embedded
+targets use the containing component's input/output shape rather than root
+adapters.
 Authors import ADK or LangGraph directly to create the target; Harnest does not
 wrap or re-export those framework APIs. Building a portable `harnest.graph.Graph`
 remains managed behavior and does not require advanced mode.
@@ -211,11 +216,11 @@ marked root-only:
 | --- | --- |
 | `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
-| `subagents/<name>.py` | Exactly one `AgentDefinition` named `<name>`. |
+| `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
 | `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
 | `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `client()` factory using the same rule. |
 | `plugins/<name>/skills/<skill>/SKILL.md` (root-only) | Plugin-owned progressive skills. |
-| `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners and native factories. |
+| `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
 | `sandbox/sandbox.py` | One optional ADK-only `Sandbox` defining the agent's lazy code-execution backend. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
 | `evals/<id>.evalset.json` (root test lane) | A test-only, ADK-only `EvalSet` whose `eval_set_id` matches its filename. |
@@ -257,7 +262,10 @@ not disconnect at the normal request deadline.
 
 `@require_human_approval` adds policy metadata to a local `@tool` or an MCP
 `client()` factory. Managed ADK wraps function execution and discovered MCP
-tools; managed LangGraph uses callable wrappers and tool-call middleware. The
+tools. Managed LangGraph passes an approval interceptor to
+`MultiServerMCPClient`, so the gate receives the adapter's original server and
+unprefixed tool names immediately before MCP transport execution; ordinary
+local LangChain tools never cross that interceptor. The
 neutral runtime stops immediately before the call, binds the request to the
 principal, session, invocation, action, and canonical argument hash, then
 returns `requires_action`. JSON, SSE, and WebSocket use the same approval ID;
@@ -272,9 +280,11 @@ rendered messages, results, headers, or credentials.
 
 Selective MCP approval names are checked against the server's discovered,
 unprefixed remote tool names in both frameworks. A missing name fails closed
-before invocation. Advanced applications have no automatic Harnest tool or MCP
-capability wrapper, including through neutral `/responses` and `/live`; keep
-protected capabilities managed or implement framework-native approval wiring.
+before invocation. Each configured LangGraph server is routed to its own policy,
+so same-named tools on other MCP servers cannot inherit it. Advanced targets
+retain governance for explicitly Harnest-decorated capabilities reached through
+the neutral boundary. Opaque native capabilities and direct framework routes
+are not inspected and require native approval wiring.
 The default approval store and suspended tasks are process local and intended
 for standalone development; restarting invalidates pending requests.
 
@@ -296,13 +306,19 @@ Runtime extensions are decorated functions in arbitrary public
 order with source path as a deterministic tie-breaker. Portable behavior covers
 authentication, invocation, normalized events, errors, and managed model calls.
 Explicit ADK-plugin and LangGraph-middleware factories preserve native callbacks
-without exposing native request types through portable hooks. See [Runtime
-extensions](extensions.md).
+without exposing native request types through portable hooks. Zero-argument
+`@context` providers publish invocation-scoped values. Adding
+`@lifecycle.resource` transfers application startup and shutdown ownership but
+does not publish the entered value by itself. Providers are discovered but not
+called by the compiler. See [Runtime extensions](extensions.md).
 
-Advanced mode continues to own arbitrary native model calls, graph routing,
-state/checkpoint semantics, approval wiring, and native integration wiring.
-Harnest still owns its neutral HTTP, authentication, and server boundaries, but
-does not automatically wrap advanced native tools or MCP calls. Managed
+Advanced components continue to own arbitrary native model calls, graph routing,
+state/checkpoint semantics, capability declaration, and native integration
+wiring. Harnest still owns its neutral HTTP, authentication, session, approval,
+tracing, and server boundaries. Explicitly decorated native capabilities inherit
+that invocation context whether the advanced component is the root, an ADK
+subagent, or a LangGraph node; Harnest does not inspect opaque native targets to
+discover capabilities automatically. Managed
 LangGraph also rejects ADK sandbox executors, `output_key`,
 `generate_content_config`, and implicit subagent delegation rather than
 silently ignoring them.
@@ -519,9 +535,15 @@ the principal ID scopes all neutral execution and session operations. The
 middleware authenticates advanced ADK native routes, but deployment policy must
 still authorize their native user fields. Health and discovery remain public.
 
-The generated `extensions/sessions.py` explicitly returns
-`InMemorySessionStore` for development. Removing it or declaring multiple
-factories fails compilation.
+The generated storage extensions return one shared development `MemoryStore`.
+Exactly one `@lifecycle.session_store` and one `@lifecycle.checkpointer`
+factory are required. Removing either or declaring duplicates fails
+compilation. Production and advanced ownership rules are detailed in
+[checkpoints.md](checkpoints.md).
+Other database, vector, embedding, and HTTP clients belong in optional
+zero-argument context providers. `@context` exposes a value once per invocation;
+combining it with `@lifecycle.resource` makes startup and shutdown
+application-scoped. Compilation never establishes those external connections.
 Production stores must use durable writes, set-based listing, distributed
 leases, and emit privacy-safe OTEL audit signals after committed mutations.
 The LangGraph driver consumes the store directly. Harnest's ADK session-service

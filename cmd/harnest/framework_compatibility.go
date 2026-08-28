@@ -5,25 +5,29 @@ import (
 	"strings"
 )
 
-// frameworkCompatibility is the framework dependency contract owned by this
-// Harnest release. Keep provider-specific dependencies out of this list: these
-// requirements are only the packages Harnest itself integrates with.
+// frameworkCompatibility is the compiled runtime dependency contract owned by
+// this release. It includes the selected framework and built-in store drivers,
+// while agent-selected model/provider packages remain project dependencies.
 type frameworkCompatibility struct {
-	FrameworkRequirements []string
+	RuntimeRequirements []string
 }
 
 var frameworkCompatibilityByName = map[string]frameworkCompatibility{
 	"adk": {
-		FrameworkRequirements: []string{
+		RuntimeRequirements: []string{
 			"google-adk[eval,extensions,mcp]>=2.8,<3",
+			"asyncpg>=0.30,<1",
+			"redis>=6,<8",
 		},
 	},
 	"langgraph": {
-		FrameworkRequirements: []string{
+		RuntimeRequirements: []string{
 			"langgraph>=1.2,<2",
 			"langchain>=1.3,<2",
 			"langchain-litellm>=0.7,<1",
 			"langchain-mcp-adapters>=0.3,<1",
+			"asyncpg>=0.30,<1",
+			"redis>=6,<8",
 		},
 	},
 }
@@ -41,5 +45,5 @@ func frameworkRequirements(framework string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.Join(compatibility.FrameworkRequirements, "\n") + "\n", nil
+	return strings.Join(compatibility.RuntimeRequirements, "\n") + "\n", nil
 }

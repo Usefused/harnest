@@ -63,6 +63,37 @@ class FrameworkArtifactTests(unittest.TestCase):
         )
         self._card(root)
 
+    def _structured_source(self, root: Path) -> None:
+        self._write(
+            root / "agent.py",
+            """
+            from dataclasses import dataclass
+
+            from harnest.graph import START, Edge, Event, Graph
+
+
+            @dataclass
+            class SearchHit:
+                document_id: str
+                score: float
+
+
+            def retrieve(_value):
+                return Event(
+                    output={"hits": [SearchHit("guide", 0.95)]},
+                    message="found one result",
+                )
+
+
+            root_agent = Graph(
+                name="structured_graph",
+                nodes={"retrieve": retrieve},
+                edges=(Edge(START, "retrieve"),),
+            )
+            """,
+        )
+        self._card(root)
+
     def _approval_source(self, root: Path) -> None:
         self._write(
             root / "agent.py",
@@ -296,6 +327,33 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(result["result"], "compiled-graph")
             self.assertEqual(load_compiled_application(output).kind, "graph")
 
+    def test_compiled_frameworks_preserve_structured_result_models(self):
+        frameworks = (
+            ("adk", ADK_AVAILABLE),
+            ("langgraph", LANGGRAPH_AVAILABLE),
+        )
+        for framework, available in frameworks:
+            if not available:
+                continue
+            with self.subTest(
+                framework=framework
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "source"
+                output = Path(directory) / "artifact"
+                root.mkdir()
+                self._structured_source(root)
+
+                compile_artifact(root, output, framework=framework)
+                result = asyncio.run(run_agent_message(output, "retrieve"))
+                structured = result["result"]
+                if framework == "langgraph":
+                    structured = structured["value"]
+
+                self.assertEqual(
+                    structured,
+                    {"hits": [{"document_id": "guide", "score": 0.95}]},
+                )
+
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_managed_adk_http_pauses_and_resumes_protected_tool(self):
         from fastapi.testclient import TestClient
@@ -380,6 +438,48 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(session.status_code, 201)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["outputText"], "model saw checked:alice:hello")
+
+    @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
+    def test_compiled_runtime_owns_resource_startup_and_shutdown(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            journal = Path(directory) / "resource-journal.txt"
+            root.mkdir()
+            self._managed_source(root)
+            self._write(
+                root / "extensions" / "retrieval.py",
+                f"""
+                from contextlib import contextmanager
+                from pathlib import Path
+
+                from harnest.lifecycle import lifecycle
+
+
+                @lifecycle.resource
+                @contextmanager
+                def vector_client():
+                    journal = Path({str(journal)!r})
+                    journal.write_text("started", encoding="utf-8")
+                    try:
+                        yield
+                    finally:
+                        journal.write_text("stopped", encoding="utf-8")
+                """,
+            )
+
+            compile_artifact(root, output, framework="langgraph")
+            self.assertFalse(journal.exists())
+
+            with TestClient(create_fastapi_app(output)) as client:
+                self.assertFalse(journal.exists())
+                response = client.post("/sessions", json={})
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(journal.read_text(encoding="utf-8"), "started")
+
+            self.assertEqual(journal.read_text(encoding="utf-8"), "stopped")
 
     @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
     def test_managed_langgraph_http_json_sse_and_live(self):
@@ -470,6 +570,239 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(application.kind, "advanced")
             self.assertEqual(application.target.name, "native_adk")
 
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_advanced_adk_root_uses_neutral_approval_governance(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._write(
+                root / "agent.py",
+                """
+                from google.adk.agents import BaseAgent
+                from google.adk.events import Event
+                from google.genai import types
+                from harnest.agent import Agent
+                from harnest.approval import require_human_approval
+                from harnest.tool import tool
+
+
+                @tool
+                @require_human_approval(message="Approve advanced root?")
+                async def protected(value):
+                    '''Run one protected native-root operation.'''
+                    return f"approved:{value}"
+
+
+                class ProtectedRoot(BaseAgent):
+                    async def _run_async_impl(self, _context):
+                        value = await protected("root")
+                        yield Event(
+                            author=self.name,
+                            content=types.Content(
+                                role="model", parts=[types.Part(text=value)]
+                            ),
+                        )
+
+
+                root_agent = Agent.advanced(ProtectedRoot(name="advanced_root"))
+                """,
+            )
+            self._card(root)
+            compile_artifact(root, output, framework="adk", mode="advanced")
+
+            with TestClient(
+                create_fastapi_app(output), base_url="http://127.0.0.1"
+            ) as client:
+                client.post("/sessions", json={"id": "advanced-root"})
+                response = client.post(
+                    "/responses",
+                    json={"input": "run", "sessionId": "advanced-root"},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                required = response.json()
+                self.assertEqual(required["status"], "requires_action", required)
+                completed = client.post(
+                    f"/approvals/{required['requiredAction']['id']}",
+                    json={"decision": "approve"},
+                ).json()
+
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["outputText"], "approved:root")
+
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_managed_adk_root_can_embed_advanced_approved_subagent(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._write(
+                root / "agent.py",
+                """
+                from google.adk.agents import BaseAgent
+                from google.adk.events import Event
+                from google.adk.models import BaseLlm, LlmResponse
+                from google.genai import types
+                from harnest.agent import Agent
+                from harnest.approval import require_human_approval
+                from harnest.tool import tool
+
+
+                @tool
+                @require_human_approval(message="Approve advanced subagent?")
+                async def protected(value):
+                    '''Run one protected native-subagent operation.'''
+                    return f"approved:{value}"
+
+
+                class ProtectedChild(BaseAgent):
+                    async def _run_async_impl(self, _context):
+                        value = await protected("subagent")
+                        yield Event(
+                            author=self.name,
+                            content=types.Content(
+                                role="model", parts=[types.Part(text=value)]
+                            ),
+                        )
+
+
+                class TransferModel(BaseLlm):
+                    async def generate_content_async(self, _request, stream=False):
+                        del stream
+                        yield LlmResponse(
+                            content=types.Content(
+                                role="model",
+                                parts=[types.Part(function_call=types.FunctionCall(
+                                    name="transfer_to_agent",
+                                    args={"agent_name": "native_child"},
+                                ))],
+                            )
+                        )
+
+
+                native_child = Agent.advanced(
+                    ProtectedChild(
+                        name="native_child",
+                        description="Handles the protected request.",
+                    )
+                )
+                root_agent = Agent(
+                    name="managed_root",
+                    model=TransferModel(model="transfer"),
+                    instruction="Always delegate.",
+                    subagents=[native_child],
+                )
+                """,
+            )
+            self._card(root)
+            self._write(root / "instructions.md", "Always delegate.")
+            compile_artifact(root, output, framework="adk", mode="managed")
+
+            with TestClient(create_fastapi_app(output)) as client:
+                client.post("/sessions", json={"id": "advanced-child"})
+                response = client.post(
+                    "/responses",
+                    json={"input": "delegate", "sessionId": "advanced-child"},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                required = response.json()
+                self.assertEqual(required["status"], "requires_action", required)
+                completed = client.post(
+                    f"/approvals/{required['requiredAction']['id']}",
+                    json={"decision": "approve"},
+                ).json()
+
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["outputText"], "approved:subagent")
+
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_embedded_advanced_adk_subagent_rejects_root_only_configuration(self):
+        from google.adk.agents import LlmAgent
+        from google.adk.apps import App
+        from harnest.agent import Agent
+
+        def build(child):
+            return Agent(
+                name="managed_root",
+                model="gemini-test",
+                instruction="Delegate.",
+                subagents=[child],
+            ).build()
+
+        with self.assertRaisesRegex(ValueError, "name must match.*native_child"):
+            build(
+                Agent.advanced(
+                    LlmAgent(name="native_child", model="gemini-test"),
+                    name="public_child",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "root input/output adapters"):
+            build(
+                Agent.advanced(
+                    LlmAgent(name="native_child", model="gemini-test"),
+                    input_adapter=lambda text, state: {**state, "input": text},
+                )
+            )
+        with self.assertRaisesRegex(TypeError, "ADK App targets are root-only"):
+            build(
+                Agent.advanced(
+                    App(
+                        name="native_app",
+                        root_agent=LlmAgent(
+                            name="native_child", model="gemini-test"
+                        ),
+                    )
+                )
+            )
+
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_managed_adk_discovers_agent_advanced_subagent_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._write(
+                root / "agent.py",
+                """
+                from harnest.agent import Agent
+
+
+                root_agent = Agent(
+                    name="managed_root",
+                    model="gemini-test",
+                    instruction="Delegate when appropriate.",
+                )
+                """,
+            )
+            self._write(root / "instructions.md", "Delegate when appropriate.")
+            self._write(
+                root / "subagents" / "native_child.py",
+                """
+                from google.adk.agents import LlmAgent
+                from harnest.agent import Agent
+
+
+                native_child = Agent.advanced(
+                    LlmAgent(
+                        name="native_child",
+                        model="gemini-test",
+                        instruction="Handle native work.",
+                    )
+                )
+                """,
+            )
+            self._card(root)
+
+            compile_artifact(root, output, framework="adk", mode="managed")
+            application = load_compiled_application(output)
+
+            self.assertEqual(application.mode, "managed")
+            self.assertEqual(application.target.sub_agents[0].name, "native_child")
+
     @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
     def test_advanced_langgraph_mode_uses_explicit_bridge(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -491,7 +824,12 @@ class FrameworkArtifactTests(unittest.TestCase):
                 builder.add_node("reply", reply)
                 builder.add_edge(START, "reply")
                 builder.add_edge("reply", END)
-                graph = builder.compile()
+                from harnest.lib.checkpoints import checkpoints
+
+
+                graph = builder.compile(
+                    checkpointer=checkpoints.as_langgraph_checkpointer()
+                )
 
 
                 def input_adapter(text, state):
@@ -511,6 +849,19 @@ class FrameworkArtifactTests(unittest.TestCase):
                 """,
             )
             self._card(root)
+            (root / "lib").mkdir()
+            (root / "lib" / "checkpoints.py").write_text(
+                "from harnest.checkpoint import MemoryStore\n"
+                "checkpoints = MemoryStore()\n",
+                encoding="utf-8",
+            )
+            (root / "extensions" / "checkpoints.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.lib.checkpoints import checkpoints\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return checkpoints\n",
+                encoding="utf-8",
+            )
 
             manifest = compile_artifact(
                 root, output, framework="langgraph", mode="advanced"

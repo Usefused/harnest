@@ -1,4 +1,4 @@
-"""Runtime ownership for a lifecycle-created session store."""
+"""Runtime ownership for lifecycle-created storage resources."""
 
 from __future__ import annotations
 
@@ -16,12 +16,20 @@ from .neutral_runtime import (
 from .session import SessionStore
 
 
-class SessionStoreRuntimeDriver(RuntimeDriver):
-    """Start and close one extension-created store around a runtime driver."""
+class StorageRuntimeDriver(RuntimeDriver):
+    """Start and close session/checkpoint resources around a runtime driver."""
 
-    def __init__(self, driver: RuntimeDriver, store: SessionStore) -> None:
+    def __init__(
+        self,
+        driver: RuntimeDriver,
+        store: SessionStore | None = None,
+        checkpoint_provider: Any | None = None,
+    ) -> None:
+        """Deduplicate shared resources so each is started and closed once."""
+
         self._driver = driver
         self._store = store
+        self._resources = _unique_resources(store, checkpoint_provider)
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -31,14 +39,17 @@ class SessionStoreRuntimeDriver(RuntimeDriver):
         return self._driver.info
 
     async def _start(self) -> None:
+        """Start shared storage once before either session or invocation traffic."""
+
         if self._started:
             return
         async with self._start_lock:
             if self._started:
                 return
             if self._closed:
-                raise RuntimeError("session store runtime is closed")
-            await self._store.start()
+                raise RuntimeError("storage runtime is closed")
+            for resource in self._resources:
+                await resource.start()
             self._started = True
 
     async def create_session(
@@ -93,6 +104,8 @@ class SessionStoreRuntimeDriver(RuntimeDriver):
             yield event
 
     async def close(self) -> None:
+        """Close framework work first, then unwind owned storage in reverse order."""
+
         if self._closed:
             return
         self._closed = True
@@ -101,17 +114,28 @@ class SessionStoreRuntimeDriver(RuntimeDriver):
             await self._driver.close()
         except BaseException as exc:
             failure = exc
-        try:
-            await self._store.close()
-        except BaseException as exc:
-            if failure is None:
-                failure = exc
-            else:
-                failure.add_note(
-                    f"session store cleanup also failed with {type(exc).__name__}"
-                )
+        for resource in reversed(self._resources):
+            try:
+                await resource.close()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(
+                        f"storage cleanup also failed with {type(exc).__name__}"
+                    )
         if failure is not None:
             raise failure
 
 
-__all__ = ["SessionStoreRuntimeDriver"]
+def _unique_resources(*values: Any) -> tuple[Any, ...]:
+    """Preserve ownership order while removing identical shared stores."""
+
+    result: list[Any] = []
+    for value in values:
+        if value is not None and all(value is not item for item in result):
+            result.append(value)
+    return tuple(result)
+
+
+__all__ = ["StorageRuntimeDriver"]

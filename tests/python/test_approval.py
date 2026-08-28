@@ -1,10 +1,9 @@
 import asyncio
 import tempfile
 import unittest
-import sys
 import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from harnest.approval import (
@@ -370,30 +369,17 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(caught.exception.challenge.action, "mcp:github.merge")
 
-    async def test_langgraph_mcp_middleware_gates_selected_call(self):
-        middleware_module = ModuleType("langchain.agents.middleware")
-        middleware_module.wrap_tool_call = lambda function: function
-        agents_module = ModuleType("langchain.agents")
-        agents_module.__path__ = []
-        langchain_module = ModuleType("langchain")
-        langchain_module.__path__ = []
-        policy = ApprovalPolicy(message="Approve merge?", tools=("merge",))
-        modules = {
-            "langchain": langchain_module,
-            "langchain.agents": agents_module,
-            "langchain.agents.middleware": middleware_module,
-        }
-        with patch.dict(sys.modules, modules):
-            from harnest.backends.langgraph import mcp_approval_middleware
+    async def test_langgraph_mcp_interceptor_gates_selected_call(self):
+        from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 
-            middleware = mcp_approval_middleware(
-                {"github_merge": ("github", "merge", policy)}
-            )
-        request = SimpleNamespace(
-            tool_call={
-                "name": "github_merge",
-                "args": {"repository": "harnest"},
-            }
+        policy = ApprovalPolicy(message="Approve merge?", tools=("merge",))
+        from harnest.runtime_langgraph import mcp_approval_interceptor
+
+        interceptor = mcp_approval_interceptor({"github": ("github", policy)})
+        request = MCPToolCallRequest(
+            server_name="github",
+            name="merge",
+            args={"repository": "harnest"},
         )
 
         async def handler(_request):
@@ -402,7 +388,8 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
         with approval_execution(ApprovalExecution("u", "s", "c")), self.assertRaises(
             ApprovalRequired
         ) as caught:
-            await middleware(request, handler)
+            await interceptor(request, handler)
+        self.assertEqual(caught.exception.challenge.action, "mcp:github.merge")
         store = InMemoryApprovalStore()
         pending = store.request(
             caught.exception.challenge,
@@ -413,7 +400,93 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
         )
         store.decide(pending.id, user_id="u", decision="approve")
         with approval_execution(ApprovalExecution("u", "s", "c", pending)):
-            self.assertEqual(await middleware(request, handler), "merged")
+            self.assertEqual(await interceptor(request, handler), "merged")
+        self.assertEqual(pending.status, "executed")
+
+    async def test_langgraph_mcp_interceptor_routes_each_server_policy(self):
+        from harnest.runtime_langgraph import mcp_approval_interceptor
+
+        interceptor = mcp_approval_interceptor(
+            {
+                "github": ("mcp__github", ApprovalPolicy(message="Approve all?")),
+                "catalog": (
+                    "mcp__catalog",
+                    ApprovalPolicy(message="Approve write?", tools=("write",)),
+                ),
+            }
+        )
+        calls = []
+
+        async def handler(request):
+            calls.append((request.server_name, request.name))
+            return "ok"
+
+        unprotected = SimpleNamespace(
+            server_name="catalog", name="read", args={"secret": "value"}
+        )
+        unknown = SimpleNamespace(server_name="other", name="write", args={})
+        self.assertEqual(await interceptor(unprotected, handler), "ok")
+        self.assertEqual(await interceptor(unknown, handler), "ok")
+
+        for server_name, tool_name, action in (
+            ("github", "read", "mcp:mcp__github.read"),
+            ("catalog", "write", "mcp:mcp__catalog.write"),
+        ):
+            request = SimpleNamespace(
+                server_name=server_name, name=tool_name, args={"value": 1}
+            )
+            with approval_execution(ApprovalExecution("u", "s", "c")), self.assertRaises(
+                ApprovalRequired
+            ) as caught:
+                await interceptor(request, handler)
+            self.assertEqual(caught.exception.challenge.action, action)
+
+        self.assertEqual(calls, [("catalog", "read"), ("other", "write")])
+
+    async def test_langgraph_mcp_interceptor_audits_error_results_and_exceptions(self):
+        from harnest.runtime_langgraph import mcp_approval_interceptor
+
+        interceptor = mcp_approval_interceptor(
+            {"github": ("github", ApprovalPolicy(message="Approve?"))}
+        )
+        request = SimpleNamespace(server_name="github", name="merge", args={})
+
+        async def error_result(_request):
+            return SimpleNamespace(isError=True)
+
+        pending, failure = await self._approved_mcp_call(
+            interceptor, request, error_result
+        )
+        self.assertIsNone(failure)
+        self.assertEqual(pending.status, "execution_failed")
+
+        async def raises(_request):
+            raise RuntimeError("transport failed")
+
+        pending, failure = await self._approved_mcp_call(interceptor, request, raises)
+        self.assertIsInstance(failure, RuntimeError)
+        self.assertEqual(str(failure), "transport failed")
+        self.assertEqual(pending.status, "execution_failed")
+
+    async def _approved_mcp_call(self, interceptor, request, handler):
+        execution = ApprovalExecution("u", "s", "c")
+        with approval_execution(execution), self.assertRaises(ApprovalRequired) as caught:
+            await interceptor(request, handler)
+        store = InMemoryApprovalStore()
+        pending = store.request(
+            caught.exception.challenge,
+            user_id="u",
+            session_id="s",
+            call_id="c",
+        )
+        store.decide(pending.id, user_id="u", decision="approve")
+        failure = None
+        try:
+            with approval_execution(ApprovalExecution("u", "s", "c", pending)):
+                await interceptor(request, handler)
+        except BaseException as exc:
+            failure = exc
+        return pending, failure
 
 
 if __name__ == "__main__":

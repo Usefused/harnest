@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from harnest.agent import AgentDefinition
 from harnest.backends import get_backend
-from harnest.bundle import BundleConventionError, compile_application
+from harnest.bundle import (
+    BundleConventionError,
+    BundleExportError,
+    _discover_subagents,
+    compile_application,
+)
 from harnest.graph import Graph
 from _session_store_fixture import write_session_store
 
@@ -124,9 +129,9 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         actual = get_backend(framework)
         lowered_graphs = []
 
-        def lower_graph(graph, native_extensions):
+        def lower_graph(graph, native_extensions, checkpointer):
             lowered_graphs.append(graph)
-            return actual._lower_graph(graph, native_extensions)
+            return actual._lower_graph(graph, native_extensions, checkpointer)
 
         observed = replace(actual, _lower_graph=lower_graph)
         with patch("harnest.bundle.get_backend", return_value=observed):
@@ -361,6 +366,28 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                     root, entrypoint="agent:root_agent", framework="adk", mode="advanced"
                 )
             self.assertIs(result.target, target)
+
+    def test_nested_advanced_subagent_is_rejected_instead_of_ignoring_resources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._write(
+                root / "native_child" / "agent.py",
+                "from harnest.agent import Agent\n"
+                "native_child = Agent.advanced(object(), name='native_child')\n",
+            )
+            self._write(
+                root / "native_child" / "tools" / "ignored.py",
+                "from harnest.tool import tool\n"
+                "@tool\n"
+                "def ignored():\n"
+                "    return 'ignored'\n",
+            )
+
+            with self.assertRaisesRegex(
+                BundleExportError,
+                r"nested advanced subagent.*subagents/native_child\.py",
+            ):
+                _discover_subagents(root)
 
     def test_langgraph_agent_rejects_discovered_subagents(self):
         cases = {

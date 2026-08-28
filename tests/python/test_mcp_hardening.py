@@ -15,7 +15,7 @@ from harnest.bundle import (
     _merge_mcp_sources,
 )
 from harnest.mcp import MCPClient
-from harnest.runtime_langgraph import _approval_policies, _mcp_connections
+from harnest.runtime_langgraph import _mcp_connections, _validate_mcp_approval
 
 
 class MCPCompilerHardeningTests(unittest.TestCase):
@@ -134,7 +134,7 @@ class MCPApprovalDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         tools = [SimpleNamespace(name="mcp__github_merge")]
         with self.assertRaisesRegex(ValueError, "unavailable tools: missing"):
-            _approval_policies(tools, "mcp__github", configured)
+            _validate_mcp_approval(tools, "mcp__github", configured)
 
 
 if __name__ == "__main__":

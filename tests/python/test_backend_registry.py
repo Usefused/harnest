@@ -53,7 +53,9 @@ class BackendRegistryTests(unittest.TestCase):
                 get_backend("langgraph").lower_managed(graph),
                 langgraph_target,
             )
-        lower_graph.assert_called_once_with(graph, middleware=())
+        lower_graph.assert_called_once_with(
+            graph, middleware=(), checkpointer=None
+        )
 
     def test_native_extensions_are_an_explicit_backend_input(self):
         validation_only = AgentDefinition(
@@ -116,7 +118,7 @@ class BackendRegistryTests(unittest.TestCase):
         self.assertIsInstance(lowered, AgentDefinition)
         self.assertEqual(lowered.instruction, "Answer.")
         backend.lower_managed.assert_called_once_with(
-            lowered, native_extensions=()
+            lowered, native_extensions=(), checkpointer=None
         )
         backend.wrap_managed.assert_called_once_with(
             target, native_extensions=()

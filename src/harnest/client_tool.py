@@ -167,6 +167,13 @@ def client_tool(
         raise ValueError("client tool timeout_seconds must be a positive integer")
 
     def decorate(fn: F) -> F:
+        from .context import registration_for as context_registration_for
+        from .lifecycle import registration_for as lifecycle_registration_for
+
+        if context_registration_for(fn) is not None:
+            raise TypeError("context providers cannot also be client tools")
+        if lifecycle_registration_for(fn) is not None:
+            raise TypeError("lifecycle extensions cannot also be client tools")
         if description:
             fn.__doc__ = description
         if not (inspect.getdoc(fn) or "").strip():

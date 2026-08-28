@@ -371,10 +371,34 @@ Advanced mode does not perform managed capability composition: authored source
 owns native tools, MCP clients, subagents, prompts, routing, state, checkpoints,
 middleware/plugins, framework upgrades, and arbitrary native model calls.
 Harnest still owns the neutral server, decorated authentication, and portable
-invocation extensions. Advanced source owns tool/MCP approval wiring because
-its native capabilities are not automatically wrapped. Portable model interception is guaranteed only
+invocation extensions. Explicit Harnest-decorated tools keep the same approval,
+identity, session, tracing, and suspension context when reached through neutral
+JSON, SSE, or WebSocket execution; advanced source must identify those native
+capabilities because opaque targets are not automatically inspected. Portable model interception is guaranteed only
 through Harnest-managed or wrapped model boundaries; otherwise use an explicit
 native lifecycle factory.
+
+`Agent.advanced(...)` is also composable. A managed ADK root may include it in
+`subagents`, and a portable ADK or LangGraph `Graph` may use it as a native node:
+
+```python
+native_researcher = Agent.advanced(
+    target=native_agent,  # native_agent.name == "researcher"
+)
+
+root_agent = Agent(
+    name="support",
+    model=model,
+    subagents=[native_researcher],
+)
+```
+
+Embedded targets cannot use root `input_adapter` or `output_adapter` functions;
+their containing agent or graph already owns that boundary. Embedded ADK
+subagents accept `BaseAgent`, not `App`, and an optional wrapper name must match
+the native agent name because ADK uses that identity for delegation. Export
+advanced filesystem subagents as flat `subagents/<name>.py` resources; nested
+subagent folders are reserved for Harnest-composed managed agents.
 
 To assess an existing edited project without rewriting any source, run:
 
@@ -432,6 +456,41 @@ library initialization. Do not create a nested agent `lib/` or import it as bare
 `lib.*`. The `harnest.lib.*` namespace works consistently in
 compilation, unit and smoke tests, evals, and the standalone server. Keep
 third-party library dependencies in `pyproject.toml`.
+
+### Execution context resources
+
+Publish reusable runtime values explicitly with `@context("name")`. Used by
+itself, the provider runs once per invocation. Combine it with
+`@lifecycle.resource` when Harnest should start the provider once for the
+application and close it during shutdown:
+
+```python
+# extensions/memory.py
+from harnest.context import context
+from harnest.lifecycle import lifecycle
+from harnest.lib.memory.bigquery import BigQueryMemory
+
+
+@lifecycle.resource
+@context("memory")
+async def memory():
+    client = BigQueryMemory()
+    try:
+        yield client
+    finally:
+        await client.close()
+```
+
+`@lifecycle.resource` owns startup and shutdown but keeps the value private;
+`@context("memory")` publishes the returned or yielded value. Nodes, tools, and
+subagents running inside Harnest retrieve the same value with
+`context.resource("memory")`. Context providers may also publish storage or a
+checkpointer when direct access is intentional. Duplicate names and provider
+conflicts fail compilation; unknown names and access outside an active
+invocation fail clearly at runtime. Harnest binds context for `/responses`,
+`/live`, `run_agent_message`, and managed nodes, tools, and subagents. Direct native
+framework endpoints and native targets invoked outside Harnest do not receive
+it. See [Runtime extensions](docs/extensions.md).
 
 ### Folder-scoped agent ownership
 
@@ -622,6 +681,12 @@ messages, assigns each discovered client a stable path-scoped capability ID,
 and rejects duplicate connection configurations even when approval metadata or
 local identities differ.
 
+Managed LangGraph supplies approval policies through
+`MultiServerMCPClient`'s native tool interceptor. The gate runs immediately
+before MCP network execution and routes on the server plus original unprefixed
+tool name, so it does not intercept ordinary local tools or leak policy between
+servers.
+
 ## Folder contract
 
 Every deployable directory must contain:
@@ -634,9 +699,11 @@ Every deployable directory must contain:
 - `server.yaml`: standalone compiled-server binding, request limits, and
   playground policy. It does not contain deployment scaling, authentication,
   session storage, TLS, or secrets.
-- required `extensions/sessions.py`: exactly one root
-  `@lifecycle.session_store` factory returning an application-owned
-  `SessionStore`.
+- required storage lifecycle: exactly one root `@lifecycle.session_store` and
+  one root `@lifecycle.checkpointer` factory. The default
+  `extensions/storage.py` returns one shared store from `lib/storage.py`;
+  teams may split the listeners across files. Compilation rejects missing,
+  duplicate, hidden, or competing authorities.
 - `agent-card.yaml`: the public A2A 1.0-facing description, interfaces,
   modalities, capabilities, and skills supported by the current runtime.
 - the Python source module named by `spec.entrypoint` using `module:symbol`
@@ -800,10 +867,12 @@ action-, and argument-bound, expires closed, and is consumed once. Approval
 continues the exact suspended task: the invocation is not rerun, earlier side
 effects are not replayed, and a later protected call can request another
 approval. The standalone store is process-local, so pending approvals and
-suspended tasks do not survive restart. Decorated
-calls in advanced targets fail closed because Harnest does not expose an
-advanced capability-wrapping API. Keep approval-protected capabilities managed
-or implement the framework-native approval integration explicitly.
+suspended tasks do not survive restart. The same workflow protects explicitly
+decorated capabilities in advanced roots and advanced subagents while they run
+through Harnest's neutral execution boundary. Calls made through direct native
+framework routes, detached background tasks, or opaque capabilities that were
+not decorated remain framework-owned; a decorated call outside the Harnest
+boundary fails closed instead of executing unprotected.
 The bundled playground renders the same request with Approve and Deny controls.
 Its Trace inspector keeps a bounded, process-local history of request stages,
 tool activity, failures, and structured `harnest.agent.*` logs for the current
@@ -869,23 +938,27 @@ native routes, but their native user fields still require deployment
 authorization. Health, Agent Card, and `/agent` discovery remain public. A
 missing authenticator preserves the local anonymous behavior.
 
-Session persistence is a required root lifecycle resource. Running
-`harnest init` creates `extensions/sessions.py` returning
-`InMemorySessionStore`; replace it
-with a durable Harnest store or a custom `SessionStore` implementation before
-production. The zero-argument synchronous factory runs once, and Harnest owns
-the returned store through startup and shutdown. The same store scopes ADK and
+Session and checkpoint persistence are required root lifecycle resources.
+`harnest init` creates one development `MemoryStore` in `lib/storage.py` and
+returns it from both factories in `extensions/storage.py`. Replace it with a
+durable Harnest store or custom implementation before production. Harnest
+starts and closes a shared object only once. The session side scopes ADK and
 LangGraph sessions across JSON, SSE, and WebSocket transports:
 
 ```python
 from harnest.lifecycle import lifecycle
+from harnest.lib.storage import store
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError
-from harnest.session import InMemorySessionStore
 
 
 @lifecycle.session_store
 def session_store():
-    return InMemorySessionStore()
+    return store
+
+
+@lifecycle.checkpointer
+def checkpointer():
+    return store
 
 
 @lifecycle.authenticate
@@ -896,10 +969,14 @@ async def authenticate(connection, _principal):
     return AuthPrincipal("tenant-user-id")
 ```
 
-The store declaration belongs in `extensions/sessions.py`; the authenticator
-may be another lifecycle extension or a host injection. Duplicate session-store
-factories fail compilation, and a lifecycle store cannot be
-combined with host-injected session storage.
+The two storage factories may share a file; the authenticator may be another
+lifecycle extension or a host injection. Duplicate factories fail compilation,
+and lifecycle session storage cannot be combined with host-injected session
+storage. Use `PostgresStore` for the recommended production path, or
+`RedisStore` when its persistence and expiry trade-offs fit the deployment.
+Managed mode creates native ADK/LangGraph adapters; advanced mode still
+declares ownership through the lifecycle. See
+[checkpoint ownership and production stores](docs/checkpoints.md).
 
 Production authenticators should validate real bearer/OIDC credentials and
 derive stable, non-secret user IDs; the example only shows the injection shape.

@@ -38,13 +38,13 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | Path | Contract |
 | --- | --- |
 | `tools/<name>.py` | Exports one `@tool`-decorated callable named `<name>`. |
-| `subagents/<name>.py` | Exports one `AgentDefinition` named `<name>` with an explicit instruction. |
-| `subagents/<name>/agent.py` | Recursively composed subagent named `<name>` with its own folder-scoped `instructions.md`, tools, MCP clients, sandbox, and skills. ADK also permits child subagents; LangGraph does not. Plugins and extensions remain root-only. |
+| `subagents/<name>.py` | Exports one managed `Agent` with an explicit instruction or one native `Agent.advanced(...)`, named `<name>`. |
+| `subagents/<name>/agent.py` | Recursively composed managed subagent named `<name>` with its own folder-scoped `instructions.md`, tools, MCP clients, sandbox, and skills. Advanced subagents use the flat-file form because native source owns composition. ADK also permits child subagents; LangGraph does not. Plugins and extensions remain root-only. |
 | `mcp/<name>.py` | Exports one literally zero-parameter `client()` factory returning `MCPClient`; `<name>` is its local identity. |
 | `plugins/<plugin>/mcp/<name>.py` | Plugin-owned `client()` factory using the same rule. |
 | `plugins/<plugin>/skills/<skill>/SKILL.md` | One progressive skill teaching the host agent when and how to use the plugin's MCP tools. |
-| `extensions/sessions.py` | Required root `@lifecycle.session_store` zero-argument factory returning an application-owned `SessionStore`. Exactly one factory must exist. |
-| `extensions/**/*.py` | Other arbitrary public root modules; only `@lifecycle.*` functions are discovered. Multiple listeners may share an invocation phase. |
+| `extensions/storage.py` | Generated home for the required zero-argument `@lifecycle.session_store` and `@lifecycle.checkpointer` factories. Return one shared store from root `lib/storage.py`; the listeners may be split across arbitrary extension files. |
+| `extensions/**/*.py` | Other arbitrary public root modules; explicit `@lifecycle.*` listeners and `@context` providers are discovered. Multiple listeners may share an invocation phase. |
 | `sandbox/sandbox.py` | Exports one `Sandbox` as `sandbox`; managed ADK only. |
 | `skills/<skill>/SKILL.md` | Progressive internal instructions. Frontmatter `name` matches `<skill>`; references, assets, and scripts may live below it. |
 | root `evals/<id>.evalset.json` | ADK `EvalSet` whose ID matches the filename. Optional root `evals/test_config.json` configures evaluation. |

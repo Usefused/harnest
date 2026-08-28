@@ -124,6 +124,8 @@ func isPlaceholderResourceEntry(name string) bool {
 	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
 }
 
+// writeAdvancedModeAudit separates retained Harnest governance from native
+// responsibilities so migration advice cannot imply that source was rewritten.
 func writeAdvancedModeAudit(
 	command *cobra.Command,
 	bundle engine.Bundle,
@@ -150,12 +152,13 @@ func writeAdvancedModeAudit(
 	fmt.Fprintln(output, "Harnest still owns:")
 	fmt.Fprintln(output, "  - neutral HTTP/SSE/WebSocket serving and server.yaml policy")
 	fmt.Fprintln(output, "  - decorated authentication lifecycle and principal-scoped sessions")
+	fmt.Fprintln(output, "  - approval and tracing context for explicitly decorated native capabilities")
 	fmt.Fprintln(output, "  - portable extension hooks around neutral invocations")
 	fmt.Fprintln(output, "You own in advanced mode:")
 	fmt.Fprintln(output, "  - native graph routing, state, checkpoint, and framework semantics")
 	fmt.Fprintln(output, "  - native middleware/plugin registration and framework upgrades")
 	fmt.Fprintln(output, "  - native object validation beyond Harnest's entrypoint checks")
-	fmt.Fprintln(output, "  - tool and MCP approval wiring; advanced targets have no automatic Harnest capability wrapper")
+	fmt.Fprintln(output, "  - native tool and MCP declaration; opaque capabilities are not discovered automatically")
 	fmt.Fprintln(output, "  - arbitrary native model calls; portable model hooks are not auto-injected into advanced targets, so use a LiteLLM lifecycle or native plugin/middleware")
 
 	fmt.Fprintln(output, "Next steps:")

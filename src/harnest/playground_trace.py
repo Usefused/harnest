@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextvars
-import json
 import logging
 import threading
 import time
@@ -12,6 +11,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+from ._json import json_value
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -30,10 +30,6 @@ _STANDARD_LOG_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _json_value(value: Any) -> Any:
-    return json.loads(json.dumps(value, default=str, ensure_ascii=False))
 
 
 def _event_detail(event: RuntimeEvent) -> dict[str, Any]:
@@ -107,7 +103,7 @@ class PlaygroundTraceStore:
                     "category": category,
                     "level": level,
                     "message": message,
-                    "detail": _json_value(dict(detail or {})),
+                    "detail": json_value(dict(detail or {}), unsupported="string"),
                 }
             )
 
@@ -159,7 +155,7 @@ class PlaygroundTraceStore:
     @staticmethod
     def _public(trace: Mapping[str, Any]) -> dict[str, Any]:
         return {
-            key: _json_value(value)
+            key: json_value(value, unsupported="string")
             for key, value in trace.items()
             if key not in {"userId", "startedMonotonic"}
         }

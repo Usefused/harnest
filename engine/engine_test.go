@@ -436,6 +436,30 @@ func TestCompiledArtifactRejectsOtherUnmanifestedFiles(t *testing.T) {
 	}
 }
 
+func TestCompiledArtifactRejectsMismatchedCheckpointOwnership(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	path := filepath.Join(directory, compiledManifestFilename)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest CompiledManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Checkpoint = CompiledCheckpoint{
+		Owner: "langgraph", Framework: "langgraph", Schema: "langgraph-native",
+	}
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, string(contents))
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "checkpoint ownership") {
+		t.Fatalf("got error %v, want checkpoint ownership mismatch", err)
+	}
+}
+
 func compiledServerArtifactFixture(t *testing.T) (Bundle, string) {
 	t.Helper()
 	source, err := LoadBundle(writeAgent(t, t.TempDir(), "serverpolicy", true))
@@ -640,7 +664,10 @@ func compiledManifestForDirectory(t *testing.T, directory string, source Bundle)
 		Entrypoint: "agent:root_agent", SourceEntrypoint: source.Config.Spec.Entrypoint,
 		SourceDirectory: "source", HarnestVersion: "0.1.0",
 		Framework: compiledFrameworkForTest(source.Config.Spec.Framework),
-		Digest:    compiledManifestDigest(files), Files: files,
+		Checkpoint: CompiledCheckpoint{
+			Owner: "harnest", Framework: "portable", Schema: "harnest-checkpoint/v1",
+		},
+		Digest: compiledManifestDigest(files), Files: files,
 	}
 }
 

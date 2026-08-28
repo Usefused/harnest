@@ -1,14 +1,14 @@
 ---
 name: harnest-authoring
-description: Build, modify, test, or review a filesystem-first Harnest agent project or Harnest itself. Use for agent folders, compiler-owned harnest.* imports, libraries, managed ADK or LangGraph graphs, client tools, plugins, extensions, MCP clients, skills, evals, tests, compilation, standalone serving, and Harnest Python or Go changes.
+description: Build, modify, test, or review Harnest agents and source. Use for agent folders, compiler-owned harnest.* imports, libraries, managed ADK or LangGraph graphs, client tools, plugins, extensions, MCP clients, skills, evals, tests, compilation, standalone serving, and Harnest Python or Go changes.
 ---
 
 # Harnest authoring
 
-Produce tested agents through filesystem ownership; let `harnest` compose
-authored source. Never edit generated `.harnest/` artifacts.
+Produce tested agents through filesystem ownership. Never edit generated
+`.harnest/` artifacts.
 
-Keep this coding skill separate from runtime `skills/` used by deployed agents.
+Keep this skill separate from deployed runtime `skills/`.
 
 ## Modify safely
 
@@ -18,17 +18,21 @@ Keep this coding skill separate from runtime `skills/` used by deployed agents.
    Init uses ignored guides; request `--example` for full samples.
 2. Preserve framework, mode, and `Agent.history` unless the user requests
    architectural migration.
+   Preserve both storage factories; read `docs/checkpoints.md` before changing
+   checkpoint ownership.
 3. Put each capability beside its owning `agent.py`. Managed resources are
    discovered; do not import or manually register sibling tools, MCP clients,
    plugins, skills, or subagents. Nested agents do not inherit parent resources.
-4. Put shared ordinary Python in root `lib/` and import it as `harnest.lib.*`.
-   Do not use `lib/` for a discovered capability; `__init__.py` is unnecessary.
+4. Compilation executes authored modules. Keep imports side-effect free. Put
+   shared code in root `lib/` without required `__init__.py`; import via
+   `harnest.lib.*`. Publish runtime values with `@context`.
 5. Import authoring symbols explicitly from `harnest.*`; no magic globals or
    compatibility aliases exist.
 6. Match path/export contracts. MCP `client()` factories take no parameters;
    `@client_tool` stubs run in callers, never the agent server.
-   Decorate executable extension listeners with `@lifecycle.*`; helpers stay
-   ignored. Invalid resources fail compile.
+   Use `@lifecycle.*` on extension listeners; keep helpers ignored. Put MCP
+   approval on `client()` and name original remote tools. Invalid resources
+   fail compile.
 7. Put agent dependencies in `pyproject.toml`; never add Harnest or framework
    packages. Put deployment settings in `config.yaml`,
    and standalone HTTP policy in `server.yaml`; use exact `${NAME}` references
@@ -40,8 +44,7 @@ Keep this coding skill separate from runtime `skills/` used by deployed agents.
 - Read [references/folder-edits.md](references/folder-edits.md) before changing
   structure or capability ownership.
 - Read [references/layout.md](references/layout.md) for path contracts.
-- Read [references/python-api.md](references/python-api.md) for `harnest.*`,
-  plugins, extensions, telemetry, MCP, and sandbox APIs.
+- Read [references/python-api.md](references/python-api.md) for Python APIs.
 - Read [references/frameworks.md](references/frameworks.md) for graphs,
   frameworks, modes, models, and subagents.
 - Read [references/workflows.md](references/workflows.md) for installation,

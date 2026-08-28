@@ -41,8 +41,8 @@ class Backend:
     """One compiler backend selected from the fixed Harnest registry."""
 
     name: str
-    _lower_agent: Callable[[AgentDefinition, Sequence[Any]], Any]
-    _lower_graph: Callable[[Graph, Sequence[Any]], Any]
+    _lower_agent: Callable[[AgentDefinition, Sequence[Any], Any], Any]
+    _lower_graph: Callable[[Graph, Sequence[Any], Any], Any]
     _wrap_managed: Callable[[Any, Sequence[Any]], Any | None]
     _validate_advanced: Callable[[_AdvancedAgentDefinition, str], AdvancedBackendResult]
 
@@ -51,11 +51,14 @@ class Backend:
         value: AgentDefinition | Graph,
         *,
         native_extensions: Sequence[Any] = (),
+        checkpointer: Any = None,
     ) -> Any:
+        """Route one portable root through its selected backend ownership boundary."""
+
         if isinstance(value, AgentDefinition):
-            return self._lower_agent(value, native_extensions)
+            return self._lower_agent(value, native_extensions, checkpointer)
         if isinstance(value, Graph):
-            return self._lower_graph(value, native_extensions)
+            return self._lower_graph(value, native_extensions, checkpointer)
         raise TypeError("managed backend input must be AgentDefinition or Graph")
 
     def wrap_managed(
@@ -72,12 +75,16 @@ class Backend:
 
 
 def _lower_adk_agent(
-    definition: AgentDefinition, _native_extensions: Sequence[Any]
+    definition: AgentDefinition,
+    _native_extensions: Sequence[Any],
+    _checkpointer: Any,
 ) -> Any:
     return definition.build()
 
 
-def _lower_adk_graph(graph: Graph, _native_extensions: Sequence[Any]) -> Any:
+def _lower_adk_graph(
+    graph: Graph, _native_extensions: Sequence[Any], _checkpointer: Any
+) -> Any:
     from .adk import lower_graph
 
     return lower_graph(graph)
@@ -86,6 +93,8 @@ def _lower_adk_graph(graph: Graph, _native_extensions: Sequence[Any]) -> Any:
 def _wrap_adk_managed(
     target: Any, native_extensions: Sequence[Any]
 ) -> Any | None:
+    """Create the ADK App only after capabilities and plugins are complete."""
+
     # Tests and compiler extensions may replace AgentDefinition.build() with a
     # validation-only definition. Preserve that observable boundary without
     # pretending it is a runnable ADK application.
@@ -93,18 +102,22 @@ def _wrap_adk_managed(
         return None
     try:
         from google.adk.apps import App
+        from google.adk.apps.app import ResumabilityConfig
     except ImportError as exc:  # pragma: no cover - optional backend
         raise BackendDependencyError("ADK compilation requires google-adk") from exc
     return App(
         name=target.name,
         root_agent=target,
         plugins=list(native_extensions),
+        resumability_config=ResumabilityConfig(is_resumable=True),
     )
 
 
 def _validate_adk_advanced(
     value: _AdvancedAgentDefinition, fallback_name: str
 ) -> AdvancedBackendResult:
+    """Normalize supported native ADK roots without exposing NativeApp publicly."""
+
     try:
         from google.adk.agents import BaseAgent
         from google.adk.apps import App
@@ -131,19 +144,23 @@ def _validate_adk_advanced(
 
 
 def _lower_langgraph_agent(
-    definition: AgentDefinition, native_extensions: Sequence[Any]
+    definition: AgentDefinition,
+    native_extensions: Sequence[Any],
+    checkpointer: Any,
 ) -> Any:
     from .langgraph import lower_agent
 
-    return lower_agent(definition, middleware=native_extensions)
+    return lower_agent(
+        definition, middleware=native_extensions, checkpointer=checkpointer
+    )
 
 
 def _lower_langgraph_graph(
-    graph: Graph, native_extensions: Sequence[Any]
+    graph: Graph, native_extensions: Sequence[Any], checkpointer: Any
 ) -> Any:
     from .langgraph import lower_graph
 
-    return lower_graph(graph, middleware=native_extensions)
+    return lower_graph(graph, middleware=native_extensions, checkpointer=checkpointer)
 
 
 def _wrap_langgraph_managed(
@@ -155,6 +172,8 @@ def _wrap_langgraph_managed(
 def _validate_langgraph_advanced(
     value: _AdvancedAgentDefinition, fallback_name: str
 ) -> AdvancedBackendResult:
+    """Accept only compiled Pregel targets at the advanced ownership boundary."""
+
     try:
         from langgraph.pregel import Pregel
     except ImportError as exc:  # pragma: no cover - optional backend

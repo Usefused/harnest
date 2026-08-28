@@ -163,49 +163,99 @@ def _runtime_driver(
 ) -> Any:
     """Select a backend once, at the process boundary."""
 
-    lifecycle_store = application.session_store
     if application.framework == "adk":
-        from .runtime_adk import ADKRuntimeDriver
-
-        if lifecycle_store is not None and adk_session_service is None:
-            from .session_adk import create_adk_session_service
-
-            adk_session_service = create_adk_session_service(lifecycle_store)
-
-        driver = ADKRuntimeDriver(
+        driver = _adk_runtime_driver(
             application,
             card=card,
             extra_endpoints=extra_endpoints,
             session_service=adk_session_service,
         )
     elif application.framework == "langgraph":
-        from .runtime_langgraph import LangGraphRuntimeDriver
-
-        if lifecycle_store is not None and langgraph_session_store is not None:
-            raise AgentRuntimeError(
-                "@lifecycle.session_store cannot be combined with an injected "
-                "LangGraph session store"
-            )
-
-        driver = LangGraphRuntimeDriver(
+        driver = _langgraph_runtime_driver(
             application,
             card=card,
-            session_store=(
-                lifecycle_store
-                if lifecycle_store is not None
-                else langgraph_session_store
-            ),
+            session_store=langgraph_session_store,
         )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
-    if lifecycle_store is not None:
-        from .runtime_session import SessionStoreRuntimeDriver
+    return _wrap_runtime_driver(application, driver)
 
-        driver = SessionStoreRuntimeDriver(driver, lifecycle_store)
-    if application.extensions:
+
+def _adk_runtime_driver(
+    application: Any,
+    *,
+    card: Mapping[str, Any] | None,
+    extra_endpoints: Mapping[str, str] | None,
+    session_service: Any | None,
+) -> Any:
+    """Give one ADK service sole ownership of native session persistence."""
+
+    from .checkpoint import ADKStore
+    from .runtime_adk import ADKRuntimeDriver
+
+    provider = application.checkpointer
+    if isinstance(provider, ADKStore):
+        if session_service is not None:
+            raise AgentRuntimeError(
+                "ADKStore cannot be combined with an injected ADK session service"
+            )
+        session_service = provider.session_service
+    if application.session_store is not None and session_service is None:
+        from .session_adk import create_adk_session_service
+
+        session_service = create_adk_session_service(application.session_store)
+    return ADKRuntimeDriver(
+        application,
+        card=card,
+        extra_endpoints=extra_endpoints,
+        session_service=session_service,
+    )
+
+
+def _langgraph_runtime_driver(
+    application: Any,
+    *,
+    card: Mapping[str, Any] | None,
+    session_store: SessionStore | None,
+) -> Any:
+    """Resolve compiled versus host-injected LangGraph session ownership."""
+
+    from .runtime_langgraph import LangGraphRuntimeDriver
+
+    lifecycle_store = application.session_store
+    if lifecycle_store is not None and session_store is not None:
+        raise AgentRuntimeError(
+            "@lifecycle.session_store cannot be combined with an injected "
+            "LangGraph session store"
+        )
+    return LangGraphRuntimeDriver(
+        application,
+        card=card,
+        session_store=(
+            lifecycle_store if lifecycle_store is not None else session_store
+        ),
+    )
+
+
+def _wrap_runtime_driver(application: Any, driver: Any) -> Any:
+    """Place storage lifecycle outside framework execution and inside extensions."""
+
+    if application.session_store is not None or application.checkpointer is not None:
+        from .runtime_session import StorageRuntimeDriver
+
+        driver = StorageRuntimeDriver(
+            driver,
+            application.session_store,
+            application.checkpointer,
+        )
+    if application.extensions or application.context_values:
         from .runtime_extensions import ExtensionRuntimeDriver
 
-        return ExtensionRuntimeDriver(driver, application.extensions)
+        return ExtensionRuntimeDriver(
+            driver,
+            application.extensions,
+            context_values=application.context_values,
+        )
     return driver
 
 
@@ -529,6 +579,8 @@ def _validate_session_storage_choice(
     adk_storage: ADKSessionStorage | None,
     langgraph_store: SessionStore | None,
 ) -> None:
+    """Reject host storage injection when the compiled agent owns that boundary."""
+
     if application.session_store is not None and (
         adk_storage is not None or langgraph_store is not None
     ):
@@ -543,6 +595,16 @@ def _runtime_adk_session_service(
     adk_storage: ADKSessionStorage | None,
     langgraph_store: SessionStore | None,
 ) -> Any | None:
+    """Select one ADK session authority before the native application is built."""
+
+    from .checkpoint import ADKStore
+
+    if isinstance(application.checkpointer, ADKStore):
+        if adk_storage is not None:
+            raise AgentRuntimeError(
+                "ADKStore cannot be combined with deployment ADK session storage"
+            )
+        return application.checkpointer.session_service
     service = _resolve_adk_session_service(
         artifact, application, adk_storage, langgraph_store
     )

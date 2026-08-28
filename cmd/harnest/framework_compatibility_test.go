@@ -9,11 +9,15 @@ import (
 
 func TestFrameworkRequirementsAreReleaseOwned(t *testing.T) {
 	tests := map[string]string{
-		"adk": "google-adk[eval,extensions,mcp]>=2.8,<3\n",
+		"adk": "google-adk[eval,extensions,mcp]>=2.8,<3\n" +
+			"asyncpg>=0.30,<1\n" +
+			"redis>=6,<8\n",
 		"langgraph": "langgraph>=1.2,<2\n" +
 			"langchain>=1.3,<2\n" +
 			"langchain-litellm>=0.7,<1\n" +
-			"langchain-mcp-adapters>=0.3,<1\n",
+			"langchain-mcp-adapters>=0.3,<1\n" +
+			"asyncpg>=0.30,<1\n" +
+			"redis>=6,<8\n",
 	}
 	for framework, expected := range tests {
 		framework := framework

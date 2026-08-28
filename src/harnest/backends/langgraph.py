@@ -8,14 +8,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, TypedDict
 
-from ..agent import AgentDefinition
+from ..agent import AgentDefinition, _AdvancedAgentDefinition
 from ..graph import START, Edge, Event, Graph, GraphContext, Join, call_graph_node
-from ..approval import (
-    ApprovalPolicy,
-    authorize_mcp,
-    record_approved_execution,
-    record_approved_failure,
-)
 from ..model_lifecycle import propagate_litellm_lifecycles
 
 
@@ -53,6 +47,8 @@ def passthrough_native(value: Any) -> Any:
 
 
 def _resolve_langchain_model(model: Any) -> Any:
+    """Translate Harnest models while preserving already-native instances."""
+
     try:
         from langchain_core.language_models import BaseChatModel
     except ImportError as exc:  # pragma: no cover - optional backend dependency
@@ -74,6 +70,8 @@ def _resolve_langchain_model(model: Any) -> Any:
 
 
 def _langchain_tools(values: Sequence[Any]) -> list[Any]:
+    """Adapt Harnest callables while preserving already-native LangChain tools."""
+
     try:
         from langchain_core.tools import BaseTool, tool as langchain_tool
     except ImportError as exc:  # pragma: no cover - optional backend dependency
@@ -102,6 +100,7 @@ def _build_ready_agent(
     middleware: Sequence[Any] = (),
     *,
     graph_node: bool = False,
+    checkpointer: Any = None,
 ) -> Any:
     """Build a simple LangChain tool-loop graph for an agent definition.
 
@@ -134,13 +133,18 @@ def _build_ready_agent(
         ) from exc
 
     model = _resolve_langchain_model(definition.model)
-    target = create_agent(
-        model=model,
-        tools=_langchain_tools((*definition.tools, *tools)),
-        system_prompt=definition.instruction,
-        name=definition.name,
-        middleware=list(middleware),
-    )
+    kwargs = {
+        "model": model,
+        "tools": _langchain_tools((*definition.tools, *tools)),
+        "system_prompt": definition.instruction,
+        "name": definition.name,
+        "middleware": list(middleware),
+    }
+    # Omitting the argument preserves LangGraph's own no-persistence default
+    # for direct backend use; compiled Harnest roots always pass their authority.
+    if checkpointer is not None:
+        kwargs["checkpointer"] = checkpointer
+    target = create_agent(**kwargs)
     target = _apply_history_projection(definition, target, graph_node=graph_node)
     return propagate_litellm_lifecycles(model, target)
 
@@ -148,6 +152,8 @@ def _build_ready_agent(
 def _apply_history_projection(
     definition: AgentDefinition, target: Any, *, graph_node: bool
 ) -> Any:
+    """Apply portable history semantics before the native agent sees state."""
+
     if definition.history == "session" and not graph_node:
         return target
     try:
@@ -173,6 +179,8 @@ def _session_input(state: Any) -> Any:
 
 
 def _turn_input(state: Any) -> Any:
+    """Project one turn's input without replaying committed conversation state."""
+
     if not isinstance(state, Mapping):
         return state
     projected = _session_input(state)
@@ -186,39 +194,6 @@ def _turn_input(state: Any) -> Any:
     return projected
 
 
-def mcp_approval_middleware(
-    policies: Mapping[str, tuple[str, str, ApprovalPolicy]],
-) -> Any | None:
-    """Create one LangChain gate for all discovered MCP tools in a plan."""
-
-    if not policies:
-        return None
-    try:
-        from langchain.agents.middleware import wrap_tool_call
-    except ImportError as exc:  # pragma: no cover - optional backend
-        raise RuntimeError("LangGraph approval requires langchain middleware") from exc
-
-    @wrap_tool_call
-    async def require_approval(request: Any, handler: Any) -> Any:
-        call = request.tool_call
-        configured = policies.get(str(call.get("name", "")))
-        if configured is None:
-            return await handler(request)
-        client_name, remote_name, policy = configured
-        grant = await authorize_mcp(
-            client_name, remote_name, call.get("args", {}), policy
-        )
-        try:
-            result = await handler(request)
-        except BaseException:
-            record_approved_failure(grant)
-            raise
-        record_approved_execution(grant)
-        return result
-
-    return require_approval
-
-
 @dataclass(frozen=True, slots=True)
 class ManagedAgentPlan:
     """Inert data awaiting asynchronous MCP discovery by the runtime driver."""
@@ -226,6 +201,7 @@ class ManagedAgentPlan:
     definition: AgentDefinition
     tools: tuple[Any, ...] = ()
     middleware: tuple[Any, ...] = ()
+    checkpointer: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +210,7 @@ class ManagedGraphPlan:
 
     graph: Graph
     middleware: tuple[Any, ...] = ()
+    checkpointer: Any = None
 
     @property
     def name(self) -> str:
@@ -252,6 +229,7 @@ def materialize_agent(
         definition,
         (*plan.tools, *mcp_tools),
         plan.middleware,
+        checkpointer=plan.checkpointer,
     )
 
 
@@ -315,21 +293,28 @@ def materialize_graph(
         pass
     else:
         raise ValueError("received extra MCP tool groups for graph agents")
-    return _build_ready_graph(resolved, plan.middleware)
+    return _build_ready_graph(
+        resolved, plan.middleware, checkpointer=plan.checkpointer
+    )
 
 
 def build_agent(
     definition: AgentDefinition,
     tools: Sequence[Any] = (),
     middleware: Sequence[Any] = (),
+    checkpointer: Any = None,
 ) -> Any:
     """Build a LangGraph agent, deferring MCP discovery until runtime."""
 
     if not isinstance(definition, AgentDefinition):
         raise TypeError("build_agent definition must be an AgentDefinition")
     if definition.mcp:
-        return ManagedAgentPlan(definition, tuple(tools), tuple(middleware))
-    return _build_ready_agent(definition, tools, middleware)
+        return ManagedAgentPlan(
+            definition, tuple(tools), tuple(middleware), checkpointer
+        )
+    return _build_ready_agent(
+        definition, tools, middleware, checkpointer=checkpointer
+    )
 
 
 def _is_async_callable(value: Callable[..., Any]) -> bool:
@@ -342,6 +327,8 @@ _SESSION_STATE_KEY = "_harnest_state"
 
 
 def _normalize_result(result: Any) -> dict[str, Any]:
+    """Convert portable node events into LangGraph state updates."""
+
     if not isinstance(result, Event):
         return {"value": result, "route": None}
 
@@ -362,6 +349,8 @@ def _normalize_result(result: Any) -> dict[str, Any]:
 
 
 def _callable_node(action: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap sync and async portable nodes with identical state projection."""
+
     if _is_async_callable(action):
 
         async def invoke(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -418,6 +407,8 @@ def _merge_state(current: Any, update: Any) -> dict[str, Any]:
 
 
 def _route_selector(edges: Sequence[Edge], end: str):
+    """Resolve portable route labels to validated LangGraph destinations."""
+
     def select(state: Mapping[str, Any]) -> str | list[str]:
         route = state.get("route")
         targets = [
@@ -435,12 +426,16 @@ def _route_selector(edges: Sequence[Edge], end: str):
 def _lower_node(
     value: Any, Pregel: type[Any], middleware: Sequence[Any]
 ) -> Any:
+    """Lower one portable or explicitly native value into a graph node."""
+
     if isinstance(value, AgentDefinition):
         if value.mcp:
             raise RuntimeError("managed MCP graph was lowered before materialization")
         return _build_ready_agent(value, middleware=middleware, graph_node=True)
     if isinstance(value, Graph):
         return _build_ready_graph(value, middleware=middleware)
+    if isinstance(value, _AdvancedAgentDefinition):
+        return _advanced_graph_node(value, Pregel)
     if isinstance(value, Pregel):
         return passthrough_native(value)
     if isinstance(value, Join):
@@ -448,9 +443,28 @@ def _lower_node(
     if callable(value):
         return _callable_node(value)
     raise TypeError(
-        "LangGraph nodes must be AgentDefinition, callable, Graph, Join, or Pregel "
-        f"values; got {type(value).__name__}"
+        "LangGraph nodes must be AgentDefinition, Agent.advanced, callable, Graph, "
+        f"Join, or Pregel values; got {type(value).__name__}"
     )
+
+
+def _advanced_graph_node(value: _AdvancedAgentDefinition, Pregel: type[Any]) -> Any:
+    """Prepare one compiled native LangGraph as a Harnest graph node."""
+
+    # Root adapters operate on public invocation envelopes and would bypass the
+    # state contract established by the parent graph if applied to a child node.
+    if value.input_adapter is not None or value.output_adapter is not None:
+        raise ValueError(
+            "embedded Agent.advanced graph nodes cannot use root input/output adapters"
+        )
+    if not isinstance(value.target, Pregel):
+        raise TypeError(
+            "embedded Agent.advanced LangGraph nodes require a compiled Pregel target"
+        )
+    # Validate at composition time so malformed native graphs fail compilation,
+    # before a deployed request can enter an incomplete execution topology.
+    value.target.validate()
+    return passthrough_native(value.target)
 
 
 def _graph_contains_agent(graph: Graph) -> bool:
@@ -462,6 +476,8 @@ def _graph_contains_agent(graph: Graph) -> bool:
 
 
 def _graph_contains_mcp_agent(graph: Graph) -> bool:
+    """Detect whether runtime MCP materialization is needed at any graph depth."""
+
     return any(
         (isinstance(value, AgentDefinition) and bool(value.mcp))
         or (isinstance(value, Graph) and _graph_contains_mcp_agent(value))
@@ -470,7 +486,9 @@ def _graph_contains_mcp_agent(graph: Graph) -> bool:
 
 
 def build_graph(
-    graph: Graph | Any, middleware: Sequence[Any] = ()
+    graph: Graph | Any,
+    middleware: Sequence[Any] = (),
+    checkpointer: Any = None,
 ) -> Any:
     """Compile a neutral graph, or validate and pass through a native Pregel."""
 
@@ -484,11 +502,16 @@ def build_graph(
             "LangGraph-native extensions require at least one Agent node"
         )
     if _graph_contains_mcp_agent(graph):
-        return ManagedGraphPlan(graph, tuple(middleware))
-    return _build_ready_graph(graph, middleware)
+        return ManagedGraphPlan(graph, tuple(middleware), checkpointer)
+    return _build_ready_graph(graph, middleware, checkpointer=checkpointer)
 
 
-def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
+def _build_ready_graph(
+    graph: Graph,
+    middleware: Sequence[Any] = (),
+    *,
+    checkpointer: Any = None,
+) -> Any:
     """Lower a graph whose agent nodes no longer require MCP discovery."""
 
     END, LANGGRAPH_START, StateGraph, add_messages, Pregel = _langgraph_types()
@@ -504,7 +527,7 @@ def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
     _add_join_edges(builder, join_inputs, LANGGRAPH_START)
     _add_terminal_edges(builder, graph, END)
 
-    compiled = builder.compile(name=graph.name)
+    compiled = builder.compile(name=graph.name, checkpointer=checkpointer)
     if graph.max_concurrency is not None:
         compiled = compiled.with_config(max_concurrency=graph.max_concurrency)
     for runtime_node in runtime_nodes:
@@ -531,6 +554,8 @@ def _graph_state(add_messages: Any) -> type[Any]:
 def _classified_edges(
     graph: Graph,
 ) -> tuple[dict[str, list[Edge]], dict[str, list[str]]]:
+    """Classify portable edges before mutating the native graph builder."""
+
     outgoing: dict[str, list[Edge]] = defaultdict(list)
     join_inputs: dict[str, list[str]] = defaultdict(list)
     for edge in graph.edges:
@@ -546,6 +571,8 @@ def _classified_edges(
 def _add_outgoing_edges(
     builder: Any, outgoing: Mapping[str, list[Edge]], graph_start: str, end: str
 ) -> None:
+    """Lower each portable edge group once to avoid competing native routes."""
+
     for source, edges in outgoing.items():
         native_source = graph_start if source == START else source
         if all(edge.route is None for edge in edges):

@@ -10,6 +10,13 @@ import sys
 from typing import Any
 import uuid
 
+from .checkpoint import (
+    ADKStore,
+    CheckpointAuthority,
+    CheckpointStore,
+    HarnestStore,
+)
+from .context import ContextValue, registration_for as context_registration_for
 from .lifecycle import LifecycleListener, registration_for
 from .session import SessionStore
 
@@ -28,29 +35,99 @@ class DiscoveredExtensions:
 
     listeners: tuple[LifecycleListener, ...] = ()
     native: tuple[Any, ...] = ()
-    session_store: SessionStore | None = None
+    session_store: SessionStore | ADKStore | None = None
+    checkpointer: CheckpointAuthority | None = None
+    context_values: tuple[ContextValue, ...] = ()
 
 
 def discover_extensions(
     directory: str | Path, *, framework: str
 ) -> DiscoveredExtensions:
-    """Discover all public Python modules below root ``extensions/``."""
+    """Discover hooks and establish one session/checkpoint authority."""
 
     if framework not in _FRAMEWORKS:
         raise ExtensionDiscoveryError(f"unsupported extension framework: {framework}")
     root = Path(directory)
     _validate_root(root)
     ordered = _ordered_listeners(root)
-    session_store, remaining = _create_session_store(ordered)
+    _validate_context_names(ordered)
+    session_store, session_listener, remaining = _create_session_store(
+        ordered, framework
+    )
+    checkpointer, checkpoint_listener, remaining = _create_checkpointer(
+        remaining, framework
+    )
+    _validate_storage_ownership(session_store, checkpointer)
     portable, native_listeners = _partition_listeners(remaining, framework)
     native = tuple(_create_native(item, framework) for item in native_listeners)
     _validate_native_duplicates(native, framework)
-    return DiscoveredExtensions(portable, native, session_store)
+    context_values = _factory_context_values(
+        (session_listener, session_store),
+        (checkpoint_listener, checkpointer),
+    )
+    return DiscoveredExtensions(
+        portable,
+        native,
+        session_store,
+        checkpointer,
+        context_values,
+    )
+
+
+def _create_checkpointer(
+    listeners: tuple[LifecycleListener, ...], framework: str
+) -> tuple[
+    CheckpointAuthority,
+    LifecycleListener,
+    tuple[LifecycleListener, ...],
+]:
+    """Instantiate the single checkpoint authority required by every root."""
+
+    factories = tuple(item for item in listeners if item.phase == "checkpointer")
+    if len(factories) != 1:
+        raise ExtensionDiscoveryError(
+            "root extensions must declare exactly one @lifecycle.checkpointer "
+            f"factory; found {len(factories)}"
+        )
+    factory = factories[0]
+    value = _call_factory(factory, label="checkpointer")
+    _validate_checkpoint_authority(value, factory, framework)
+    remaining = tuple(item for item in listeners if item.phase != "checkpointer")
+    return value, factory, remaining
+
+
+def _validate_checkpoint_authority(
+    value: Any, factory: LifecycleListener, framework: str
+) -> None:
+    """Reject incomplete or wrong-framework checkpoint ownership at compilation."""
+
+    if not isinstance(value, CheckpointAuthority):
+        raise ExtensionDiscoveryError(
+            f"checkpointer lifecycle factory {factory.identity} must return a "
+            f"checkpoint authority; got {type(value).__name__}"
+        )
+    if isinstance(value, HarnestStore) and not isinstance(value, CheckpointStore):
+        raise ExtensionDiscoveryError(
+            f"checkpointer lifecycle factory {factory.identity} returned "
+            f"{type(value).__name__}, which does not implement CheckpointStore"
+        )
+    if value.framework is not None and value.framework != framework:
+        raise ExtensionDiscoveryError(
+            f"checkpointer lifecycle factory {factory.identity} targets "
+            f"{value.framework}, but this agent uses {framework}"
+        )
 
 
 def _create_session_store(
     listeners: tuple[LifecycleListener, ...],
-) -> tuple[SessionStore, tuple[LifecycleListener, ...]]:
+    framework: str,
+) -> tuple[
+    SessionStore | ADKStore,
+    LifecycleListener,
+    tuple[LifecycleListener, ...],
+]:
+    """Instantiate the single store that owns committed conversation state."""
+
     factories = tuple(item for item in listeners if item.phase == "session_store")
     if len(factories) != 1:
         raise ExtensionDiscoveryError(
@@ -59,13 +136,54 @@ def _create_session_store(
         )
     factory = factories[0]
     value = _call_factory(factory, label="session store")
-    if not isinstance(value, SessionStore):
+    # Native ADK storage implements ADK's service contracts rather than the
+    # portable protocol, so it is valid only inside that framework boundary.
+    native_adk_store = framework == "adk" and isinstance(value, ADKStore)
+    if not isinstance(value, SessionStore) and not native_adk_store:
         raise ExtensionDiscoveryError(
             f"session store lifecycle factory {factory.identity} must return "
-            f"SessionStore; got {type(value).__name__}"
+            f"SessionStore"
+            f"{' or ADKStore' if framework == 'adk' else ''}; "
+            f"got {type(value).__name__}"
         )
     remaining = tuple(item for item in listeners if item.phase != "session_store")
-    return value, remaining
+    return value, factory, remaining
+
+
+def _factory_context_values(
+    *factories: tuple[LifecycleListener, Any],
+) -> tuple[ContextValue, ...]:
+    """Expose only storage factories explicitly marked for agent context."""
+
+    return tuple(
+        ContextValue(listener.context_name, value, listener.identity)
+        for listener, value in factories
+        if listener.context_name is not None
+    )
+
+
+def _validate_context_names(listeners: tuple[LifecycleListener, ...]) -> None:
+    """Reject ambiguous resource lookup before any factory is invoked."""
+
+    names = [item.context_name for item in listeners if item.context_name is not None]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ExtensionDiscoveryError(
+            "duplicate context resource names: " + ", ".join(duplicates)
+        )
+
+
+def _validate_storage_ownership(
+    session_store: SessionStore | ADKStore,
+    checkpointer: CheckpointAuthority,
+) -> None:
+    """Prevent native ADK from silently ignoring a competing session store."""
+
+    if isinstance(checkpointer, ADKStore) and session_store is not checkpointer:
+        raise ExtensionDiscoveryError(
+            "native ADK storage requires @lifecycle.session_store and "
+            "@lifecycle.checkpointer to return the same ADKStore object"
+        )
 
 
 def _ordered_listeners(root: Path) -> tuple[LifecycleListener, ...]:
@@ -117,47 +235,102 @@ def _extension_files(root: Path) -> tuple[Path, ...]:
 
 
 def _load_listeners(path: Path, root: Path) -> tuple[LifecycleListener, ...]:
+    """Load only decorated functions and reject aliased listener identities."""
+
     module = _load_module(path)
     relative = path.relative_to(root).as_posix()
     found: list[LifecycleListener] = []
     seen: set[int] = set()
     for name, value in vars(module).items():
-        registration = registration_for(value)
-        if registration is None or getattr(value, "__module__", None) != module.__name__:
-            continue
-        if not inspect.isfunction(value):
-            raise ExtensionDiscoveryError(
-                f"decorated extension {relative}:{name} must be a function"
-            )
-        if id(value) in seen:
-            raise ExtensionDiscoveryError(
-                f"decorated extension function {relative}:{value.__name__} "
-                "cannot be exported under multiple names"
-            )
-        seen.add(id(value))
-        _validate_listener_signature(relative, name, value, registration.phase)
-        found.append(
-            LifecycleListener(
-                phase=registration.phase,
-                callback=value,
-                order=registration.order,
-                relative_path=relative,
-                line=inspect.getsourcelines(value)[1],
-                function_name=name,
-                framework=registration.framework,
-            )
-        )
+        listener = _listener_from_export(module.__name__, relative, name, value, seen)
+        if listener is not None:
+            found.append(listener)
     return tuple(found)
+
+
+def _listener_from_export(
+    module_name: str,
+    relative: str,
+    name: str,
+    value: Any,
+    seen: set[int],
+) -> LifecycleListener | None:
+    """Normalize one locally declared extension without following imports."""
+
+    registration = registration_for(value)
+    context_registration = context_registration_for(value)
+    if registration is None and context_registration is None:
+        return None
+    if getattr(value, "__module__", None) != module_name:
+        return None
+    if not inspect.isfunction(value):
+        raise ExtensionDiscoveryError(
+            f"decorated extension {relative}:{name} must be a function"
+        )
+    if id(value) in seen:
+        raise ExtensionDiscoveryError(
+            f"decorated extension function {relative}:{value.__name__} "
+            "cannot be exported under multiple names"
+        )
+    seen.add(id(value))
+    phase = registration.phase if registration is not None else "context"
+    _validate_context_provider(relative, name, value, phase, context_registration)
+    _validate_listener_signature(relative, name, value, phase)
+    order = (
+        registration.order if registration is not None else context_registration.order
+    )
+    return LifecycleListener(
+        phase=phase,
+        callback=value,
+        order=order,
+        relative_path=relative,
+        line=inspect.getsourcelines(value)[1],
+        function_name=name,
+        framework=registration.framework if registration is not None else None,
+        context_name=(
+            context_registration.name if context_registration is not None else None
+        ),
+    )
+
+
+def _validate_context_provider(
+    relative: str,
+    name: str,
+    function: Any,
+    phase: str,
+    registration: Any,
+) -> None:
+    """Keep public context binding separate from executable agent capabilities."""
+
+    if registration is None:
+        return
+    if getattr(function, "__harnest_tool__", False):
+        raise ExtensionDiscoveryError(
+            f"context provider {relative}:{name} cannot also be a tool"
+        )
+    allowed = {"context", "resource", "session_store", "checkpointer"}
+    if phase not in allowed:
+        raise ExtensionDiscoveryError(
+            f"context provider {relative}:{name} cannot also use "
+            f"@lifecycle.{phase}"
+        )
 
 
 def _validate_listener_signature(
     relative: str, name: str, function: Any, phase: str
 ) -> None:
-    if phase in {"adk_plugin", "langgraph_middleware", "session_store"}:
-        if inspect.signature(function).parameters:
-            raise ExtensionDiscoveryError(
-                f"lifecycle factory {relative}:{name} must accept no arguments"
-            )
+    """Keep factories declarative while giving event hooks one context pair."""
+
+    factory_phases = {
+        "adk_plugin",
+        "langgraph_middleware",
+        "session_store",
+        "checkpointer",
+        "resource",
+        "context",
+    }
+    if phase in factory_phases:
+        _validate_factory_signature(relative, name, function, phase)
         return
     parameters = tuple(inspect.signature(function).parameters.values())
     positional = {
@@ -167,6 +340,31 @@ def _validate_listener_signature(
     if len(parameters) != 2 or any(item.kind not in positional for item in parameters):
         raise ExtensionDiscoveryError(
             f"lifecycle listener {relative}:{name} must accept exactly two arguments"
+        )
+
+
+def _validate_factory_signature(
+    relative: str, name: str, function: Any, phase: str
+) -> None:
+    """Reject factories whose calling or ownership contract is ambiguous."""
+
+    if inspect.signature(function).parameters:
+        raise ExtensionDiscoveryError(
+            f"lifecycle factory {relative}:{name} must accept no arguments"
+        )
+    if phase == "resource" and inspect.iscoroutinefunction(function):
+        raise ExtensionDiscoveryError(
+            f"runtime resource factory {relative}:{name} must be synchronous "
+            "and return a context manager"
+        )
+    managed_context = (
+        inspect.isgeneratorfunction(function)
+        or inspect.isasyncgenfunction(function)
+    )
+    if phase == "context" and managed_context:
+        raise ExtensionDiscoveryError(
+            f"context provider {relative}:{name} must return a value; "
+            "combine it with @lifecycle.resource when cleanup is required"
         )
 
 

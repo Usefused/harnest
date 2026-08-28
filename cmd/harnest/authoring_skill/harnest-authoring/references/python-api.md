@@ -44,13 +44,15 @@ entry. A callable can return a plain value or `Event(output=..., route=...,
 message=..., state_delta=...)`; routed edges set `route=`. A callable may
 declare `context: GraphContext`, read `context.state`, and persist explicit
 session changes with `state_delta`. This works identically in managed ADK and
-LangGraph without a native plugin or checkpointer. Every node must be reachable.
+LangGraph without authoring a native plugin or checkpointer; Harnest supplies
+the lifecycle-owned framework adapter. Every node must be reachable.
 
 An inline `Agent` node defined in the root `agent.py` is composed in the root
 resource scope. For an agent with private tools or skills, define the same
-`Agent` under `subagents/<name>/agent.py`; its sibling resources remain isolated
-from the parent. A flat `subagents/<name>.py` has no private folder and should be
-promoted to that directory form when private resources are needed.
+managed `Agent` under `subagents/<name>/agent.py`; its sibling resources remain
+isolated from the parent. A flat managed `subagents/<name>.py` has no private
+folder and should be promoted when private resources are needed. An advanced
+subagent remains flat and composes those capabilities through its native target.
 
 ## Tools
 
@@ -67,6 +69,12 @@ def lookup_ticket(ticket_id: str) -> str:
 Place this in `tools/lookup_ticket.py`; the callable and file stem must match.
 A tool needs a docstring or `@tool(description="...")`. The decorator keeps the
 function directly callable for unit tests.
+
+Tool arguments and results must be structured values. Harnest preserves JSON
+values, mappings, lists, tuples, dataclasses, enums, UUIDs, paths, temporal
+values, decimals, and typed models exposing `model_dump()`. Unsupported,
+recursive, and non-finite values fail explicitly; convert custom objects to a
+supported model or mapping at the tool boundary.
 
 For work implemented by the connected browser, desktop, or mobile client,
 declare a typed stub instead:
@@ -212,7 +220,9 @@ names before `prefix=` is applied. Harnest validates the selection after
 discovery in both frameworks and fails closed when a name is absent. Identical
 connection configurations are rejected even when capability identity or
 approval policy differs, preventing duplicate sessions to one configured
-server.
+server. Managed LangGraph installs the policy as a native MCP tool interceptor,
+keyed by server and original tool name immediately before network execution;
+it does not intercept ordinary local tools.
 
 ## Human approval
 
@@ -250,10 +260,11 @@ call; it does not rerun the invocation or repeat earlier side effects. Each
 later protected call creates a separate approval. Unique request IDs,
 arguments, messages, credentials, and results never enter approval audit logs.
 Pending approvals and suspended tasks are process-local. Calls outside
-Harnest's managed execution boundary fail closed. Advanced apps have no
-automatic Harnest capability wrapper, including through neutral `/responses`
-and `/live`; keep protected capabilities managed or implement framework-native
-approval explicitly.
+Harnest's neutral execution boundary fail closed. Explicitly decorated
+capabilities in advanced roots and subagents keep this governance when reached
+through `/responses` or `/live`. Opaque native capabilities, direct native
+routes, and detached tasks remain framework-owned and need native approval
+wiring.
 
 ## Plugins versus extensions
 
@@ -332,7 +343,52 @@ lease. Harnest owns that instance and adapts it to ADK or LangGraph; host
 storage injection is mutually exclusive. Production
 stores must persist durably, list with set-based queries, coordinate leases
 across replicas, and emit privacy-safe OTEL audit signals after committed
-mutations. The example `InMemorySessionStore` declaration is development-only.
+mutations. The generated `MemoryStore` declaration is development-only.
+
+Every agent also declares exactly one synchronous `@lifecycle.checkpointer`
+factory. Keep a shared built-in store in root `lib/` and return the same object
+from both storage factories:
+
+```python
+from harnest.lib.storage import store
+from harnest.lifecycle import lifecycle
+
+@lifecycle.session_store
+def session_store():
+    return store
+
+@lifecycle.checkpointer
+def checkpointer():
+    return store
+```
+
+`MemoryStore`, `PostgresStore`, and `RedisStore` implement both contracts and
+are imported from `harnest.store`. The compiled environment includes the
+release-bounded `asyncpg` and `redis` drivers. Managed Harnest creates native
+framework adapters. Advanced LangGraph
+compiles with `store.as_langgraph_checkpointer()`, or uses the exact lifecycle-owned
+`LangGraphStore(native_saver)`. Advanced ADK native ownership uses
+one `ADKStore(session_service)` returned from both storage factories. Hidden,
+raw, duplicate, or mismatched authorities fail compilation. Read
+`docs/checkpoints.md` for schema and recovery limits.
+
+For other database, vector-store, embedding, or HTTP clients, declare a
+zero-argument provider and decorate it with `@context("name")`. On its own the
+provider runs once per invocation. Add `@lifecycle.resource` when Harnest must
+start it once for the application and close it after framework shutdown.
+Lifecycle ownership stays private unless `@context` explicitly publishes the
+returned or yielded value. Nodes, tools, lifecycle listeners, and subagents use
+`context.resource("name")` during execution. Keep provider imports free of
+connection or network work. Duplicate names and incompatible decorator roles
+fail compilation; access outside an invocation fails clearly. See
+`docs/extensions.md` for the complete pattern and BigQuery example.
+
+Harnest binds context for `/responses`, `/live`, `run_agent_message`, and their
+managed nodes, tools, listeners, and subagents. Direct native framework
+endpoints and native targets called outside the compiled Harnest application do
+not receive it. Storage and checkpointer factories may be combined with
+`@context` when deliberate direct access is required; their ownership and
+tenant guarantees still apply.
 
 ## Advanced applications
 
@@ -349,6 +405,15 @@ root_agent = Agent.advanced(
     output_adapter=from_graph_output,
 )
 ```
+
+The same wrapper embeds a native ADK agent as a managed subagent or a compiled
+ADK/LangGraph target as a portable graph node. Do not set root input/output
+adapters on an embedded wrapper; the containing agent or graph owns its input
+shape. Embedded ADK components accept `BaseAgent`/`BaseNode`, not an `App`; a
+subagent wrapper name must match the native agent name. Filesystem advanced
+subagents use `subagents/<name>.py`, while nested folders remain managed-only.
+Harnest-decorated capabilities retain approval, identity, session, and trace
+context through the neutral invocation boundary at either depth.
 
 Import ADK or LangGraph directly to construct `target`; Harnest does not wrap or
 re-export their APIs. ADK targets are validated ADK applications, agents, or

@@ -15,7 +15,7 @@ then change at least:
 5. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
 6. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
 7. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
-8. `extensions/sessions.py` → the required application-owned `SessionStore`;
+8. `extensions/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
 9. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
 10. `evals/<id>.evalset.json` → optional official ADK eval sets; and
 11. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in

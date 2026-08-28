@@ -45,6 +45,28 @@ class ExtensionContractTests(unittest.TestCase):
 
         registration = registration_for(sessions)
         self.assertEqual(registration.phase, "session_store")
+
+    def test_checkpointer_decorator_registers_an_ownership_factory(self):
+        @lifecycle.checkpointer
+        def checkpoints():
+            return object()
+
+        registration = registration_for(checkpoints)
+
+        self.assertIsNotNone(registration)
+        self.assertEqual(registration.phase, "checkpointer")
+        self.assertIsNone(registration.framework)
+
+    def test_resource_decorator_registers_a_runtime_only_factory(self):
+        @lifecycle.resource(order=5)
+        def vector_client():
+            return object()
+
+        registration = registration_for(vector_client)
+
+        self.assertIsNotNone(registration)
+        self.assertEqual(registration.phase, "resource")
+        self.assertEqual(registration.order, 5)
         self.assertIsNone(registration.framework)
 
     def test_decorator_validation_rejects_ambiguous_registration(self):

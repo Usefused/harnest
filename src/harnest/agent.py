@@ -45,7 +45,9 @@ class AgentDefinition:
     instruction: str | None = None
     description: str = ""
     tools: Sequence[Tool] = field(default_factory=tuple)
-    subagents: Sequence["AgentDefinition | Any"] = field(default_factory=tuple)
+    subagents: Sequence["AgentDefinition | _AdvancedAgentDefinition | Any"] = field(
+        default_factory=tuple
+    )
     mcp: Sequence[MCPClient] = field(default_factory=tuple)
     sandbox: Sandbox | Any | None = None
     output_key: str | None = None
@@ -61,11 +63,10 @@ class AgentDefinition:
         input_adapter: Callable[[str, Mapping[str, Any]], Any] | None = None,
         output_adapter: Callable[[Any], Any] | None = None,
     ) -> "_AdvancedAgentDefinition":
-        """Wrap a framework-native application for advanced compilation.
+        """Wrap a framework-native root, subagent, or graph node.
 
-        Managed agents continue to use ``Agent(...)``. This constructor is the
-        explicit escape hatch for applications authored directly with ADK or
-        LangGraph.
+        Export the wrapper as the root in advanced mode, or embed it in a
+        managed agent/graph when only one component needs native behavior.
         """
 
         return _AdvancedAgentDefinition(
@@ -81,6 +82,8 @@ class AgentDefinition:
         self._validate_resources()
 
     def _validate_identity(self) -> None:
+        """Keep authored identity safe across framework and artifact boundaries."""
+
         if not isinstance(self.name, str) or not _AGENT_NAME_PATTERN.fullmatch(self.name):
             raise ValueError(
                 "agent name must start with a letter or underscore and contain "
@@ -138,10 +141,9 @@ class AgentDefinition:
         return built
 
     def _build_kwargs(self) -> dict[str, Any]:
-        children = [
-            child.build() if isinstance(child, AgentDefinition) else child
-            for child in self.subagents
-        ]
+        """Translate the portable definition into ADK constructor arguments."""
+
+        children = [_build_adk_subagent(child) for child in self.subagents]
         runtime_tools = [*self.tools, *(client.to_adk_toolset() for client in self.mcp)]
         kwargs: dict[str, Any] = {
             "name": self.name,
@@ -170,6 +172,8 @@ class AgentDefinition:
         return kwargs
 
     def _content_config(self) -> Any:
+        """Translate authored mappings while preserving native ADK configuration."""
+
         config = self.generate_content_config
         if not isinstance(config, Mapping):
             return config
@@ -198,6 +202,46 @@ class _AdvancedAgentDefinition:
             not isinstance(self.name, str) or not self.name.strip()
         ):
             raise ValueError("Agent.advanced name must be a non-empty string")
+
+
+def _build_adk_subagent(value: Any) -> Any:
+    """Build or unwrap one value for ADK's native subagent collection."""
+
+    if isinstance(value, AgentDefinition):
+        return value.build()
+    if not isinstance(value, _AdvancedAgentDefinition):
+        return value
+    # Input and output adapters transform Harnest's root transport boundary;
+    # applying them inside a parent would silently change the component contract.
+    if value.input_adapter is not None or value.output_adapter is not None:
+        raise ValueError(
+            "embedded Agent.advanced subagents cannot use root input/output adapters"
+        )
+    try:
+        from google.adk.agents import BaseAgent
+        from google.adk.apps import App
+    except ImportError as exc:  # pragma: no cover - optional runtime
+        raise RuntimeError("advanced ADK subagents require google-adk") from exc
+    # An App owns plugins and application services that cannot be preserved when
+    # it is inserted into another application's delegation hierarchy.
+    if isinstance(value.target, App):
+        raise TypeError(
+            "embedded Agent.advanced ADK subagents require a BaseAgent target; "
+            "ADK App targets are root-only"
+        )
+    target = value.target
+    if not isinstance(target, BaseAgent):
+        raise TypeError(
+            "embedded Agent.advanced ADK subagents require a BaseAgent target"
+        )
+    # ADK routes delegation by the native agent name. Accepting a different
+    # wrapper identity would make discovery and runtime routing disagree.
+    if value.name is not None and value.name != target.name:
+        raise ValueError(
+            "embedded Agent.advanced subagent name must match its native ADK "
+            f"agent name {target.name!r}; got {value.name!r}"
+        )
+    return target
 
 
 # A short alias reads naturally in agent.py: Agent(...).build().

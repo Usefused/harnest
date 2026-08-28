@@ -2,7 +2,7 @@ import importlib.util
 import unittest
 from unittest.mock import patch
 
-from harnest.agent import AgentDefinition
+from harnest.agent import Agent, AgentDefinition
 from harnest.graph import START, Edge, Event, Graph, GraphContext, Join
 from harnest.mcp import MCPClient
 
@@ -267,6 +267,57 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         native = builder.compile()
 
         self.assertIs(build_graph(native), native)
+
+    async def test_agent_advanced_can_embed_native_pregel_as_a_graph_node(self):
+        from harnest.backends.langgraph import build_graph
+        from langgraph.graph import END, START as LANGGRAPH_START, StateGraph
+
+        visited = []
+
+        def native_step(state):
+            visited.append(state["value"])
+            return state
+
+        builder = StateGraph(dict)
+        builder.add_node("native_step", native_step)
+        builder.add_edge(LANGGRAPH_START, "native_step")
+        builder.add_edge("native_step", END)
+        native = builder.compile()
+        graph = Graph(
+            name="hybrid_graph",
+            nodes={"advanced_node": Agent.advanced(native)},
+            edges=(Edge(START, "advanced_node"),),
+        )
+
+        result = await build_graph(graph).ainvoke(
+            {"value": "hello", "messages": []},
+            config={"configurable": {"thread_id": "hybrid"}},
+        )
+
+        self.assertEqual(visited, ["hello"])
+        self.assertEqual(result["value"], "hello")
+
+    async def test_embedded_advanced_pregel_rejects_root_adapters(self):
+        from harnest.backends.langgraph import build_graph
+        from langgraph.graph import END, START as LANGGRAPH_START, StateGraph
+
+        builder = StateGraph(dict)
+        builder.add_node("identity", lambda state: state)
+        builder.add_edge(LANGGRAPH_START, "identity")
+        builder.add_edge("identity", END)
+        native = builder.compile()
+        graph = Graph(
+            name="adapted_graph",
+            nodes={
+                "advanced_node": Agent.advanced(
+                    native, output_adapter=lambda value: value
+                )
+            },
+            edges=(Edge(START, "advanced_node"),),
+        )
+
+        with self.assertRaisesRegex(ValueError, "root input/output adapters"):
+            build_graph(graph)
 
 
 if __name__ == "__main__":

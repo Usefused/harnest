@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>Harnest Playground</title>
-    <link rel="stylesheet" href="/_harnest/playground.css?v=5">
+    <link rel="stylesheet" href="/_harnest/playground.css?v=6">
   </head>
   <body>
     <div class="shell">
@@ -115,6 +115,7 @@
             <div class="inspector-tabs" role="tablist" aria-label="Session inspector">
               <button id="state-tab" class="inspector-tab active" type="button" role="tab" aria-selected="true" aria-controls="state-view">State</button>
               <button id="trace-tab" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="trace-view">Trace <span id="trace-count">0</span></button>
+              <button id="logs-tab" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="logs-view">Logs <span id="log-count">0</span></button>
             </div>
             <button id="refresh-state" class="icon-button" type="button" title="Refresh inspector" aria-label="Refresh inspector">↻</button>
           </div>
@@ -142,7 +143,7 @@
           <div id="trace-runs" class="trace-runs" aria-label="Recent request traces"></div>
           <div id="trace-empty" class="trace-empty">
             <strong>Send a message to trace it</strong>
-            <p>Runtime stages, structured logs, and tool activity will appear here.</p>
+            <p>Runtime stages and tool activity will appear here.</p>
           </div>
           <ol id="trace-timeline" class="trace-timeline" aria-label="Request flow" hidden></ol>
           <div class="inspector-footer">
@@ -150,8 +151,38 @@
             <code id="trace-id">Not created</code>
           </div>
         </section>
+        <section id="logs-view" class="inspector-view logs-view" role="tabpanel" aria-labelledby="logs-tab" hidden>
+          <div class="logs-overview">
+            <div>
+              <span class="eyebrow">Current session</span>
+              <h2>Runtime logs</h2>
+            </div>
+            <span id="log-summary" class="log-summary">0 logs</span>
+          </div>
+          <label class="log-search">
+            <span aria-hidden="true">⌕</span>
+            <span class="sr-only">Search runtime logs</span>
+            <input id="log-search" type="search" placeholder="Search messages or fields…" autocomplete="off">
+          </label>
+          <div id="log-levels" class="log-levels" role="group" aria-label="Filter logs by level">
+            <button class="log-level active" type="button" data-level="all" aria-pressed="true">All</button>
+            <button class="log-level" type="button" data-level="debug" aria-pressed="false">Debug</button>
+            <button class="log-level" type="button" data-level="info" aria-pressed="false">Info</button>
+            <button class="log-level" type="button" data-level="warning" aria-pressed="false">Warn</button>
+            <button class="log-level" type="button" data-level="error" aria-pressed="false">Error</button>
+          </div>
+          <div id="logs-empty" class="trace-empty">
+            <strong>No logs match</strong>
+            <p>Send a message or change the search and level filters.</p>
+          </div>
+          <ol id="logs-list" class="logs-list" aria-label="Session runtime logs" hidden></ol>
+          <div class="inspector-footer">
+            <span>Scope</span>
+            <code>Current session · all recent runs</code>
+          </div>
+        </section>
       </aside>
     </div>
-    <script src="/_harnest/playground.js?v=5" defer></script>
+    <script src="/_harnest/playground.js?v=6" defer></script>
   </body>
 </html>

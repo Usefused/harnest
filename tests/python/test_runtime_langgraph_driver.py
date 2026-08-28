@@ -1,9 +1,11 @@
 import sys
 import unittest
+from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from harnest.agent import Agent, AgentDefinition
+from harnest.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.graph import START, Edge, Graph
@@ -115,8 +117,9 @@ class _Target:
 class _MCPAdapterClient:
     instances = []
 
-    def __init__(self, connections, *, tool_name_prefix):
+    def __init__(self, connections, *, tool_interceptors, tool_name_prefix):
         self.connections = connections
+        self.tool_interceptors = tool_interceptors
         self.tool_name_prefix = tool_name_prefix
         self.requests = []
         self.closed = 0
@@ -133,12 +136,14 @@ class _MCPAdapterClient:
         self.closed += 1
 
 
-def _request(session_id="session-1", *, state_delta=None):
+def _request(
+    session_id="session-1", *, state_delta=None, invocation_id="invocation-1"
+):
     return InvocationRequest(
         input="hello",
         user_id="user-1",
         session_id=session_id,
-        invocation_id="invocation-1",
+        invocation_id=invocation_id,
         metadata={"source": "test"},
         state_delta=state_delta or {},
     )
@@ -254,10 +259,10 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state["counter"], 2)
         self.assertIn("messages", session.state)
 
-        await self.driver.invoke(_request())
+        await self.driver.invoke(_request(invocation_id="invocation-2"))
         thread_ids = [item["configurable"]["thread_id"] for item in self.target.configs]
         self.assertEqual(len(set(thread_ids)), 2)
-        self.assertTrue(all(item.startswith("session-1:") for item in thread_ids))
+        self.assertEqual(thread_ids, ["invocation-1", "invocation-2"])
         self.assertNotIn("session-1", thread_ids)
         self.assertEqual(len(self.target.inputs[1]["messages"]), 4)
 
@@ -336,17 +341,23 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         await driver.close()
 
     async def test_driver_materializes_and_closes_one_mcp_client(self):
+        configured = replace(
+            MCPClient.sse(
+                "https://mcp.example/sse",
+                prefix="legacy",
+                tools=("echo",),
+            ),
+            capability_id="mcp__legacy",
+            approval=ApprovalPolicy(
+                message="Approve echo?",
+                tools=("echo",),
+            ),
+        )
         definition = AgentDefinition(
             name="mcp_agent",
             model="openai:test",
             instruction="Use MCP tools.",
-            mcp=(
-                MCPClient.sse(
-                    "https://mcp.example/sse",
-                    prefix="legacy",
-                    tools=("echo",),
-                ),
-            ),
+            mcp=(configured,),
         )
         plan = ManagedAgentPlan(definition, tools=("local-tool",))
         target = _Target()
@@ -376,12 +387,13 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.text, "answer-2")
         self.assertEqual(len(_MCPAdapterClient.instances), 1)
         client = _MCPAdapterClient.instances[0]
-        self.assertEqual(client.requests, ["legacy"])
-        self.assertEqual(client.connections["legacy"]["transport"], "sse")
+        self.assertEqual(client.requests, ["mcp__legacy"])
+        self.assertEqual(client.connections["mcp__legacy"]["transport"], "sse")
         self.assertTrue(client.tool_name_prefix)
+        self.assertEqual(len(client.tool_interceptors), 1)
         passed_plan, passed_tools = materialize.call_args.args
         self.assertIs(passed_plan, plan)
-        self.assertEqual([tool.name for tool in passed_tools], ["legacy_echo"])
+        self.assertEqual([tool.name for tool in passed_tools], ["mcp__legacy_echo"])
 
         await driver.close()
 
@@ -431,6 +443,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(_MCPAdapterClient.instances), 1)
         client = _MCPAdapterClient.instances[-1]
         self.assertEqual(client.requests, ["graph"])
+        self.assertEqual(client.tool_interceptors, [])
         passed_plan, tool_groups = materialize.call_args.args
         self.assertIs(passed_plan, plan)
         self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo"])

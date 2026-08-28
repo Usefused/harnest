@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from typing import Any
 
+from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.models import BaseLlm, LlmResponse
 from google.adk.runners import InMemoryRunner
@@ -155,6 +156,47 @@ class GraphAdkTests(unittest.TestCase):
             if edge.from_node.name == "left" and edge.to_node.name == "gather"
         )
         self.assertEqual(routed.route, ["a", "b"])
+
+    def test_agent_advanced_embeds_native_node_and_rejects_root_boundaries(self):
+        native = LlmAgent(name="native_agent", model="gemini-test")
+        graph = Graph(
+            name="hybrid",
+            nodes={"native": Agent.advanced(native)},
+            edges=[Edge(START, "native")],
+        )
+
+        workflow = graph.build()
+
+        self.assertEqual(
+            [node.name for node in workflow.graph.nodes if node.name != "__START__"],
+            ["native"],
+        )
+        with self.assertRaisesRegex(ValueError, "root input/output adapters"):
+            Graph(
+                name="adapted",
+                nodes={
+                    "native": Agent.advanced(
+                        LlmAgent(name="adapted_agent", model="gemini-test"),
+                        output_adapter=lambda value: value,
+                    )
+                },
+                edges=[Edge(START, "native")],
+            ).build()
+        with self.assertRaisesRegex(TypeError, "ADK App targets are root-only"):
+            Graph(
+                name="application_node",
+                nodes={
+                    "native": Agent.advanced(
+                        App(
+                            name="native_app",
+                            root_agent=LlmAgent(
+                                name="app_agent", model="gemini-test"
+                            ),
+                        )
+                    )
+                },
+                edges=[Edge(START, "native")],
+            ).build()
 
     def test_executes_deterministic_function_sequence(self):
         def first(node_input):

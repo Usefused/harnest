@@ -159,16 +159,25 @@ type CompiledArtifact struct {
 }
 
 type CompiledManifest struct {
-	APIVersion       string            `json:"apiVersion"`
-	Kind             string            `json:"kind"`
-	Name             string            `json:"name"`
-	Entrypoint       string            `json:"entrypoint"`
-	SourceEntrypoint string            `json:"sourceEntrypoint"`
-	SourceDirectory  string            `json:"sourceDirectory"`
-	HarnestVersion   string            `json:"harnestVersion"`
-	Framework        CompiledFramework `json:"framework"`
-	Digest           string            `json:"digest"`
-	Files            []CompiledFile    `json:"files"`
+	APIVersion       string             `json:"apiVersion"`
+	Kind             string             `json:"kind"`
+	Name             string             `json:"name"`
+	Entrypoint       string             `json:"entrypoint"`
+	SourceEntrypoint string             `json:"sourceEntrypoint"`
+	SourceDirectory  string             `json:"sourceDirectory"`
+	HarnestVersion   string             `json:"harnestVersion"`
+	Framework        CompiledFramework  `json:"framework"`
+	Checkpoint       CompiledCheckpoint `json:"checkpoint"`
+	Digest           string             `json:"digest"`
+	Files            []CompiledFile     `json:"files"`
+}
+
+// CompiledCheckpoint records the immutable authority selected while Python
+// source is compiled, allowing the Go engine to validate it without loading it.
+type CompiledCheckpoint struct {
+	Owner     string `json:"owner"`
+	Framework string `json:"framework"`
+	Schema    string `json:"schema"`
 }
 
 type CompiledFramework struct {

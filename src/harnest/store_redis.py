@@ -1,0 +1,794 @@
+"""Redis-backed Harnest session and checkpoint storage."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
+import hashlib
+import importlib
+import json
+import secrets
+import time
+from typing import Any, Literal
+
+from . import store_redis_scripts as scripts
+from ._json import json_value
+from .checkpoint import (
+    CheckpointConflictError,
+    CheckpointRecord,
+    CheckpointWrite,
+    HarnestStore,
+    PendingAction,
+    RunRecord,
+    RunStatus,
+    _require_fields,
+    _validate_same_run,
+    _validate_transition,
+)
+from .logging import get_logger
+from .neutral_runtime import SessionConflictError, SessionRecord
+from .session import SessionLease
+
+
+_SCHEMA_VERSION = "1"
+_AUDIT = get_logger("store.audit")
+
+
+class RedisStore(HarnestStore):
+    """Combined Redis store with atomic CAS and renewable execution leases.
+
+    Production durability depends on Redis persistence, replication, and
+    failover configuration; Postgres remains the reference durable backend.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        prefix: str = "harnest",
+        session_ttl_seconds: int | None = None,
+        checkpoint_ttl_seconds: int = 604_800,
+        lease_seconds: int = 60,
+        lease_wait_seconds: float = 30,
+        client_options: Mapping[str, Any] | None = None,
+        _client: Any = None,
+    ) -> None:
+        """Configure bounded leases, data retention, and injected-client ownership."""
+
+        _require_text(url, "url")
+        _require_text(prefix, "prefix")
+        _require_positive(checkpoint_ttl_seconds, "checkpoint_ttl_seconds")
+        _require_positive(lease_seconds, "lease_seconds")
+        _require_optional_positive(session_ttl_seconds, "session_ttl_seconds")
+        if lease_wait_seconds < 0:
+            raise ValueError("lease_wait_seconds cannot be negative")
+        self._url = url
+        self._prefix = prefix.rstrip(":")
+        # Redis Cluster requires every key touched by one Lua script to share a
+        # slot. A per-store hash tag preserves atomicity across run/index keys.
+        self._slot = "{" + _digest(self._prefix)[:16] + "}"
+        self._session_ttl = session_ttl_seconds or 0
+        self._checkpoint_ttl = checkpoint_ttl_seconds
+        self._lease_ms = lease_seconds * 1000
+        self._lease_wait = lease_wait_seconds
+        self._client_options = dict(client_options or {})
+        self._client = _client
+        self._owns_client = _client is None
+
+    async def start(self) -> None:
+        """Open the client and establish the compatible schema marker."""
+
+        if self._client is None:
+            self._client = _create_client(self._url, self._client_options)
+        schema_key = self._key("schema")
+        await self._client.set(schema_key, _SCHEMA_VERSION, nx=True)
+        version = _text(await self._client.get(schema_key))
+        if version != _SCHEMA_VERSION:
+            raise RuntimeError(
+                f"unsupported Harnest Redis schema {version!r}; expected {_SCHEMA_VERSION}"
+            )
+
+    async def create(
+        self, *, session_id: str, user_id: str, state: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Create one tenant-scoped session with an atomic Lua mutation."""
+
+        _require_text(session_id, "session_id")
+        _require_text(user_id, "user_id")
+        record = SessionRecord(
+            id=session_id,
+            user_id=user_id,
+            state=json_value(state),
+            created_at=_timestamp(),
+            updated_at=_timestamp(),
+        )
+        keys = (self._session_key(user_id, session_id), self._user_key(user_id))
+        try:
+            created = await self._eval(
+                scripts.CREATE_SESSION,
+                keys,
+                (_session_dump(record), session_id, self._session_ttl),
+            )
+        except Exception:
+            _audit("session.create", "user", "failed", "redis")
+            raise
+        if not created:
+            _audit("session.create", "user", "failed", "redis")
+            raise SessionConflictError("session already exists")
+        _audit("session.create", "user", "committed", "redis")
+        return record
+
+    async def get(
+        self, *, session_id: str, user_id: str
+    ) -> SessionRecord | None:
+        raw = await self._require_client().get(
+            self._session_key(user_id, session_id)
+        )
+        return None if raw is None else _session_load(raw)
+
+    async def list(self, *, user_id: str) -> Sequence[SessionRecord]:
+        """Load one user's indexed sessions with a single set-based MGET."""
+
+        _require_text(user_id, "user_id")
+        session_ids = await self._require_client().zrange(
+            self._user_key(user_id), 0, -1
+        )
+        if not session_ids:
+            return ()
+        keys = [self._session_key(user_id, _text(item)) for item in session_ids]
+        # MGET keeps this set-based even when a user owns many sessions.
+        values = await self._require_client().mget(keys)
+        return tuple(_session_load(raw) for raw in values if raw is not None)
+
+    async def update(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        state_delta: Mapping[str, Any],
+    ) -> SessionRecord | None:
+        """Atomically merge state while preserving session expiry policy."""
+
+        try:
+            async with self._mutation_lock(user_id, session_id):
+                raw = await self._eval(
+            scripts.UPDATE_SESSION,
+                    (
+                        self._session_key(user_id, session_id),
+                        self._user_key(user_id),
+                    ),
+                    (_json_dump(state_delta), _timestamp(), self._session_ttl),
+                )
+        except Exception:
+            _audit("session.update", "agent", "failed", "redis")
+            raise
+        if raw is None:
+            return None
+        _audit("session.update", "agent", "committed", "redis")
+        return _session_load(raw)
+
+    async def delete(self, *, session_id: str, user_id: str) -> bool:
+        """Delete a session and its user index entry atomically."""
+
+        try:
+            async with self._mutation_lock(user_id, session_id):
+                deleted = await self._eval(
+                    scripts.DELETE_SESSION,
+                    (
+                        self._session_key(user_id, session_id),
+                        self._user_key(user_id),
+                    ),
+                    (session_id,),
+                )
+        except Exception:
+            _audit("session.delete", "user", "failed", "redis")
+            raise
+        if not deleted:
+            return False
+        _audit("session.delete", "user", "committed", "redis")
+        return True
+
+    @asynccontextmanager
+    async def acquire(
+        self, *, session_id: str, user_id: str
+    ) -> AsyncIterator[SessionLease]:
+        """Hold and renew a token-bound distributed lease for one execution."""
+
+        lock_key = self._lease_key(user_id, session_id)
+        token = secrets.token_hex(16)
+        await self._acquire_lock(lock_key, token)
+        stop = asyncio.Event()
+        renewer = asyncio.create_task(self._renew_lock(lock_key, token, stop))
+        try:
+            record = await self.get(session_id=session_id, user_id=user_id)
+            if record is None:
+                raise KeyError("session not found")
+            yield _RedisLease(self, record, lock_key, token)
+        finally:
+            stop.set()
+            renewer.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewer
+            await self._eval(scripts.COMPARE_DELETE, (lock_key,), (token,))
+
+    async def begin_run(
+        self,
+        *,
+        application_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        framework: Literal["adk", "langgraph"],
+    ) -> RunRecord:
+        """Create an idempotent run while allowing one active run per session."""
+
+        _require_fields(application_id, user_id, session_id, run_id)
+        record = RunRecord(
+            application_id, user_id, session_id, run_id, framework
+        )
+        active_key = self._active_key(application_id, user_id, session_id)
+        try:
+            raw = await self._eval(
+                scripts.BEGIN_RUN,
+                (self._run_key(run_id), active_key),
+                (_run_dump(record), run_id, self._checkpoint_ttl),
+            )
+        except Exception:
+            _audit("checkpoint.run_started", "agent", "failed", "redis")
+            raise
+        if raw is None:
+            _audit("checkpoint.run_started", "agent", "failed", "redis")
+            raise CheckpointConflictError("session already has an active run")
+        stored = _run_load(raw)
+        try:
+            _validate_same_run(
+                stored, application_id, user_id, session_id, framework
+            )
+        except CheckpointConflictError:
+            _audit("checkpoint.run_started", "agent", "failed", "redis")
+            raise
+        _audit("checkpoint.run_started", "agent", "committed", "redis")
+        return stored
+
+    async def get_run(self, *, run_id: str) -> RunRecord | None:
+        raw = await self._require_client().get(self._run_key(run_id))
+        return None if raw is None else _run_load(raw)
+
+    async def get_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint_id: str | None = None,
+        namespace: str = "",
+    ) -> CheckpointRecord | None:
+        """Resolve an exact or newest checkpoint through its Redis index."""
+
+        if await self.get_run(run_id=run_id) is None:
+            return None
+        client = self._require_client()
+        if checkpoint_id is None:
+            members = await client.zrevrange(
+                self._checkpoint_index(run_id, namespace), 0, 0
+            )
+            if not members:
+                return None
+            raw = await client.get(members[0])
+        else:
+            raw = await client.get(
+                self._checkpoint_key(run_id, namespace, checkpoint_id)
+            )
+        return None if raw is None else _checkpoint_load(raw)
+
+    async def list_checkpoints(
+        self,
+        *,
+        run_id: str,
+        namespace: str | None = None,
+        before: str | None = None,
+        limit: int = 20,
+    ) -> AsyncIterator[CheckpointRecord]:
+        """Read bounded checkpoint history from sorted-set indexes."""
+
+        _require_limit(limit)
+        if await self.get_run(run_id=run_id) is None:
+            return
+        index = self._checkpoint_index(run_id, namespace)
+        cursor = self._checkpoint_cursor(run_id, namespace)
+        maximum: Any = "+inf"
+        if before is not None:
+            score = await self._require_client().hget(cursor, before)
+            if score is None:
+                return
+            maximum = f"({_text(score)}"
+        members = await self._require_client().zrevrangebyscore(
+            index, maximum, "-inf", start=0, num=limit
+        )
+        if not members:
+            return
+        values = await self._require_client().mget(members)
+        for raw in values:
+            if raw is not None:
+                yield _checkpoint_load(raw)
+
+    async def put(
+        self, checkpoint: CheckpointRecord, *, expected_revision: int | None
+    ) -> CheckpointRecord:
+        """Persist checkpoint data and revision indexes with one Lua CAS."""
+
+        checkpoint_key = self._checkpoint_key(
+            checkpoint.run_id, checkpoint.namespace, checkpoint.checkpoint_id
+        )
+        keys = (
+            self._run_key(checkpoint.run_id),
+            checkpoint_key,
+            self._checkpoint_index(checkpoint.run_id, None),
+            self._checkpoint_index(checkpoint.run_id, checkpoint.namespace),
+            self._checkpoint_cursor(checkpoint.run_id, None),
+            self._checkpoint_cursor(checkpoint.run_id, checkpoint.namespace),
+            self._key("checkpoint-sequence", _digest(checkpoint.run_id)),
+        )
+        expected = -1 if expected_revision is None else expected_revision
+        try:
+            result = await self._eval(
+                scripts.PUT_CHECKPOINT,
+                keys,
+                (
+                    expected,
+                    _checkpoint_dump(checkpoint),
+                    checkpoint.checkpoint_id,
+                    self._checkpoint_ttl,
+                ),
+            )
+        except Exception:
+            _audit("checkpoint.saved", "agent", "failed", "redis")
+            raise
+        try:
+            stored = _checkpoint_result(result)
+        except (KeyError, CheckpointConflictError):
+            _audit("checkpoint.saved", "agent", "failed", "redis")
+            raise
+        _audit("checkpoint.saved", "agent", "committed", "redis")
+        return stored
+
+    async def put_writes(
+        self,
+        *,
+        run_id: str,
+        checkpoint_id: str,
+        writes: Sequence[CheckpointWrite],
+    ) -> None:
+        """Add pending writes idempotently with one Lua operation."""
+
+        if not writes:
+            return
+        arguments: list[Any] = []
+        for value in writes:
+            arguments.extend((_write_field(value), _write_dump(value)))
+        arguments.append(self._checkpoint_ttl)
+        try:
+            result = await self._eval(
+                scripts.PUT_WRITES,
+                (self._run_key(run_id), self._writes_key(run_id, checkpoint_id)),
+                arguments,
+            )
+        except Exception:
+            _audit("checkpoint.writes_saved", "agent", "failed", "redis")
+            raise
+        _raise_checkpoint_result(_text(result))
+        _audit("checkpoint.writes_saved", "agent", "committed", "redis")
+
+    async def get_writes(
+        self, *, run_id: str, checkpoint_id: str
+    ) -> Sequence[CheckpointWrite]:
+        if await self.get_run(run_id=run_id) is None:
+            return ()
+        values = await self._require_client().hvals(
+            self._writes_key(run_id, checkpoint_id)
+        )
+        return tuple(_write_load(value) for value in values)
+
+    async def get_writes_batch(
+        self, *, run_id: str, checkpoint_ids: Sequence[str]
+    ) -> Mapping[str, Sequence[CheckpointWrite]]:
+        """Fetch several pending-write hashes in one Redis round trip."""
+
+        if not checkpoint_ids or await self.get_run(run_id=run_id) is None:
+            return {}
+        keys = [self._writes_key(run_id, value) for value in checkpoint_ids]
+        result = await self._eval(
+            scripts.GET_WRITES_BATCH, keys, checkpoint_ids
+        )
+        grouped: dict[str, Sequence[CheckpointWrite]] = {}
+        for index in range(0, len(result), 2):
+            checkpoint_id = _text(result[index])
+            values = _json_load(result[index + 1])
+            grouped[checkpoint_id] = tuple(_write_load(value) for value in values)
+        return grouped
+
+    async def transition(
+        self,
+        *,
+        run_id: str,
+        expected_status: RunStatus,
+        status: RunStatus,
+        pending_action: PendingAction | None = None,
+    ) -> RunRecord:
+        """Apply one status compare-and-swap and release terminal ownership."""
+
+        _validate_transition(expected_status, status, pending_action)
+        current = await self.get_run(run_id=run_id)
+        if current is None:
+            _audit("checkpoint.transition", "agent", "failed", "redis")
+            raise KeyError("checkpoint run not found")
+        active_key = self._active_key(
+            current.application_id, current.user_id, current.session_id
+        )
+        try:
+            result = await self._eval(
+                scripts.TRANSITION_RUN,
+                (self._run_key(run_id), active_key),
+                (
+                    expected_status,
+                    status,
+                    _json_dump(None if pending_action is None else asdict(pending_action)),
+                    _timestamp(),
+                    run_id,
+                    self._checkpoint_ttl,
+                ),
+            )
+        except Exception:
+            _audit("checkpoint.transition", "agent", "failed", "redis")
+            raise
+        try:
+            record = _run_result(result)
+        except (KeyError, CheckpointConflictError):
+            _audit("checkpoint.transition", "agent", "failed", "redis")
+            raise
+        _audit("checkpoint.transition", "agent", "committed", "redis")
+        return record
+
+    async def delete_run(self, *, run_id: str) -> None:
+        """Make run data unreachable immediately and let private blobs expire."""
+
+        current = await self.get_run(run_id=run_id)
+        if current is None:
+            return
+        active = self._active_key(
+            current.application_id, current.user_id, current.session_id
+        )
+        keys = (
+            self._run_key(run_id),
+            active,
+            self._checkpoint_index(run_id, None),
+            self._checkpoint_cursor(run_id, None),
+            self._key("checkpoint-sequence", _digest(run_id)),
+        )
+        try:
+            await self._eval(scripts.DELETE_RUN, keys, (run_id,))
+        except Exception:
+            _audit("checkpoint.run_deleted", "user", "failed", "redis")
+            raise
+        # Checkpoint and write blobs expire independently. Removing the run and
+        # indexes makes them unreachable immediately without a blocking key scan.
+        _audit("checkpoint.run_deleted", "user", "committed", "redis")
+
+    async def close(self) -> None:
+        """Close only clients created and owned by this store."""
+
+        client, self._client = self._client, None
+        if client is not None and self._owns_client:
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if callable(close):
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+
+    async def _acquire_lock(self, key: str, token: str) -> None:
+        """Wait only for the configured bound when acquiring a session lease."""
+
+        deadline = time.monotonic() + self._lease_wait
+        while True:
+            acquired = await self._require_client().set(
+                key, token, nx=True, px=self._lease_ms
+            )
+            if acquired:
+                return
+            if time.monotonic() >= deadline:
+                raise SessionConflictError("session execution lease is busy")
+            await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+    async def _renew_lock(
+        self, key: str, token: str, stop: asyncio.Event
+    ) -> None:
+        """Renew a lease only while its original ownership token still matches."""
+
+        interval = max(0.1, self._lease_ms / 3000)
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                renewed = await self._eval(
+                    scripts.COMPARE_EXPIRE, (key,), (token, self._lease_ms)
+                )
+                if not renewed:
+                    return
+
+    @asynccontextmanager
+    async def _mutation_lock(
+        self, user_id: str, session_id: str
+    ) -> AsyncIterator[None]:
+        """Serialize short session mutations without starting a renewer task."""
+
+        key = self._lease_key(user_id, session_id)
+        token = secrets.token_hex(16)
+        await self._acquire_lock(key, token)
+        try:
+            yield
+        finally:
+            await self._eval(scripts.COMPARE_DELETE, (key,), (token,))
+
+    async def _eval(
+        self, script: str, keys: Sequence[str], arguments: Sequence[Any]
+    ) -> Any:
+        return await self._require_client().eval(
+            script, len(keys), *keys, *arguments
+        )
+
+    def _require_client(self) -> Any:
+        if self._client is None:
+            raise RuntimeError("RedisStore.start() must be called first")
+        return self._client
+
+    def _key(self, *parts: str) -> str:
+        return ":".join((self._prefix, self._slot, *parts))
+
+    def _session_key(self, user_id: str, session_id: str) -> str:
+        return self._key("session", _digest(user_id), _digest(session_id))
+
+    def _user_key(self, user_id: str) -> str:
+        return self._key("sessions", _digest(user_id))
+
+    def _lease_key(self, user_id: str, session_id: str) -> str:
+        return self._key("lease", _digest(user_id), _digest(session_id))
+
+    def _run_key(self, run_id: str) -> str:
+        return self._key("run", _digest(run_id))
+
+    def _active_key(self, application: str, user: str, session: str) -> str:
+        return self._key("active", _digest(application, user, session))
+
+    def _checkpoint_key(
+        self, run_id: str, namespace: str, checkpoint_id: str
+    ) -> str:
+        return self._key(
+            "checkpoint", _digest(run_id), _digest(namespace, checkpoint_id)
+        )
+
+    def _checkpoint_index(self, run_id: str, namespace: str | None) -> str:
+        scope = "all" if namespace is None else _digest(namespace)
+        return self._key("checkpoints", _digest(run_id), scope)
+
+    def _checkpoint_cursor(self, run_id: str, namespace: str | None) -> str:
+        scope = "all" if namespace is None else _digest(namespace)
+        return self._key("checkpoint-cursors", _digest(run_id), scope)
+
+    def _writes_key(self, run_id: str, checkpoint_id: str) -> str:
+        return self._key("writes", _digest(run_id), _digest(checkpoint_id))
+
+
+class _RedisLease:
+    def __init__(
+        self,
+        store: RedisStore,
+        record: SessionRecord,
+        lock_key: str,
+        token: str,
+    ) -> None:
+        self._store = store
+        self._record = record
+        self._lock_key = lock_key
+        self._token = token
+
+    @property
+    def record(self) -> SessionRecord:
+        return self._record
+
+    async def patch_state(self, delta: Mapping[str, Any]) -> None:
+        await self.replace_state({**dict(self._record.state), **json_value(delta)})
+
+    async def replace_state(self, state: Mapping[str, Any]) -> None:
+        """Replace leased state only if the execution still owns the token."""
+
+        updated = replace(
+            self._record, state=json_value(state), updated_at=_timestamp()
+        )
+        try:
+            raw = await self._store._eval(
+                scripts.LEASE_REPLACE,
+                (
+                    self._store._session_key(
+                        self._record.user_id, self._record.id
+                    ),
+                    self._lock_key,
+                    self._store._user_key(self._record.user_id),
+                ),
+                (self._token, _session_dump(updated), self._store._session_ttl),
+            )
+        except Exception:
+            _audit("session.lease_update", "agent", "failed", "redis")
+            raise
+        if raw is None:
+            _audit("session.lease_update", "agent", "failed", "redis")
+            raise SessionConflictError("session execution lease was lost")
+        self._record = _session_load(raw)
+        _audit("session.lease_update", "agent", "committed", "redis")
+
+
+def _create_client(url: str, options: Mapping[str, Any]) -> Any:
+    """Import redis-py only when this backend is selected and create its client."""
+
+    try:
+        module = importlib.import_module("redis.asyncio")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "RedisStore requires the 'redis' package; install harnest[redis]"
+        ) from exc
+    return module.Redis.from_url(url, **dict(options))
+
+
+def _session_dump(value: SessionRecord) -> str:
+    return _json_dump(
+        {
+            "id": value.id,
+            "user_id": value.user_id,
+            "state": value.state,
+            "created_at": value.created_at,
+            "updated_at": value.updated_at,
+        }
+    )
+
+
+def _session_load(value: Any) -> SessionRecord:
+    data = _json_load(value)
+    return SessionRecord(**data)
+
+
+def _run_dump(value: RunRecord) -> str:
+    return _json_dump(asdict(value))
+
+
+def _run_load(value: Any) -> RunRecord:
+    """Restore the typed pending action at the Redis serialization boundary."""
+
+    data = _json_load(value)
+    pending = data.pop("pending_action", None)
+    return RunRecord(
+        **data,
+        pending_action=None if pending is None else PendingAction(**pending),
+    )
+
+
+def _checkpoint_dump(value: CheckpointRecord) -> str:
+    """Encode opaque binary payloads without interpreting framework state."""
+
+    data = asdict(value)
+    for name in ("payload", "metadata", "versions"):
+        data[name] = base64.b64encode(data[name]).decode("ascii")
+    return _json_dump(data)
+
+
+def _checkpoint_load(value: Any) -> CheckpointRecord:
+    """Reject corrupt binary encoding before returning framework state."""
+
+    data = _json_load(value)
+    for name in ("payload", "metadata", "versions"):
+        data[name] = base64.b64decode(data[name], validate=True)
+    return CheckpointRecord(**data)
+
+
+def _write_dump(value: CheckpointWrite) -> str:
+    data = asdict(value)
+    data["payload"] = base64.b64encode(data["payload"]).decode("ascii")
+    return _json_dump(data)
+
+
+def _write_load(value: Any) -> CheckpointWrite:
+    data = _json_load(value)
+    data["payload"] = base64.b64decode(data["payload"], validate=True)
+    return CheckpointWrite(**data)
+
+
+def _write_field(value: CheckpointWrite) -> str:
+    return _digest(value.task_id, value.channel)
+
+
+def _checkpoint_result(result: Any) -> CheckpointRecord:
+    code = _text(result[0])
+    _raise_checkpoint_result(code)
+    return _checkpoint_load(result[1])
+
+
+def _run_result(result: Any) -> RunRecord:
+    code = _text(result[0])
+    _raise_checkpoint_result(code)
+    return _run_load(result[1])
+
+
+def _raise_checkpoint_result(code: str) -> None:
+    """Translate atomic Lua outcomes into the portable checkpoint contract."""
+
+    if code == "missing":
+        raise KeyError("checkpoint run not found")
+    if code == "terminal":
+        raise CheckpointConflictError("checkpoint run is already terminal")
+    if code == "conflict":
+        raise CheckpointConflictError("checkpoint revision or status changed")
+    if code != "ok":
+        raise RuntimeError(f"unexpected Redis checkpoint result {code!r}")
+
+
+def _json_dump(value: Any) -> str:
+    return json.dumps(json_value(value), separators=(",", ":"), sort_keys=True)
+
+
+def _json_load(value: Any) -> Any:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _text(value: Any) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
+def _digest(*values: str) -> str:
+    """Keep raw tenant and execution identifiers out of Redis key names."""
+
+    encoded = "\0".join(values).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _require_text(value: Any, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+
+
+def _require_positive(value: int, name: str) -> None:
+    if value < 1:
+        raise ValueError(f"{name} must be positive")
+
+
+def _require_optional_positive(value: int | None, name: str) -> None:
+    if value is not None:
+        _require_positive(value, name)
+
+
+def _require_limit(limit: int) -> None:
+    if limit < 1:
+        raise ValueError("checkpoint list limit must be positive")
+
+
+def _audit(operation: str, trigger: str, outcome: str, backend: str) -> None:
+    """Emit a payload-free signal for each attempted durable mutation."""
+
+    # Redis keys and stored values may encode tenant or customer information.
+    _AUDIT.info(
+        operation,
+        operation=operation,
+        trigger=trigger,
+        outcome=outcome,
+        backend=backend,
+    )
+
+
+__all__ = ["RedisStore"]

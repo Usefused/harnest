@@ -6,7 +6,7 @@ import inspect
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
-from harnest.agent import AgentDefinition
+from harnest.agent import AgentDefinition, _AdvancedAgentDefinition
 from harnest.graph import START, Event, Graph, GraphContext, Join, call_graph_node
 from harnest.model_lifecycle import propagate_litellm_lifecycles
 
@@ -98,6 +98,8 @@ def lower_graph(graph: Graph) -> Any:
 
 
 def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
+    """Recursively lower one portable graph into an ADK workflow."""
+
     from google.adk.workflow import Edge as AdkEdge
     from google.adk.workflow import JoinNode
     from google.adk.workflow import START as ADK_START
@@ -112,6 +114,7 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
     try:
         native_nodes: dict[str, BaseNode] = {}
         for name, value in graph.nodes.items():
+            value = _embedded_graph_node(value)
             if isinstance(value, Join):
                 native = JoinNode(name=name)
             elif isinstance(value, Graph):
@@ -131,8 +134,8 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
                 native = adk_node(value, name=name)
             else:
                 raise TypeError(
-                    f"graph node {name!r} expected AgentDefinition, callable, "
-                    "Graph, Join, or native ADK BaseNode/BaseAgent; got "
+                    f"graph node {name!r} expected AgentDefinition, Agent.advanced, "
+                    "callable, Graph, Join, or native ADK BaseNode/BaseAgent; got "
                     f"{type(value).__name__}"
                 )
             native_nodes[name] = native
@@ -158,6 +161,41 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
         )
     finally:
         active.remove(identity)
+
+
+def _embedded_graph_node(value: Any) -> Any:
+    """Normalize an explicitly advanced wrapper for graph-node lowering."""
+
+    if isinstance(value, _AdvancedAgentDefinition):
+        return _advanced_graph_node(value)
+    return value
+
+
+def _advanced_graph_node(value: _AdvancedAgentDefinition) -> Any:
+    """Validate and unwrap one native ADK node embedded in a Harnest graph."""
+
+    # Root adapters translate neutral request and response envelopes; a graph
+    # node instead exchanges state according to its surrounding graph edges.
+    if value.input_adapter is not None or value.output_adapter is not None:
+        raise ValueError(
+            "embedded Agent.advanced graph nodes cannot use root input/output adapters"
+        )
+    from google.adk.apps import App
+    from google.adk.workflow import BaseNode
+
+    # App-level plugins and services cannot be preserved inside another graph's
+    # application boundary, so silently extracting root_agent would be unsafe.
+    if isinstance(value.target, App):
+        raise TypeError(
+            "embedded Agent.advanced ADK graph nodes require a BaseNode target; "
+            "ADK App targets are root-only"
+        )
+    target = value.target
+    if not isinstance(target, BaseNode):
+        raise TypeError(
+            "embedded Agent.advanced ADK graph nodes require a BaseNode target"
+        )
+    return target
 
 
 __all__ = ["lower_graph"]

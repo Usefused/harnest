@@ -51,10 +51,12 @@ harnest mode advanced AGENT_DIR --check
 
 This command is read-only. It reports the current framework, mode, entrypoint,
 managed folders that need explicit wiring, and the responsibility boundary. In
-advanced mode Harnest keeps the neutral server, authentication, and portable
-invocation extensions. The agent owns native routing, state, checkpoints,
-middleware/plugins, approval wiring, framework upgrades, and arbitrary native
-model calls. Portable model hooks are guaranteed only at Harnest-managed/wrapped
+advanced mode Harnest keeps the neutral server, authentication, sessions,
+approvals, tracing, and portable invocation extensions. The agent owns native
+routing, state, checkpoints, middleware/plugins, capability declaration,
+framework upgrades, and arbitrary native model calls. Explicitly decorated
+native capabilities inherit the neutral invocation context; opaque or direct
+native execution needs framework wiring. Portable model hooks are guaranteed only at Harnest-managed/wrapped
 model boundaries. The check never updates files; migrate semantically and
 preserve unrelated changes.
 
@@ -94,8 +96,9 @@ Use `Agent(..., history="session")` for native multi-turn behavior; it is the
 default for root agents, subagents, and graph agent nodes. The model receives
 earlier user/assistant turns only from the same Harnest session. Use
 `history="turn"` when deterministic isolation matters more than conversation
-continuity. Do not carry a duplicate transcript in graph state or enable a
-framework checkpointer: Harnest session storage remains authoritative.
+continuity. Do not carry a duplicate transcript in graph state. The required
+checkpoint lifecycle persists in-progress execution; Harnest session storage
+remains the committed conversation authority.
 
 ## Models and Ollama
 

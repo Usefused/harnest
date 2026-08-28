@@ -68,6 +68,8 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"harnest.lock":           "projectSchema: 2",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
+		"lib/storage.py":         "store = MemoryStore()",
+		"extensions/storage.py":  "@lifecycle.checkpointer",
 		"tools/_README.md":       "Add one @tool callable",
 		"plugins/_README.md":     "capability bundles",
 		"extensions/_README.md":  "@lifecycle-decorated functions",
@@ -82,7 +84,6 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"requestTimeoutSeconds: 300", "maxConcurrentRequests: 8",
 		"maxRequestBytes: 1MiB", "enabled: true",
 	})
-	assertIgnoredLibraryGuide(t, target)
 	assertOnlyPlaceholderResources(t, target)
 }
 
@@ -97,7 +98,7 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 		"tools/echo.py":                                    "from harnest.tool import tool",
 		"skills/getting-started/SKILL.md":                  "name: getting-started",
 		"extensions/starter.py":                            "@lifecycle.after_invoke",
-		"extensions/sessions.py":                           "return InMemorySessionStore()",
+		"extensions/storage.py":                            "return store",
 		"plugins/starter/mcp/starter.py":                   "from harnest.mcp import MCPClient",
 		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"evals/starter.evalset.json":                       "answers_greeting",
@@ -109,17 +110,6 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 		"root_agent = Graph(",
 		`history="session"`,
 	})
-}
-
-func assertIgnoredLibraryGuide(t *testing.T, root string) {
-	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(root, "lib"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "_README.md" {
-		t.Fatalf("generated lib must contain only ignored guidance: %v", entries)
-	}
 }
 
 func TestInitRefusesNonEmptyDirectory(t *testing.T) {
@@ -283,11 +273,21 @@ func assertOnlyPlaceholderResources(t *testing.T, root string) {
 			t.Fatalf("read advanced optional folder %s: %v", directory, err)
 		}
 		for _, entry := range entries {
+			if isRequiredStoreResource(directory, entry.Name()) {
+				continue
+			}
 			if !strings.HasPrefix(entry.Name(), ".") && !strings.HasPrefix(entry.Name(), "_") {
 				t.Fatalf("advanced optional folder %s contains discoverable resource %s", directory, entry.Name())
 			}
 		}
 	}
+}
+
+func isRequiredStoreResource(directory, name string) bool {
+	if directory == "lib" {
+		return name == "storage.py"
+	}
+	return directory == "extensions" && name == "storage.py"
 }
 
 func TestPythonResolutionPrecedence(t *testing.T) {

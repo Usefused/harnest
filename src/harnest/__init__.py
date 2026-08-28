@@ -21,6 +21,9 @@ from .bundle import (
 from .mcp import MCPClient
 from .approval import require_human_approval
 from .client_tool import client_tool
+from .checkpoint import ADKStore, HarnestStore, LangGraphStore
+from .context import AgentContext, context
+from .store import MemoryStore, PostgresStore, RedisStore
 from .graph import START, Edge, Event, Graph, GraphContext, Join
 from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
 from .model_lifecycle import LiteLLMContext
@@ -34,7 +37,9 @@ from .tracing import Tracer, current_trace_ids, get_tracer, span, traced
 __all__ = [
     "Agent",
     "AgentDefinition",
+    "AgentContext",
     "AgentSource",
+    "ADKStore",
     "CompiledApplication",
     "BundleConventionError",
     "BundleDuplicateError",
@@ -48,12 +53,17 @@ __all__ = [
     "Event",
     "Graph",
     "GraphContext",
+    "HarnestStore",
     "Join",
     "MCPClient",
     "require_human_approval",
     "LiteLLMContext",
     "LiteLLMLifecycle",
     "LiteLLMModel",
+    "LangGraphStore",
+    "MemoryStore",
+    "PostgresStore",
+    "RedisStore",
     "DROP_EVENT",
     "LifecycleContext",
     "lifecycle",
@@ -74,6 +84,7 @@ __all__ = [
     "define_orchestrator",
     "instruction_file",
     "current_trace_ids",
+    "context",
     "get_logger",
     "get_tracer",
     "span",

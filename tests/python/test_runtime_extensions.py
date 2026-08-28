@@ -1,9 +1,16 @@
 import asyncio
 import unittest
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from typing import AsyncIterator, Mapping, Sequence
 
 from harnest.lifecycle import LifecycleListener
+from harnest.context import (
+    ContextResourceError,
+    ContextUnavailableError,
+    ContextValue,
+    context,
+)
 from harnest.neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -15,6 +22,7 @@ from harnest.runtime_extensions import (
     DROP_EVENT,
     ExtensionRuntimeDriver,
     ExtensionTransformError,
+    RuntimeResourceError,
     StreamingResultTransformationError,
     LifecycleAuthenticator,
 )
@@ -108,8 +116,16 @@ def request() -> InvocationRequest:
     )
 
 
-def listener(phase, callback, *, name="hook", order=0):
-    return LifecycleListener(phase, callback, order, f"{name}.py", 1, name)
+def listener(phase, callback, *, name="hook", order=0, context_name=None):
+    return LifecycleListener(
+        phase,
+        callback,
+        order,
+        f"{name}.py",
+        1,
+        name,
+        context_name=context_name,
+    )
 
 
 class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
@@ -261,6 +277,304 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         await wrapped.close()
         self.assertTrue(driver.closed)
+
+    async def test_runtime_resources_enter_once_and_unwind_after_driver_close(self):
+        driver = FakeDriver()
+        events = []
+
+        @contextmanager
+        def sync_resource():
+            events.append("sync-start")
+            try:
+                yield
+            finally:
+                events.append(f"sync-stop:{driver.closed}")
+
+        @asynccontextmanager
+        async def async_resource():
+            events.append("async-start")
+            try:
+                yield
+            finally:
+                events.append(f"async-stop:{driver.closed}")
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [
+                listener("resource", sync_resource, name="sync", order=1),
+                listener("resource", async_resource, name="async", order=2),
+            ],
+        )
+
+        await wrapped.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        await wrapped.invoke(request())
+        await wrapped.close()
+        await wrapped.close()
+
+        self.assertEqual(
+            events,
+            [
+                "sync-start",
+                "async-start",
+                "async-stop:True",
+                "sync-stop:True",
+            ],
+        )
+
+    async def test_plain_generator_resources_are_managed_without_boilerplate(self):
+        events = []
+
+        def sync_resource():
+            events.append("sync-start")
+            try:
+                yield "sync"
+            finally:
+                events.append("sync-stop")
+
+        async def async_resource():
+            events.append("async-start")
+            try:
+                yield "async"
+            finally:
+                events.append("async-stop")
+
+        wrapped = ExtensionRuntimeDriver(
+            FakeDriver(),
+            [
+                listener("resource", sync_resource, name="sync"),
+                listener("resource", async_resource, name="async"),
+            ],
+        )
+
+        await wrapped.invoke(request())
+        await wrapped.close()
+
+        self.assertEqual(
+            events, ["sync-start", "async-start", "async-stop", "sync-stop"]
+        )
+
+    async def test_context_resource_is_visible_to_hooks_driver_and_child_tasks(self):
+        memory = object()
+        seen = []
+
+        async def managed_memory():
+            seen.append("start")
+            try:
+                yield memory
+            finally:
+                seen.append("stop")
+
+        class ContextDriver(FakeDriver):
+            async def invoke(self, invocation):
+                async def child():
+                    return context.resource("memory")
+
+                seen.append(context.resource("memory"))
+                seen.append(await asyncio.create_task(child()))
+                return await super().invoke(invocation)
+
+        def before(_context, value):
+            seen.append(context.resource("memory"))
+            return value
+
+        wrapped = ExtensionRuntimeDriver(
+            ContextDriver(),
+            [
+                listener(
+                    "resource",
+                    managed_memory,
+                    name="memory",
+                    context_name="memory",
+                ),
+                listener("before_invoke", before, name="before"),
+            ],
+        )
+
+        await wrapped.invoke(request())
+        with self.assertRaises(ContextUnavailableError):
+            context.resource("memory")
+        await wrapped.close()
+
+        self.assertEqual(seen, ["start", memory, memory, memory, "stop"])
+
+    async def test_context_only_provider_is_resolved_once_per_invocation(self):
+        created = []
+
+        async def request_cache():
+            value = object()
+            created.append(value)
+            return value
+
+        class ContextDriver(FakeDriver):
+            async def invoke(self, invocation):
+                self.asserted = context.resource("request_cache")
+                return await super().invoke(invocation)
+
+        driver = ContextDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [
+                listener(
+                    "context",
+                    request_cache,
+                    name="request_cache",
+                    context_name="request_cache",
+                )
+            ],
+        )
+
+        await wrapped.invoke(request())
+        first = driver.asserted
+        await wrapped.invoke(replace(request(), invocation_id="invoke-2"))
+
+        self.assertEqual(len(created), 2)
+        self.assertIs(first, created[0])
+        self.assertIs(driver.asserted, created[1])
+        await wrapped.close()
+
+    async def test_context_values_expose_prebuilt_storage_explicitly(self):
+        sessions = object()
+
+        class ContextDriver(FakeDriver):
+            async def invoke(self, invocation):
+                self.sessions = context.resource("sessions")
+                return await super().invoke(invocation)
+
+        driver = ContextDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [],
+            context_values=(ContextValue("sessions", sessions, "storage.py:1"),),
+        )
+
+        await wrapped.invoke(request())
+
+        self.assertIs(driver.sessions, sessions)
+        await wrapped.close()
+
+    async def test_stream_context_does_not_leak_to_frame_consumer(self):
+        memory = object()
+
+        class ContextDriver(FakeDriver):
+            async def stream(self, invocation):
+                self.memory = context.resource("memory")
+                async for event in super().stream(invocation):
+                    yield event
+
+        driver = ContextDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [],
+            context_values=(ContextValue("memory", memory, "memory.py:1"),),
+        )
+
+        count = 0
+        async for _ in wrapped.stream(request()):
+            count += 1
+            with self.assertRaises(ContextUnavailableError):
+                context.resource("memory")
+
+        self.assertEqual(count, 3)
+        self.assertIs(driver.memory, memory)
+        await wrapped.close()
+
+    async def test_child_task_cannot_retain_context_after_invocation(self):
+        release = asyncio.Event()
+
+        class ContextDriver(FakeDriver):
+            async def invoke(self, invocation):
+                async def background():
+                    await release.wait()
+                    return context.resource("memory")
+
+                self.background = asyncio.create_task(background())
+                return await super().invoke(invocation)
+
+        driver = ContextDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [],
+            context_values=(ContextValue("memory", object(), "memory.py:1"),),
+        )
+
+        await wrapped.invoke(request())
+        release.set()
+
+        with self.assertRaises(ContextUnavailableError):
+            await driver.background
+        await wrapped.close()
+
+    def test_runtime_rejects_duplicate_or_unnamed_context_providers(self):
+        provider = listener(
+            "context",
+            lambda: object(),
+            name="cache",
+            context_name="cache",
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate names"):
+            ExtensionRuntimeDriver(
+                FakeDriver(),
+                [provider],
+                context_values=(ContextValue("cache", object(), "storage.py:1"),),
+            )
+        with self.assertRaisesRegex(ValueError, "require a context name"):
+            ExtensionRuntimeDriver(
+                FakeDriver(),
+                [listener("context", lambda: object(), name="unnamed")],
+            )
+
+    async def test_private_lifecycle_resource_is_not_published(self):
+        @contextmanager
+        def private_resource():
+            yield object()
+
+        class ContextDriver(FakeDriver):
+            async def invoke(self, invocation):
+                with self.test.assertRaises(ContextResourceError):
+                    context.resource("private")
+                return await super().invoke(invocation)
+
+        driver = ContextDriver()
+        driver.test = self
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [listener("resource", private_resource, name="private")],
+        )
+
+        await wrapped.invoke(request())
+        await wrapped.close()
+
+    async def test_invalid_runtime_resource_fails_before_driver_execution(self):
+        driver = FakeDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [listener("resource", lambda: object(), name="invalid")],
+        )
+
+        with self.assertRaisesRegex(RuntimeResourceError, "context manager"):
+            await wrapped.invoke(request())
+
+        self.assertEqual(driver.requests, [])
+        await wrapped.close()
+
+    async def test_close_without_use_does_not_create_runtime_resources(self):
+        created = []
+        wrapped = ExtensionRuntimeDriver(
+            FakeDriver(),
+            [
+                listener(
+                    "resource",
+                    lambda: created.append(True),
+                    name="never_started",
+                )
+            ],
+        )
+
+        await wrapped.close()
+
+        self.assertEqual(created, [])
 
 
 class LifecycleAuthenticatorTests(unittest.IsolatedAsyncioTestCase):

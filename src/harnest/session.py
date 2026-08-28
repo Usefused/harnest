@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncContextManager, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
 
+from ._json import json_value
 from .neutral_runtime import SessionConflictError, SessionRecord
 
 
@@ -201,7 +202,7 @@ class InMemorySessionStore:
 def _record(
     session_id: str, stored: _StoredSession, *, serialize: bool = True
 ) -> SessionRecord:
-    state = _json_value(stored.state) if serialize else dict(stored.state)
+    state = json_value(stored.state) if serialize else dict(stored.state)
     return SessionRecord(
         id=session_id,
         user_id=stored.user_id,
@@ -214,19 +215,6 @@ def _record(
 def _require_text(value: Any, name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
-
-
-def _json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _json_value(model_dump(mode="json"))
-    return str(value)
 
 
 def _timestamp() -> str:

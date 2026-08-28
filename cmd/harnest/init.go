@@ -253,6 +253,8 @@ func prepareScaffoldDirectory(directory string) (bool, error) {
 	return false, nil
 }
 
+// scaffoldFilesForMode keeps framework-specific ownership visible in authored
+// source while sharing the neutral folder and storage contracts.
 func scaffoldFilesForMode(
 	name, framework, mode string,
 	example bool,
@@ -410,14 +412,25 @@ def client():
 def observe_result(_context, _result):
     """Observe completed invocations without replacing their result."""
 `,
-		"extensions/sessions.py": `from harnest.lifecycle import lifecycle
-from harnest.session import InMemorySessionStore
+		"lib/storage.py": `from harnest.store import MemoryStore
+
+
+store = MemoryStore()
+`,
+		"extensions/storage.py": `from harnest.lib.storage import store
+from harnest.lifecycle import lifecycle
 
 
 @lifecycle.session_store
 def session_store():
-    """Create the application-owned session store once at startup."""
-    return InMemorySessionStore()
+    """Return the store for completed conversation and business state."""
+    return store
+
+
+@lifecycle.checkpointer
+def checkpointer():
+    """Return the same store for private in-progress execution state."""
+    return store
 `,
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
@@ -535,6 +548,8 @@ description: Apply the agent's core instructions when answering a general reques
 			files["agent.py"] = fmt.Sprintf(`import os
 
 from google.adk.agents import LlmAgent
+from google.adk.apps import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.models.lite_llm import LiteLlm
 from harnest.agent import Agent
 
@@ -543,22 +558,27 @@ from harnest.agent import Agent
 # owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
 root_agent = Agent.advanced(
     name=%q,
-    target=LlmAgent(
+    target=App(
         name=%q,
-        model=LiteLlm(
-            model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-            api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        root_agent=LlmAgent(
+            name=%q,
+            model=LiteLlm(
+                model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
+                api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
+            ),
+            instruction="You are a clear and helpful assistant.",
         ),
-        instruction="You are a clear and helpful assistant.",
     )
 )
-`, adkIdentifier, adkIdentifier)
+`, adkIdentifier, adkIdentifier, adkIdentifier)
 		} else {
 			files["agent.py"] = fmt.Sprintf(`import os
 
 from langchain.agents import create_agent
 from langchain_litellm import ChatLiteLLM
 from harnest.agent import Agent
+from harnest.lib.storage import store
 
 
 # Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
@@ -573,6 +593,7 @@ root_agent = Agent.advanced(
         tools=[],
         system_prompt="You are a clear and helpful assistant.",
         name=%q,
+        checkpointer=store.as_langgraph_checkpointer(),
     )
 )
 `, adkIdentifier, adkIdentifier)
@@ -588,12 +609,13 @@ func minimalScaffoldFiles(
 	files map[string]string,
 	agentName, framework, mode string,
 ) map[string]string {
+	// Minimal projects keep only resources required to compile safely; optional
+	// examples become ignored guides so discovery never grants capabilities.
 	for _, relative := range []string{
 		"tools/echo.py",
 		"subagents/__init__.py",
 		"mcp/_README.md",
 		"extensions/starter.py",
-		"extensions/sessions.py",
 		"plugins/starter/mcp/starter.py",
 		"plugins/starter/skills/starter-guidance/SKILL.md",
 		"sandbox/_README.md",

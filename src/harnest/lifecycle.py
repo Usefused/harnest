@@ -23,7 +23,13 @@ _PHASES = frozenset(
     }
 )
 _FACTORY_PHASES = frozenset(
-    {"adk_plugin", "langgraph_middleware", "session_store"}
+    {
+        "adk_plugin",
+        "langgraph_middleware",
+        "session_store",
+        "checkpointer",
+        "resource",
+    }
 )
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
@@ -58,6 +64,7 @@ class LifecycleListener:
     line: int
     function_name: str
     framework: str | None = None
+    context_name: str | None = None
 
     @property
     def identity(self) -> str:
@@ -139,7 +146,11 @@ class _PhaseDecorator:
 
 
 class _LifecycleDecorators:
+    # Discovery requires both factories so compiled roots always declare who
+    # owns committed conversation state and resumable in-progress state.
     session_store = _PhaseDecorator("session_store")
+    checkpointer = _PhaseDecorator("checkpointer")
+    resource = _PhaseDecorator("resource")
     authenticate = _PhaseDecorator("authenticate")
     before_invoke = _PhaseDecorator("before_invoke")
     after_invoke = _PhaseDecorator("after_invoke")
@@ -177,6 +188,8 @@ def _registration_decorator(
     def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
         if not callable(function):
             raise TypeError("lifecycle decorators require a callable")
+        if getattr(function, "__harnest_tool__", False):
+            raise TypeError("tools cannot also be lifecycle extensions")
         if hasattr(function, _REGISTRATION_ATTRIBUTE):
             raise TypeError("a function may have only one lifecycle decorator")
         setattr(

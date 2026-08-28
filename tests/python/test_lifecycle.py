@@ -35,11 +35,25 @@ class ExtensionCompilerTests(unittest.TestCase):
 
     @staticmethod
     def _session_store(path: Path) -> None:
+        library = path.parent / "lib"
+        library.mkdir(exist_ok=True)
         (path / "sessions.py").write_text(
             "from harnest.lifecycle import lifecycle\n"
             "from harnest.session import InMemorySessionStore\n"
             "@lifecycle.session_store\n"
             "def session_store(): return InMemorySessionStore()\n",
+            encoding="utf-8",
+        )
+        (path / "checkpoints.py").write_text(
+            "from harnest.lib.checkpoints import checkpoints\n"
+            "from harnest.lifecycle import lifecycle\n"
+            "@lifecycle.checkpointer\n"
+            "def checkpointer(): return checkpoints\n",
+            encoding="utf-8",
+        )
+        (library / "checkpoints.py").write_text(
+            "from harnest.checkpoint import MemoryStore\n"
+            "checkpoints = MemoryStore()\n",
             encoding="utf-8",
         )
 
@@ -196,12 +210,16 @@ class ExtensionCompilerTests(unittest.TestCase):
                 "def notify(context, error): pass\n",
                 encoding="utf-8",
             )
-            backend = SimpleNamespace(
-                validate_advanced=Mock(
-                    return_value=SimpleNamespace(
-                        name="root", target=object(), native_app=None
-                    )
+            def advanced_result(*_args, **_kwargs):
+                from harnest.lib.checkpoints import checkpoints
+
+                target = SimpleNamespace(
+                    checkpointer=checkpoints.as_langgraph_checkpointer()
                 )
+                return SimpleNamespace(name="root", target=target, native_app=None)
+
+            backend = SimpleNamespace(
+                validate_advanced=Mock(side_effect=advanced_result)
             )
             with patch("harnest.bundle.get_backend", return_value=backend):
                 application = compile_application(

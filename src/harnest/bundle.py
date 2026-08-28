@@ -18,6 +18,13 @@ from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .application import CompiledApplication
+from .checkpoint import (
+    ADKStore,
+    CheckpointAuthority,
+    HarnestStore,
+    LangGraphStore,
+    checkpoint_metadata,
+)
 from .compatibility import (
     FrameworkCompatibilityError,
     validate_framework_compatibility,
@@ -105,7 +112,7 @@ class _DiscoveredResources:
     """Resources discovered once for a single folder-owned agent scope."""
 
     tools: tuple[Callable[..., Any], ...]
-    subagents: tuple[AgentDefinition, ...]
+    subagents: tuple[AgentDefinition | _AdvancedAgentDefinition, ...]
     mcp: tuple[MCPClient, ...]
     sandbox: Sandbox | None
     skill_directories: tuple[Path, ...]
@@ -207,6 +214,8 @@ def _compile_advanced_application(
     backend: Any,
     compatibility: Any,
 ) -> CompiledApplication:
+    """Validate native ownership while retaining Harnest's runtime boundaries."""
+
     if not isinstance(value, _AdvancedAgentDefinition):
         raise BundleExportError(
             f"advanced agent module {anchor} must export the result of "
@@ -232,6 +241,10 @@ def _compile_advanced_application(
     advanced = _attach_advanced_native_extensions(
         advanced, discovered_extensions.native, framework=framework
     )
+    advanced = _ensure_adk_resumability(advanced, framework=framework)
+    _validate_advanced_checkpointer(
+        advanced, discovered_extensions.checkpointer, framework=framework
+    )
     return CompiledApplication(
         name=advanced.name,
         framework=framework,
@@ -242,6 +255,9 @@ def _compile_advanced_application(
         bridge=value,
         extensions=discovered_extensions.listeners,
         session_store=discovered_extensions.session_store,
+        checkpointer=discovered_extensions.checkpointer,
+        checkpoint_metadata=checkpoint_metadata(discovered_extensions.checkpointer),
+        context_values=discovered_extensions.context_values,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -258,6 +274,8 @@ def _compile_managed_application(
     backend: Any,
     compatibility: Any,
 ) -> CompiledApplication:
+    """Compose portable resources before lowering once to the selected framework."""
+
     if not isinstance(value, (AgentDefinition, Graph)):
         raise BundleExportError(
             f"managed agent module {anchor} must export Agent or Graph "
@@ -278,15 +296,28 @@ def _compile_managed_application(
     native_extensions = discovered_extensions.native + (
         (model_extension,) if model_extension is not None else ()
     )
+    provider = discovered_extensions.checkpointer
+    # Managed compilation owns framework adaptation. Native wrappers would
+    # create a second authority outside that portable ownership boundary.
+    if not isinstance(provider, HarnestStore):
+        raise BundleConventionError(
+            "managed agents require a Harnest checkpoint store; native "
+            "LangGraphStore and ADKStore are advanced-mode ownership wrappers"
+        )
+    native_checkpointer = _managed_checkpointer(provider, framework)
     if isinstance(value, AgentDefinition):
         definition = _compose_definition(anchor, value, framework=framework)
         target = backend.lower_managed(
-            definition, native_extensions=native_extensions
+            definition,
+            native_extensions=native_extensions,
+            checkpointer=native_checkpointer,
         )
     else:
         graph = _resolve_graph_resources(anchor, value, framework=framework)
         target = backend.lower_managed(
-            graph, native_extensions=native_extensions
+            graph,
+            native_extensions=native_extensions,
+            checkpointer=native_checkpointer,
         )
 
     # Extensions wrap the completed target because capability composition must
@@ -308,10 +339,89 @@ def _compile_managed_application(
         kind="agent" if isinstance(value, AgentDefinition) else "graph",
         extensions=portable_extensions,
         session_store=discovered_extensions.session_store,
+        checkpointer=provider,
+        checkpoint_metadata=checkpoint_metadata(provider),
+        context_values=discovered_extensions.context_values,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
     )
+
+
+def _managed_checkpointer(provider: HarnestStore, framework: str) -> Any:
+    """Adapt Harnest storage only when the framework owns checkpoint calls."""
+
+    # ADK resumability persists through its runtime services, while LangGraph
+    # requires its checkpoint protocol to be installed during graph compilation.
+    if framework == "adk":
+        return None
+    from .checkpoint_langgraph import HarnestCheckpointSaver
+
+    return HarnestCheckpointSaver(provider)
+
+
+def _validate_advanced_checkpointer(
+    advanced: Any,
+    provider: CheckpointAuthority,
+    *,
+    framework: str,
+) -> None:
+    """Enforce one visible checkpoint authority for each advanced framework."""
+
+    if framework == "langgraph":
+        _validate_advanced_langgraph_checkpointer(advanced.target, provider)
+        return
+    if not isinstance(provider, (HarnestStore, ADKStore)):
+        raise BundleConventionError(
+            "advanced ADK agents require HarnestStore or ADKStore checkpoint ownership"
+        )
+    if advanced.native_app is None:
+        return
+    config = getattr(advanced.native_app, "resumability_config", None)
+    if not bool(getattr(config, "is_resumable", False)):
+        raise BundleConventionError(
+            "advanced ADK App must enable ResumabilityConfig(is_resumable=True)"
+        )
+
+
+def _ensure_adk_resumability(advanced: Any, *, framework: str) -> Any:
+    """Enable the ADK capability required by the checkpoint contract."""
+
+    if framework != "adk" or advanced.native_app is None:
+        return advanced
+    config = getattr(advanced.native_app, "resumability_config", None)
+    if bool(getattr(config, "is_resumable", False)):
+        return advanced
+    from google.adk.apps.app import ResumabilityConfig
+
+    native_app = advanced.native_app.model_copy(
+        update={"resumability_config": ResumabilityConfig(is_resumable=True)}
+    )
+    return replace(advanced, native_app=native_app)
+
+
+def _validate_advanced_langgraph_checkpointer(
+    target: Any, provider: CheckpointAuthority
+) -> None:
+    """Match lifecycle ownership to the checkpointer compiled into the graph."""
+
+    native = getattr(target, "checkpointer", None)
+    if isinstance(provider, LangGraphStore):
+        if native is not provider:
+            raise BundleConventionError(
+                "advanced LangGraph target must compile with the same LangGraphStore "
+                "returned by @lifecycle.checkpointer"
+            )
+        return
+    if not isinstance(provider, HarnestStore):
+        raise BundleConventionError(
+            "advanced LangGraph agents require HarnestStore or LangGraphStore"
+        )
+    if getattr(native, "store", None) is not provider:
+        raise BundleConventionError(
+            "advanced LangGraph target must compile with "
+            "store.as_langgraph_checkpointer() when Harnest owns checkpointing"
+        )
 
 
 def _load_extensions(bundle_root: Path, framework: str) -> Any:
@@ -324,6 +434,8 @@ def _load_extensions(bundle_root: Path, framework: str) -> Any:
 def _attach_advanced_native_extensions(
     advanced: Any, native_extensions: Sequence[Any], *, framework: str
 ) -> Any:
+    """Attach ADK plugins only where native construction remains mutable."""
+
     if not native_extensions:
         return advanced
     if framework == "langgraph":
@@ -410,6 +522,7 @@ def compile_artifact(
                 "distribution": built.framework_distribution,
                 "version": built.framework_version,
             },
+            "checkpoint": dict(built.checkpoint_metadata or {}),
             "digest": _artifact_digest(file_records),
             "files": file_records,
         }
@@ -425,6 +538,8 @@ def compile_artifact(
 
 
 def _copy_agent_source(source: Path, destination: Path) -> None:
+    """Copy authored source while excluding environments and generated state."""
+
     destination.mkdir()
     paths = sorted(
         source.rglob("*"),
@@ -499,6 +614,8 @@ def _write_artifact_loader(
 
 
 def _artifact_file_records(directory: Path) -> list[dict[str, Any]]:
+    """Record deterministic file identity for artifact verification."""
+
     records = []
     paths = sorted(
         directory.rglob("*"),
@@ -523,6 +640,8 @@ def _artifact_file_records(directory: Path) -> list[dict[str, Any]]:
 
 
 def _artifact_digest(records: Sequence[dict[str, Any]]) -> str:
+    """Bind every recorded file into one reproducible artifact digest."""
+
     digest = hashlib.sha256()
     for record in records:
         digest.update(record["path"].encode("utf-8"))
@@ -535,6 +654,8 @@ def _artifact_digest(records: Sequence[dict[str, Any]]) -> str:
 
 
 def _replace_artifact(staging: Path, output: Path) -> None:
+    """Publish a complete staged artifact without leaving partial output."""
+
     if not output.exists():
         os.replace(staging, output)
         return
@@ -729,6 +850,8 @@ def _validate_graph_resource_consumption(
     has_root_agent: bool,
     framework: str,
 ) -> None:
+    """Fail when graph structure would leave discovered capabilities unused."""
+
     ignored = [
         f"{kind} {name!r}"
         for name, kind in resource_kinds.items()
@@ -807,6 +930,8 @@ def _compose_definition(
     graph_resource_context: bool = False,
     capability_scope: str = "",
 ) -> AgentDefinition:
+    """Attach only resources owned by this agent's filesystem scope."""
+
     bundle_root = anchor.parent
     _validate_folder_scope(bundle_root, is_root)
     instruction = _resolve_instruction(bundle_root, root.instruction)
@@ -905,6 +1030,8 @@ def _discover_folder_resources(
 
 
 def _validate_framework_evals(directory: Path, framework: str) -> None:
+    """Reject ADK-only eval assets instead of silently ignoring them in LangGraph."""
+
     if framework == "adk":
         _discover_evals(directory)
         return
@@ -916,10 +1043,12 @@ def _validate_framework_evals(directory: Path, framework: str) -> None:
 
 
 def _agent_subagents_for_framework(
-    discovered: tuple[AgentDefinition, ...],
+    discovered: tuple[AgentDefinition | _AdvancedAgentDefinition, ...],
     framework: str,
     graph_resource_context: bool,
-) -> tuple[AgentDefinition, ...]:
+) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
+    """Return filesystem subagents consumable by the selected framework shape."""
+
     if framework != "langgraph":
         return discovered
     if discovered and not graph_resource_context:
@@ -987,6 +1116,8 @@ def _read_required_text(path: Path, *, kind: str) -> str:
 
 
 def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
+    """Load strict filename-matched tools in deterministic filesystem order."""
+
     tools = []
     for path in _resource_files(directory, kind="tools"):
         name = path.stem
@@ -1015,7 +1146,9 @@ def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
 
 def _discover_subagents(
     directory: Path, *, framework: str = "adk", capability_scope: str = ""
-) -> tuple[AgentDefinition, ...]:
+) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
+    """Discover managed and explicitly advanced filesystem subagents."""
+
     if directory.is_symlink():
         raise BundleConventionError(
             f"subagents directory cannot be a symlink: {directory}"
@@ -1054,6 +1187,8 @@ def _subagent_entry(path: Path) -> tuple[str, Path, bool] | None:
 
 
 def _nested_subagent_entry(path: Path) -> tuple[str, Path, bool]:
+    """Resolve flat versus folder-owned subagents without guessing ownership."""
+
     _validate_resource_name(path.name, path)
     nested_anchor = path / "agent.py"
     if nested_anchor.is_symlink():
@@ -1072,7 +1207,9 @@ def _load_subagent_entries(
     *,
     framework: str,
     capability_scope: str,
-) -> tuple[AgentDefinition, ...]:
+) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
+    """Load, validate, and compose ordered filesystem subagent exports."""
+
     agents = []
     seen_exports: dict[str, Path] = {}
     for export_name, path, nested in sorted(entries, key=lambda item: item[0]):
@@ -1083,40 +1220,76 @@ def _load_subagent_entries(
             )
         seen_exports[export_name] = path
         module, value = _load_export(path, export_name)
-        if not isinstance(value, AgentDefinition):
+        if not isinstance(value, (AgentDefinition, _AdvancedAgentDefinition)):
             raise BundleExportError(
-                f"subagent module {path} must export AgentDefinition {export_name!r}; "
+                f"subagent module {path} must export Agent or Agent.advanced "
+                f"as {export_name!r}; "
                 f"got {type(value).__name__}"
             )
-        if value.name != export_name:
+        if _subagent_name(value) != export_name:
             raise BundleExportError(
                 f"subagent exported by {path} must have name {export_name!r}; "
-                f"got {value.name!r}"
+                f"got {_subagent_name(value)!r}"
             )
         _reject_extra_exports(
             module,
             path,
             export_name,
             kind="subagent",
-            predicate=lambda item: isinstance(item, AgentDefinition),
+            predicate=lambda item: isinstance(
+                item, (AgentDefinition, _AdvancedAgentDefinition)
+            ),
         )
-        if not nested and value.instruction is None:
+        if (
+            isinstance(value, AgentDefinition)
+            and not nested
+            and value.instruction is None
+        ):
             raise BundleExportError(
                 f"flat subagent {path} must provide instruction explicitly; "
                 "use a nested subagent folder to load instructions.md"
             )
         agents.append(
-            _compose_definition(
+            _compose_subagent_entry(
                 path,
                 value,
-                is_root=False,
+                nested=nested,
                 framework=framework,
                 capability_scope=_agent_scope(capability_scope, export_name),
+                export_name=export_name,
             )
-            if nested
-            else value
         )
     return tuple(agents)
+
+
+def _compose_subagent_entry(
+    path: Path,
+    value: AgentDefinition | _AdvancedAgentDefinition,
+    *,
+    nested: bool,
+    framework: str,
+    capability_scope: str,
+    export_name: str,
+) -> AgentDefinition | _AdvancedAgentDefinition:
+    """Compose a nested managed export or preserve one flat export."""
+
+    if not nested:
+        return value
+    # A nested folder promises Harnest-owned resource composition. Advanced
+    # targets own native composition, so accepting that shape would silently
+    # ignore sibling instructions and capabilities.
+    if isinstance(value, _AdvancedAgentDefinition):
+        raise BundleExportError(
+            f"nested advanced subagent {path.parent} is not supported; "
+            f"export Agent.advanced(...) from subagents/{export_name}.py"
+        )
+    return _compose_definition(
+        path,
+        value,
+        is_root=False,
+        framework=framework,
+        capability_scope=capability_scope,
+    )
 
 
 def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]:
@@ -1636,6 +1809,8 @@ def _load_module(path: Path) -> ModuleType:
 
 
 def _tool_name(value: Any) -> str:
+    """Resolve one stable public tool identity or fail before composition."""
+
     name = getattr(value, "__name__", None)
     if not isinstance(name, str) or not name:
         name = getattr(value, "name", None)
@@ -1647,7 +1822,15 @@ def _tool_name(value: Any) -> str:
 
 
 def _subagent_name(value: Any) -> str:
+    """Return the stable name used to detect and report subagent conflicts."""
+
     name = getattr(value, "name", None)
+    # Agent.advanced permits an omitted root-facing override, but filesystem
+    # subagents still need the native target's name to match their export.
+    if (not isinstance(name, str) or not name) and isinstance(
+        value, _AdvancedAgentDefinition
+    ):
+        name = getattr(value.target, "name", None)
     if not isinstance(name, str) or not name:
         raise BundleDuplicateError(
             f"subagent {value!r} has no stable name"

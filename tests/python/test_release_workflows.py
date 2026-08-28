@@ -2,6 +2,7 @@ import re
 import subprocess
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -161,6 +162,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         # The Go binary owns `harnest`; the bundled wheel is an internal runtime.
         self.assertNotIn("[project.scripts]", project)
+
+    def test_compiled_framework_extras_include_builtin_store_drivers(self):
+        project = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["optional-dependencies"]
+
+        # The CLI installs exactly one framework extra into every compiled
+        # environment, so both extras must carry all built-in store drivers.
+        for extra in ("adk", "langgraph", "all"):
+            requirements = project[extra]
+            self.assertTrue(any(value.startswith("asyncpg") for value in requirements))
+            self.assertTrue(any(value.startswith("redis") for value in requirements))
 
     def test_installer_replaces_a_writable_legacy_python_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:

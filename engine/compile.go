@@ -234,6 +234,8 @@ func validateCompiledIdentity(source Bundle, manifest CompiledManifest) error {
 	return nil
 }
 
+// validateCompiledCompatibility keeps framework and checkpoint ownership
+// checks at the artifact boundary before any compiled source can be trusted.
 func validateCompiledCompatibility(manifest CompiledManifest) error {
 	if strings.TrimSpace(manifest.HarnestVersion) == "" {
 		return fmt.Errorf("compiled manifest harnestVersion cannot be empty")
@@ -247,7 +249,29 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	if strings.TrimSpace(manifest.Framework.Version) == "" {
 		return fmt.Errorf("compiled manifest framework version cannot be empty")
 	}
-	return nil
+	return validateCompiledCheckpoint(manifest)
+}
+
+// validateCompiledCheckpoint rejects silently substituted storage without
+// requiring the Go engine to import either Python framework.
+func validateCompiledCheckpoint(manifest CompiledManifest) error {
+	checkpoint := manifest.Checkpoint
+	if strings.TrimSpace(checkpoint.Schema) == "" {
+		return fmt.Errorf("compiled manifest checkpoint schema cannot be empty")
+	}
+	if checkpoint.Owner == "harnest" && checkpoint.Framework == "portable" {
+		return nil
+	}
+	if checkpoint.Owner == manifest.Framework.Name &&
+		checkpoint.Framework == manifest.Framework.Name {
+		return nil
+	}
+	return fmt.Errorf(
+		"compiled checkpoint ownership %q/%q does not match framework %q",
+		checkpoint.Owner,
+		checkpoint.Framework,
+		manifest.Framework.Name,
+	)
 }
 
 func validateCompiledSource(directory string, source Bundle, manifest CompiledManifest) error {

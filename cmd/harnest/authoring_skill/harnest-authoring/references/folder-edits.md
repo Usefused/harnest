@@ -35,8 +35,8 @@ and extended examples into that skill's linked `references/` files.
 | Add model-facing operational guidance | Owning `skills/<skill>/SKILL.md` | Give it distinct frontmatter name/description and put supporting files below that skill. |
 | Connect one MCP server | Owning `mcp/<name>.py` | Export zero-argument `client()` returning `MCPClient`; the filename supplies identity and ordinary Python reads environment/secrets. |
 | Bundle reusable MCP access plus usage guidance | Root `plugins/<plugin>/mcp/` and `plugins/<plugin>/skills/` | A populated plugin needs at least one MCP client and one skill; it never contains agents or lifecycle code. |
-| Add a simple subagent | Owning `subagents/<name>.py` | Export `AgentDefinition` as `<name>` with an explicit instruction. |
-| Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. |
+| Add a simple subagent | Owning `subagents/<name>.py` | Export managed `Agent` as `<name>` with an explicit instruction, or export `Agent.advanced(...)` around a fully composed native agent of the same name. |
+| Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Managed agents only: add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. Advanced agents compose capabilities natively in the flat-file form. |
 | Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use explicit native factory decorators only for tighter framework control. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
 | Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
@@ -68,6 +68,11 @@ and extended examples into that skill's linked `references/` files.
 - Cross-cutting invocation policy still belongs in a portable lifecycle
   extension. Use `lib/` for implementation shared by resources, not to disguise
   persistence, auditing, or guardrails that must surround every call.
+- Put zero-argument context providers in root `extensions/`. Use
+  `@context("name")` to publish a value once per invocation, or combine it with
+  `@lifecycle.resource` for application startup and shutdown. Consumers in
+  nodes, tools, listeners, and subagents call `context.resource("name")`;
+  lifecycle ownership alone does not expose the value.
 
 ## Treat advanced mode differently
 
@@ -123,6 +128,9 @@ Treat a path move as an ownership change:
    old and new public resource present together as a compatibility shim.
 
 ### Promote a flat subagent to a folder
+
+This migration applies only to managed agents. Advanced subagents remain flat
+and compose their capabilities explicitly with the native framework.
 
 Move `subagents/<name>.py` to `subagents/<name>/agent.py`, keep the export named
 `<name>`, add `subagents/<name>/instructions.md`, and then add only that agent's

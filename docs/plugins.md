@@ -43,7 +43,9 @@ configuration and `pyproject.toml`; they are not embedded in the plugin.
 Factory diagnostics redact exception messages because those values may contain
 credentials. A selective `@require_human_approval(tools=[...])` policy names
 the server's original tools before any prefix; ADK and LangGraph validate every
-name after discovery and fail closed on a typo.
+name after discovery and fail closed on a typo. In managed LangGraph, Harnest
+uses the MCP adapter's native interceptor at the network-call boundary and
+routes approval by server plus original tool name; local tools are unaffected.
 
 Skill directories under `skills/` follow the Agent Skills layout. The
 `SKILL.md` frontmatter `name` must match its directory. Its instructions should

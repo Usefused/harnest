@@ -29,8 +29,10 @@ const ui = {
   inspectorRefresh: document.querySelector("#refresh-state"),
   stateTab: document.querySelector("#state-tab"),
   traceTab: document.querySelector("#trace-tab"),
+  logsTab: document.querySelector("#logs-tab"),
   stateView: document.querySelector("#state-view"),
   traceView: document.querySelector("#trace-view"),
+  logsView: document.querySelector("#logs-view"),
   traceCount: document.querySelector("#trace-count"),
   traceTitle: document.querySelector("#trace-title"),
   traceStatus: document.querySelector("#trace-status"),
@@ -38,6 +40,12 @@ const ui = {
   traceEmpty: document.querySelector("#trace-empty"),
   traceTimeline: document.querySelector("#trace-timeline"),
   traceId: document.querySelector("#trace-id"),
+  logCount: document.querySelector("#log-count"),
+  logSummary: document.querySelector("#log-summary"),
+  logSearch: document.querySelector("#log-search"),
+  logLevels: document.querySelector("#log-levels"),
+  logsEmpty: document.querySelector("#logs-empty"),
+  logsList: document.querySelector("#logs-list"),
 };
 
 const runtime = {
@@ -51,6 +59,8 @@ const runtime = {
   inspectorView: "state",
   traces: [],
   selectedTraceId: "",
+  logQuery: "",
+  logLevel: "all",
   traceTimer: null,
   toolCards: new Map(),
 };
@@ -405,6 +415,7 @@ function renderTraces(traces) {
   runtime.selectedTraceId = selected?.id || "";
   renderTraceRuns();
   renderTrace(selected);
+  renderLogs();
 }
 
 function renderTraceRuns() {
@@ -435,7 +446,62 @@ function renderTrace(trace) {
   ui.traceStatus.textContent = trace?.status || "Idle";
   ui.traceStatus.dataset.status = trace?.status || "idle";
   ui.traceId.textContent = trace?.id || "Not created";
-  for (const entry of trace?.entries || []) ui.traceTimeline.append(traceEntry(entry));
+  for (const entry of trace?.entries || []) {
+    if (entry.category !== "log") ui.traceTimeline.append(traceEntry(entry));
+  }
+}
+
+function sessionLogs() {
+  return runtime.traces.flatMap((trace, index) =>
+    (trace.entries || [])
+      .filter((entry) => entry.category === "log")
+      .map((entry) => ({ entry, trace, run: runtime.traces.length - index })),
+  );
+}
+
+function normalizedLogLevel(level) {
+  const value = String(level || "INFO").toUpperCase();
+  if (["CRITICAL", "FATAL", "ERROR"].includes(value)) return "error";
+  if (["WARN", "WARNING"].includes(value)) return "warning";
+  if (value === "DEBUG") return "debug";
+  return "info";
+}
+
+function logMatches(item) {
+  const level = normalizedLogLevel(item.entry.level);
+  if (runtime.logLevel !== "all" && level !== runtime.logLevel) return false;
+  const searchable = `${item.entry.message} ${item.entry.level} ${pretty(item.entry.detail || {})}`.toLowerCase();
+  return searchable.includes(runtime.logQuery);
+}
+
+function renderLogs() {
+  const logs = sessionLogs();
+  const visible = logs.filter(logMatches);
+  ui.logCount.textContent = String(logs.length);
+  ui.logSummary.textContent = `${visible.length} of ${logs.length}`;
+  ui.logsEmpty.hidden = visible.length > 0;
+  ui.logsList.hidden = visible.length === 0;
+  ui.logsList.replaceChildren(...visible.map(logEntry));
+}
+
+function logEntry(item) {
+  const row = document.createElement("li");
+  const level = normalizedLogLevel(item.entry.level);
+  row.className = "log-entry";
+  row.dataset.level = level;
+  const heading = document.createElement("div");
+  heading.className = "log-entry-heading";
+  const badge = document.createElement("span");
+  badge.className = "log-level-badge";
+  badge.textContent = item.entry.level || "INFO";
+  const run = document.createElement("span");
+  run.textContent = `Run ${item.run} · +${Math.max(0, Math.round(Number(item.entry.offsetMs) || 0))}ms`;
+  heading.append(badge, run);
+  const message = document.createElement("strong");
+  message.textContent = item.entry.message;
+  row.append(heading, message);
+  appendTraceDetail(row, item.entry.detail);
+  return row;
 }
 
 function traceTitle(trace) {
@@ -487,17 +553,32 @@ function appendTraceDetail(parent, detail) {
 function selectInspectorView(view) {
   runtime.inspectorView = view;
   const tracing = view === "trace";
-  ui.stateView.hidden = tracing;
+  const logging = view === "logs";
+  ui.stateView.hidden = tracing || logging;
   ui.traceView.hidden = !tracing;
-  ui.stateTab.classList.toggle("active", !tracing);
+  ui.logsView.hidden = !logging;
+  ui.stateTab.classList.toggle("active", !tracing && !logging);
   ui.traceTab.classList.toggle("active", tracing);
-  ui.stateTab.setAttribute("aria-selected", String(!tracing));
+  ui.logsTab.classList.toggle("active", logging);
+  ui.stateTab.setAttribute("aria-selected", String(!tracing && !logging));
   ui.traceTab.setAttribute("aria-selected", String(tracing));
-  if (tracing) runAction(loadTraces);
+  ui.logsTab.setAttribute("aria-selected", String(logging));
+  ui.inspectorToggle.textContent = logging ? "Logs" : tracing ? "Trace" : "State";
+  if (tracing || logging) runAction(loadTraces);
 }
 
 function refreshInspector() {
-  return runtime.inspectorView === "trace" ? loadTraces() : loadSessionState();
+  return runtime.inspectorView === "state" ? loadSessionState() : loadTraces();
+}
+
+function selectLogLevel(button) {
+  runtime.logLevel = button.dataset.level;
+  for (const option of ui.logLevels.querySelectorAll(".log-level")) {
+    const active = option === button;
+    option.classList.toggle("active", active);
+    option.setAttribute("aria-pressed", String(active));
+  }
+  renderLogs();
 }
 
 function startTracePolling() {
@@ -800,6 +881,14 @@ function bindEvents() {
   ui.inspectorRefresh.addEventListener("click", () => runAction(refreshInspector));
   ui.stateTab.addEventListener("click", () => selectInspectorView("state"));
   ui.traceTab.addEventListener("click", () => selectInspectorView("trace"));
+  ui.logsTab.addEventListener("click", () => selectInspectorView("logs"));
+  ui.logSearch.addEventListener("input", () => {
+    runtime.logQuery = ui.logSearch.value.trim().toLowerCase();
+    renderLogs();
+  });
+  for (const button of ui.logLevels.querySelectorAll(".log-level")) {
+    button.addEventListener("click", () => selectLogLevel(button));
+  }
   ui.inspectorToggle.addEventListener("click", toggleInspector);
   ui.sessionTrigger.addEventListener("click", () => toggleSessionMenu());
   ui.sessionTrigger.addEventListener("keydown", (event) => {

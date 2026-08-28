@@ -16,7 +16,15 @@ from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ._json import json_value
+from .approval import (
+    ApprovalPolicy,
+    authorize_mcp,
+    record_approved_execution,
+    record_approved_failure,
+)
 from .application import CompiledApplication
+from .checkpoint import CheckpointStore, HarnestStore
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp import _validate_approval_tools
 from .neutral_runtime import (
@@ -68,7 +76,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._materialize_lock = asyncio.Lock()
         self._recursion_limit = recursion_limit
         self._info = _agent_info(application, card_value)
-        self._session_store = session_store or InMemorySessionStore()
+        self._session_store = (
+            session_store
+            if session_store is not None
+            else InMemorySessionStore()
+        )
         self._owns_session_store = session_store is None
         if not isinstance(self._session_store, SessionStore):
             raise TypeError("session_store must implement SessionStore")
@@ -149,10 +161,16 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             graph_input = _graph_input(
                 self._application, request.input, session.record.state
             )
-            config = self._execution_config(session_id)
+            await self._begin_checkpoint(request, session_id)
+            config = self._execution_config(request.invocation_id)
             target = await self._target_for_run()
-            result = await target.ainvoke(graph_input, config=config)
-            await self._store_result(session, result)
+            try:
+                result = await target.ainvoke(graph_input, config=config)
+                await self._store_result(session, result)
+            except BaseException:
+                await self._finish_checkpoint(request.invocation_id, "failed")
+                raise
+            await self._finish_checkpoint(request.invocation_id, "completed")
 
         text_value, public_result = _graph_output(self._application, result)
         events = _result_events(result, text_value, public_result)
@@ -184,12 +202,20 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             graph_input = _graph_input(
                 self._application, request.input, session.record.state
             )
-            config = self._execution_config(session_id)
+            await self._begin_checkpoint(request, session_id)
+            config = self._execution_config(request.invocation_id)
             state = _StreamState()
-            async for event in _target_stream(target, graph_input, config, state):
-                yield event
-            state.final_state = state.final_state if state.final_state is not None else {}
-            await self._store_result(session, state.final_state)
+            try:
+                async for event in _target_stream(target, graph_input, config, state):
+                    yield event
+                state.final_state = (
+                    state.final_state if state.final_state is not None else {}
+                )
+                await self._store_result(session, state.final_state)
+            except BaseException:
+                await self._finish_checkpoint(request.invocation_id, "failed")
+                raise
+            await self._finish_checkpoint(request.invocation_id, "completed")
 
         for event in _final_stream_events(self._application, state):
             yield event
@@ -240,6 +266,8 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             return self._target
 
     async def _materialize_plan(self, plan: Any) -> None:
+        """Build one target and unwind partial MCP ownership on startup failure."""
+
         try:
             from .backends.langgraph import (
                 ManagedAgentPlan, managed_graph_mcp_clients,
@@ -250,12 +278,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 if isinstance(plan, ManagedAgentPlan)
                 else managed_graph_mcp_clients(plan)
             )
-            tool_groups, approval_policies = await self._resolve_tool_groups(configured)
-            from .backends.langgraph import mcp_approval_middleware
-
-            middleware = mcp_approval_middleware(approval_policies)
-            if middleware is not None:
-                plan = replace(plan, middleware=(*plan.middleware, middleware))
+            tool_groups = await self._resolve_tool_groups(configured)
             self._target = (
                 materialize_agent(plan, tool_groups[0])
                 if isinstance(plan, ManagedAgentPlan)
@@ -269,16 +292,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
 
     async def _resolve_tool_groups(
         self, configured_groups: Sequence[tuple[Any, ...]]
-    ) -> tuple[list[list[Any]], dict[str, tuple[str, str, Any]]]:
-        resolved: list[
-            tuple[
-                tuple[Any, ...],
-                list[Any],
-                dict[str, tuple[str, str, Any]],
-            ]
-        ] = []
+    ) -> list[list[Any]]:
+        """Reuse identical MCP discovery groups within one materialized graph."""
+
+        resolved: list[tuple[tuple[Any, ...], list[Any]]] = []
         groups: list[list[Any]] = []
-        policies: dict[str, tuple[str, str, Any]] = {}
         for configured in configured_groups:
             # Reuse an identical MCP group so nested graph nodes do not open
             # duplicate connections or repeat remote tool discovery.
@@ -286,30 +304,36 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 (item for item in resolved if item[0] == configured), None
             )
             if cached is None:
-                tools, group_policies = await self._resolve_tool_group(configured)
-                cached = (configured, tools, group_policies)
+                tools = await self._resolve_tool_group(configured)
+                cached = (configured, tools)
                 resolved.append(cached)
             groups.append(cached[1])
-            policies.update(cached[2])
-        return groups, policies
+        return groups
 
     async def _resolve_tool_group(
         self, configured_group: tuple[Any, ...]
-    ) -> tuple[list[Any], dict[str, tuple[str, str, Any]]]:
+    ) -> list[Any]:
+        """Attach approval at transport time before exposing discovered tools."""
+
         client_type = _mcp_client_type()
         connections, names = _mcp_connections(configured_group)
-        client = client_type(connections, tool_name_prefix=True)
+        policies = _mcp_server_approval_policies(names)
+        interceptors = [mcp_approval_interceptor(policies)] if policies else []
+        client = client_type(
+            connections,
+            tool_interceptors=interceptors,
+            tool_name_prefix=True,
+        )
         self._mcp_clients.append(client)
         tools: list[Any] = []
-        policies: dict[str, tuple[str, str, Any]] = {}
         for server_name, configured in names:
             discovered = await client.get_tools(server_name=server_name)
             selected = _filtered_mcp_tools(
                 discovered, server_name=server_name, allowed=configured.tool_filter
             )
+            _validate_mcp_approval(selected, server_name, configured)
             tools.extend(selected)
-            policies.update(_approval_policies(selected, server_name, configured))
-        return tools, policies
+        return tools
 
     async def _session_id_for_request(self, request: InvocationRequest) -> str:
         self._ensure_open()
@@ -356,12 +380,50 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             state = {"value": result}
         await session.replace_state(state)
 
-    def _execution_config(self, session_id: str) -> dict[str, Any]:
+    async def _begin_checkpoint(
+        self, request: InvocationRequest, session_id: str
+    ) -> None:
+        """Claim portable run ownership before invoking the compiled graph."""
+
+        store = self._portable_checkpoints()
+        if store is None:
+            return
+        await store.begin_run(
+            application_id=self._application.name,
+            user_id=request.user_id,
+            session_id=session_id,
+            run_id=request.invocation_id,
+            framework="langgraph",
+        )
+
+    async def _finish_checkpoint(self, run_id: str, status: str) -> None:
+        """Release portable run ownership after the graph becomes terminal."""
+
+        store = self._portable_checkpoints()
+        if store is None:
+            return
+        record = await store.get_run(run_id=run_id)
+        if record is not None and record.status == "running":
+            await store.transition(
+                run_id=run_id,
+                expected_status="running",
+                status=status,
+            )
+
+    def _portable_checkpoints(self) -> CheckpointStore | None:
+        """Use portable checkpoints only when Harnest owns the native adapter."""
+
+        provider = self._application.checkpointer
+        return provider if isinstance(provider, HarnestStore) else None
+
+    def _execution_config(self, run_id: str) -> dict[str, Any]:
+        """Isolate native checkpoint threads while SessionStore carries history."""
+
         return {
             "configurable": {
-                # Never reuse the public session id as checkpoint identity: the
-                # explicit session map above is the sole state authority.
-                "thread_id": f"{session_id}:{uuid.uuid4().hex}",
+                # A thread represents one invocation. SessionStore remains the
+                # committed multi-turn authority across these isolated runs.
+                "thread_id": run_id,
             },
             "recursion_limit": self._recursion_limit,
         }
@@ -457,6 +519,8 @@ def _mcp_client_type() -> Any:
 def _mcp_connections(
     configured_group: Sequence[Any],
 ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
+    """Build one deduplicated adapter connection map and approval-policy index."""
+
     connections: dict[str, dict[str, Any]] = {}
     names: list[tuple[str, Any]] = []
     for index, configured in enumerate(configured_group):
@@ -473,24 +537,69 @@ def _mcp_connections(
     return connections, names
 
 
-def _approval_policies(
+def _mcp_server_approval_policies(
+    configured: Sequence[tuple[str, Any]],
+) -> dict[str, tuple[str, ApprovalPolicy]]:
+    """Index policies by adapter server identity before tool execution exists."""
+
+    return {
+        server_name: (server_name, client.approval)
+        for server_name, client in configured
+        if client.approval is not None
+    }
+
+
+def _validate_mcp_approval(
     tools: Sequence[Any], server_name: str, configured: Any
-) -> dict[str, tuple[str, str, Any]]:
+) -> None:
+    """Fail startup when approval selects tools the server did not expose."""
+
     policy = configured.approval
     if policy is None:
-        return {}
+        return
     prefix = f"{server_name}_"
     remote_names = tuple(
         str(getattr(tool, "name", "")).removeprefix(prefix) for tool in tools
     )
     _validate_approval_tools(policy, remote_names, capability_id=server_name)
-    result: dict[str, tuple[str, str, Any]] = {}
-    for tool in tools:
-        exposed_name = str(getattr(tool, "name", ""))
-        remote_name = exposed_name.removeprefix(prefix)
-        if policy.applies_to(remote_name):
-            result[exposed_name] = (server_name, remote_name, policy)
-    return result
+
+
+def mcp_approval_interceptor(
+    policies: Mapping[str, tuple[str, ApprovalPolicy]],
+) -> Any:
+    """Gate MCP transport calls using the adapter's original server/tool names."""
+
+    async def require_approval(request: Any, handler: Any) -> Any:
+        """Authorize selected remote calls immediately before MCP execution."""
+
+        configured = policies.get(str(request.server_name))
+        if configured is None:
+            return await handler(request)
+        client_name, policy = configured
+        tool_name = str(request.name)
+        if not policy.applies_to(tool_name):
+            return await handler(request)
+        grant = await authorize_mcp(client_name, tool_name, request.args, policy)
+        try:
+            result = await handler(request)
+        except BaseException:
+            record_approved_failure(grant)
+            raise
+        if _mcp_result_failed(result):
+            record_approved_failure(grant)
+        else:
+            record_approved_execution(grant)
+        return result
+
+    return require_approval
+
+
+def _mcp_result_failed(result: Any) -> bool:
+    """Recognize adapter-level error results before they become ToolMessages."""
+
+    return getattr(result, "isError", False) is True or getattr(
+        result, "status", None
+    ) == "error"
 
 
 def _require_identifier(value: Any, field_name: str) -> None:
@@ -583,21 +692,23 @@ def _graph_output(
         return _mapping_output(result)
     if isinstance(result, str):
         return result, result
-    return _visible_value(result), _json_value(result)
+    return _visible_value(result), json_value(result)
 
 
 def _adapted_output(adapted: Any) -> tuple[str, Any]:
     if isinstance(adapted, str):
         return adapted, adapted
-    return _visible_value(adapted), _json_value(adapted)
+    return _visible_value(adapted), json_value(adapted)
 
 
 def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
-    structured = {
-        str(key): _json_value(value)
-        for key, value in result.items()
-        if key not in {"messages", _TURN_START_KEY, _SESSION_STATE_KEY}
-    }
+    structured = json_value(
+        {
+            key: value
+            for key, value in result.items()
+            if key not in {"messages", _TURN_START_KEY, _SESSION_STATE_KEY}
+        }
+    )
     public_result = structured or None
     messages = result.get("messages")
     if isinstance(messages, (list, tuple)) and messages:
@@ -612,7 +723,7 @@ def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
         return "", None
     value = result.get("value")
     if value is None:
-        return _visible_value(result), _json_value(result)
+        return _visible_value(result), json_value(result)
     return (value if isinstance(value, str) else _visible_value(value)), public_result
 
 
@@ -640,7 +751,7 @@ def _managed_graph_internal_state(
 def _visible_value(value: Any) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(_json_value(value), ensure_ascii=False)
+    return json.dumps(json_value(value), ensure_ascii=False)
 
 
 def _message_text(message: Any) -> str:
@@ -672,7 +783,7 @@ def _message_tool_events(message: Any) -> list[dict[str, Any]]:
                     "type": "tool_call",
                     "id": call.get("id"),
                     "name": call.get("name"),
-                    "arguments": _json_value(call.get("args", {})),
+                    "arguments": json_value(call.get("args", {})),
                 }
             )
     if getattr(message, "type", None) == "tool":
@@ -681,7 +792,7 @@ def _message_tool_events(message: Any) -> list[dict[str, Any]]:
                 "type": "tool_result",
                 "id": getattr(message, "tool_call_id", None),
                 "name": getattr(message, "name", None),
-                "result": _json_value(getattr(message, "content", None)),
+                "result": json_value(getattr(message, "content", None)),
             }
         )
     return events
@@ -721,7 +832,7 @@ def _event_identity(event: Mapping[str, Any]) -> tuple[Any, ...]:
         event.get("type"),
         event.get("id"),
         event.get("name"),
-        json.dumps(_json_value(event), sort_keys=True, ensure_ascii=False),
+        json.dumps(json_value(event), sort_keys=True, ensure_ascii=False),
     )
 
 
@@ -733,19 +844,6 @@ def _stream_item(item: Any) -> tuple[str, Any]:
         return item[0], item[1]
     # A target may ignore the requested multi-mode stream and yield values only.
     return "values", item
-
-
-def _json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _json_value(model_dump(mode="json", by_alias=True))
-    return str(value)
 
 
 __all__ = ["LangGraphRuntimeDriver"]

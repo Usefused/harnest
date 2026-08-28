@@ -17,6 +17,13 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             "def session_store(): return InMemorySessionStore()\n",
             encoding="utf-8",
         )
+        (root / "checkpoints.py").write_text(
+            "from harnest.checkpoint import MemoryStore\n"
+            "from harnest.lifecycle import lifecycle\n"
+            "@lifecycle.checkpointer\n"
+            "def checkpointer(): return MemoryStore()\n",
+            encoding="utf-8",
+        )
 
     def test_discovers_arbitrary_nested_files_and_orders_shared_phases(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,6 +63,87 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         self.assertIsInstance(result.session_store, InMemorySessionStore)
         self.assertEqual(result.listeners, ())
 
+    def test_discovers_the_required_checkpoint_authority(self):
+        from harnest.checkpoint import MemoryStore
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+
+            result = discover_extensions(root, framework="langgraph")
+
+        self.assertIsInstance(result.checkpointer, MemoryStore)
+
+    def test_requires_exactly_one_typed_checkpointer_factory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "checkpoints.py").unlink()
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "found 0"):
+                discover_extensions(root, framework="adk")
+            (root / "checkpoints.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return object()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "checkpoint authority"):
+                discover_extensions(root, framework="adk")
+
+    def test_harnest_checkpointer_must_implement_the_store_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "checkpoints.py").write_text(
+                "from harnest.checkpoint import HarnestStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "class IncompleteStore(HarnestStore): pass\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return IncompleteStore()\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "does not implement CheckpointStore"
+            ):
+                discover_extensions(root, framework="adk")
+
+    def test_native_adk_store_is_the_single_session_and_checkpoint_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "storage.py").write_text(
+                "from harnest.checkpoint import ADKStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "store = ADKStore(object())\n"
+                "@lifecycle.session_store\n"
+                "def session_store(): return store\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return store\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="adk")
+
+        self.assertIs(result.session_store, result.checkpointer)
+
+    def test_native_adk_store_rejects_a_competing_session_store(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "checkpoints.py").write_text(
+                "from harnest.checkpoint import ADKStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return ADKStore(object())\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "same ADKStore object"
+            ):
+                discover_extensions(root, framework="adk")
+
     def test_undecorated_public_helpers_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
@@ -64,6 +152,132 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             (root / "helpers.py").write_text("def parse(value): return value\n")
             result = discover_extensions(root, framework="langgraph")
         self.assertEqual(result.listeners, ())
+
+    def test_runtime_resource_factory_is_discovered_without_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            self._session_store(root)
+            (root / "retrieval.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.resource\n"
+                "def vector_client():\n"
+                "  raise RuntimeError('compile must not create clients')\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="langgraph")
+
+        self.assertEqual(
+            [item.function_name for item in result.listeners], ["vector_client"]
+        )
+
+    def test_context_providers_are_discovered_without_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            self._session_store(root)
+            (root / "memory.py").write_text(
+                "from harnest.context import context\n"
+                "@context('request_cache')\n"
+                "async def request_cache():\n"
+                "  raise RuntimeError('compile must not create context values')\n",
+                encoding="utf-8",
+            )
+            (root / "client.py").write_text(
+                "from harnest.context import context\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.resource\n"
+                "@context('memory')\n"
+                "async def memory():\n"
+                "  yield object()\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="langgraph")
+
+        self.assertEqual(
+            [(item.phase, item.context_name) for item in result.listeners],
+            [("resource", "memory"), ("context", "request_cache")],
+        )
+
+    def test_storage_is_exposed_only_when_its_factory_declares_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            root.mkdir(parents=True)
+            (root / "storage.py").write_text(
+                "from harnest.checkpoint import MemoryStore\n"
+                "from harnest.context import context\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "store = MemoryStore()\n"
+                "@lifecycle.session_store\n"
+                "@context('sessions')\n"
+                "def session_store(): return store\n"
+                "@lifecycle.checkpointer\n"
+                "@context('checkpoints')\n"
+                "def checkpointer(): return store\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="adk")
+
+        self.assertEqual(
+            [item.name for item in result.context_values],
+            ["sessions", "checkpoints"],
+        )
+        self.assertIs(result.context_values[0].value, result.session_store)
+        self.assertIs(result.context_values[1].value, result.checkpointer)
+
+    def test_context_names_and_lifecycle_roles_are_strict(self):
+        for source, message in (
+            (
+                "from harnest.context import context\n"
+                "@context('same')\ndef first(): return 1\n"
+                "@context('same')\ndef second(): return 2\n",
+                "duplicate context resource names",
+            ),
+            (
+                "from harnest.context import context\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.before_invoke\n"
+                "@context('invalid')\n"
+                "def before(ctx, value): return value\n",
+                "cannot also use @lifecycle.before_invoke",
+            ),
+            (
+                "from harnest.context import context\n"
+                "@context('invalid')\n"
+                "def invalid():\n  yield object()\n",
+                "combine it with @lifecycle.resource",
+            ),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "extensions"
+                self._session_store(root)
+                (root / "providers.py").write_text(source, encoding="utf-8")
+
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extensions(root, framework="adk")
+
+    def test_runtime_resource_factory_signature_is_validated_without_calling_it(self):
+        for source, message in (
+            (
+                "@lifecycle.resource\ndef resource(value): return value\n",
+                "no arguments",
+            ),
+            (
+                "@lifecycle.resource\nasync def resource(): return None\n",
+                "must be synchronous",
+            ),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "extensions"
+                self._session_store(root)
+                (root / "resource.py").write_text(
+                    "from harnest.lifecycle import lifecycle\n" + source,
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extensions(root, framework="adk")
 
     def test_adk_plugin_factory_is_explicit_and_validated(self):
         try:

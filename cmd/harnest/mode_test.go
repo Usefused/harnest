@@ -47,7 +47,8 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		"You own in advanced mode:",
 		"native graph routing",
 		"portable model hooks are not auto-injected",
-		"advanced targets have no automatic Harnest capability wrapper",
+		"approval and tracing context for explicitly decorated native capabilities",
+		"opaque capabilities are not discovered automatically",
 		"keep evals as test-only inputs",
 		"No files were changed.",
 	})
