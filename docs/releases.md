@@ -112,8 +112,11 @@ The apply command prints its fresh effective plan, verifies its source hashes,
 and writes recovery copies under `.harnest/upgrade-backups/<id>/` before
 touching authored files. The
 committed `harnest.lock` records the project schema, not the installed CLI or
-framework package version. Review the resulting diff, run `harnest test`, and
-compile before deployment.
+framework package version. Repositories that predate lifecycle-owned storage
+receive the minimal shared `MemoryStore` in `lib/storage.py` and the required
+session-store and checkpointer factories in `extensions/storage.py`. Existing
+partial or custom storage is reported as a manual blocker rather than guessed.
+Review the resulting diff, run `harnest test`, and compile before deployment.
 
 Harnest releases also define the supported ADK and LangGraph version ranges.
 Those bounds are published in Harnest's `pyproject.toml`, installed with the

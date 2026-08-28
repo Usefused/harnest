@@ -6,10 +6,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from harnest.bundle import compile_application
 from harnest.cli import main as cli_main
-from harnest.extension_loader import discover_extensions
 from harnest.upgrade import UpgradeError, apply_upgrade, plan_upgrade
-from _session_store_fixture import write_session_store
 
 
 class RepositoryUpgradeTests(unittest.TestCase):
@@ -30,7 +29,11 @@ class RepositoryUpgradeTests(unittest.TestCase):
             "    requirementsFile: requirements.txt\n"
             "  resources:\n    cpu: \"1\"\n    memory: 1Gi\n",
         )
-        self.write(root / "agent.py", "root_agent = object()\n")
+        self.write(
+            root / "agent.py",
+            "from harnest.agent import Agent\n"
+            "root_agent = Agent(name='legacy', model='test/model')\n",
+        )
         self.write(root / "instructions.md", "Legacy instructions.\n")
         self.write(
             root / "requirements.txt",
@@ -89,6 +92,8 @@ class RepositoryUpgradeTests(unittest.TestCase):
         self.assertIn(("move", "mcp_servers", "mcp"), operations)
         self.assertIn(("create", "server.yaml", None), operations)
         self.assertIn(("create", "harnest.lock", None), operations)
+        self.assertIn(("create", "lib/storage.py", None), operations)
+        self.assertIn(("create", "extensions/storage.py", None), operations)
         self.assertIn(
             ("move", "extensions/audit/langgraph.py", "extensions/audit/_langgraph.py"),
             operations,
@@ -128,14 +133,18 @@ class RepositoryUpgradeTests(unittest.TestCase):
             self.assertNotIn("google-adk", pyproject)
             self.assertIn("dependencyFile: pyproject.toml", (root / "config.yaml").read_text(encoding="utf-8"))
             self.assertEqual(plan_upgrade(root).actions, ())
-            write_session_store(root)
             with patch.dict(os.environ, {}, clear=False):
-                discovered = discover_extensions(root / "extensions", framework="adk")
+                application = compile_application(
+                    root,
+                    entrypoint="agent:root_agent",
+                    framework="adk",
+                    mode="managed",
+                )
             self.assertEqual(
-                [listener.phase for listener in discovered.listeners],
+                [listener.phase for listener in application.extensions],
                 ["before_invoke", "on_event"],
             )
-            self.assertEqual([item.name for item in discovered.native], ["audit"])
+            self.assertIs(application.session_store, application.checkpointer)
 
     def test_manual_blocker_prevents_every_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -149,6 +158,39 @@ class RepositoryUpgradeTests(unittest.TestCase):
 
             self.assertFalse((root / "server.yaml").exists())
             self.assertTrue((root / "mcp_servers").is_dir())
+
+    def test_partial_storage_is_a_manual_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(
+                root / "extensions" / "storage.py",
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.session_store\n"
+                "def session_store(): return object()\n",
+            )
+
+            plan = plan_upgrade(root)
+
+        self.assertTrue(
+            any("add @checkpointer manually" in value for value in plan.blockers)
+        )
+
+    def test_new_storage_path_after_planning_invalidates_apply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            plan = plan_upgrade(root)
+            self.write(root / "lib" / "storage.py", "authored = True\n")
+
+            with self.assertRaisesRegex(UpgradeError, "changed after planning"):
+                apply_upgrade(plan)
+
+            self.assertEqual(
+                (root / "lib" / "storage.py").read_text(encoding="utf-8"),
+                "authored = True\n",
+            )
+            self.assertFalse((root / ".harnest").exists())
 
     def test_ambiguous_legacy_extension_is_a_manual_blocker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -236,7 +278,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 2",
+                "projectSchema: 3",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
             )
 

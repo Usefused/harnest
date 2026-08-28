@@ -19,11 +19,31 @@ import yaml
 from .server_config import DEFAULT_SERVER_YAML
 
 
-PROJECT_SCHEMA = 2
+PROJECT_SCHEMA = 3
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 2
+projectSchema: 3
 """
+_STORAGE_LIBRARY = """from harnest.store import MemoryStore
+
+
+store = MemoryStore()
+"""
+_STORAGE_EXTENSION = '''from harnest.lib.storage import store
+from harnest.lifecycle import lifecycle
+
+
+@lifecycle.session_store
+def session_store():
+    """Return the store for completed conversation and business state."""
+    return store
+
+
+@lifecycle.checkpointer
+def checkpointer():
+    """Return the same store for private in-progress execution state."""
+    return store
+'''
 _FRAMEWORK_DEPENDENCIES = {
     "adk": ("google-adk[eval,extensions,mcp]>=2.8,<3",),
     "langgraph": (
@@ -107,6 +127,7 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     _plan_dependencies(root, framework, actions, blockers)
     _plan_mcp(root, actions, blockers)
     _plan_extensions(root, framework, actions, blockers)
+    _plan_storage(root, actions, blockers)
     return UpgradePlan(
         root,
         framework,
@@ -547,6 +568,121 @@ def _plan_extensions(
         _plan_extension_file(root, path, framework, actions, blockers)
 
 
+def _plan_storage(
+    root: Path, actions: list[UpgradeAction], blockers: list[str]
+) -> None:
+    """Add the minimal shared store only when no authored authority exists."""
+
+    factories = _storage_factories(root, blockers)
+    if factories is None or _block_duplicate_storage(factories, blockers):
+        return
+    present = {phase for phase, locations in factories.items() if locations}
+    if present == {"session_store", "checkpointer"}:
+        return
+    if present:
+        missing = ({"session_store", "checkpointer"} - present).pop()
+        blockers.append(
+            f"storage lifecycle already defines one authority; add @{missing} "
+            "manually so ownership remains explicit"
+        )
+        return
+    if _storage_targets_conflict(root, blockers):
+        return
+    actions.extend(
+        (
+            UpgradeAction(
+                "create",
+                "lib/storage.py",
+                "add one shared development store for session and checkpoint state",
+                content=_STORAGE_LIBRARY,
+            ),
+            UpgradeAction(
+                "create",
+                "extensions/storage.py",
+                "declare the required session-store and checkpointer factories",
+                content=_STORAGE_EXTENSION,
+            ),
+        )
+    )
+
+
+def _storage_factories(
+    root: Path, blockers: list[str]
+) -> dict[str, list[str]] | None:
+    """Inspect lifecycle ownership without executing authored extension code."""
+
+    directory = root / "extensions"
+    found = {"session_store": [], "checkpointer": []}
+    if not directory.exists():
+        return found
+    if directory.is_symlink() or not directory.is_dir():
+        return None
+    for path in sorted(directory.rglob("*.py")):
+        if _ignored(path.relative_to(directory).parts) or path.is_symlink():
+            continue
+        try:
+            _, module = _python_source(path)
+        except UpgradeError as exc:
+            blockers.append(str(exc))
+            return None
+        for phase, line in _module_storage_factories(module):
+            found[phase].append(f"{_relative(root, path)}:{line}")
+    return found
+
+
+def _module_storage_factories(module: ast.Module) -> tuple[tuple[str, int], ...]:
+    """Conservatively recognize storage decorators at module scope."""
+
+    found = []
+    for item in module.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in item.decorator_list:
+            value = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if isinstance(value, ast.Attribute) and value.attr in {
+                "session_store",
+                "checkpointer",
+            }:
+                found.append((value.attr, item.lineno))
+    return tuple(found)
+
+
+def _block_duplicate_storage(
+    factories: dict[str, list[str]], blockers: list[str]
+) -> bool:
+    """Report every competing authority before an upgrade can mutate files."""
+
+    duplicates = [
+        f"duplicate @{phase} factories: {', '.join(locations)}"
+        for phase, locations in factories.items()
+        if len(locations) > 1
+    ]
+    blockers.extend(duplicates)
+    return bool(duplicates)
+
+
+def _storage_targets_conflict(root: Path, blockers: list[str]) -> bool:
+    """Preserve authored paths instead of choosing alternate hidden locations."""
+
+    conflicts = [
+        relative
+        for relative in ("lib/storage.py", "extensions/storage.py")
+        if (root / relative).exists() or (root / relative).is_symlink()
+    ]
+    if conflicts:
+        blockers.append(
+            "cannot generate required storage because authored paths exist: "
+            + ", ".join(conflicts)
+        )
+    invalid_directories = []
+    for relative in ("lib", "extensions"):
+        path = root / relative
+        if path.exists() and (path.is_symlink() or not path.is_dir()):
+            invalid_directories.append(relative)
+            blockers.append(f"{relative}/ must be a regular directory")
+    return bool(conflicts or invalid_directories)
+
+
 def _plan_extension_file(
     root: Path,
     path: Path,
@@ -782,10 +918,12 @@ def _render_blockers(blockers: tuple[str, ...]) -> list[str]:
 
 
 def _verify_action_source(root: Path, action: UpgradeAction) -> None:
+    target = root / action.path
+    if action.kind == "create" and (target.exists() or target.is_symlink()):
+        raise UpgradeError(f"upgrade source changed after planning: {action.path}")
     if action.digest is None:
         return
-    path = root / action.path
-    actual = _tree_digest(path) if path.is_dir() else _file_digest(path)
+    actual = _tree_digest(target) if target.is_dir() else _file_digest(target)
     if actual != action.digest:
         raise UpgradeError(f"upgrade source changed after planning: {action.path}")
 

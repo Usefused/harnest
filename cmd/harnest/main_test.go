@@ -65,7 +65,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
-		"harnest.lock":           "projectSchema: 2",
+		"harnest.lock":           "projectSchema: 3",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"lib/storage.py":         "store = MemoryStore()",

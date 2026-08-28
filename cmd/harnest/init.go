@@ -264,7 +264,7 @@ func scaffoldFilesForMode(
 	files := map[string]string{
 		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 2
+projectSchema: 3
 `,
 		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent

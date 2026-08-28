@@ -7,7 +7,9 @@ folder has different ownership or may not compile at all.
 ## Establish the edit boundary
 
 1. Check the working tree and preserve unrelated edits. Do not regenerate an
-   initialized project.
+   initialized project. `harnest upgrade --apply` adds the current minimal
+   shared storage factories when both are absent; it blocks instead of
+   rewriting partial or custom storage ownership.
 2. Read `config.yaml` first. Record the selected framework and whether the mode
    is `managed` or `advanced`; that decision changes how capabilities are wired.
 3. Inventory authored files with `rg --files`, excluding `.harnest/`. Read the
