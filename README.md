@@ -283,7 +283,9 @@ For ADK this builds an `LlmAgent`; for LangGraph it builds a LangChain tool-loop
 graph. `history="session"` is the default and exposes prior user/assistant turns
 from the same Harnest session. Set `history="turn"` for an intentionally
 isolated model call. This contract also applies to `Agent` nodes inside a
-portable `Graph`; the Harnest runtime remains the single session authority.
+portable `Graph`: a routed agent consumes its predecessor's direct output as
+the current user input while retaining only the selected history. The Harnest
+runtime remains the single session authority.
 `LiteLLMModel` and `OllamaModel` have
 adapters for both frameworks. Provider-specific Python dependencies still
 belong in the agent's `pyproject.toml`.

@@ -9,7 +9,16 @@ from dataclasses import dataclass, replace
 from typing import Annotated, Any, TypedDict
 
 from ..agent import AgentDefinition, _AdvancedAgentDefinition
-from ..graph import START, Edge, Event, Graph, GraphContext, Join, call_graph_node
+from ..graph import (
+    START,
+    Edge,
+    Event,
+    Graph,
+    GraphContext,
+    Join,
+    _model_input_text,
+    call_graph_node,
+)
 from ..model_lifecycle import propagate_litellm_lifecycles
 
 
@@ -100,6 +109,7 @@ def _build_ready_agent(
     middleware: Sequence[Any] = (),
     *,
     graph_node: bool = False,
+    consume_value: bool = False,
     checkpointer: Any = None,
 ) -> Any:
     """Build a simple LangChain tool-loop graph for an agent definition.
@@ -145,12 +155,21 @@ def _build_ready_agent(
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     target = create_agent(**kwargs)
-    target = _apply_history_projection(definition, target, graph_node=graph_node)
+    target = _apply_history_projection(
+        definition,
+        target,
+        graph_node=graph_node,
+        consume_value=consume_value,
+    )
     return propagate_litellm_lifecycles(model, target)
 
 
 def _apply_history_projection(
-    definition: AgentDefinition, target: Any, *, graph_node: bool
+    definition: AgentDefinition,
+    target: Any,
+    *,
+    graph_node: bool,
+    consume_value: bool,
 ) -> Any:
     """Apply portable history semantics before the native agent sees state."""
 
@@ -162,7 +181,20 @@ def _apply_history_projection(
         raise RuntimeError(
             "building a LangGraph agent requires langchain-core"
         ) from exc
-    projection = _session_input if definition.history == "session" else _turn_input
+
+    def projection(state: Any) -> Any:
+        projected = (
+            _session_input(state)
+            if definition.history == "session"
+            else _turn_input(state)
+        )
+        return _append_node_input(
+            projected,
+            state,
+            consume_value=consume_value,
+            retain_history=definition.history == "session",
+        )
+
     return RunnableSequence(
         RunnableLambda(projection),
         target,
@@ -192,6 +224,32 @@ def _turn_input(state: Any) -> Any:
         start = max(len(messages) - 1, 0)
     projected["messages"] = list(messages[start:])
     return projected
+
+
+def _append_node_input(
+    projected: Any,
+    state: Any,
+    *,
+    consume_value: bool,
+    retain_history: bool,
+) -> Any:
+    """Promote a predecessor's portable output to the agent's user input."""
+
+    if not consume_value or not isinstance(projected, Mapping):
+        return projected
+    if not isinstance(state, Mapping) or state.get("value") is None:
+        return projected
+    try:
+        from langchain_core.messages import HumanMessage
+    except ImportError as exc:  # pragma: no cover - optional backend dependency
+        raise RuntimeError(
+            "building a LangGraph agent requires langchain-core"
+        ) from exc
+    history = projected.get("messages", ()) if retain_history else ()
+    if not isinstance(history, (list, tuple)):
+        history = ()
+    value = HumanMessage(content=_model_input_text(state["value"]))
+    return {**projected, "messages": [*history, value]}
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,14 +482,23 @@ def _route_selector(edges: Sequence[Edge], end: str):
 
 
 def _lower_node(
-    value: Any, Pregel: type[Any], middleware: Sequence[Any]
+    value: Any,
+    Pregel: type[Any],
+    middleware: Sequence[Any],
+    *,
+    direct_input: bool,
 ) -> Any:
     """Lower one portable or explicitly native value into a graph node."""
 
     if isinstance(value, AgentDefinition):
         if value.mcp:
             raise RuntimeError("managed MCP graph was lowered before materialization")
-        return _build_ready_agent(value, middleware=middleware, graph_node=True)
+        return _build_ready_agent(
+            value,
+            middleware=middleware,
+            graph_node=True,
+            consume_value=direct_input,
+        )
     if isinstance(value, Graph):
         return _build_ready_graph(value, middleware=middleware)
     if isinstance(value, _AdvancedAgentDefinition):
@@ -518,8 +585,16 @@ def _build_ready_graph(
 
     builder = StateGraph(_graph_state(add_messages))
     runtime_nodes = []
+    direct_inputs = {
+        edge.target for edge in graph.edges if edge.source != START
+    }
     for name, value in graph.nodes.items():
-        runtime_node = _lower_node(value, Pregel, middleware)
+        runtime_node = _lower_node(
+            value,
+            Pregel,
+            middleware,
+            direct_input=name in direct_inputs,
+        )
         runtime_nodes.append(runtime_node)
         builder.add_node(name, runtime_node)
     outgoing, join_inputs = _classified_edges(graph)

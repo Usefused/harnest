@@ -96,7 +96,9 @@ Use `Agent(..., history="session")` for native multi-turn behavior; it is the
 default for root agents, subagents, and graph agent nodes. The model receives
 earlier user/assistant turns only from the same Harnest session. Use
 `history="turn"` when deterministic isolation matters more than conversation
-continuity. Do not carry a duplicate transcript in graph state. The required
+continuity. A graph agent following another node receives that node's output as
+its current user input in either mode; session mode additionally retains its
+earlier conversation. Do not carry a duplicate transcript in graph state. The required
 checkpoint lifecycle persists in-progress execution; Harnest session storage
 remains the committed conversation authority.
 

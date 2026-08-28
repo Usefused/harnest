@@ -76,6 +76,58 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
                 [message.content for message in seen[0]["messages"]], expected
             )
             self.assertNotIn("_harnest_turn_start", seen[0])
+
+    async def test_agent_consumes_predecessor_output_with_selected_history(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.runnables import RunnableLambda
+        from harnest.backends.langgraph import build_graph
+
+        messages = [
+            HumanMessage(content="first"),
+            AIMessage(content="reply"),
+            HumanMessage(content="second"),
+        ]
+        for history, expected in (
+            ("session", ["first", "reply", "second", "routed:second"]),
+            ("turn", ["routed:second"]),
+        ):
+            seen = []
+
+            async def record(state):
+                seen.append(state)
+                return state
+
+            graph = Graph(
+                name=f"{history}_routed_context",
+                nodes={
+                    "route": lambda value: f"routed:{value}",
+                    "assistant": AgentDefinition(
+                        name="assistant",
+                        model="openai:test",
+                        instruction="Answer the routed request.",
+                        history=history,
+                    ),
+                },
+                edges=(Edge(START, "route"), Edge("route", "assistant")),
+            )
+            with patch(
+                "langchain.agents.create_agent",
+                return_value=RunnableLambda(record),
+            ):
+                target = build_graph(graph)
+
+            await target.ainvoke(
+                {
+                    "messages": messages,
+                    "value": "second",
+                    "_harnest_turn_start": 2,
+                }
+            )
+
+            self.assertEqual(
+                [message.content for message in seen[0]["messages"]],
+                expected,
+            )
     async def test_mcp_agent_lowers_to_inert_runtime_plan(self):
         from harnest.backends.langgraph import ManagedAgentPlan, build_agent
 

@@ -111,7 +111,10 @@ That `Agent` is the supported one-agent managed form. Harnest builds an ADK
 making earlier user and assistant turns in the Harnest session available to the
 model. `history="turn"` projects only the current invocation. ADK chat modes and
 LangGraph message projection remain backend details; neither creates another
-session or checkpoint authority.
+session or checkpoint authority. When an agent follows another graph node,
+Harnest promotes that predecessor's direct output to the agent's current user
+input. Session history remains available in `session` mode; `turn` mode exposes
+only the promoted input.
 
 The primary graph-like managed form exports the small neutral graph API:
 

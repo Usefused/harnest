@@ -29,7 +29,9 @@ root_agent = Graph(
 `output_key`, `generate_content_config`, and `history`. `history="session"`
 (default) includes earlier user/assistant turns from the same Harnest session;
 use `history="turn"` for deliberate per-invocation isolation. The behavior is
-the same for ADK and LangGraph, including `Agent` nodes in portable graphs.
+the same for ADK and LangGraph, including `Agent` nodes in portable graphs. A
+graph agent consumes its predecessor's direct output as the current user input;
+session mode keeps earlier conversation in addition to that value.
 Prefer filesystem composition over
 manually populating discovered resources. These explicit object fields are not
 name-based access selectors for resource folders: filesystem location defines

@@ -122,7 +122,10 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
                 native = adk_node(nested, name=name)
                 propagate_litellm_lifecycles(nested, native)
             elif isinstance(value, AgentDefinition):
-                built_agent = value.build()
+                built_agent = _build_agent_node(
+                    value,
+                    direct_input=_receives_direct_input(graph, name),
+                )
                 native = adk_node(built_agent, name=name)
                 propagate_litellm_lifecycles(built_agent, native)
             elif callable(value):
@@ -169,6 +172,30 @@ def _embedded_graph_node(value: Any) -> Any:
     if isinstance(value, _AdvancedAgentDefinition):
         return _advanced_graph_node(value)
     return value
+
+
+def _receives_direct_input(graph: Graph, node_name: str) -> bool:
+    """Distinguish graph entry input from a preceding node's output."""
+
+    return any(
+        edge.target == node_name and edge.source != START for edge in graph.edges
+    )
+
+
+def _build_agent_node(
+    definition: AgentDefinition, *, direct_input: bool
+) -> Any:
+    """Preserve session history while allowing ADK to inject node output."""
+
+    built = definition.build()
+    if definition.history != "session" or not direct_input:
+        return built
+    # ADK chat nodes reject non-START edges. Single-turn dispatch injects the
+    # direct node value, while explicit content inclusion retains this node's
+    # prior session events across invocations.
+    return built.model_copy(
+        update={"mode": "single_turn", "include_contents": "default"}
+    )
 
 
 def _advanced_graph_node(value: _AdvancedAgentDefinition) -> Any:

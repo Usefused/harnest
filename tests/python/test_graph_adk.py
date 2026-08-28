@@ -90,6 +90,46 @@ async def _run_conversation(history: str) -> tuple[str, list[list[str]]]:
     return native.mode, model.seen
 
 
+async def _run_routed_conversation(history: str) -> tuple[str, list[list[str]]]:
+    model = _RecordingLlm(model=f"recording-routed-{history}")
+
+    def route(value: str) -> str:
+        return f"routed:{value}"
+
+    graph = Graph(
+        name=f"{history}_routed_conversation",
+        nodes={
+            "route": route,
+            "assistant": Agent(
+                name="assistant",
+                model=model,
+                instruction="Answer the routed request.",
+                history=history,
+            ),
+        },
+        edges=[Edge(START, "route"), Edge("route", "assistant")],
+    )
+    workflow = graph.build()
+    native = next(node for node in workflow.graph.nodes if node.name == "assistant")
+    runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
+    await runner.session_service.create_session(
+        app_name=graph.name, user_id="test-user", session_id="test-session"
+    )
+    try:
+        for message in ("first", "second"):
+            async for _ in runner.run_async(
+                user_id="test-user",
+                session_id="test-session",
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text=message)]
+                ),
+            ):
+                pass
+    finally:
+        await runner.close()
+    return native.mode, model.seen
+
+
 class GraphAdkTests(unittest.TestCase):
     def test_agent_history_controls_native_multi_turn_graph_context(self):
         session_mode, session_seen = asyncio.run(_run_conversation("session"))
@@ -99,6 +139,21 @@ class GraphAdkTests(unittest.TestCase):
         self.assertEqual(session_seen[1], ["first", "reply-1", "second"])
         self.assertEqual(turn_mode, "single_turn")
         self.assertEqual(turn_seen[1], ["second"])
+
+    def test_session_agent_consumes_routed_output_and_retains_node_history(self):
+        session_mode, session_seen = asyncio.run(
+            _run_routed_conversation("session")
+        )
+        _, turn_seen = asyncio.run(_run_routed_conversation("turn"))
+
+        # ADK requires direct-input nodes to dispatch as single-turn, while
+        # explicit content inclusion preserves Harnest's session contract.
+        self.assertEqual(session_mode, "single_turn")
+        self.assertEqual(
+            session_seen[1],
+            ["first", "reply-1", "second", "routed:second"],
+        )
+        self.assertEqual(turn_seen[1], ["routed:second"])
 
     def test_ir_validates_references_duplicates_and_reachability(self):
         with self.assertRaisesRegex(ValueError, "unknown target"):

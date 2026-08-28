@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -14,6 +15,19 @@ START = "START"
 
 RouteValue = bool | int | str
 Route = RouteValue | tuple[RouteValue, ...] | None
+
+
+def _model_input_text(value: Any) -> str:
+    """Render a portable node value consistently at model text boundaries."""
+
+    if isinstance(value, str):
+        return value
+    model_json = getattr(value, "model_dump_json", None)
+    if callable(model_json):
+        return model_json()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def _normalize_route(value: Any, *, field_name: str) -> Route:
