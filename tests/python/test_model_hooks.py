@@ -162,6 +162,37 @@ class ModelLifecyclePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replacement.custom_metadata, {"gateway": "team"})
         self.assertEqual(replacement.interaction_id, "interaction-1")
 
+    def test_adk_non_text_replacement_names_the_responsible_hook_phase(self):
+        from google.adk.models.llm_request import LlmRequest
+        from google.adk.models.llm_response import LlmResponse
+        from google.genai import types
+
+        call = types.FunctionCall(name="lookup", args={"id": "1"})
+        request = LlmRequest(
+            model="model",
+            contents=[
+                types.Content(role="user", parts=[types.Part(function_call=call)])
+            ],
+        )
+        original = ModelCallRequest("model", (ModelMessage("user", ""),))
+        changed = ModelCallRequest("model", (ModelMessage("user", "added"),))
+        with self.assertRaisesRegex(
+            ModelLifecycleError,
+            "before_model cannot add text to a non-text ADK message",
+        ):
+            _apply_adk_request(request, original, changed)
+
+        response = LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(function_call=call)]
+            )
+        )
+        with self.assertRaisesRegex(
+            ModelLifecycleError,
+            "after_model cannot add text to a non-text ADK message",
+        ):
+            _apply_adk_response(response, ModelCallResponse("added"))
+
     def test_langgraph_text_changes_preserve_tool_calls_metadata_and_structure(self):
         from langchain.agents.middleware.types import ModelResponse
         from langchain_core.messages import AIMessage, HumanMessage

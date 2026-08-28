@@ -194,7 +194,7 @@ def compile_application(
 
 @contextmanager
 def _bundle_library(bundle_root: Path) -> Iterator[None]:
-    """Translate namespace validation failures into the compiler error model."""
+    """Translate authored namespace failures into the compiler error model."""
 
     try:
         with authored_library(bundle_root):
@@ -238,8 +238,16 @@ def _compile_advanced_application(
         raise BundleImportError(str(exc)) from exc
     except AdvancedBackendValidationError as exc:
         raise BundleExportError(str(exc)) from exc
+    credential_extensions = _credential_native_extensions(
+        discovered_extensions.credential_provider,
+        discovered_extensions.native,
+        framework=framework,
+    )
     advanced = _attach_advanced_native_extensions(
-        advanced, discovered_extensions.native, framework=framework
+        advanced,
+        discovered_extensions.native,
+        framework=framework,
+        prepend_extensions=credential_extensions,
     )
     advanced = _ensure_adk_resumability(advanced, framework=framework)
     _validate_advanced_checkpointer(
@@ -256,7 +264,9 @@ def _compile_advanced_application(
         extensions=discovered_extensions.listeners,
         session_store=discovered_extensions.session_store,
         checkpointer=discovered_extensions.checkpointer,
+        credential_provider=discovered_extensions.credential_provider,
         output_policy=discovered_extensions.output_policy,
+        telemetry_exporters=discovered_extensions.telemetry_exporters,
         checkpoint_metadata=checkpoint_metadata(discovered_extensions.checkpointer),
         context_values=discovered_extensions.context_values,
         harnest_version=compatibility.harnest_version,
@@ -294,9 +304,17 @@ def _compile_managed_application(
     model_extension = portable_model_extension(
         portable_extensions, framework=framework
     )
-    native_extensions = discovered_extensions.native + (
+    authored_native_extensions = discovered_extensions.native + (
         (model_extension,) if model_extension is not None else ()
     )
+    credential_extensions = _credential_native_extensions(
+        discovered_extensions.credential_provider,
+        authored_native_extensions,
+        framework=framework,
+    )
+    # Credentials bind first so every authored native callback observes the
+    # same private invocation authority as tools and subagents.
+    native_extensions = credential_extensions + authored_native_extensions
     provider = discovered_extensions.checkpointer
     # Managed compilation owns framework adaptation. Native wrappers would
     # create a second authority outside that portable ownership boundary.
@@ -341,7 +359,17 @@ def _compile_managed_application(
         extensions=portable_extensions,
         session_store=discovered_extensions.session_store,
         checkpointer=provider,
+        credential_provider=discovered_extensions.credential_provider,
         output_policy=discovered_extensions.output_policy,
+        telemetry_exporters=discovered_extensions.telemetry_exporters,
+        input_schema=(
+            definition.input_schema if isinstance(value, AgentDefinition) else None
+        ),
+        output_schema=(
+            definition.output_schema
+            if isinstance(value, AgentDefinition)
+            else graph.output_schema
+        ),
         checkpoint_metadata=checkpoint_metadata(provider),
         context_values=discovered_extensions.context_values,
         harnest_version=compatibility.harnest_version,
@@ -395,10 +423,12 @@ def _ensure_adk_resumability(advanced: Any, *, framework: str) -> Any:
     if bool(getattr(config, "is_resumable", False)):
         return advanced
     from google.adk.apps.app import ResumabilityConfig
+    from ._adk_warnings import suppress_adk_warnings
 
-    native_app = advanced.native_app.model_copy(
-        update={"resumability_config": ResumabilityConfig(is_resumable=True)}
-    )
+    with suppress_adk_warnings("resumability"):
+        native_app = advanced.native_app.model_copy(
+            update={"resumability_config": ResumabilityConfig(is_resumable=True)}
+        )
     return replace(advanced, native_app=native_app)
 
 
@@ -434,11 +464,15 @@ def _load_extensions(bundle_root: Path, framework: str) -> Any:
 
 
 def _attach_advanced_native_extensions(
-    advanced: Any, native_extensions: Sequence[Any], *, framework: str
+    advanced: Any,
+    native_extensions: Sequence[Any],
+    *,
+    framework: str,
+    prepend_extensions: Sequence[Any] = (),
 ) -> Any:
     """Attach ADK plugins only where native construction remains mutable."""
 
-    if not native_extensions:
+    if not native_extensions and not prepend_extensions:
         return advanced
     if framework == "langgraph":
         raise BundleConventionError(
@@ -448,7 +482,13 @@ def _attach_advanced_native_extensions(
     app = advanced.native_app
     if app is None:
         raise BundleConventionError("advanced ADK lifecycle plugins require an ADK App")
-    plugins = tuple(getattr(app, "plugins", ())) + tuple(native_extensions)
+    # Harnest-owned security binders must run before plugins already attached
+    # to an advanced App; ordinary discovered plugins retain append semantics.
+    plugins = (
+        tuple(prepend_extensions)
+        + tuple(getattr(app, "plugins", ()))
+        + tuple(native_extensions)
+    )
     names = [getattr(plugin, "name", None) for plugin in plugins]
     duplicates = sorted({name for name in names if name and names.count(name) > 1})
     if duplicates:
@@ -457,6 +497,29 @@ def _attach_advanced_native_extensions(
         )
     native_app = app.model_copy(update={"plugins": list(plugins)})
     return replace(advanced, native_app=native_app)
+
+
+def _credential_native_extensions(
+    provider: Any,
+    native_extensions: Sequence[Any],
+    *,
+    framework: str,
+) -> tuple[Any, ...]:
+    """Bind private credentials across ADK's neutral and native run surfaces."""
+
+    if provider is None or framework != "adk":
+        return ()
+    from .credentials_adk import adk_credential_plugin
+
+    plugin = adk_credential_plugin(provider)
+    if any(
+        getattr(candidate, "name", None) == plugin.name
+        for candidate in native_extensions
+    ):
+        raise BundleConventionError(
+            f"ADK plugin name {plugin.name!r} is reserved by Harnest credentials"
+        )
+    return (plugin,)
 
 
 def compile_artifact(
@@ -986,6 +1049,7 @@ def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
         ("plugins", "capability plugins"),
         ("extensions", "runtime extensions"),
         ("lib", "authored libraries"),
+        ("models", "authored models"),
     )
     for directory, label in root_only_resources:
         path = bundle_root / directory

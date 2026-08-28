@@ -105,12 +105,17 @@ def _wrap_adk_managed(
         from google.adk.apps.app import ResumabilityConfig
     except ImportError as exc:  # pragma: no cover - optional backend
         raise BackendDependencyError("ADK compilation requires google-adk") from exc
-    return App(
-        name=target.name,
-        root_agent=target,
-        plugins=list(native_extensions),
-        resumability_config=ResumabilityConfig(is_resumable=True),
-    )
+    from .._adk_warnings import suppress_adk_warnings
+
+    # Resumability is required by Harnest's approval/checkpoint contract; its
+    # experimental status is an implementation choice, not an authoring issue.
+    with suppress_adk_warnings("resumability"):
+        return App(
+            name=target.name,
+            root_agent=target,
+            plugins=list(native_extensions),
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
 
 
 def _validate_adk_advanced(

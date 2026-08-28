@@ -5,6 +5,7 @@ from pathlib import Path
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.output import OutputPolicy
 from harnest.session import InMemorySessionStore
+from harnest.telemetry import TelemetryExporterError, resolve_telemetry_exporters
 
 
 class ExtensionDiscoveryTests(unittest.TestCase):
@@ -74,6 +75,49 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             result = discover_extensions(root, framework="langgraph")
 
         self.assertIsInstance(result.checkpointer, MemoryStore)
+
+    def test_telemetry_exporter_factories_are_repeatable_and_runtime_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "telemetry.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.telemetry_exporter\n"
+                "def first(): raise RuntimeError('runtime only')\n"
+                "@lifecycle.telemetry_exporter(order=10)\n"
+                "def second(): return object()\n",
+                encoding="utf-8",
+            )
+
+            discovered = discover_extensions(root, framework="langgraph")
+
+        self.assertEqual(
+            [item.function_name for item in discovered.telemetry_exporters],
+            ["first", "second"],
+        )
+        self.assertNotIn(
+            "telemetry_exporter", [item.phase for item in discovered.listeners]
+        )
+        with self.assertRaisesRegex(
+            TelemetryExporterError, "first.*RuntimeError"
+        ):
+            resolve_telemetry_exporters(discovered.telemetry_exporters)
+
+    def test_telemetry_exporter_factory_requires_zero_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "telemetry.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.telemetry_exporter\n"
+                "def exporter(endpoint): return endpoint\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "must accept no arguments"
+            ):
+                discover_extensions(root, framework="adk")
 
     def test_output_policy_defaults_to_suppress_and_can_opt_in(self):
         with tempfile.TemporaryDirectory() as temporary:

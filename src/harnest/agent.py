@@ -8,9 +8,16 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .mcp import MCPClient
+from .mcp_lifecycle import propagate_mcp_lifecycles
 from .model import ModelInput, resolve_model
 from .model_lifecycle import propagate_litellm_lifecycles
 from .sandbox import Sandbox
+from .structured import (
+    PydanticModel,
+    framework_metadata_field,
+    provider_output_schema,
+    validate_output_schema,
+)
 
 Tool = Callable[..., Any] | Any
 
@@ -50,7 +57,9 @@ class AgentDefinition:
     )
     mcp: Sequence[MCPClient] = field(default_factory=tuple)
     sandbox: Sandbox | Any | None = None
+    input_schema: PydanticModel | None = None
     output_key: str | None = None
+    output_schema: PydanticModel | None = None
     generate_content_config: Mapping[str, Any] | Any | None = None
     history: Literal["session", "turn"] = "session"
 
@@ -80,6 +89,10 @@ class AgentDefinition:
         self._validate_identity()
         self._validate_history()
         self._validate_resources()
+        validate_output_schema(self.input_schema, field_name="agent input_schema")
+        validate_output_schema(self.output_schema, field_name="agent output_schema")
+        if self.output_schema is not None:
+            framework_metadata_field(self.output_schema)
 
     def _validate_identity(self) -> None:
         """Keep authored identity safe across framework and artifact boundaries."""
@@ -136,8 +149,10 @@ class AgentDefinition:
         kwargs = self._build_kwargs()
         built = LlmAgent(**kwargs)
         propagate_litellm_lifecycles(kwargs["model"], built)
+        propagate_mcp_lifecycles(kwargs["tools"], built)
         for child in kwargs["sub_agents"]:
             propagate_litellm_lifecycles(child, built)
+            propagate_mcp_lifecycles(child, built)
         return built
 
     def _build_kwargs(self) -> dict[str, Any]:
@@ -161,6 +176,7 @@ class AgentDefinition:
         }
         if self.output_key is not None:
             kwargs["output_key"] = self.output_key
+        kwargs.update(self._schema_kwargs())
         if self.sandbox is not None:
             kwargs["code_executor"] = (
                 self.sandbox.to_adk_executor()
@@ -170,6 +186,23 @@ class AgentDefinition:
         if self.generate_content_config is not None:
             kwargs["generate_content_config"] = self._content_config()
         return kwargs
+
+    def _schema_kwargs(self) -> dict[str, PydanticModel]:
+        """Expose only provider-owned fields to the native model boundary."""
+
+        return {
+            name: schema
+            for name, schema in (
+                ("input_schema", self.input_schema),
+                (
+                    "output_schema",
+                    provider_output_schema(self.output_schema)
+                    if self.output_schema is not None
+                    else None,
+                ),
+            )
+            if schema is not None
+        }
 
     def _content_config(self) -> Any:
         """Translate authored mappings while preserving native ADK configuration."""

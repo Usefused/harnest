@@ -22,9 +22,30 @@ func TestSkillsShowPrintsEmbeddedAuthoringSkill(t *testing.T) {
 	}
 }
 
+func TestSkillsShowPrintsEmbeddedAuthenticationSkill(t *testing.T) {
+	stdout, _, err := executeForTest(
+		t, defaultSystem(), "skills", "show", authenticationSkillName,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "name: harnest-authentication") {
+		t.Fatalf("unexpected authentication skill output:\n%s", stdout)
+	}
+}
+
 func TestEmbeddedAuthoringSkillMarkdownLinksResolve(t *testing.T) {
 	t.Helper()
-	err := fs.WalkDir(authoringSkill, authoringSkillRoot, func(file string, entry fs.DirEntry, walkErr error) error {
+	for _, skill := range bundledCodingAgentSkills {
+		assertEmbeddedSkillMarkdownLinksResolve(t, skill)
+	}
+}
+
+func assertEmbeddedSkillMarkdownLinksResolve(
+	t *testing.T, skill bundledCodingAgentSkill,
+) {
+	t.Helper()
+	err := fs.WalkDir(authoringSkill, skill.root, func(file string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() || path.Ext(file) != ".md" {
 			return walkErr
 		}
@@ -57,7 +78,8 @@ func TestSkillsInstallUsesExplicitCodingAgentTarget(t *testing.T) {
 	}
 	destination := filepath.Join(project, ".claude", "skills", authoringSkillName)
 	assertEmbeddedSkillInstalled(t, destination)
-	if !strings.Contains(stdout, destination) || !strings.Contains(stdout, "for claude") {
+	if !strings.Contains(stdout, filepath.Dir(destination)) ||
+		!strings.Contains(stdout, "for claude") {
 		t.Fatalf("install output does not identify target and destination:\n%s", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(project, "skills", authoringSkillName)); !os.IsNotExist(err) {
@@ -192,14 +214,24 @@ func TestSkillsInstallRejectsUnknownTarget(t *testing.T) {
 
 func assertEmbeddedSkillInstalled(t *testing.T, destination string) {
 	t.Helper()
-	err := fs.WalkDir(authoringSkill, authoringSkillRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	parent := filepath.Dir(destination)
+	for _, skill := range bundledCodingAgentSkills {
+		assertOneEmbeddedSkillInstalled(t, skill, filepath.Join(parent, skill.name))
+	}
+}
+
+func assertOneEmbeddedSkillInstalled(
+	t *testing.T, skill bundledCodingAgentSkill, destination string,
+) {
+	t.Helper()
+	err := fs.WalkDir(authoringSkill, skill.root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
 			return nil
 		}
-		relative := strings.TrimPrefix(path, authoringSkillRoot+"/")
+		relative := strings.TrimPrefix(path, skill.root+"/")
 		want, err := authoringSkill.ReadFile(path)
 		if err != nil {
 			return err

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harnest Authentication"
+  short_description: "Build Harnest authentication and credential flows"
+  default_prompt: "Use $harnest-authentication to implement or review this Harnest authentication and downstream credential flow."

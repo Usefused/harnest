@@ -25,6 +25,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     instructions.md      root instructions
     pyproject.toml       locked agent and framework dependencies
     lib/                 reusable Python helpers imported as harnest.lib.*
+    models/              Pydantic contracts imported as harnest.models.*
     tools/               discovered Python tools
     plugins/             reusable MCP-client-and-skill capability bundles
     extensions/          portable lifecycle plus framework-specific integration

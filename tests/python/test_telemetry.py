@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
 from harnest.logging import get_logger
 from harnest.telemetry import (
+    TelemetryExporter,
     _exporter_name,
     _reset_for_testing,
     configure_observability,
@@ -27,6 +31,26 @@ class _Capture(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
+
+
+class _TrackingSpanExporter(InMemorySpanExporter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.shutdowns = 0
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+        super().shutdown()
+
+
+class _TrackingLogExporter(InMemoryLogRecordExporter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.shutdowns = 0
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+        super().shutdown()
 
 
 class TelemetryTests(unittest.TestCase):
@@ -120,6 +144,164 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(record.attributes["result_count"], 2)
         self.assertEqual(record.trace_id, int(trace_id, 16))
         self.assertEqual(record.span_id, int(span_id, 16))
+
+    def test_multiple_destinations_select_traces_and_logs_independently(self):
+        first_spans = InMemorySpanExporter()
+        second_spans = InMemorySpanExporter()
+        second_logs = InMemoryLogRecordExporter()
+        with patch.dict(
+            os.environ,
+            {
+                "HARNEST_LOG_CONSOLE": "false",
+                "HARNEST_OTEL_ENABLED": "false",
+            },
+        ):
+            state = configure_observability(
+                "demo",
+                framework="langgraph",
+                exporters=(
+                    TelemetryExporter(name="trace-only", traces=first_spans),
+                    TelemetryExporter(
+                        name="combined",
+                        traces=second_spans,
+                        logs=second_logs,
+                    ),
+                ),
+                set_global_providers=False,
+            )
+            with span("agent.work"):
+                get_logger("agent").info("agent.completed")
+            state.force_flush()
+
+        self.assertEqual(
+            [item.name for item in first_spans.get_finished_spans()],
+            ["agent.work"],
+        )
+        self.assertEqual(
+            [item.name for item in second_spans.get_finished_spans()],
+            ["agent.work"],
+        )
+        self.assertEqual(len(second_logs.get_finished_logs()), 1)
+
+    def test_runtime_factories_run_only_for_the_first_process_bootstrap(self):
+        calls: list[str] = []
+        first_spans = InMemorySpanExporter()
+
+        def first():
+            calls.append("first")
+            return TelemetryExporter(name="first", traces=first_spans)
+
+        def ignored():
+            calls.append("ignored")
+            return TelemetryExporter(
+                name="ignored", traces=InMemorySpanExporter()
+            )
+
+        environment = {
+            "HARNEST_LOG_CONSOLE": "false",
+            "HARNEST_OTEL_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment):
+            initial = configure_observability(
+                "demo",
+                framework="langgraph",
+                exporter_factories=(
+                    SimpleNamespace(callback=first, identity="first.py:1:first"),
+                ),
+                set_global_providers=False,
+            )
+            repeated = configure_observability(
+                "demo",
+                framework="langgraph",
+                exporter_factories=(
+                    SimpleNamespace(
+                        callback=ignored, identity="ignored.py:1:ignored"
+                    ),
+                ),
+                set_global_providers=False,
+            )
+
+        self.assertIs(repeated, initial)
+        self.assertEqual(calls, ["first"])
+
+    def test_adopted_providers_shut_down_only_added_processors(self):
+        spans = _TrackingSpanExporter()
+        logs = _TrackingLogExporter()
+        tracer_provider = TracerProvider(shutdown_on_exit=False)
+        logger_provider = LoggerProvider(shutdown_on_exit=False)
+        environment = {
+            "HARNEST_LOG_CONSOLE": "false",
+            "HARNEST_OTEL_ENABLED": "false",
+        }
+        with (
+            patch.dict(os.environ, environment),
+            patch(
+                "harnest.telemetry.trace.get_tracer_provider",
+                return_value=tracer_provider,
+            ),
+            patch(
+                "opentelemetry._logs.get_logger_provider",
+                return_value=logger_provider,
+            ),
+        ):
+            state = configure_observability(
+                "demo",
+                framework="adk",
+                exporters=(
+                    TelemetryExporter(name="adopted", traces=spans, logs=logs),
+                ),
+                use_global_providers=True,
+                set_global_providers=False,
+            )
+            state.shutdown()
+
+        self.assertFalse(state.owns_tracer_provider)
+        self.assertFalse(state.owns_logger_provider)
+        self.assertEqual(spans.shutdowns, 1)
+        self.assertEqual(logs.shutdowns, 1)
+
+    def test_provider_adoption_is_independent_per_signal(self):
+        tracer_provider = TracerProvider(shutdown_on_exit=False)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HARNEST_LOG_CONSOLE": "false",
+                    "HARNEST_OTEL_ENABLED": "false",
+                },
+            ),
+            patch(
+                "harnest.telemetry.trace.get_tracer_provider",
+                return_value=tracer_provider,
+            ),
+            patch(
+                "opentelemetry._logs.get_logger_provider",
+                return_value=object(),
+            ),
+        ):
+            state = configure_observability(
+                "demo",
+                framework="adk",
+                exporters=(
+                    TelemetryExporter(
+                        name="traces", traces=InMemorySpanExporter()
+                    ),
+                ),
+                use_global_providers=True,
+                set_global_providers=False,
+            )
+
+        self.assertFalse(state.owns_tracer_provider)
+        self.assertTrue(state.owns_logger_provider)
+
+    def test_destination_requires_name_signal_and_matching_sdk_type(self):
+        spans = InMemorySpanExporter()
+        with self.assertRaisesRegex(ValueError, "name"):
+            TelemetryExporter(name="", traces=spans)
+        with self.assertRaisesRegex(ValueError, "traces or logs"):
+            TelemetryExporter(name="empty")
+        with self.assertRaisesRegex(TypeError, "SpanExporter"):
+            TelemetryExporter(name="wrong", traces=object())
 
     def test_traced_supports_sync_and_async_functions(self):
         spans = InMemorySpanExporter()

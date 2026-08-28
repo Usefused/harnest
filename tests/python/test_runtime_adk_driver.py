@@ -1,13 +1,22 @@
 import types as python_types
 import unittest
+from typing import Any
 
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.models import BaseLlm, LlmResponse
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from pydantic import BaseModel
 
 from harnest.application import CompiledApplication
+from harnest.graph import START, Edge, Event, Graph
+from harnest.mcp import MCPClient
+from harnest.mcp_lifecycle import (
+    MCPClientContext,
+    MCPClientLifecycle,
+    attach_mcp_lifecycle,
+)
 from harnest.neutral_runtime import (
     InvocationRequest,
     RuntimeDriver,
@@ -15,6 +24,7 @@ from harnest.neutral_runtime import (
 )
 from harnest.output import OutputPolicy
 from harnest.runtime_adk import ADKRuntimeDriver, _ADKEventNormalizer
+from harnest.structured import FrameworkMetadata, provider_output_schema
 
 
 class DeterministicLlm(BaseLlm):
@@ -25,6 +35,47 @@ class DeterministicLlm(BaseLlm):
                 role="model", parts=[types.Part(text="deterministic response")]
             )
         )
+
+
+class StructuredAnswer(BaseModel):
+    answer: str
+
+
+class ADKTurnDetails(BaseModel):
+    events: list[dict[str, Any]]
+
+
+class RuntimeDetails(BaseModel):
+    adk: ADKTurnDetails
+
+
+class StructuredAnswerWithMetadata(BaseModel):
+    answer: str
+    metadata: FrameworkMetadata[RuntimeDetails]
+
+
+class StructuredLlm(BaseLlm):
+    async def generate_content_async(self, llm_request, stream=False):
+        del llm_request, stream
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text='{"answer":"validated"}')],
+            )
+        )
+
+
+class _RecordingMCPLifecycle(MCPClientLifecycle):
+    """Record ADK application-level lifecycle ownership."""
+
+    def __init__(self):
+        self.events = []
+
+    async def start(self, context: MCPClientContext):
+        self.events.append(f"start:{context.framework}")
+
+    async def close(self, context: MCPClientContext):
+        self.events.append(f"close:{context.framework}")
 
 
 def _application() -> CompiledApplication:
@@ -41,6 +92,69 @@ def _application() -> CompiledApplication:
         mode="managed",
         target=agent,
         native_app=app,
+    )
+
+
+def _structured_application() -> CompiledApplication:
+    """Build an ADK fixture with Harnest-owned structured output metadata."""
+
+    agent = LlmAgent(
+        name="structured",
+        model=StructuredLlm(model="structured"),
+        instruction="Answer with the configured schema.",
+        output_schema=StructuredAnswer,
+    )
+    return CompiledApplication(
+        name="structured",
+        framework="adk",
+        mode="managed",
+        target=agent,
+        native_app=App(name="structured", root_agent=agent),
+        output_schema=StructuredAnswer,
+    )
+
+
+def _structured_metadata_application() -> CompiledApplication:
+    """Build a fixture whose public model opts into native turn metadata."""
+
+    provider_schema = provider_output_schema(StructuredAnswerWithMetadata)
+    agent = LlmAgent(
+        name="structured_metadata",
+        model=StructuredLlm(model="structured-metadata"),
+        instruction="Answer with the provider-owned output fields.",
+        output_schema=provider_schema,
+    )
+    return CompiledApplication(
+        name="structured_metadata",
+        framework="adk",
+        mode="managed",
+        target=agent,
+        native_app=App(name="structured_metadata", root_agent=agent),
+        output_schema=StructuredAnswerWithMetadata,
+    )
+
+
+def _structured_graph_application() -> CompiledApplication:
+    """Build a portable graph whose terminal value has an output contract."""
+
+    def answer(_value):
+        return Event(output={"answer": "validated"})
+
+    graph = Graph(
+        name="structured_graph",
+        nodes={"answer": answer},
+        edges=(Edge(START, "answer"),),
+        output_schema=StructuredAnswer,
+    )
+    target = graph.build()
+    return CompiledApplication(
+        name=graph.name,
+        framework="adk",
+        mode="managed",
+        target=target,
+        native_app=App(name=graph.name, root_agent=target),
+        kind="graph",
+        output_schema=graph.output_schema,
     )
 
 
@@ -139,7 +253,29 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [event["type"] for event in result.events], ["message"]
         )
-
+        session = await self.driver.get_session(
+            session_id="invoke-session", user_id="test-user"
+        )
+        self.assertIsNotNone(session)
+        self.assertEqual(session.metadata["adk"]["appName"], "root")
+        self.assertGreaterEqual(len(session.metadata["adk"]["events"]), 1)
+        self.assertIn("content", session.metadata["adk"]["events"][0])
+        messages = await self.driver.get_session_messages(
+            session_id="invoke-session", user_id="test-user"
+        )
+        self.assertIsNotNone(messages)
+        self.assertIn("user", {message.role for message in messages})
+        self.assertIn("assistant", {message.role for message in messages})
+        assistant = next(
+            message for message in messages if message.role == "assistant"
+        )
+        self.assertEqual(assistant.content, "deterministic response")
+        self.assertIn("adk", assistant.metadata)
+        self.assertIsNone(
+            await self.driver.get_session_messages(
+                session_id="missing", user_id="test-user"
+            )
+        )
         await self.driver.create_session(
             session_id="stream-session", user_id="test-user", state={}
         )
@@ -159,6 +295,83 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_structured_output_is_a_result_for_invoke_and_stream(self):
+        driver = ADKRuntimeDriver(_structured_application())
+        try:
+            await driver.create_session(
+                session_id="structured-invoke", user_id="test-user", state={}
+            )
+            invoked = await driver.invoke(_request("structured-invoke"))
+            await driver.create_session(
+                session_id="structured-stream", user_id="test-user", state={}
+            )
+            streamed = [
+                event
+                async for event in driver.stream(
+                    _request("structured-stream", invocation_id="structured-2")
+                )
+            ]
+        finally:
+            await driver.close()
+
+        expected = {"answer": "validated"}
+        self.assertEqual(invoked.result, expected)
+        self.assertEqual(invoked.events[-1]["output"], expected)
+        self.assertEqual(streamed[-1]["output"], expected)
+
+    async def test_declared_runtime_metadata_contains_native_adk_turn(self):
+        driver = ADKRuntimeDriver(_structured_metadata_application())
+        try:
+            await driver.create_session(
+                session_id="metadata", user_id="test-user", state={}
+            )
+            invoked = await driver.invoke(_request("metadata"))
+        finally:
+            await driver.close()
+
+        self.assertEqual(invoked.result["answer"], "validated")
+        events = invoked.result["metadata"]["adk"]["events"]
+        self.assertTrue(events)
+        self.assertTrue(
+            any(event.get("author") == "structured_metadata" for event in events)
+        )
+
+    async def test_graph_output_schema_validates_terminal_output(self):
+        driver = ADKRuntimeDriver(_structured_graph_application())
+        try:
+            await driver.create_session(
+                session_id="graph-output", user_id="test-user", state={}
+            )
+            invoked = await driver.invoke(_request("graph-output"))
+        finally:
+            await driver.close()
+
+        self.assertEqual(invoked.result, {"answer": "validated"})
+
+    async def test_mcp_gateway_lifecycle_follows_adk_driver_ownership(self):
+        lifecycle = _RecordingMCPLifecycle()
+        client = MCPClient.sse(
+            "https://gateway.example/sse", lifecycle=lifecycle
+        )
+        binding = client._lifecycle_binding("adk")
+        self.assertIsNotNone(binding)
+        application = _application()
+        assert binding is not None
+        attach_mcp_lifecycle(application.target, binding)
+        driver = ADKRuntimeDriver(application)
+        try:
+            await driver.create_session(
+                session_id="lifecycle-session",
+                user_id="test-user",
+                state={},
+            )
+            await driver.invoke(_request("lifecycle-session"))
+            self.assertEqual(lifecycle.events, ["start:adk"])
+        finally:
+            await driver.close()
+
+        self.assertEqual(lifecycle.events, ["start:adk", "close:adk"])
 
     async def test_close_is_idempotent_and_rejects_new_work(self):
         await self.driver.close()

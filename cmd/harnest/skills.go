@@ -12,14 +12,26 @@ import (
 )
 
 const (
-	authoringSkillRoot = "authoring_skill/harnest-authoring"
-	authoringSkillName = "harnest-authoring"
+	authoringSkillRoot      = "authoring_skill/harnest-authoring"
+	authoringSkillName      = "harnest-authoring"
+	authenticationSkillRoot = "authoring_skill/harnest-authentication"
+	authenticationSkillName = "harnest-authentication"
 )
 
-// authoringSkill contains documentation for coding agents that modify Harnest
-// projects. It is intentionally installed outside an agent's runtime skills/.
+type bundledCodingAgentSkill struct {
+	name string
+	root string
+}
+
+var bundledCodingAgentSkills = []bundledCodingAgentSkill{
+	{name: authoringSkillName, root: authoringSkillRoot},
+	{name: authenticationSkillName, root: authenticationSkillRoot},
+}
+
+// authoringSkill contains focused guidance for coding agents that modify
+// Harnest projects. It is installed outside an agent's runtime skills/.
 //
-//go:embed authoring_skill/harnest-authoring
+//go:embed authoring_skill/harnest-authoring authoring_skill/harnest-authentication
 var authoringSkill embed.FS
 
 type codingAgentTarget struct {
@@ -35,28 +47,38 @@ var codingAgentTargets = map[string]codingAgentTarget{
 	"cursor":  {name: "cursor", relativeSkillsDir: ".cursor/skills"},
 }
 
+// newSkillsCommand exposes embedded coding guidance outside runtime agent skills.
 func (a *application) newSkillsCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "skills",
 		Short: "Show or install Harnest guidance for coding agents",
-		Long: `Show or install the bundled Harnest authoring skill.
+		Long: `Show or install the bundled Harnest coding-agent skills.
 
-This skill teaches a coding agent how to create and modify Harnest projects. It
-is separate from the runtime skills/ directory compiled into an agent.`,
+These skills cover general authoring and authentication/credential boundaries.
+They are separate from the runtime skills/ directory compiled into an agent.`,
 	}
 	command.AddCommand(a.newSkillsShowCommand(), a.newSkillsInstallCommand())
 	return command
 }
 
+// newSkillsShowCommand prints one explicitly selected embedded skill entrypoint.
 func (a *application) newSkillsShowCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show",
-		Short: "Print the bundled Harnest authoring skill",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			contents, err := authoringSkill.ReadFile(authoringSkillRoot + "/SKILL.md")
+		Use:   "show [skill]",
+		Short: "Print a bundled Harnest coding-agent skill",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			name := authoringSkillName
+			if len(args) == 1 {
+				name = args[0]
+			}
+			skill, err := bundledSkill(name)
 			if err != nil {
-				return fmt.Errorf("read embedded authoring skill: %w", err)
+				return err
+			}
+			contents, err := authoringSkill.ReadFile(skill.root + "/SKILL.md")
+			if err != nil {
+				return fmt.Errorf("read embedded %s skill: %w", skill.name, err)
 			}
 			_, err = command.OutOrStdout().Write(contents)
 			return err
@@ -64,13 +86,14 @@ func (a *application) newSkillsShowCommand() *cobra.Command {
 	}
 }
 
+// newSkillsInstallCommand installs the complete cooperating skill set together.
 func (a *application) newSkillsInstallCommand() *cobra.Command {
 	var targetName string
 	var projectDirectory string
 	var force bool
 	command := &cobra.Command{
 		Use:   "install",
-		Short: "Install the authoring skill for a coding agent",
+		Short: "Install Harnest skills for a coding agent",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			project, err := filepath.Abs(projectDirectory)
@@ -89,19 +112,22 @@ func (a *application) newSkillsInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			destination := filepath.Join(
-				project,
-				filepath.FromSlash(target.relativeSkillsDir),
-				authoringSkillName,
-			)
-			if err := installAuthoringSkill(destination, force); err != nil {
-				return err
+			destinations := skillDestinations(project, target)
+			for _, destination := range destinations {
+				if err := validateSkillDestination(destination.path, force); err != nil {
+					return err
+				}
+			}
+			for _, destination := range destinations {
+				if err := installBundledSkill(destination.skill, destination.path, force); err != nil {
+					return err
+				}
 			}
 			fmt.Fprintf(
 				command.OutOrStdout(),
-				"Installed Harnest authoring skill for %s at %s\n",
+				"Installed Harnest coding-agent skills for %s at %s\n",
 				target.name,
-				destination,
+				filepath.Dir(destinations[0].path),
 			)
 			return nil
 		},
@@ -116,15 +142,49 @@ func (a *application) newSkillsInstallCommand() *cobra.Command {
 		&projectDirectory,
 		"project",
 		".",
-		"project root where the coding-agent skill should be installed",
+		"project root where the coding-agent skills should be installed",
 	)
 	command.Flags().BoolVar(
 		&force,
 		"force",
 		false,
-		"replace an existing installed authoring skill",
+		"replace existing installed Harnest coding-agent skills",
 	)
 	return command
+}
+
+type skillDestination struct {
+	skill bundledCodingAgentSkill
+	path  string
+}
+
+// skillDestinations maps every bundled skill into one coding-agent convention.
+func skillDestinations(project string, target codingAgentTarget) []skillDestination {
+	directory := filepath.Join(project, filepath.FromSlash(target.relativeSkillsDir))
+	destinations := make([]skillDestination, 0, len(bundledCodingAgentSkills))
+	for _, skill := range bundledCodingAgentSkills {
+		destinations = append(destinations, skillDestination{
+			skill: skill,
+			path:  filepath.Join(directory, skill.name),
+		})
+	}
+	return destinations
+}
+
+// bundledSkill resolves only declared skill names from the embedded filesystem.
+func bundledSkill(name string) (bundledCodingAgentSkill, error) {
+	// Selection is explicit so `show` cannot read arbitrary embedded files.
+	for _, skill := range bundledCodingAgentSkills {
+		if name == skill.name {
+			return skill, nil
+		}
+	}
+	return bundledCodingAgentSkill{}, fmt.Errorf(
+		"unknown Harnest skill %q; choose %s or %s",
+		name,
+		authoringSkillName,
+		authenticationSkillName,
+	)
 }
 
 func (a *application) resolveCodingAgentTarget(requested, project string) (codingAgentTarget, error) {
@@ -194,7 +254,12 @@ func detectProjectCodingAgent(project string) (codingAgentTarget, bool) {
 	return codingAgentTarget{}, false
 }
 
-func installAuthoringSkill(destination string, force bool) error {
+// installBundledSkill replaces one skill through a same-directory staging path.
+func installBundledSkill(
+	skill bundledCodingAgentSkill, destination string, force bool,
+) error {
+	// Validate again at the mutation boundary in case a destination changed
+	// after the command performed its all-skills preflight.
 	if err := validateSkillDestination(destination, force); err != nil {
 		return err
 	}
@@ -203,13 +268,13 @@ func installAuthoringSkill(destination string, force bool) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create coding-agent skills directory: %w", err)
 	}
-	stagingRoot, err := os.MkdirTemp(parent, ".harnest-authoring-install-")
+	stagingRoot, err := os.MkdirTemp(parent, ".harnest-skill-install-")
 	if err != nil {
-		return fmt.Errorf("create authoring skill staging directory: %w", err)
+		return fmt.Errorf("create coding-agent skill staging directory: %w", err)
 	}
 	defer os.RemoveAll(stagingRoot)
-	staged := filepath.Join(stagingRoot, authoringSkillName)
-	if err := copyEmbeddedAuthoringSkill(staged); err != nil {
+	staged := filepath.Join(stagingRoot, skill.name)
+	if err := copyEmbeddedSkill(skill, staged); err != nil {
 		return err
 	}
 
@@ -218,14 +283,16 @@ func installAuthoringSkill(destination string, force bool) error {
 	if _, err := os.Lstat(destination); err == nil {
 		hadPrevious = true
 		if err := os.Rename(destination, backup); err != nil {
-			return fmt.Errorf("stage existing authoring skill for replacement: %w", err)
+			return fmt.Errorf(
+				"stage existing %s skill for replacement: %w", skill.name, err,
+			)
 		}
 	}
 	if err := os.Rename(staged, destination); err != nil {
 		if hadPrevious {
 			_ = os.Rename(backup, destination)
 		}
-		return fmt.Errorf("install authoring skill: %w", err)
+		return fmt.Errorf("install %s skill: %w", skill.name, err)
 	}
 	return nil
 }
@@ -236,23 +303,27 @@ func validateSkillDestination(destination string, force bool) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("inspect authoring skill destination: %w", err)
+		return fmt.Errorf("inspect coding-agent skill destination: %w", err)
 	}
 	if !force {
-		return fmt.Errorf("authoring skill already exists at %s; pass --force to replace it", destination)
+		return fmt.Errorf(
+			"coding-agent skill already exists at %s; pass --force to replace it",
+			destination,
+		)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("authoring skill destination %s is not a directory", destination)
+		return fmt.Errorf("coding-agent skill destination %s is not a directory", destination)
 	}
 	return nil
 }
 
-func copyEmbeddedAuthoringSkill(destination string) error {
-	return fs.WalkDir(authoringSkill, authoringSkillRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+// copyEmbeddedSkill materializes one declared embedded tree into staging.
+func copyEmbeddedSkill(skill bundledCodingAgentSkill, destination string) error {
+	return fs.WalkDir(authoringSkill, skill.root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(authoringSkillRoot, path)
+		relative, err := filepath.Rel(skill.root, path)
 		if err != nil {
 			return err
 		}

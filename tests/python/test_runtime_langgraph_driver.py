@@ -4,12 +4,19 @@ from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+
 from harnest.agent import Agent, AgentDefinition
 from harnest.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.graph import START, Edge, Graph
 from harnest.mcp import MCPClient
+from harnest.mcp_lifecycle import (
+    MCPClientContext,
+    MCPClientLifecycle,
+    MCPHTTPClientOptions,
+)
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
 from harnest.output import OutputPolicy
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
@@ -123,18 +130,62 @@ class _MCPAdapterClient:
         self.tool_interceptors = tool_interceptors
         self.tool_name_prefix = tool_name_prefix
         self.requests = []
+        self.http_clients = []
         self.closed = 0
         self.__class__.instances.append(self)
 
     async def get_tools(self, *, server_name):
         self.requests.append(server_name)
+        factory = self.connections[server_name].get("httpx_client_factory")
+        if factory is not None:
+            self.http_clients.append(
+                factory(headers={"X-Adapter": "langgraph"}, timeout=1.0)
+            )
         return [
             SimpleNamespace(name=f"{server_name}_echo"),
             SimpleNamespace(name=f"{server_name}_hidden"),
         ]
 
     async def aclose(self):
+        for client in self.http_clients:
+            await client.aclose()
         self.closed += 1
+
+
+class _TrackedHTTPClient(httpx.AsyncClient):
+    """Expose adapter-owned session cleanup ordering to the runtime test."""
+
+    def __init__(self, events, **kwargs):
+        super().__init__(**kwargs)
+        self.events = events
+
+    async def aclose(self):
+        self.events.append("session-close")
+        await super().aclose()
+
+
+class _RuntimeMCPLifecycle(MCPClientLifecycle):
+    """Record the application and session ownership boundaries."""
+
+    def __init__(self):
+        self.events = []
+
+    async def start(self, context: MCPClientContext):
+        self.events.append(f"start:{context.framework}")
+
+    def create_http_client(
+        self, options: MCPHTTPClientOptions, context: MCPClientContext
+    ):
+        self.events.append(f"create:{context.framework}")
+        return _TrackedHTTPClient(
+            self.events,
+            headers=dict(options.headers),
+            timeout=options.timeout,
+            auth=options.auth,
+        )
+
+    async def close(self, context: MCPClientContext):
+        self.events.append(f"lifecycle-close:{context.framework}")
 
 
 def _request(
@@ -258,7 +309,26 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1", user_id="user-1"
         )
         self.assertEqual(session.state["counter"], 2)
-        self.assertIn("messages", session.state)
+        self.assertNotIn("messages", session.state)
+        self.assertIn("messages", session.metadata["langgraph"])
+        self.assertEqual(
+            session.metadata["langgraph"]["messages"][-1]["content"][1]["text"],
+            "answer-2",
+        )
+        messages = await self.driver.get_session_messages(
+            session_id="session-1", user_id="user-1"
+        )
+        self.assertEqual(
+            [message.role for message in messages],
+            ["assistant", "tool", "assistant"],
+        )
+        self.assertEqual(messages[-1].content, "answer-2")
+        self.assertIn("langgraph", messages[-1].metadata)
+        self.assertIsNone(
+            await self.driver.get_session_messages(
+                session_id="missing", user_id="user-1"
+            )
+        )
 
         await self.driver.invoke(_request(invocation_id="invocation-2"))
         thread_ids = [item["configurable"]["thread_id"] for item in self.target.configs]
@@ -293,6 +363,11 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.result["value"], "count:3")
         self.assertEqual(session.state, {"count": 3, "tenant": "one"})
+        self.assertIn("messages", session.metadata["langgraph"])
+        self.assertEqual(
+            session.metadata["langgraph"]["_harnest_state"],
+            {"count": 3, "tenant": "one"},
+        )
         self.assertEqual(
             target.inputs[0]["_harnest_state"], {"count": 2, "tenant": "one"}
         )
@@ -476,6 +551,60 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(target.closed, 1)
         self.assertEqual(client.closed, 1)
+
+    async def test_mcp_gateway_lifecycle_wraps_adapter_owned_sessions(self):
+        lifecycle = _RuntimeMCPLifecycle()
+        configured = replace(
+            MCPClient.streamable_http(
+                "https://gateway.example/mcp",
+                lifecycle=lifecycle,
+            ),
+            capability_id="mcp__gateway",
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="gateway_agent",
+                model="openai:test",
+                instruction="Use the gateway.",
+                mcp=(configured,),
+            ),
+            tools=(),
+        )
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain_mcp_adapters": adapters,
+                "langchain_mcp_adapters.client": client_module,
+            },
+        ), patch(
+            "harnest.backends.langgraph.materialize_agent",
+            return_value=_Target(),
+        ):
+            await driver.invoke(_request())
+
+        self.assertEqual(
+            lifecycle.events,
+            ["start:langgraph", "create:langgraph"],
+        )
+        await driver.close()
+        self.assertEqual(
+            lifecycle.events,
+            [
+                "start:langgraph",
+                "create:langgraph",
+                "session-close",
+                "lifecycle-close:langgraph",
+            ],
+        )
 
     async def test_driver_materializes_mcp_agents_inside_graph(self):
         definition = AgentDefinition(

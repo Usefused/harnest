@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from .approval import (
     ApprovalPolicy,
@@ -14,10 +14,24 @@ from .approval import (
     record_approved_execution,
     record_approved_failure,
 )
+from .mcp_lifecycle import (
+    MCPClientContext,
+    MCPClientLifecycle,
+    MCPHTTPClientOptions,
+    _MCPClientLifecycleBinding,
+    _MCPClientLifecycleController,
+    _mcp_lifecycle_controller,
+    attach_mcp_lifecycle,
+)
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
-__all__ = ["MCPClient"]
+__all__ = [
+    "MCPClient",
+    "MCPClientContext",
+    "MCPClientLifecycle",
+    "MCPHTTPClientOptions",
+]
 
 
 def _expand(value: str) -> str:
@@ -50,6 +64,10 @@ class MCPClient:
     approval: ApprovalPolicy | None = field(default=None, repr=False)
     identity: str | None = field(default=None, repr=False)
     capability_id: str | None = field(default=None, repr=False)
+    lifecycle: MCPClientLifecycle | None = field(default=None, repr=False)
+    _lifecycle_controller: _MCPClientLifecycleController | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def stdio(
@@ -60,6 +78,7 @@ class MCPClient:
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
         timeout_seconds: float = 30,
+        lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
         return cls(
             "stdio",
@@ -69,6 +88,7 @@ class MCPClient:
             tool_filter=tools,
             tool_name_prefix=prefix,
             timeout_seconds=timeout_seconds,
+            lifecycle=lifecycle,
         )
 
     @classmethod
@@ -81,6 +101,7 @@ class MCPClient:
         prefix: str | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
+        lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
         return cls(
             "streamable-http",
@@ -90,6 +111,7 @@ class MCPClient:
             tool_name_prefix=prefix,
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
+            lifecycle=lifecycle,
         )
 
     @classmethod
@@ -102,6 +124,7 @@ class MCPClient:
         prefix: str | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
+        lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
         return cls(
             "sse",
@@ -111,11 +134,28 @@ class MCPClient:
             tool_name_prefix=prefix,
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
+            lifecycle=lifecycle,
         )
 
     def __post_init__(self) -> None:
         self._validate_timeouts()
         self._validate_transport()
+        self._initialize_lifecycle()
+
+    def _initialize_lifecycle(self) -> None:
+        """Validate and privately bind the optional remote-client lifecycle."""
+
+        if self.lifecycle is None:
+            return
+        if not isinstance(self.lifecycle, MCPClientLifecycle):
+            raise TypeError("MCP lifecycle must extend MCPClientLifecycle")
+        if self.transport == "stdio":
+            raise ValueError("MCP client lifecycle requires an HTTP transport")
+        object.__setattr__(
+            self,
+            "_lifecycle_controller",
+            _mcp_lifecycle_controller(self.lifecycle),
+        )
 
     def _validate_timeouts(self) -> None:
         if self.timeout_seconds <= 0:
@@ -143,13 +183,17 @@ class MCPClient:
         """Construct an ADK MCP toolset, resolving ``${ENV_VAR}`` placeholders."""
 
         classes = _adk_mcp_classes()
-        connection = self._adk_connection(classes)
+        binding = self._lifecycle_binding("adk")
+        connection = self._adk_connection(classes, binding=binding)
         toolset_type = self._adk_toolset_type(classes[0])
-        return toolset_type(
+        toolset = toolset_type(
             connection_params=connection,
             tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
             tool_name_prefix=self.tool_name_prefix,
         )
+        if binding is not None:
+            attach_mcp_lifecycle(toolset, binding)
+        return toolset
 
     def _adk_toolset_type(self, base: Any) -> Any:
         policy = self.approval
@@ -189,17 +233,30 @@ class MCPClient:
 
         return ApprovalMcpToolset
 
-    def _adk_connection(self, classes: tuple[Any, ...]) -> Any:
+    def _adk_connection(
+        self,
+        classes: tuple[Any, ...],
+        *,
+        binding: _MCPClientLifecycleBinding | None = None,
+    ) -> Any:
+        """Build ADK parameters and install the portable HTTP-client seam."""
+
         _, sse_params, stdio_params, stream_params, server_parameters = classes
         if self.transport == "stdio":
             return self._adk_stdio(stdio_params, server_parameters)
         params = sse_params if self.transport == "sse" else stream_params
-        return params(
-            url=_expand(self.url or ""),
-            headers={key: _expand(value) for key, value in self.headers.items()},
-            timeout=self.timeout_seconds,
-            sse_read_timeout=self.sse_read_timeout_seconds,
-        )
+        kwargs: dict[str, Any] = {
+            "url": _expand(self.url or ""),
+            "headers": {
+                key: _expand(value) for key, value in self.headers.items()
+            },
+            "timeout": self.timeout_seconds,
+            "sse_read_timeout": self.sse_read_timeout_seconds,
+        }
+        if binding is not None:
+            # Both framework adapters own and close each returned session client.
+            kwargs["httpx_client_factory"] = binding.client_factory()
+        return params(**kwargs)
 
     def _adk_stdio(self, params: Any, server_parameters: Any) -> Any:
         server = server_parameters(
@@ -222,7 +279,7 @@ class MCPClient:
                     "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
                 },
             }
-        return {
+        connection: dict[str, Any] = {
             "transport": (
                 "streamable_http"
                 if self.transport == "streamable-http"
@@ -236,6 +293,28 @@ class MCPClient:
                 "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
             },
         }
+        binding = self._lifecycle_binding("langgraph")
+        if binding is not None:
+            # LangChain forwards this factory to the same MCP SDK transport seam.
+            connection["httpx_client_factory"] = binding.client_factory()
+        return connection
+
+    def _lifecycle_binding(
+        self, framework: Literal["adk", "langgraph"]
+    ) -> _MCPClientLifecycleBinding | None:
+        """Resolve a privacy-safe framework binding for this connection."""
+
+        controller = self._lifecycle_controller
+        if controller is None:
+            return None
+        name = self.capability_id or self.identity or self.tool_name_prefix or "mcp"
+        context = MCPClientContext(
+            name=name,
+            transport=cast(Literal["sse", "streamable-http"], self.transport),
+            framework=framework,
+            url=_expand(self.url or ""),
+        )
+        return _MCPClientLifecycleBinding(controller, context)
 
 
 def _guard_adk_mcp_tool(
@@ -274,6 +353,8 @@ def _mcp_connection_configuration(client: MCPClient) -> tuple[Any, ...]:
         client.tool_name_prefix,
         client.timeout_seconds,
         client.sse_read_timeout_seconds,
+        # Lifecycle instances may hold distinct certificate and gateway state.
+        id(client.lifecycle) if client.lifecycle is not None else None,
     )
 
 
@@ -296,12 +377,19 @@ def _validate_approval_tools(
 
 
 def _adk_mcp_classes() -> tuple[Any, ...]:
+    """Load ADK MCP types without leaking Harnest-owned feature warnings."""
+
+    from ._adk_warnings import suppress_adk_warnings
+
     try:
-        from google.adk.tools.mcp_tool import (
-            McpToolset, SseConnectionParams, StdioConnectionParams,
-            StreamableHTTPConnectionParams,
-        )
-        from mcp import StdioServerParameters
+        # Importing ADK MCP support instantiates its experimental auth registry.
+        # Harnest owns that choice, so the upstream warning is not user-actionable.
+        with suppress_adk_warnings("pluggable_auth"):
+            from google.adk.tools.mcp_tool import (
+                McpToolset, SseConnectionParams, StdioConnectionParams,
+                StreamableHTTPConnectionParams,
+            )
+            from mcp import StdioServerParameters
     except ImportError:  # pragma: no cover - depends on optional runtime
         return _fallback_adk_mcp_classes()
     return (McpToolset, SseConnectionParams, StdioConnectionParams,
@@ -309,18 +397,23 @@ def _adk_mcp_classes() -> tuple[Any, ...]:
 
 
 def _fallback_adk_mcp_classes() -> tuple[Any, ...]:
+    """Load ADK MCP types from their defining compatibility modules."""
+
+    from ._adk_warnings import suppress_adk_warnings
+
     # ADK releases differ in what mcp_tool re-exports, so use the defining
     # modules as a compatibility seam for the supported 2.x line.
     try:
-        from google.adk.tools.mcp_tool.mcp_session_manager import (
-            SseConnectionParams, StdioConnectionParams,
-            StreamableHTTPConnectionParams,
-        )
-        from mcp import StdioServerParameters
-        try:
-            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-        except ImportError:
-            from google.adk.tools.mcp_tool import McpToolset
+        with suppress_adk_warnings("pluggable_auth"):
+            from google.adk.tools.mcp_tool.mcp_session_manager import (
+                SseConnectionParams, StdioConnectionParams,
+                StreamableHTTPConnectionParams,
+            )
+            from mcp import StdioServerParameters
+            try:
+                from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+            except ImportError:
+                from google.adk.tools.mcp_tool import McpToolset
     except ImportError as exc:  # pragma: no cover - optional runtime
         raise RuntimeError(
             "google-adk with MCP support is required to use MCPClient"

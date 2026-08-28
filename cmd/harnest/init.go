@@ -163,7 +163,7 @@ func createScaffoldDirectories(
 	example bool,
 	created *[]string,
 ) error {
-	directories := append([]string{"lib"}, managedResourceDirectories...)
+	directories := append([]string{"lib", "models"}, managedResourceDirectories...)
 	directories = append(
 		directories,
 		"tests",
@@ -383,6 +383,17 @@ Nested helper modules follow the same import path. The root-only lib/ directory
 is bundled but never discovered as tools or other agent resources. Keep resource
 declarations in their owning folders. Harnest ignores this underscore-prefixed
 guide; replace it with Python modules as needed.
+`,
+		"models/_README.md": `# Pydantic contracts
+
+Store request, response, tool, WebSocket, and streaming Pydantic models here.
+Import them through the compiler-owned namespace:
+
+    from harnest.models.support import SupportRequest, SupportResponse
+
+Nested modules use the same harnest.models.* path. This root-only folder is
+bundled but never discovered as a capability. Harnest ignores this
+underscore-prefixed guide; replace it with Python modules as needed.
 `,
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,

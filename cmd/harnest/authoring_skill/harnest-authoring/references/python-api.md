@@ -26,17 +26,49 @@ root_agent = Graph(
 
 `Agent` is an alias of `AgentDefinition`. Common fields are `name`, `model`,
 `instruction`, `description`, `tools`, `subagents`, `mcp`, `sandbox`,
-`output_key`, `generate_content_config`, and `history`. `history="session"`
+`input_schema`, `output_schema`, `output_key`, `generate_content_config`, and
+`history`. `input_schema` and `output_schema` accept Pydantic `BaseModel`
+classes. The input model validates `input` consistently for JSON, SSE, and
+`/live`; every completed transport exposes validated structured output as
+`result`. `history="session"`
 (default) includes earlier user/assistant turns from the same Harnest session;
 use `history="turn"` for deliberate per-invocation isolation. The behavior is
 the same for ADK and LangGraph, including `Agent` nodes in portable graphs. A
 graph agent consumes its predecessor's direct output as the current user input;
 session mode keeps earlier conversation in addition to that value.
+
+`Graph(..., output_schema=ResultModel)` applies the same validated public result
+boundary to its terminal output. To include framework-generated turn details,
+declare one explicit runtime-owned field on either output model:
+
+```python
+from typing import Any
+from pydantic import BaseModel
+from harnest import FrameworkMetadata
+
+class TurnMetadata(BaseModel):
+    adk: dict[str, Any] | None = None
+    langgraph: dict[str, Any] | None = None
+
+class ResultModel(BaseModel):
+    answer: str
+    metadata: FrameworkMetadata[TurnMetadata]
+```
+
+Harnest excludes that field from provider generation, injects the active native
+namespace after the turn, and validates the complete model. Without the marker,
+result metadata is not injected. Use at most one marker field. Advanced output
+is adapter-owned.
 Prefer filesystem composition over
 manually populating discovered resources. These explicit object fields are not
 name-based access selectors for resource folders: filesystem location defines
 which discovered resources an agent owns. Harnest does not define a separate
 `SubAgent` class.
+
+Define these Pydantic types in root `models/**/*.py`, not beside each use. A
+model in `models/support.py` imports as `harnest.models.support`; no
+`__init__.py` is required. The same namespace is available from `agent.py`,
+tools, client tools, extensions, subagents, tests, and compiled runtime code.
 
 `Graph` nodes may be `Agent` definitions, typed callables, nested `Graph`
 objects, `Join()` nodes, accepted backend-native nodes, or strings naming
@@ -72,6 +104,11 @@ Place this in `tools/lookup_ticket.py`; the callable and file stem must match.
 A tool needs a docstring or `@tool(description="...")`. The decorator keeps the
 function directly callable for unit tests.
 
+Use `@tool(output_schema=ResultModel)` to accept a mapping or model instance and
+validate it as that Pydantic type. A direct `-> ResultModel` return annotation
+enables the same behavior. `@client_tool` accepts the same option and validates
+the caller-submitted output before resuming execution.
+
 Tool arguments and results must be structured values. Harnest preserves JSON
 values, mappings, lists, tuples, dataclasses, enums, UUIDs, paths, temporal
 values, decimals, and typed models exposing `model_dump()`. Unsupported,
@@ -97,6 +134,12 @@ clients submit `{"output": ...}` to `/client-tools/{requestId}`; WebSocket
 clients answer `client_tool.requested` with `client_tool.result`. Unit-test the
 client implementation separately from this declaration. Client tools fail
 closed outside managed runtime execution.
+
+## Authentication and credentials
+
+Use the separately installed `$harnest-authentication` skill for authentication,
+verified principals, incoming credentials, downstream resolution, and their
+tests. Do not put tokens in context resources, metadata, sessions, or tasks.
 
 ## Reusable library modules
 
@@ -217,6 +260,18 @@ potentially sensitive message. Use a prefix to control exposed names; Harnest
 separately assigns a stable path-scoped capability identity so same-named
 clients in direct, plugin, and subagent scopes cannot collide.
 
+For remote servers behind gateways, pass a connection-scoped
+`MCPClientLifecycle` to `streamable_http(..., lifecycle=...)` or
+`sse(..., lifecycle=...)`. Put the subclass in root `lib/` and import it from
+the MCP factory. `start(context)` and `close(context)` may be sync or async and
+run once per application lifecycle. The synchronous
+`create_http_client(options, context)` must return a fresh
+`httpx.AsyncClient`; preserve the supplied headers, timeout, and auth unless the
+gateway deliberately replaces them. The adapter owns and closes each returned
+session client. Use this seam for custom CA/mTLS, proxy, or `httpx.Auth`
+configuration. It behaves the same in ADK and LangGraph, redacts hook errors,
+and is rejected for `stdio` clients.
+
 For `@require_human_approval(tools=[...])`, use the MCP server's original tool
 names before `prefix=` is applied. Harnest validates the selection after
 discovery in both frameworks and fails closed when a name is absent. Identical
@@ -241,6 +296,10 @@ def delete_customer(customer_id: str):
     """Delete one customer."""
     ...
 ```
+
+`@client_tool` can be combined with `@require_human_approval` in either
+decorator order. The approval boundary runs first; after approval, the host
+receives the client-tool request and its result resumes the same invocation.
 
 Decorate an MCP `client()` to protect every remote tool or a selected list:
 
@@ -295,6 +354,29 @@ structural message/model control requires zero-argument `@lifecycle.adk_plugin` 
 `@lifecycle.langgraph_middleware` factories for native framework callbacks.
 Read `docs/extensions.md` for phase and advanced-mode guarantees.
 
+### Public output policy
+
+Keep the default when customers should see tool traces and the final answer but
+not provisional subagent narration. To expose narration attached to subagent
+tool calls, declare one root factory:
+
+```python
+from harnest.lifecycle import lifecycle
+from harnest.output import OutputPolicy
+
+
+@lifecycle.output_policy
+def output_policy():
+    return OutputPolicy(subagent_messages="include")
+```
+
+The factory is synchronous, zero-argument, root-only, and unique. Accepted
+values are `"suppress"` (default) and `"include"`. It affects Harnest neutral
+JSON, SSE, WebSocket, and playground events equally for ADK and LangGraph;
+direct native endpoints are not projected. It never enables hidden reasoning,
+hides tool calls/results, or removes a terminal answer. Prefer `"suppress"`
+unless the product intentionally displays provisional agent progress.
+
 ## Logging, tracing, and sandboxing
 
 ```python
@@ -326,6 +408,16 @@ async def refresh_catalog() -> None:
 attributes. `traced` supports synchronous, asynchronous, generator, and async
 generator functions. `get_tracer` exposes a dynamic tracer and
 `current_trace_ids()` returns the active W3C identifiers when recording.
+
+For multiple direct destinations, define repeatable zero-argument
+`@lifecycle.telemetry_exporter` factories under root `extensions/`. Each factory
+is called only at runtime and returns a uniquely named `TelemetryExporter` with
+an OpenTelemetry `traces` exporter, `logs` exporter, or both. Harnest owns batch
+processors and flushing. Keep exporter construction and environment reads in
+the factory; module import must not connect or perform network I/O. See
+`docs/extensions.md#telemetry-exporters` for the complete example. Root-owned
+exporters also receive Harnest telemetry produced during subagent execution;
+nested agents cannot register competing destinations.
 
 `harnest.sandbox.Sandbox.container(...)` and `Sandbox.provider(...)` define lazy
 ADK code executors. A sandbox is an execution boundary, not merely a policy

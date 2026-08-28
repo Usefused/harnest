@@ -8,7 +8,11 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 
-from harnest._library import release_authored_library
+from harnest._library import (
+    LibraryConventionError,
+    activate_authored_library,
+    release_authored_library,
+)
 from harnest.bundle import (
     BundleConventionError,
     compile_application,
@@ -155,6 +159,109 @@ class AuthoredLibraryTests(unittest.TestCase):
             finally:
                 release_authored_library(artifact / "source")
 
+    def test_compilation_retains_telemetry_factory_without_calling_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            self._write(
+                root / "extensions" / "telemetry.py",
+                "from harnest import lifecycle\n"
+                "@lifecycle.telemetry_exporter\n"
+                "def destination():\n"
+                "    raise RuntimeError('must run only at runtime')\n",
+            )
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                application = compile_application(
+                    root, entrypoint="agent:root_agent", framework="langgraph"
+                )
+
+        self.assertEqual(len(application.telemetry_exporters), 1)
+        self.assertEqual(
+            application.telemetry_exporters[0].function_name, "destination"
+        )
+
+    def test_models_namespace_supplies_agent_contracts_in_compiled_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "agent"
+            artifact = workspace / "artifact"
+            write_session_store(root)
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "models" / "support.py",
+                "from pydantic import BaseModel\n"
+                "class SupportRequest(BaseModel):\n"
+                "    question: str\n"
+                "class SupportResponse(BaseModel):\n"
+                "    answer: str\n",
+            )
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "from harnest.models.support import SupportRequest, SupportResponse\n"
+                "root_agent = Agent(\n"
+                "    name='root', model='test/model',\n"
+                "    input_schema=SupportRequest, output_schema=SupportResponse,\n"
+                ")\n",
+            )
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                compile_artifact(root, artifact)
+                application = load_compiled_application(artifact)
+            try:
+                self.assertEqual(application.input_schema.__name__, "SupportRequest")
+                self.assertEqual(application.output_schema.__name__, "SupportResponse")
+                self.assertEqual(
+                    application.input_schema.model_validate(
+                        {"question": "Status?"}
+                    ).question,
+                    "Status?",
+                )
+            finally:
+                release_authored_library(artifact / "source")
+
+    def test_models_namespace_supplies_graph_output_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "agent"
+            artifact = workspace / "artifact"
+            write_session_store(root)
+            self._write(
+                root / "models" / "support.py",
+                "from typing import Any\n"
+                "from harnest import FrameworkMetadata\n"
+                "from pydantic import BaseModel\n"
+                "class TurnMetadata(BaseModel):\n"
+                "    adk: dict[str, Any] | None = None\n"
+                "    langgraph: dict[str, Any] | None = None\n"
+                "class SupportResponse(BaseModel):\n"
+                "    answer: str\n"
+                "    metadata: FrameworkMetadata[TurnMetadata]\n",
+            )
+            self._write(
+                root / "agent.py",
+                "from harnest.graph import START, Edge, Event, Graph\n"
+                "from harnest.models.support import SupportResponse\n"
+                "def answer(value):\n"
+                "    return Event(output={'answer': value})\n"
+                "root_agent = Graph(\n"
+                "    name='root', nodes={'answer': answer},\n"
+                "    edges=(Edge(START, 'answer'),),\n"
+                "    output_schema=SupportResponse,\n"
+                ")\n",
+            )
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                compile_artifact(root, artifact)
+                application = load_compiled_application(artifact)
+            try:
+                from harnest.structured import framework_metadata_field
+
+                self.assertEqual(application.output_schema.__name__, "SupportResponse")
+                self.assertEqual(
+                    framework_metadata_field(application.output_schema), "metadata"
+                )
+            finally:
+                release_authored_library(artifact / "source")
+
     def test_authored_unit_and_smoke_tests_can_import_library(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "agent"
@@ -171,6 +278,46 @@ class AuthoredLibraryTests(unittest.TestCase):
                 exit_code = run_agent_tests(root, include_smoke=True)
 
         self.assertEqual(exit_code, 0)
+
+    def test_authored_unit_lane_does_not_start_mcp_client_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            self._write(
+                root / "lib" / "mcp_gateway.py",
+                "from harnest.mcp import MCPClientLifecycle\n"
+                "starts = 0\n"
+                "class GatewayLifecycle(MCPClientLifecycle):\n"
+                "    def start(self, context):\n"
+                "        global starts\n"
+                "        starts += 1\n"
+                "        raise AssertionError('unit tests started MCP lifecycle')\n",
+            )
+            self._write(
+                root / "mcp" / "catalog.py",
+                "from harnest.lib.mcp_gateway import GatewayLifecycle\n"
+                "from harnest.mcp import MCPClient\n"
+                "def client():\n"
+                "    return MCPClient.streamable_http(\n"
+                "        'https://offline.invalid/mcp',\n"
+                "        lifecycle=GatewayLifecycle(),\n"
+                "    )\n",
+            )
+            self._write(
+                root / "tests" / "unit" / "test_mcp_gateway.py",
+                "from harnest.lib import mcp_gateway\n"
+                "def test_lifecycle_remains_lazy(agent):\n"
+                "    assert agent.name == 'root'\n"
+                "    assert mcp_gateway.starts == 0\n",
+            )
+            with (
+                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.testing.create_fastapi_app") as create_app,
+            ):
+                exit_code = run_agent_tests(root)
+
+        self.assertEqual(exit_code, 0)
+        create_app.assert_not_called()
 
     def test_smoke_tests_share_one_compiled_server_lifecycle(self):
         lifecycle = {"started": 0, "closed": 0}
@@ -311,6 +458,52 @@ class AuthoredLibraryTests(unittest.TestCase):
                     BundleConventionError, "authored libraries are root-only"
                 ):
                     compile_application(root, entrypoint="agent:root_agent")
+
+    def test_nested_subagents_cannot_define_their_own_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            nested = root / "subagents" / "helper"
+            self._write(
+                nested / "agent.py",
+                "from harnest.agent import Agent\n"
+                "helper = Agent(name='helper', model='test/model')\n",
+            )
+            self._write(nested / "instructions.md", "Help.\n")
+            self._write(nested / "models" / "private.py", "VALUE = 1\n")
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with self.assertRaisesRegex(
+                    BundleConventionError, "authored models are root-only"
+                ):
+                    compile_application(root, entrypoint="agent:root_agent")
+
+    def test_models_namespace_rejects_invalid_module_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "agent"
+            self._write_agent(root)
+            self._write(root / "models" / "bad-name.py", "VALUE = 1\n")
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with self.assertRaisesRegex(
+                    BundleConventionError,
+                    "authored models module names must be valid Python identifiers",
+                ):
+                    compile_application(root, entrypoint="agent:root_agent")
+
+    def test_models_namespace_cannot_mix_two_agent_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            first = workspace / "first"
+            second = workspace / "second"
+            self._write(first / "models" / "contract.py", "VALUE = 1\n")
+            self._write(second / "models" / "contract.py", "VALUE = 2\n")
+            self.assertTrue(activate_authored_library(first))
+            try:
+                with self.assertRaisesRegex(
+                    LibraryConventionError, "harnest.models is already bound"
+                ):
+                    activate_authored_library(second)
+            finally:
+                release_authored_library(first)
 
     def test_library_rejects_symlinks_invalid_names_and_import_collisions(self):
         cases = {

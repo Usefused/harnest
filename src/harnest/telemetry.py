@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import atexit
+import inspect
 import json
 import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from opentelemetry import trace
 
@@ -17,6 +19,50 @@ from opentelemetry import trace
 _LOCK = threading.Lock()
 _STATE: "TelemetryState | None" = None
 _STANDARD_RECORD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
+
+
+class TelemetryExporterError(RuntimeError):
+    """A runtime telemetry-exporter factory returned an invalid destination."""
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryExporter:
+    """One named telemetry destination with optional trace and log exporters."""
+
+    name: str
+    traces: Any | None = None
+    logs: Any | None = None
+
+    def __post_init__(self) -> None:
+        """Validate signal exporters without initializing external services."""
+
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("telemetry exporter name must be a non-empty string")
+        object.__setattr__(self, "name", self.name.strip())
+        if self.traces is None and self.logs is None:
+            raise ValueError("telemetry exporter must provide traces or logs")
+        _validate_signal_exporter(self.traces, signal="traces")
+        _validate_signal_exporter(self.logs, signal="logs")
+
+
+def _validate_signal_exporter(exporter: Any | None, *, signal: str) -> None:
+    """Require the OpenTelemetry SDK contract for the selected signal."""
+
+    if exporter is None:
+        return
+    if signal == "traces":
+        from opentelemetry.sdk.trace.export import SpanExporter
+
+        expected = SpanExporter
+    else:
+        from opentelemetry.sdk._logs.export import LogRecordExporter
+
+        expected = LogRecordExporter
+    if not isinstance(exporter, expected):
+        raise TypeError(
+            f"telemetry {signal} exporter must implement {expected.__name__}; "
+            f"got {type(exporter).__name__}"
+        )
 
 
 def _boolean(name: str, default: bool) -> bool:
@@ -97,29 +143,131 @@ class TelemetryState:
     logger_provider: Any | None = None
     owns_tracer_provider: bool = False
     owns_logger_provider: bool = False
+    span_processors: tuple[Any, ...] = ()
+    log_processors: tuple[Any, ...] = ()
+    shutdown_called: bool = False
 
     def force_flush(self, timeout_millis: int = 5000) -> None:
-        providers = (
-            self.tracer_provider if self.owns_tracer_provider else None,
-            self.logger_provider if self.owns_logger_provider else None,
-        )
-        for provider in providers:
-            flush = getattr(provider, "force_flush", None)
+        """Flush owned providers or only processors added to adopted providers."""
+
+        targets = self._flush_targets()
+        for target in targets:
+            flush = getattr(target, "force_flush", None)
             if callable(flush):
                 try:
                     flush(timeout_millis=timeout_millis)
                 except TypeError:
                     flush(timeout_millis)
 
+    def _flush_targets(self) -> tuple[Any, ...]:
+        """Avoid flushing every exporter attached to a provider Harnest adopted."""
+
+        values: list[Any] = []
+        if self.owns_tracer_provider and self.tracer_provider is not None:
+            values.append(self.tracer_provider)
+        else:
+            values.extend(self.span_processors)
+        if self.owns_logger_provider and self.logger_provider is not None:
+            values.append(self.logger_provider)
+        else:
+            values.extend(self.log_processors)
+        return tuple(values)
+
     def shutdown(self) -> None:
-        providers = (
-            self.logger_provider if self.owns_logger_provider else None,
-            self.tracer_provider if self.owns_tracer_provider else None,
-        )
-        for provider in providers:
-            shutdown = getattr(provider, "shutdown", None)
+        """Shut down providers or processors created and owned by Harnest."""
+
+        if self.shutdown_called:
+            return
+        self.shutdown_called = True
+        for target in self._shutdown_targets():
+            shutdown = getattr(target, "shutdown", None)
             if callable(shutdown):
                 shutdown()
+
+    def _shutdown_targets(self) -> tuple[Any, ...]:
+        """Close added processors when their adopted provider remains host-owned."""
+
+        values: list[Any] = []
+        if self.owns_logger_provider and self.logger_provider is not None:
+            values.append(self.logger_provider)
+        else:
+            values.extend(reversed(self.log_processors))
+        if self.owns_tracer_provider and self.tracer_provider is not None:
+            values.append(self.tracer_provider)
+        else:
+            values.extend(reversed(self.span_processors))
+        return tuple(values)
+
+
+def resolve_telemetry_exporters(
+    factories: Sequence[Any],
+) -> tuple[TelemetryExporter, ...]:
+    """Call discovered exporter factories only during runtime bootstrap."""
+
+    resolved: list[TelemetryExporter] = []
+    try:
+        for factory in factories:
+            resolved.append(_call_telemetry_factory(factory))
+    except BaseException:
+        _shutdown_exporters(resolved)
+        raise
+    names = [item.name for item in resolved]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        _shutdown_exporters(resolved)
+        raise TelemetryExporterError(
+            "duplicate telemetry exporter names: " + ", ".join(duplicates)
+        )
+    return tuple(resolved)
+
+
+def _shutdown_exporters(exporters: Sequence[TelemetryExporter]) -> None:
+    """Release constructed destinations when runtime validation cannot continue."""
+
+    seen: set[int] = set()
+    for destination in reversed(exporters):
+        for exporter in (destination.logs, destination.traces):
+            if exporter is None or id(exporter) in seen:
+                continue
+            seen.add(id(exporter))
+            shutdown = getattr(exporter, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+
+
+def _call_telemetry_factory(factory: Any) -> TelemetryExporter:
+    """Resolve one factory without retaining a potentially sensitive failure."""
+
+    callback = getattr(factory, "callback", None)
+    identity = getattr(factory, "identity", repr(factory))
+    if not callable(callback):
+        raise TelemetryExporterError(
+            f"telemetry exporter factory {identity} is not callable"
+        )
+    failure: TelemetryExporterError | None = None
+    try:
+        value = callback()
+    except Exception as error:
+        failure = TelemetryExporterError(
+            f"telemetry exporter factory {identity} failed with "
+            f"{type(error).__name__}"
+        )
+        value = None
+    if failure is not None:
+        raise failure
+    if inspect.isawaitable(value):
+        closer = getattr(value, "close", None)
+        if callable(closer):
+            closer()
+        raise TelemetryExporterError(
+            f"telemetry exporter factory {identity} must be synchronous"
+        )
+    if not isinstance(value, TelemetryExporter):
+        raise TelemetryExporterError(
+            f"telemetry exporter factory {identity} must return "
+            f"TelemetryExporter; got {type(value).__name__}"
+        )
+    return value
 
 
 def _exporter_name(signal: str) -> str:
@@ -222,26 +370,44 @@ def configure_observability(
     service_version: str | None = None,
     span_exporter: Any | None = None,
     log_exporter: Any | None = None,
+    exporters: Sequence[TelemetryExporter] = (),
+    exporter_factories: Sequence[Any] = (),
     use_global_providers: bool = False,
     set_global_providers: bool = True,
 ) -> TelemetryState:
     """Configure console logging and optional OTLP traces/logs once per process."""
 
     global _STATE
-    if not isinstance(service_name, str) or not service_name.strip():
-        raise ValueError("telemetry service_name must be a non-empty string")
-    if framework not in {"adk", "langgraph"}:
-        raise ValueError("telemetry framework must be adk or langgraph")
+    destinations = _validated_configuration(service_name, framework, exporters)
     with _LOCK:
         if _STATE is not None:
             return _STATE
-        enabled = _otel_enabled() or span_exporter is not None or log_exporter is not None
-        tracer_provider, logger_provider, owns_providers = _providers(
-            enabled=enabled, service_name=service_name, framework=framework,
-            service_version=service_version, span_exporter=span_exporter,
-            log_exporter=log_exporter, use_global_providers=use_global_providers,
-            set_global_providers=set_global_providers,
+        authored = resolve_telemetry_exporters(exporter_factories)
+        destinations = _validated_destinations((*destinations, *authored))
+        otel_enabled = _otel_enabled()
+        enabled = _observability_enabled(
+            otel_enabled, span_exporter, log_exporter, destinations
         )
+        try:
+            providers = _providers(
+                enabled=enabled, service_name=service_name, framework=framework,
+                service_version=service_version, span_exporter=span_exporter,
+                log_exporter=log_exporter,
+                use_global_providers=use_global_providers,
+                set_global_providers=set_global_providers,
+                exporters=destinations, otel_enabled=otel_enabled,
+            )
+        except BaseException:
+            _shutdown_exporters(destinations)
+            raise
+        (
+            tracer_provider,
+            logger_provider,
+            owns_tracer_provider,
+            owns_logger_provider,
+            span_processors,
+            log_processors,
+        ) = providers
         _configure_agent_logger(logger_provider)
         _STATE = TelemetryState(
             service_name=service_name.strip(),
@@ -249,50 +415,117 @@ def configure_observability(
             enabled=enabled,
             tracer_provider=tracer_provider,
             logger_provider=logger_provider,
-            owns_tracer_provider=owns_providers,
-            owns_logger_provider=owns_providers,
+            owns_tracer_provider=owns_tracer_provider,
+            owns_logger_provider=owns_logger_provider,
+            span_processors=span_processors,
+            log_processors=log_processors,
         )
-        if _STATE.owns_tracer_provider or _STATE.owns_logger_provider:
+        if any(
+            (
+                _STATE.owns_tracer_provider,
+                _STATE.owns_logger_provider,
+                bool(_STATE.span_processors),
+                bool(_STATE.log_processors),
+            )
+        ):
             atexit.register(_STATE.shutdown)
         return _STATE
 
 
-def _providers(**options: Any) -> tuple[Any | None, Any | None, bool]:
-    if not options["enabled"]:
-        return None, None, False
-    if _should_adopt_global(options):
-        if options["span_exporter"] is not None or options["log_exporter"] is not None:
-            raise ValueError("custom exporters cannot be combined with global providers")
-        from opentelemetry import _logs
+def _validated_configuration(
+    service_name: str,
+    framework: str,
+    exporters: Sequence[TelemetryExporter],
+) -> tuple[TelemetryExporter, ...]:
+    """Validate stable bootstrap inputs before claiming the process singleton."""
 
-        return trace.get_tracer_provider(), _logs.get_logger_provider(), False
-    tracer_provider, logger_provider = _new_providers(options)
-    if options["set_global_providers"]:
-        from opentelemetry import _logs
-
-        trace.set_tracer_provider(tracer_provider)
-        _logs.set_logger_provider(logger_provider)
-    return tracer_provider, logger_provider, True
+    if not isinstance(service_name, str) or not service_name.strip():
+        raise ValueError("telemetry service_name must be a non-empty string")
+    if framework not in {"adk", "langgraph"}:
+        raise ValueError("telemetry framework must be adk or langgraph")
+    return _validated_destinations(exporters)
 
 
-def _should_adopt_global(options: Mapping[str, Any]) -> bool:
-    if options["use_global_providers"] or not options["set_global_providers"]:
-        return bool(options["use_global_providers"])
-    from opentelemetry import _logs
-    from opentelemetry.sdk._logs import LoggerProvider
-    from opentelemetry.sdk.trace import TracerProvider
+def _validated_destinations(
+    exporters: Sequence[TelemetryExporter],
+) -> tuple[TelemetryExporter, ...]:
+    """Require typed destinations with unique stable names."""
 
-    return isinstance(trace.get_tracer_provider(), TracerProvider) or isinstance(
-        _logs.get_logger_provider(), LoggerProvider
+    destinations = tuple(exporters)
+    if any(not isinstance(item, TelemetryExporter) for item in destinations):
+        raise TypeError("exporters must contain only TelemetryExporter values")
+    names = [item.name for item in destinations]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise TelemetryExporterError(
+            "duplicate telemetry exporter names: " + ", ".join(duplicates)
+        )
+    return destinations
+
+
+def _observability_enabled(
+    otel_enabled: bool,
+    span_exporter: Any | None,
+    log_exporter: Any | None,
+    exporters: Sequence[TelemetryExporter],
+) -> bool:
+    """Enable providers when any environment or authored destination exists."""
+
+    return any(
+        (
+            otel_enabled,
+            span_exporter is not None,
+            log_exporter is not None,
+            bool(exporters),
+        )
     )
 
 
-def _new_providers(options: Mapping[str, Any]) -> tuple[Any, Any]:
+def _providers(
+    **options: Any,
+) -> tuple[
+    Any | None,
+    Any | None,
+    bool,
+    bool,
+    tuple[Any, ...],
+    tuple[Any, ...],
+]:
+    """Create providers or extend adopted providers with authored exporters."""
+
+    if not options["enabled"]:
+        return None, None, False, False, (), ()
+    resource = _telemetry_resource(options)
+    tracer_provider, owns_tracer = _select_tracer_provider(resource, options)
+    logger_provider, owns_logger = _select_logger_provider(resource, options)
+    span_processors, log_processors = _attach_exporters(
+        tracer_provider,
+        logger_provider,
+        _signal_exporters(
+            options, "traces", include_environment=owns_tracer
+        ),
+        _signal_exporters(options, "logs", include_environment=owns_logger),
+    )
+    if options["set_global_providers"] and owns_tracer:
+        trace.set_tracer_provider(tracer_provider)
+    if options["set_global_providers"] and owns_logger:
+        from opentelemetry import _logs
+
+        _logs.set_logger_provider(logger_provider)
+    return (
+        tracer_provider,
+        logger_provider,
+        owns_tracer,
+        owns_logger,
+        span_processors,
+        log_processors,
+    )
+
+
+def _telemetry_resource(options: Mapping[str, Any]) -> Any:
+    """Build the shared resource used by providers Harnest creates."""
+
     from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.sdk._logs import LoggerProvider
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
     attributes = {
         "service.name": os.getenv("OTEL_SERVICE_NAME", options["service_name"]).strip(),
@@ -300,20 +533,109 @@ def _new_providers(options: Mapping[str, Any]) -> tuple[Any, Any]:
     }
     if options["service_version"]:
         attributes["service.version"] = options["service_version"]
-    resource = Resource.create(attributes)
-    tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
-    logger_provider = LoggerProvider(resource=resource, shutdown_on_exit=False)
-    selected_span = options["span_exporter"]
-    if selected_span is None:
-        selected_span = _trace_exporter(_exporter_name("traces"))
-    selected_log = options["log_exporter"]
-    if selected_log is None:
-        selected_log = _log_exporter(_exporter_name("logs"))
-    if selected_span is not None:
-        tracer_provider.add_span_processor(BatchSpanProcessor(selected_span))
-    if selected_log is not None:
-        logger_provider.add_log_record_processor(BatchLogRecordProcessor(selected_log))
-    return tracer_provider, logger_provider
+    return Resource.create(attributes)
+
+
+def _select_tracer_provider(
+    resource: Any, options: Mapping[str, Any]
+) -> tuple[Any, bool]:
+    """Adopt only a capable tracer provider or create a signal-local provider."""
+
+    from opentelemetry.sdk.trace import TracerProvider
+
+    current = trace.get_tracer_provider()
+    if _can_adopt(current, "add_span_processor", options):
+        return current, False
+    return TracerProvider(resource=resource, shutdown_on_exit=False), True
+
+
+def _select_logger_provider(
+    resource: Any, options: Mapping[str, Any]
+) -> tuple[Any, bool]:
+    """Adopt only a capable logger provider or create a signal-local provider."""
+
+    from opentelemetry import _logs
+    from opentelemetry.sdk._logs import LoggerProvider
+
+    current = _logs.get_logger_provider()
+    if _can_adopt(current, "add_log_record_processor", options):
+        return current, False
+    return LoggerProvider(resource=resource, shutdown_on_exit=False), True
+
+
+def _can_adopt(provider: Any, method: str, options: Mapping[str, Any]) -> bool:
+    """Adopt globals only when requested and capable of accepting processors."""
+
+    adoption_enabled = (
+        options["use_global_providers"] or options["set_global_providers"]
+    )
+    return adoption_enabled and callable(getattr(provider, method, None))
+
+
+def _signal_exporters(
+    options: Mapping[str, Any], signal: str, *, include_environment: bool
+) -> tuple[Any, ...]:
+    """Select the default signal exporter and all authored destinations."""
+
+    key = "span_exporter" if signal == "traces" else "log_exporter"
+    values: list[Any] = []
+    explicit = options[key]
+    if explicit is not None:
+        values.append(explicit)
+    elif include_environment and options["otel_enabled"]:
+        factory = _trace_exporter if signal == "traces" else _log_exporter
+        selected = factory(_exporter_name(signal))
+        if selected is not None:
+            values.append(selected)
+    values.extend(
+        getattr(destination, signal)
+        for destination in options["exporters"]
+        if getattr(destination, signal) is not None
+    )
+    return tuple(values)
+
+
+def _attach_exporters(
+    tracer_provider: Any,
+    logger_provider: Any,
+    span_exporters: Sequence[Any],
+    log_exporters: Sequence[Any],
+) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    """Attach one batch processor per destination and return owned additions."""
+
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+    add_span = getattr(tracer_provider, "add_span_processor", None)
+    add_log = getattr(logger_provider, "add_log_record_processor", None)
+    if span_exporters and not callable(add_span):
+        raise TelemetryExporterError(
+            "the active tracer provider cannot accept telemetry exporters"
+        )
+    if log_exporters and not callable(add_log):
+        raise TelemetryExporterError(
+            "the active logger provider cannot accept telemetry exporters"
+        )
+    span_processors = tuple(BatchSpanProcessor(item) for item in span_exporters)
+    log_processors = tuple(BatchLogRecordProcessor(item) for item in log_exporters)
+    try:
+        for processor in span_processors:
+            add_span(processor)
+        for processor in log_processors:
+            add_log(processor)
+    except BaseException:
+        _shutdown_processors((*log_processors, *span_processors))
+        raise
+    return span_processors, log_processors
+
+
+def _shutdown_processors(processors: Sequence[Any]) -> None:
+    """Release batch workers when provider attachment cannot complete."""
+
+    for processor in reversed(processors):
+        shutdown = getattr(processor, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
 
 def get_tracer(name: str, *, version: str | None = None) -> Any:
@@ -328,18 +650,8 @@ def instrument_fastapi(app: Any, state: TelemetryState) -> None:
 
     if not state.enabled or state.tracer_provider is None:
         return
-
-    def register_flush() -> None:
-        add_event_handler = getattr(app, "add_event_handler", None)
-        if callable(add_event_handler):
-            add_event_handler("shutdown", state.force_flush)
-            return
-        on_shutdown = getattr(getattr(app, "router", None), "on_shutdown", None)
-        if isinstance(on_shutdown, list):
-            on_shutdown.append(state.force_flush)
-
+    _attach_telemetry_lifecycle(app, state)
     if getattr(app, "_is_instrumented_by_opentelemetry", False):
-        register_flush()
         return
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
@@ -354,7 +666,26 @@ def instrument_fastapi(app: Any, state: TelemetryState) -> None:
         tracer_provider=state.tracer_provider,
         excluded_urls=excluded_urls,
     )
-    register_flush()
+
+
+def _attach_telemetry_lifecycle(app: Any, state: TelemetryState) -> None:
+    """Shut down owned providers and processors after the application lifespan."""
+
+    router = getattr(app, "router", None)
+    original = getattr(router, "lifespan_context", None)
+    if not callable(original) or getattr(app, "__harnest_telemetry_lifespan__", False):
+        return
+
+    @asynccontextmanager
+    async def lifespan(application: Any):
+        try:
+            async with original(application):
+                yield
+        finally:
+            state.shutdown()
+
+    router.lifespan_context = lifespan
+    app.__harnest_telemetry_lifespan__ = True
 
 
 def _reset_for_testing() -> None:
@@ -367,8 +698,11 @@ def _reset_for_testing() -> None:
 
 
 __all__ = [
+    "TelemetryExporter",
+    "TelemetryExporterError",
     "TelemetryState",
     "configure_observability",
     "get_tracer",
     "instrument_fastapi",
+    "resolve_telemetry_exporters",
 ]

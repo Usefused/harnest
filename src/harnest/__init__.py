@@ -18,17 +18,34 @@ from .bundle import (
     compile_artifact,
     discover_evals,
 )
-from .mcp import MCPClient
+from .mcp import (
+    MCPClient,
+    MCPClientContext,
+    MCPClientLifecycle,
+    MCPHTTPClientOptions,
+)
 from .approval import require_human_approval
 from .client_tool import client_tool
 from .checkpoint import ADKStore, HarnestStore, LangGraphStore
 from .context import AgentContext, context
+from .credentials import (
+    Credential,
+    CredentialError,
+    CredentialProvider,
+    CredentialProviderError,
+    CredentialRequest,
+    CredentialUnavailableError,
+    credentials,
+)
 from .store import MemoryStore, PostgresStore, RedisStore
 from .graph import START, Edge, Event, Graph, GraphContext, Join
 from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
 from .model_lifecycle import LiteLLMContext
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
 from .output import OutputPolicy
+from .neutral_runtime import ResponseRequest
+from .structured import FrameworkMetadata, StructuredOutputError
+from .telemetry import TelemetryExporter, TelemetryExporterError
 from .lifecycle import DROP_EVENT, LifecycleContext, lifecycle
 from .logging import Logger, get_logger
 from .sandbox import Sandbox
@@ -42,6 +59,12 @@ __all__ = [
     "AgentSource",
     "ADKStore",
     "CompiledApplication",
+    "Credential",
+    "CredentialError",
+    "CredentialProvider",
+    "CredentialProviderError",
+    "CredentialRequest",
+    "CredentialUnavailableError",
     "BundleConventionError",
     "BundleDuplicateError",
     "BundleError",
@@ -57,6 +80,9 @@ __all__ = [
     "HarnestStore",
     "Join",
     "MCPClient",
+    "MCPClientContext",
+    "MCPClientLifecycle",
+    "MCPHTTPClientOptions",
     "require_human_approval",
     "LiteLLMContext",
     "LiteLLMLifecycle",
@@ -73,8 +99,13 @@ __all__ = [
     "OllamaModel",
     "Orchestrator",
     "OutputPolicy",
+    "ResponseRequest",
+    "FrameworkMetadata",
     "Sandbox",
     "START",
+    "StructuredOutputError",
+    "TelemetryExporter",
+    "TelemetryExporterError",
     "Tracer",
     "bundle_agent",
     "client_tool",
@@ -87,6 +118,7 @@ __all__ = [
     "instruction_file",
     "current_trace_ids",
     "context",
+    "credentials",
     "get_logger",
     "get_tracer",
     "span",

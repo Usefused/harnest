@@ -25,17 +25,25 @@ from .approval import (
 )
 from .application import CompiledApplication
 from .checkpoint import CheckpointStore, HarnestStore
+from .graph import _model_input_text
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp import _validate_approval_tools
+from .mcp_lifecycle import (
+    _MCPClientLifecycleBinding,
+    close_mcp_lifecycles,
+    start_mcp_lifecycles,
+)
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
     RuntimeDriver,
+    SessionMessage,
     SessionRecord,
 )
 from .output import OutputPolicy
 from .session import InMemorySessionStore, SessionLease, SessionStore
+from .structured import validate_runtime_output
 
 
 _TURN_START_KEY = "_harnest_turn_start"
@@ -74,6 +82,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._plan = plan
         self._target = None if plan is not None else application.target
         self._mcp_clients: list[Any] = []
+        self._mcp_lifecycles: list[_MCPClientLifecycleBinding] = []
         self._materialize_lock = asyncio.Lock()
         self._recursion_limit = recursion_limit
         self._info = _agent_info(application, card_value)
@@ -120,6 +129,18 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._ensure_open()
         records = await self._session_store.list(user_id=user_id)
         return tuple(self._public_session(record) for record in records)
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None:
+        """Return the stored transcript without exposing Harnest state keys."""
+
+        self._ensure_open()
+        record = await self._session_store.get(
+            session_id=session_id,
+            user_id=user_id,
+        )
+        return None if record is None else _langgraph_session_messages(record)
 
     async def update_session(
         self,
@@ -173,8 +194,10 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 raise
             await self._finish_checkpoint(request.invocation_id, "completed")
 
-        text_value, public_result = _graph_output(self._application, result)
         turn_start = _message_count(graph_input)
+        text_value, public_result = _graph_output(
+            self._application, result, turn_start=turn_start
+        )
         events = _result_events(
             result,
             text_value,
@@ -232,7 +255,10 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 raise
             await self._finish_checkpoint(request.invocation_id, "completed")
 
-        for event in _final_stream_events(self._application, state):
+        turn_start = _message_count(graph_input)
+        for event in _final_stream_events(
+            self._application, state, turn_start=turn_start
+        ):
             yield event
 
     async def close(self) -> None:
@@ -250,14 +276,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                         await _close_resource(target)
                 except BaseException as exc:
                     failure = exc
-                for client in reversed(self._mcp_clients):
-                    try:
-                        if client is not target:
-                            await _close_resource(client)
-                    except BaseException as exc:
-                        if failure is None:
-                            failure = exc
-                self._mcp_clients.clear()
+                try:
+                    await self._close_mcp_resources(skip=target)
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
         finally:
             if self._owns_session_store:
                 await self._session_store.close()
@@ -299,10 +322,18 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 if isinstance(plan, ManagedAgentPlan)
                 else materialize_graph(plan, tool_groups)
             )
-        except BaseException:
-            for client in reversed(self._mcp_clients):
-                await _close_resource(client)
-            self._mcp_clients.clear()
+        except BaseException as error:
+            try:
+                await self._close_mcp_resources(reset_lifecycles=True)
+            except BaseException as cleanup_error:
+                # Startup remains the actionable failure; lifecycle errors are
+                # redacted and retained only as a type-level diagnostic note.
+                add_note = getattr(error, "add_note", None)
+                if callable(add_note):
+                    add_note(
+                        "MCP startup cleanup also failed with "
+                        f"{type(cleanup_error).__name__}"
+                    )
             raise
 
     async def _resolve_tool_groups(
@@ -330,6 +361,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     ) -> list[Any]:
         """Attach approval at transport time before exposing discovered tools."""
 
+        await self._start_mcp_lifecycles(configured_group)
         client_type = _mcp_client_type()
         connections, names = _mcp_connections(configured_group)
         policies = _mcp_server_approval_policies(names)
@@ -349,6 +381,50 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             _validate_mcp_approval(selected, server_name, configured)
             tools.extend(selected)
         return tools
+
+    async def _start_mcp_lifecycles(
+        self, configured_group: Sequence[Any]
+    ) -> None:
+        """Start newly encountered MCP lifecycle owners before discovery."""
+
+        owned = {id(binding.controller) for binding in self._mcp_lifecycles}
+        new_bindings: list[_MCPClientLifecycleBinding] = []
+        for configured in configured_group:
+            binding = configured._lifecycle_binding("langgraph")
+            if binding is None or id(binding.controller) in owned:
+                continue
+            owned.add(id(binding.controller))
+            new_bindings.append(binding)
+        await start_mcp_lifecycles(new_bindings)
+        self._mcp_lifecycles.extend(new_bindings)
+
+    async def _close_mcp_resources(
+        self,
+        *,
+        skip: Any = None,
+        reset_lifecycles: bool = False,
+    ) -> None:
+        """Close adapter sessions before their application lifecycle owners."""
+
+        failure: BaseException | None = None
+        for client in reversed(self._mcp_clients):
+            try:
+                if client is not skip:
+                    await _close_resource(client)
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+        self._mcp_clients.clear()
+        try:
+            await close_mcp_lifecycles(
+                self._mcp_lifecycles, reset=reset_lifecycles
+            )
+        except BaseException as error:
+            if failure is None:
+                failure = error
+        self._mcp_lifecycles.clear()
+        if failure is not None:
+            raise failure
 
     async def _session_id_for_request(self, request: InvocationRequest) -> str:
         self._ensure_open()
@@ -448,9 +524,19 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             raise RuntimeError("LangGraph runtime driver is closed")
 
     def _public_session(self, record: SessionRecord) -> SessionRecord:
-        if self._application.kind != "graph":
-            return record
-        return replace(record, state=_managed_graph_user_state(record.state))
+        """Separate portable state from lossless framework-owned session data."""
+
+        metadata = {
+            **dict(record.metadata),
+            "langgraph": json_value(record.state),
+        }
+        if self._application.kind == "advanced":
+            return replace(record, metadata=metadata)
+        return replace(
+            record,
+            state=_managed_graph_user_state(record.state),
+            metadata=metadata,
+        )
 
 
 def _runtime_plan(application: Any, recursion_limit: int) -> Any | None:
@@ -477,6 +563,8 @@ def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> Agent
         card=card,
         framework="langgraph",
         mode=application.mode,
+        input_schema=application.input_schema,
+        output_schema=application.output_schema,
     )
 
 
@@ -518,12 +606,21 @@ async def _target_stream(
 
 
 def _final_stream_events(
-    application: CompiledApplication, state: _StreamState
+    application: CompiledApplication,
+    state: _StreamState,
+    *,
+    turn_start: int,
 ) -> list[dict[str, Any]]:
-    final_text, public_result = _graph_output(application, state.final_state)
+    final_text, public_result = _graph_output(
+        application, state.final_state, turn_start=turn_start
+    )
     events: list[dict[str, Any]] = []
     if final_text and final_text != state.text:
-        delta = final_text[len(state.text):] if final_text.startswith(state.text) else final_text
+        delta = (
+            final_text[len(state.text) :]
+            if final_text.startswith(state.text)
+            else final_text
+        )
         if delta:
             events.append({"type": "message", "role": "assistant", "text": delta})
     for event in _tool_events(state.final_state):
@@ -532,7 +629,13 @@ def _final_stream_events(
             state.tools.add(identity)
             events.append(event)
     if public_result is not None:
-        events.append({"type": "graph_output", "output": public_result, "result": public_result})
+        events.append(
+            {
+                "type": "graph_output",
+                "output": public_result,
+                "result": public_result,
+            }
+        )
     return events
 
 
@@ -682,7 +785,7 @@ async def _close_resource(resource: Any) -> None:
 
 def _graph_input(
     application: CompiledApplication,
-    text_value: str,
+    text_value: Any,
     state: Mapping[str, Any],
 ) -> Any:
     if application.bridge is not None and application.bridge.input_adapter is not None:
@@ -694,7 +797,10 @@ def _graph_input(
     previous_messages = state.get("messages", ())
     if not isinstance(previous_messages, (list, tuple)):
         previous_messages = ()
-    messages = [*previous_messages, HumanMessage(content=text_value)]
+    messages = [
+        *previous_messages,
+        HumanMessage(content=_model_input_text(text_value)),
+    ]
     if application.kind == "graph":
         return {
             **{
@@ -712,17 +818,63 @@ def _graph_input(
 
 
 def _graph_output(
-    application: CompiledApplication, result: Any
+    application: CompiledApplication,
+    result: Any,
+    *,
+    turn_start: int = 0,
 ) -> tuple[str, Any]:
-    adapter = application.bridge.output_adapter if application.bridge is not None else None
+    """Return public output after Harnest enriches any declared metadata field."""
+
+    adapter = (
+        application.bridge.output_adapter
+        if application.bridge is not None
+        else None
+    )
     adapted = adapter(result) if adapter is not None else result
     if adapted is not result:
         return _adapted_output(adapted)
     if isinstance(result, Mapping):
+        if application.output_schema is not None:
+            model = validate_runtime_output(
+                application.output_schema,
+                _structured_output_value(application, result),
+                metadata=_langgraph_turn_metadata(result, turn_start=turn_start),
+                boundary="model output",
+            )
+            structured = json_value(model)
+            return _visible_value(structured), structured
         return _mapping_output(result)
     if isinstance(result, str):
         return result, result
     return _visible_value(result), json_value(result)
+
+
+def _structured_output_value(
+    application: CompiledApplication, result: Mapping[str, Any]
+) -> Any:
+    """Select the provider result for agents and the terminal value for graphs."""
+
+    if getattr(application, "kind", "agent") == "graph":
+        return result.get("value")
+    return result.get("structured_response")
+
+
+def _langgraph_turn_metadata(result: Any, *, turn_start: int) -> dict[str, Any]:
+    """Preserve native current-turn state under an explicit framework namespace."""
+
+    if not isinstance(result, Mapping):
+        return {"langgraph": {"result": json_value(result)}}
+    native = {
+        key: value
+        for key, value in result.items()
+        if key not in {_TURN_START_KEY, _SESSION_STATE_KEY}
+    }
+    messages = result.get("messages")
+    if isinstance(messages, (list, tuple)):
+        # Session history remains durable, while output metadata describes only
+        # the turn that produced this result and its framework bookkeeping.
+        native["messages"] = messages[turn_start:]
+    return {"langgraph": json_value(native)}
 
 
 def _adapted_output(adapted: Any) -> tuple[str, Any]:
@@ -802,6 +954,72 @@ def _message_text(message: Any) -> str:
         ):
             parts.append(block["text"])
     return "".join(parts)
+
+
+def _langgraph_session_messages(record: SessionRecord) -> list[SessionMessage]:
+    """Project stored LangGraph messages with their full native records."""
+
+    native_messages = record.state.get("messages")
+    if not isinstance(native_messages, (list, tuple)):
+        return []
+    messages: list[SessionMessage] = []
+    for index, message in enumerate(native_messages):
+        native = json_value(message)
+        if not isinstance(native, Mapping):
+            continue
+        role = _langgraph_message_role(native)
+        messages.append(
+            SessionMessage(
+                id=str(native.get("id") or f"{record.id}:{index}"),
+                role=role,
+                content=_langgraph_message_content(native, role=role),
+                created_at=_langgraph_message_created_at(native),
+                metadata={"langgraph": native},
+            )
+        )
+    return messages
+
+
+def _langgraph_message_role(message: Mapping[str, Any]) -> str:
+    """Map LangChain message types onto the portable transcript roles."""
+
+    message_type = message.get("type")
+    return {
+        "human": "user",
+        "ai": "assistant",
+        "tool": "tool",
+        "system": "system",
+    }.get(str(message_type), "assistant")
+
+
+def _langgraph_message_content(message: Mapping[str, Any], *, role: str) -> Any:
+    """Expose visible block text while preserving structured tool content."""
+
+    content = message.get("content")
+    if isinstance(content, str) or content is None:
+        return content
+    if not isinstance(content, list):
+        return content
+    texts = [
+        block["text"]
+        for block in content
+        if isinstance(block, Mapping)
+        and block.get("type") in {"text", "output_text"}
+        and isinstance(block.get("text"), str)
+    ]
+    if texts:
+        return "".join(texts)
+    return content if role == "tool" else None
+
+
+def _langgraph_message_created_at(message: Mapping[str, Any]) -> str | None:
+    """Use a native textual timestamp when a message implementation supplies one."""
+
+    for key in ("createdAt", "created_at", "timestamp"):
+        value = message.get(key)
+        if isinstance(value, str):
+            return value
+    return None
 
 
 def _message_tool_events(message: Any) -> list[dict[str, Any]]:

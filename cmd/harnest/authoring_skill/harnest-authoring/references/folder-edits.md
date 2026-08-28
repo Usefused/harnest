@@ -32,6 +32,7 @@ and extended examples into that skill's linked `references/` files.
 
 | Intent | Managed-mode location | Important follow-up |
 | --- | --- | --- |
+| Add or reuse Pydantic request, response, or tool contracts | Root `models/**/*.py` | Import below `harnest.models`; keep schema definitions out of `agent.py` and discovered resources. |
 | Change the agent's general behavior | Owning `instructions.md` | Keep it non-empty; do not duplicate it into `agent.py` unless dynamic instructions are required. |
 | Add one callable capability | Owning `tools/<name>.py` | Export one `@tool` callable named exactly `<name>`. |
 | Add model-facing operational guidance | Owning `skills/<skill>/SKILL.md` | Give it distinct frontmatter name/description and put supporting files below that skill. |
@@ -39,7 +40,8 @@ and extended examples into that skill's linked `references/` files.
 | Bundle reusable MCP access plus usage guidance | Root `plugins/<plugin>/mcp/` and `plugins/<plugin>/skills/` | A populated plugin needs at least one MCP client and one skill; it never contains agents or lifecycle code. |
 | Add a simple subagent | Owning `subagents/<name>.py` | Export managed `Agent` as `<name>` with an explicit instruction, or export `Agent.advanced(...)` around a fully composed native agent of the same name. |
 | Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Managed agents only: add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. Advanced agents compose capabilities natively in the flat-file form. |
-| Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use explicit native factory decorators only for tighter framework control. |
+| Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use one `@lifecycle.output_policy` factory only when public subagent narration should differ from the safe default. |
+| Export traces or logs directly to one or more destinations | Root `extensions/telemetry.py` | Add one repeatable `@lifecycle.telemetry_exporter` runtime factory per destination; return `TelemetryExporter` with `traces`, `logs`, or both. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
 | Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
 | Add offline behavior coverage | Root `tests/unit/test_*.py` | Use compiler fixtures; do not manually import the compiled agent. |
@@ -60,13 +62,14 @@ and extended examples into that skill's linked `references/` files.
 - Use normal Python imports only for installed dependencies and stable authored
   library modules. A Harnest agent root is not itself a Python package, and
   resource modules are loaded independently by the compiler.
-- Put pure helpers, domain types, validation, and reusable clients in root
-  `lib/`, then import them below `harnest.lib`. For example,
+- Put Pydantic contracts in root `models/` and import them below
+  `harnest.models`. Put pure helpers, other domain types, validation, and
+  reusable clients in root `lib/`, then import them below `harnest.lib`. For example,
   `lib/storage/queries.py` is `harnest.lib.storage.queries`. Do not add
   `__init__.py` just to form packages, import one discovered resource from
-  another, or place `lib/` beneath a subagent. The root library is available to
-  every bundle resource in managed and advanced mode during compile, tests,
-  evals, and standalone runs.
+  another, or place `models/` or `lib/` beneath a subagent. Both root namespaces
+  are available to every bundle resource in managed and advanced mode during
+  compile, tests, evals, and standalone runs.
 - Cross-cutting invocation policy still belongs in a portable lifecycle
   extension. Use `lib/` for implementation shared by resources, not to disguise
   persistence, auditing, or guardrails that must surround every call.

@@ -113,11 +113,16 @@ harnest test support-agent --smoke --evals
 ```
 
 - The default lane compiles first and runs `tests/unit/test_*.py` offline.
+- MCP descriptors are compiled in that unit lane, but `MCPClientLifecycle`
+  setup and remote discovery remain lazy. Unit-test gateway helpers without a
+  network handshake.
 - When LiteLLM is installed, set `LITELLM_LOCAL_MODEL_COST_MAP=True` for a
   strictly network-silent offline lane; otherwise LiteLLM may attempt to refresh
   its public model cost map during import before falling back to bundled data.
 - `--smoke` additionally runs live-runtime tests and may consume credentials,
   model tokens, MCP services, time, and money. Use it only when authorized.
+  Put real gateway/MCP handshakes here and assert tool behavior rather than a
+  fixed number of adapter-created HTTP clients.
 - `--evals` runs validated eval assets after Python tests. ADK EvalSet JSON is
   ADK-specific; LangGraph can use authored pytest evaluations. Only root
   `evals/` assets are selected; nested eval files are not an executable lane.

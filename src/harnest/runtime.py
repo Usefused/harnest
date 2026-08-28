@@ -57,7 +57,7 @@ def _apply_observability_defaults(framework: str) -> None:
 
 
 def load_compiled_application(artifact: str | Path) -> Any:
-    """Load the portable application and retain its library for lazy imports."""
+    """Load the application and retain authored namespaces for lazy imports."""
 
     directory = Path(artifact).resolve()
     if directory.is_symlink() or not directory.is_dir():
@@ -69,7 +69,7 @@ def load_compiled_application(artifact: str | Path) -> Any:
     try:
         library_acquired = activate_authored_library(source_root)
     except (LibraryConventionError, LibraryImportError) as exc:
-        raise AgentRuntimeError(f"invalid authored library: {exc}") from exc
+        raise AgentRuntimeError(f"invalid authored Python namespace: {exc}") from exc
     try:
         return _import_compiled_application(entrypoint)
     except Exception:
@@ -160,6 +160,7 @@ def _runtime_driver(
     extra_endpoints: Mapping[str, str] | None = None,
     adk_session_service: Any | None = None,
     langgraph_session_store: SessionStore | None = None,
+    manage_credential_provider: bool = True,
 ) -> Any:
     """Select a backend once, at the process boundary."""
 
@@ -178,7 +179,11 @@ def _runtime_driver(
         )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
-    return _wrap_runtime_driver(application, driver)
+    return _wrap_runtime_driver(
+        application,
+        driver,
+        manage_credential_provider=manage_credential_provider,
+    )
 
 
 def _adk_runtime_driver(
@@ -237,7 +242,12 @@ def _langgraph_runtime_driver(
     )
 
 
-def _wrap_runtime_driver(application: Any, driver: Any) -> Any:
+def _wrap_runtime_driver(
+    application: Any,
+    driver: Any,
+    *,
+    manage_credential_provider: bool = True,
+) -> Any:
     """Place storage lifecycle outside framework execution and inside extensions."""
 
     if application.session_store is not None or application.checkpointer is not None:
@@ -248,13 +258,19 @@ def _wrap_runtime_driver(application: Any, driver: Any) -> Any:
             application.session_store,
             application.checkpointer,
         )
-    if application.extensions or application.context_values:
+    if (
+        application.extensions
+        or application.context_values
+        or application.credential_provider is not None
+    ):
         from .runtime_extensions import ExtensionRuntimeDriver
 
         return ExtensionRuntimeDriver(
             driver,
             application.extensions,
             context_values=application.context_values,
+            credential_provider=application.credential_provider,
+            manage_credential_provider=manage_credential_provider,
         )
     return driver
 
@@ -324,7 +340,11 @@ async def _run_agent_message(
     from .neutral_runtime import InvocationRequest, require_customer_facing_output
     from .telemetry import configure_observability
 
-    configure_observability(application.name, framework=application.framework)
+    telemetry = configure_observability(
+        application.name,
+        framework=application.framework,
+        exporter_factories=application.telemetry_exporters,
+    )
     try:
         card = load_agent_card(artifact)
     except AgentRuntimeError:
@@ -377,6 +397,7 @@ async def _run_agent_message(
         return _direct_result(result)
     finally:
         await driver.close()
+        telemetry.force_flush()
 
 
 def _create_adk_fastapi_app(
@@ -427,10 +448,24 @@ def _create_adk_fastapi_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any):
+        from .runtime_extensions import (
+            _close_credential_provider,
+            _start_credential_provider,
+        )
+
+        provider = application.credential_provider
+        provider_started = False
         try:
+            if provider is not None:
+                await _start_credential_provider(provider)
+                provider_started = True
             yield
         finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
+            try:
+                if provider_started:
+                    await _close_credential_provider(provider)
+            finally:
+                shutil.rmtree(runtime_root, ignore_errors=True)
 
     kwargs: dict[str, Any] = {
         "agents_dir": str(agents_dir),
@@ -447,16 +482,114 @@ def _create_adk_fastapi_app(
     }
     if "bind_host" in inspect.signature(get_fast_api_app).parameters:
         kwargs["bind_host"] = bind_host
+    credential_service = None
+    if application.credential_provider is not None:
+        from .credentials_adk import adk_credential_service
+
+        credential_service = adk_credential_service(application.credential_provider)
     try:
+        # Without a provider, retain ADK's in-memory warning because that
+        # credential durability choice remains user-actionable.
         if session_service is None:
-            return get_fast_api_app(session_service_uri="memory://", **kwargs)
+            return _build_adk_fastapi_app(
+                get_fast_api_app,
+                session_service_uri="memory://",
+                credential_service=credential_service,
+                kwargs=kwargs,
+            )
         from .session_adk import register_adk_session_service
 
         with register_adk_session_service(session_service) as service_uri:
-            return get_fast_api_app(session_service_uri=service_uri, **kwargs)
+            return _build_adk_fastapi_app(
+                get_fast_api_app,
+                session_service_uri=service_uri,
+                credential_service=credential_service,
+                kwargs=kwargs,
+            )
     except Exception:
         shutil.rmtree(runtime_root, ignore_errors=True)
         raise
+
+
+def _build_adk_fastapi_app(
+    factory: Any,
+    *,
+    session_service_uri: str,
+    credential_service: Any,
+    kwargs: Mapping[str, Any],
+) -> Any:
+    """Use ADK's supported credential seam or its public server constructor."""
+
+    if credential_service is None:
+        return factory(session_service_uri=session_service_uri, **kwargs)
+    if "credential_service" in inspect.signature(factory).parameters:
+        return factory(
+            session_service_uri=session_service_uri,
+            credential_service=credential_service,
+            **kwargs,
+        )
+    # ADK 2.8's convenience factory hardcodes in-memory credentials. ApiServer
+    # exposes the service explicitly, so compose the equivalent production-safe
+    # surface until the convenience factory gains that parameter.
+    return _build_adk_api_server(
+        session_service_uri=session_service_uri,
+        credential_service=credential_service,
+        kwargs=kwargs,
+    )
+
+
+def _build_adk_api_server(
+    *,
+    session_service_uri: str,
+    credential_service: Any,
+    kwargs: Mapping[str, Any],
+) -> Any:
+    """Construct ADK's public ApiServer with non-persisting credentials."""
+
+    from google.adk.cli import fast_api as adk_fast_api
+
+    agents_dir = str(kwargs["agents_dir"])
+    loader = kwargs["agent_loader"]
+    loader._allow_special_agents = False
+    adk_fast_api.load_services_module(agents_dir)
+    memory_service = adk_fast_api.create_memory_service_from_options(
+        base_dir=agents_dir,
+        memory_service_uri=str(kwargs["memory_service_uri"]),
+    )
+    session_service = adk_fast_api.create_session_service_from_options(
+        base_dir=agents_dir,
+        session_service_uri=session_service_uri,
+        session_db_kwargs=None,
+        use_local_storage=False,
+    )
+    artifact_service = adk_fast_api.create_artifact_service_from_options(
+        base_dir=agents_dir,
+        artifact_service_uri=str(kwargs["artifact_service_uri"]),
+        strict_uri=True,
+        use_local_storage=False,
+    )
+    server = adk_fast_api.ApiServer(
+        agent_loader=loader,
+        session_service=session_service,
+        memory_service=memory_service,
+        artifact_service=artifact_service,
+        credential_service=credential_service,
+        eval_sets_manager=adk_fast_api.LocalEvalSetsManager(agents_dir=agents_dir),
+        eval_set_results_manager=adk_fast_api.LocalEvalSetResultsManager(
+            agents_dir=agents_dir
+        ),
+        agents_dir=agents_dir,
+        auto_create_session=False,
+    )
+    server.default_app_name = loader.list_agents()[0]
+    app = server.get_fast_api_app(
+        lifespan=kwargs["lifespan"],
+        bind_host=kwargs.get("bind_host"),
+    )
+    adk_fast_api.maybe_install_request_metrics_middleware(
+        app, otel_to_cloud=False
+    )
+    return app
 
 
 def _exposes_native_adk_api(application: Any) -> bool:
@@ -530,7 +663,10 @@ def _build_fastapi_app(
     )
 
     from .neutral_runtime import create_neutral_app
-    from .telemetry import configure_observability, instrument_fastapi
+    from .telemetry import (
+        configure_observability,
+        instrument_fastapi,
+    )
 
     adk_session_service = _runtime_adk_session_service(
         artifact,
@@ -551,10 +687,13 @@ def _build_fastapi_app(
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
             authenticator=authenticator,
+            telemetry_exporter_factories=application.telemetry_exporters,
         )
     else:
         telemetry = configure_observability(
-            application.name, framework=application.framework
+            application.name,
+            framework=application.framework,
+            exporter_factories=application.telemetry_exporters,
         )
         app = create_neutral_app(
             _runtime_driver(
@@ -631,6 +770,7 @@ def _build_native_adk_app(
     max_request_bytes: int,
     playground_enabled: bool,
     authenticator: Authenticator | None,
+    telemetry_exporter_factories: Any,
 ) -> tuple[Any, Any]:
     from .neutral_runtime import create_neutral_router
     from .playground import create_playground_router
@@ -649,6 +789,9 @@ def _build_native_adk_app(
         card=card,
         extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
         adk_session_service=adk_session_service,
+        # ADK's outer lifespan owns the provider shared by native and neutral
+        # routes; the neutral wrapper still binds it per invocation.
+        manage_credential_provider=False,
     )
     trace_store = None
     if playground_enabled:
@@ -675,6 +818,7 @@ def _build_native_adk_app(
         application.name,
         framework=application.framework,
         use_global_providers=_adk_owns_otel(),
+        exporter_factories=telemetry_exporter_factories,
     )
     return app, telemetry
 

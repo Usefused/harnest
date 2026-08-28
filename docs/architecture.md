@@ -202,8 +202,9 @@ import or register one another. For example, tools use
 `from harnest.tool import tool` and MCP client definitions use
 `from harnest.mcp import MCPClient`. The compiler/runtime owns this namespace,
 so agents do not declare Harnest in `pyproject.toml`. Normal standard-library
-and third-party imports remain valid. Root `lib/` supplies the one intentional
-authored import namespace: `lib/audit.py` becomes `harnest.lib.audit`, and
+and third-party imports remain valid. Root `models/` supplies Pydantic contracts
+below `harnest.models`, while root `lib/` supplies reusable implementation below
+`harnest.lib`: `models/support.py` becomes `harnest.models.support`, and
 `lib/storage/queries.py` becomes `harnest.lib.storage.queries`. Namespace
 directories require no `__init__.py`. Import-free resource source fails
 compilation; there is no implicit-global compatibility bridge. The bundle always requires a
@@ -217,6 +218,7 @@ marked root-only:
 
 | Path | Required filename-matched export |
 | --- | --- |
+| `models/**/*.py` (root-only) | Pydantic contracts mounted below `harnest.models`; no resource export contract. |
 | `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
 | `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
@@ -235,13 +237,14 @@ files. In those cases compilation moves on without creating a runtime resource.
 Once a public entry exists, its complete convention is enforced; populated but
 invalid resources are never silently skipped.
 
-The root library is not a resource root. Its modules are global to the compiled
-bundle in managed and advanced mode, while nested agent `lib/` folders are
-invalid. Library callables are never auto-registered as tools, nodes, agents, or
-lifecycle hooks. Entry points and discovered resources import them explicitly
-through `harnest.lib.*`, with identical resolution during compilation, unit and
-smoke tests, evals, and standalone serving. This boundary allows reuse without
-turning the authored root into an installable package or coupling independently
+The root models and library folders are not resource roots. Their modules are
+global to the compiled bundle in managed and advanced mode, while nested agent
+`models/` and `lib/` folders are invalid. Their contents are never
+auto-registered as tools, nodes, agents, or lifecycle hooks. Entry points and
+discovered resources import them explicitly through `harnest.models.*` and
+`harnest.lib.*`, with identical resolution during compilation, unit and smoke
+tests, evals, and standalone serving. This boundary allows reuse without turning
+the authored root into an installable package or coupling independently
 discovered resource modules to each other.
 
 Each MCP module is ordinary Python and may read `os.environ`, call a credential
@@ -262,6 +265,21 @@ ADK receives the matching connection-parameter type; LangGraph receives the
 matching `langchain-mcp-adapters` connection dictionary. HTTP request timeouts
 and long-lived SSE idle-read timeouts are separate so quiet legacy servers do
 not disconnect at the normal request deadline.
+
+A remote descriptor may own one `MCPClientLifecycle` for gateway, proxy,
+custom authentication, CA, or mTLS setup. The controller starts it once before
+the first adapter session and closes it once after the framework has closed its
+MCP resources. The synchronous client factory runs per adapter-owned session
+and must return a fresh `httpx.AsyncClient`; the adapter, rather than the
+lifecycle, owns and closes that client. This ownership and ordering is identical
+for ADK and LangGraph, including startup unwinding and shutdown in reverse
+order. A lifecycle is connection-scoped and cannot be shared across different
+connections or frameworks. `stdio` rejects HTTP lifecycle configuration.
+Hook diagnostics expose only the hook and exception type, while lifecycle
+context and HTTP option representations omit URLs, headers, auth, and timeout
+objects. Reusable lifecycle implementations belong in root `lib/` and are
+attached explicitly by an `mcp/<name>.py` or plugin MCP factory; they are not
+discovered runtime extensions.
 
 `@require_human_approval` adds policy metadata to a local `@tool` or an MCP
 `client()` factory. Managed ADK wraps function execution and discovered MCP
@@ -291,7 +309,7 @@ are not inspected and require native approval wiring.
 The default approval store and suspended tasks are process local and intended
 for standalone development; restarting invalidates pending requests.
 
-Outside root `lib/`, the compiler ignores `__init__.py`, dotfiles, cache
+Outside root `lib/` and `models/`, the compiler ignores `__init__.py`, dotfiles, cache
 directories, and files whose names start with `_`. It imports public resource
 files in deterministic filename order. Missing or wrongly typed exports are
 convention errors; module import
@@ -314,6 +332,48 @@ without exposing native request types through portable hooks. Zero-argument
 `@lifecycle.resource` transfers application startup and shutdown ownership but
 does not publish the entered value by itself. Providers are discovered but not
 called by the compiler. See [Runtime extensions](extensions.md).
+
+Exactly zero or one root `@lifecycle.output_policy` factory selects public
+intermediate model messages. Its default `OutputPolicy()` suppresses subagent
+narration attached to tool calls without removing tool events or a terminal
+answer; `subagent_messages="include"` exposes that provisional narration. Both
+backend drivers apply the policy before producing neutral non-streaming and
+streaming events, so `/responses`, `/live`, and the playground agree. Native
+framework endpoints remain outside this projection boundary.
+
+Zero or more root `@lifecycle.telemetry_exporter` factories declare direct
+telemetry destinations. The compiler retains but never calls these factories;
+runtime bootstrap resolves each uniquely named `TelemetryExporter` and adds a
+batch processor for its optional trace and log exporters. The root owns this
+process-wide configuration, including telemetry emitted during subagent work.
+
+Exactly zero or one root `@lifecycle.credential_provider` factory establishes
+the application's private downstream-authorization authority. The factory
+returns a framework-neutral `CredentialProvider`; construction remains offline,
+while `start`, `resolve`, and `close` run only in the compiled application
+lifecycle. Resolution receives immutable audience, scope, framework, agent,
+invocation, and session identifiers plus the complete verified `AuthPrincipal`,
+but never the original connection or request metadata. Selected secret-bearing
+authentication values remain opaque `Credential` objects on that principal.
+Returned material is redacted, invocation-scoped, and absent from the enumerable
+`AgentContext` registry. ContextVar revocation prevents child tasks from
+retaining access after their invocation ends. The public
+`context.credentials` property is a resolver capability, not stored context
+data. See [authentication.md](authentication.md).
+
+The provider is a consumption boundary rather than a persistence API. Workload
+identity, Vault, or an external OAuth broker may durably own authorization
+grants, but Harnest never saves resolved tokens in sessions, checkpoints,
+queued-task payloads, telemetry, or application state. Delayed work resolves a
+new short-lived credential from stored non-secret intent or a grant reference.
+Managed backends bind the same provider around root and subagent execution;
+advanced ADK receives an internal plugin for its native run lifecycle, while
+provider start/close remains owned by the outer compiled server. Provider and
+lifecycle failures are replaced with type-only errors outside the original
+exception chain. The authentication middleware also carries its verified
+principal through a separate private, revocable binding. Advanced ADK credential
+resolution uses that principal instead of the caller-authored native `userId`;
+the native value is only the unauthenticated local-development fallback.
 
 Advanced components continue to own arbitrary native model calls, graph routing,
 state/checkpoint semantics, capability declaration, and native integration
@@ -396,6 +456,10 @@ reinforces the boundary by withholding HTTP/smoke fixtures, but it does not
 install an operating-system network sandbox. Smoke tests are always opt-in
 because they can use live models, credentials, MCP services, time, and money.
 Their environment must be supplied explicitly by the developer or CI job.
+Compiling the unit lane materializes MCP descriptors but does not start an
+`MCPClientLifecycle`. A live gateway handshake or remote tool assertion belongs
+in the smoke lane. One compiled server lifecycle spans that smoke suite, while
+adapter-owned MCP session clients may be created and closed more than once.
 
 Both `tests/` subtrees are test-only compiler input. They never become prompts,
 tools, subagents, skill content, evaluation cases, Agent Card capabilities, or
@@ -463,12 +527,28 @@ surface is deliberately transport- and provider-neutral:
 | Route | Contract |
 | --- | --- |
 | `GET /agent` | Returns `{id,name,description,card,endpoints}` for the compiled agent. |
-| `POST /sessions` | Create an in-memory session from `{id?,state?}`; returns 201 with `{id,state}`. |
-| `GET /sessions`, `GET /sessions/{id}` | Return `{sessions:[{id,state},...]}` or one `{id,state}`. |
+| `POST /sessions` | Create a session from `{id?,state?}`; returns 201 with the complete neutral session record. |
+| `GET /sessions`, `GET /sessions/{id}` | Return self-describing records containing `id`, `userId`, `state`, `createdAt`, `updatedAt`, and namespaced framework `metadata`. |
+| `GET /sessions/{id}/messages` | Return the self-describing ordered transcript as `{sessionId,userId,messages}`; every message has `id`, `role`, `content`, `createdAt`, and complete namespaced framework `metadata`. |
 | `PATCH /sessions/{id}` | Apply the exact `{"stateDelta": {...}}` body. |
 | `DELETE /sessions/{id}` | Delete a session and return 204. |
 | `POST /responses` | Run `input` against an optional `sessionId`; return neutral JSON, or named SSE when `stream` is true. |
 | `WS /live` | Direct multi-turn WebSocket transport using neutral connect, request, and response event frames. |
+
+Session `state` remains the portable application-owned view. `metadata.adk`
+preserves ADK session fields and events, while `metadata.langgraph` preserves
+the complete stored LangGraph state, including native messages and their IDs,
+tool fields, response metadata, and usage metadata. These namespaces are
+intentionally framework-shaped and may evolve with the release-bounded
+framework version; Harnest does not flatten or discard their generated fields.
+
+Managed `Agent` and `Graph` output models may separately opt into current-turn
+framework data with one explicit `FrameworkMetadata[T]` field. The compiler omits
+that runtime-owned field from the model provider's schema. After completion,
+the driver injects the native `adk` or `langgraph` namespace and validates the
+full authored output model before any transport exposes it. Models without the
+marker receive no injected result field; advanced output remains controlled by
+its adapter.
 
 `/responses` also accepts an opaque `metadata` object. Its completed JSON has
 `id`, `status`, `sessionId`, `outputText`, ordered `output`, and echoed
@@ -697,8 +777,9 @@ code and owns the default OpenTelemetry bootstrap. Managed ADK and LangGraph use
 one process-global Harnest provider when OTLP is enabled. Advanced ADK may
 initialize its own global providers while creating the official FastAPI
 surface, so Harnest adopts those providers and does not add a duplicate
-exporter. Externally installed global providers are adopted without mutation or
-shutdown.
+environment exporter. Externally installed global providers are adopted without
+shutdown; explicitly authored telemetry exporters are added to providers that
+support processors.
 
 Every execution transport creates a low-cardinality
 `harnest.agent.invoke` span. SSE spans remain open for the generator lifetime;

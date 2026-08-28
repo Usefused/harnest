@@ -345,6 +345,59 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(string_agent.kwargs["model"], "gemini-test")
         self.assertIs(custom_agent.kwargs["model"], custom_model)
 
+    def test_agent_passes_pydantic_input_and_output_schemas_to_adk(self):
+        from pydantic import BaseModel
+
+        class Question(BaseModel):
+            topic: str
+
+        class Answer(BaseModel):
+            value: str
+
+        modules = _fake_adk_modules()
+        with patch.dict(sys.modules, modules):
+            built = Agent(
+                name="structured",
+                model="gemini-test",
+                instruction="Answer structurally.",
+                input_schema=Question,
+                output_schema=Answer,
+            ).build()
+
+        self.assertIs(built.kwargs["input_schema"], Question)
+        self.assertIs(built.kwargs["output_schema"], Answer)
+        with self.assertRaisesRegex(TypeError, "Pydantic BaseModel class"):
+            Agent(
+                name="invalid",
+                model="gemini-test",
+                instruction="Answer.",
+                output_schema=dict,  # type: ignore[arg-type]
+            )
+
+    def test_agent_keeps_runtime_metadata_out_of_adk_output_schema(self):
+        from pydantic import BaseModel
+
+        from harnest.structured import FrameworkMetadata
+
+        class Details(BaseModel):
+            framework: str
+
+        class Answer(BaseModel):
+            value: str
+            metadata: FrameworkMetadata[Details]
+
+        modules = _fake_adk_modules()
+        with patch.dict(sys.modules, modules):
+            built = Agent(
+                name="structured_metadata",
+                model="gemini-test",
+                instruction="Answer structurally.",
+                output_schema=Answer,
+            ).build()
+
+        self.assertNotIn("metadata", built.kwargs["output_schema"].model_fields)
+        self.assertIn("metadata", Answer.model_fields)
+
     def test_ollama_model_builds_adk_litellm_lazily(self):
         connector = OllamaModel(
             "qwen3:8b",
@@ -1022,10 +1075,12 @@ class AuthoringTests(unittest.TestCase):
                 self.assertEqual(
                     neutral_session.status_code, 201, neutral_session.text
                 )
-                self.assertEqual(
-                    neutral_session.json(),
-                    {"id": "neutral-session", "state": {"ready": True}},
-                )
+                neutral_record = neutral_session.json()
+                self.assertEqual(neutral_record["id"], "neutral-session")
+                self.assertEqual(neutral_record["state"], {"ready": True})
+                self.assertIsNone(neutral_record["createdAt"])
+                self.assertIsNotNone(neutral_record["updatedAt"])
+                self.assertIn("adk", neutral_record["metadata"])
                 native_session = client.get(
                     "/apps/root/users/_harnest_neutral/sessions/neutral-session"
                 )

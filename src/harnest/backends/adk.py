@@ -9,6 +9,7 @@ from typing import Any
 from harnest.agent import AgentDefinition, _AdvancedAgentDefinition
 from harnest.graph import START, Event, Graph, GraphContext, Join, call_graph_node
 from harnest.model_lifecycle import propagate_litellm_lifecycles
+from harnest.mcp_lifecycle import propagate_mcp_lifecycles
 
 
 def _adk_route(route: Any) -> Any:
@@ -84,8 +85,11 @@ def _callable_adapter(value: Any, *, name: str) -> Any:
 
 
 def _own_node_lifecycles(workflow: Any, native_nodes: dict[str, Any]) -> Any:
+    """Make the enclosing workflow own every lowered node lifecycle."""
+
     for native in native_nodes.values():
         propagate_litellm_lifecycles(native, workflow)
+        propagate_mcp_lifecycles(native, workflow)
     return workflow
 
 
@@ -121,6 +125,7 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
                 nested = _lower_graph(value, active=active)
                 native = adk_node(nested, name=name)
                 propagate_litellm_lifecycles(nested, native)
+                propagate_mcp_lifecycles(nested, native)
             elif isinstance(value, AgentDefinition):
                 built_agent = _build_agent_node(
                     value,
@@ -128,6 +133,7 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
                 )
                 native = adk_node(built_agent, name=name)
                 propagate_litellm_lifecycles(built_agent, native)
+                propagate_mcp_lifecycles(built_agent, native)
             elif callable(value):
                 native = adk_node(
                     _callable_adapter(value, name=name),
@@ -193,9 +199,14 @@ def _build_agent_node(
     # ADK chat nodes reject non-START edges. Single-turn dispatch injects the
     # direct node value, while explicit content inclusion retains this node's
     # prior session events across invocations.
-    return built.model_copy(
+    copied = built.model_copy(
         update={"mode": "single_turn", "include_contents": "default"}
     )
+    # Pydantic copies declared fields, while Harnest lifecycle ownership is
+    # intentionally attached out of band to avoid framework schema coupling.
+    propagate_litellm_lifecycles(built, copied)
+    propagate_mcp_lifecycles(built, copied)
+    return copied
 
 
 def _advanced_graph_node(value: _AdvancedAgentDefinition) -> Any:

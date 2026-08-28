@@ -5,7 +5,8 @@ agents. Its managed authoring layer supports Google ADK and LangGraph, lowers a
 small graph API to the selected framework, and serves both through the same
 HTTP/WebSocket contract. Agent authors put instructions, tools, plugins,
 extensions, subagents, MCP connections, skills, evals, and tests in conventional
-folders; ordinary reusable Python lives under `lib/`. The native CLI validates
+folders; Pydantic contracts live under `models/`, and ordinary reusable Python
+lives under `lib/`. The native CLI validates
 that source, compiles it, and runs the result.
 
 The design borrows the useful part of Eve's developer experience: one agent is
@@ -164,6 +165,7 @@ examples/self-serve/
         ├── pyproject.toml            Agent dependency declarations
         ├── uv.lock                   Resolved dependency lock after sync
         ├── lib/                      Reusable Python under harnest.lib
+        ├── models/                   Pydantic contracts under harnest.models
         ├── tools/                    Decorated callable exports
         ├── subagents/                AgentDefinition exports
         ├── mcp/                      MCPClient connections
@@ -286,6 +288,82 @@ isolated model call. This contract also applies to `Agent` nodes inside a
 portable `Graph`: a routed agent consumes its predecessor's direct output as
 the current user input while retaining only the selected history. The Harnest
 runtime remains the single session authority.
+Use Pydantic models when callers and downstream code need enforced input and
+output contracts:
+
+In `models/support.py`:
+
+```python
+from pydantic import BaseModel, Field
+
+
+class SupportRequest(BaseModel):
+    question: str
+    priority: int = Field(ge=1, le=5)
+
+
+class SupportAnswer(BaseModel):
+    answer: str
+    escalation_required: bool
+```
+
+Then `agent.py` only imports the contracts it configures:
+
+```python
+from harnest.agent import Agent
+from harnest.models.support import SupportAnswer, SupportRequest
+
+root_agent = Agent(
+    name="support",
+    model=model,
+    input_schema=SupportRequest,
+    output_schema=SupportAnswer,
+)
+```
+
+The same `input_schema` validates the `input` value for JSON, SSE, and `/live`
+WebSocket requests. Harnest exposes it in the `/responses` OpenAPI request body
+and sends validated structured input to either backend as JSON model content.
+The configured `output_schema` is enforced by ADK or LangChain and validated
+again at Harnest's public boundary. Completed JSON responses, terminal SSE
+events, and terminal WebSocket frames all carry the model value under `result`.
+Invalid structured output fails the request or stream without echoing rejected
+values in the error.
+
+When the public result should include framework-generated turn details, declare
+that ownership in the output model instead of asking the model to fabricate the
+field:
+
+```python
+from typing import Any
+
+from pydantic import BaseModel
+
+from harnest import FrameworkMetadata
+
+
+class TurnMetadata(BaseModel):
+    adk: dict[str, Any] | None = None
+    langgraph: dict[str, Any] | None = None
+
+
+class SupportAnswer(BaseModel):
+    answer: str
+    metadata: FrameworkMetadata[TurnMetadata]
+```
+
+The field is explicit and required in the public `SupportAnswer`, but Harnest
+removes it from the provider-facing schema and fills it after the turn
+completes. Only the active framework namespace is populated, preserving native
+message/event IDs, tool fields, response metadata, and usage details. Without a
+`FrameworkMetadata[...]` field, Harnest injects nothing into the model result. A
+portable `Graph` accepts the same `output_schema=` option and validates its
+terminal output through this contract. Advanced applications remain
+adapter-owned. The deterministic
+[`examples/runtime-metadata`](examples/runtime-metadata) application exercises
+the same source and smoke assertion under both managed frameworks without a
+model server or API key.
+
 `LiteLLMModel` and `OllamaModel` have
 adapters for both frameworks. Provider-specific Python dependencies still
 belong in the agent's `pyproject.toml`.
@@ -433,6 +511,16 @@ factory returning `MCPClient`. The filename supplies the identity `catalog`.
 An `@client_tool` export follows the same tool filename/signature contract, but
 its Python body is only a declaration: the connected client executes it.
 
+### Pydantic model contracts
+
+Put shared `BaseModel` types in root `models/` and import them through
+`harnest.models.*`. For example, `models/support.py` is
+`harnest.models.support`. The namespace is available to `agent.py`, tools,
+client tools, extensions, subagents, authored tests, and the compiled server.
+It is root-only, is never capability discovery, and needs no `__init__.py`.
+Use it for model input/output, tool output, request, streaming, and WebSocket
+contracts instead of repeating model classes in resource files.
+
 ### Reusable Python library
 
 Put ordinary shared implementation in root `lib/`. Harnest mounts
@@ -458,6 +546,34 @@ library initialization. Do not create a nested agent `lib/` or import it as bare
 `lib.*`. The `harnest.lib.*` namespace works consistently in
 compilation, unit and smoke tests, evals, and the standalone server. Keep
 third-party library dependencies in `pyproject.toml`.
+
+Tools can enforce Pydantic output from either an explicit decorator option or
+a Pydantic return annotation. This also applies to `@client_tool`, where the
+client-submitted value is validated before the suspended invocation resumes:
+
+In `models/orders.py`:
+
+```python
+from pydantic import BaseModel
+
+
+class OrderStatus(BaseModel):
+    order_id: str
+    status: str
+```
+
+Then `tools/lookup_order.py` imports the shared contract:
+
+```python
+from harnest.models.orders import OrderStatus
+from harnest.tool import tool
+
+
+@tool(output_schema=OrderStatus)
+def lookup_order(order_id: str):
+    """Load one order status."""
+    return {"order_id": order_id, "status": "processing"}
+```
 
 ### Execution context resources
 
@@ -493,6 +609,15 @@ invocation fail clearly at runtime. Harnest binds context for `/responses`,
 `/live`, `run_agent_message`, and managed nodes, tools, and subagents. Direct native
 framework endpoints and native targets invoked outside Harnest do not receive
 it. See [Runtime extensions](docs/extensions.md).
+
+### Invocation credentials
+
+`@lifecycle.authenticate` may attach selected opaque credentials to its verified
+`AuthPrincipal`. A `CredentialProvider` receives that complete principal and
+applies pass-through or token-exchange policy for a requested audience. Trusted
+tools and `lib/` functions call `context.credentials.resolve(...)`; credentials
+never become context resources, model input, or persistent state. See
+[Authentication and downstream credentials](docs/authentication.md).
 
 ### Folder-scoped agent ownership
 
@@ -530,6 +655,15 @@ source path. Portable hooks cover authentication, invocation, events, errors,
 and managed model calls; explicit `@lifecycle.adk_plugin` and
 `@lifecycle.langgraph_middleware` factories retain native framework control.
 See the [runtime extension contract](docs/extensions.md).
+
+Harnest hides intermediate subagent narration that accompanies a tool call by
+default while preserving the tool trace and final answer. To deliberately show
+that narration, add one root `@lifecycle.output_policy` factory under
+`extensions/` returning
+`OutputPolicy(subagent_messages="include")`. The policy is consistent across
+ADK and LangGraph neutral JSON, streaming, `/live`, and playground output; it
+does not change direct framework-native endpoints. See
+[Output policy](docs/extensions.md#output-policy) before opting in.
 
 An optional `sandbox/sandbox.py` exports one `Sandbox`. Built-in container
 sandboxes deny network access by default; provider packages can supply another
@@ -688,6 +822,94 @@ messages, assigns each discovered client a stable path-scoped capability ID,
 and rejects duplicate connection configurations even when approval metadata or
 local identities differ.
 
+For an MCP server behind an enterprise gateway, attach a portable
+`MCPClientLifecycle`. Keep the reusable implementation in `lib/`, which is the
+user-owned import namespace (not `extensions/`):
+
+```python
+# lib/mcp_gateway.py
+import os
+import ssl
+
+import httpx
+
+from harnest.mcp import (
+    MCPClientContext,
+    MCPClientLifecycle,
+    MCPHTTPClientOptions,
+)
+
+
+class GatewayAuth(httpx.Auth):
+    def auth_flow(self, request):
+        request.headers["X-Gateway-Token"] = os.environ["MCP_GATEWAY_TOKEN"]
+        yield request
+
+
+class GatewayLifecycle(MCPClientLifecycle):
+    def start(self, context: MCPClientContext):
+        tls = ssl.create_default_context(cafile=os.environ["MCP_CA_FILE"])
+        tls.load_cert_chain(
+            certfile=os.environ["MCP_CLIENT_CERT"],
+            keyfile=os.environ["MCP_CLIENT_KEY"],
+        )
+        self.tls = tls
+
+    def create_http_client(
+        self,
+        options: MCPHTTPClientOptions,
+        context: MCPClientContext,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers=dict(options.headers),
+            timeout=options.timeout,
+            auth=options.auth or GatewayAuth(),
+            verify=self.tls,
+            proxy=os.getenv("HTTPS_PROXY"),
+        )
+
+    def close(self, context: MCPClientContext):
+        self.tls = None
+```
+
+```python
+# mcp/catalog.py
+import os
+
+from harnest.lib.mcp_gateway import GatewayLifecycle
+from harnest.mcp import MCPClient
+
+
+def client():
+    return MCPClient.streamable_http(
+        os.environ["CATALOG_MCP_URL"],
+        lifecycle=GatewayLifecycle(),
+    )
+```
+
+`start` and `close` may be synchronous or asynchronous and run once for the
+configured connection during the compiled application's lifetime. The
+`create_http_client` hook is deliberately synchronous: ADK and LangGraph call
+it for each MCP session and own and close the returned `httpx.AsyncClient`.
+Do not cache that session client in the lifecycle. Both frameworks receive the
+same context contract, adapter headers, timeout, and auth inputs. Create a new
+lifecycle instance for each MCP descriptor; Harnest rejects sharing one
+stateful instance across connections or frameworks. Harnest redacts hook
+exception messages, and context/options representations omit URLs, headers,
+authentication, and timeout objects; application code should likewise avoid
+logging those values. Lifecycles apply only to remote Streamable HTTP and SSE
+clients, not `stdio` clients.
+
+The normal authored-test split still applies. `harnest test AGENT_DIR` compiles
+the descriptor but does not start its MCP lifecycle, so unit tests remain
+offline. Unit-test any certificate, header, or client-construction helpers from
+`harnest.lib` with fake inputs or `httpx.MockTransport`; do not perform an MCP
+handshake. Put a real gateway handshake and tool call in
+`tests/smoke/test_*.py`, run it explicitly with `--smoke`, and inject its
+credentials through the runtime environment. The smoke suite shares one
+compiled server lifecycle, but adapters may create multiple session clients, so
+assert observable tool behavior rather than a fixed client-factory call count.
+
 Managed LangGraph supplies approval policies through
 `MultiServerMCPClient`'s native tool interceptor. The gate runs immediately
 before MCP network execution and routes on the server plus original unprefixed
@@ -722,8 +944,13 @@ Every deployable directory must contain:
   root-only `plugins/<name>/{mcp,skills}` capability bundles; and root-only
   `extensions/**/*.py` decorated runtime lifecycle modules. Folder-based nested
   subagents get their own supported sibling resource scope as described above.
+- optional root `@lifecycle.credential_provider` factory under `extensions/`;
+  it supplies private invocation-scoped credentials without adding them to
+  context resources or persistent agent state.
 - optional root-only `lib/` containing ordinary reusable Python imported below
   `harnest.lib`; it is global to the bundle and is not resource discovery.
+- optional root-only `models/` containing Pydantic contracts imported below
+  `harnest.models`; it is global to the bundle and is not resource discovery.
 - non-empty UTF-8 `instructions.md` (also required as bundle metadata in advanced
   mode), plus optional `skills/`, ADK-only `evals/`, and
   test-only `tests/unit/` and `tests/smoke/` directories following the
@@ -846,6 +1073,10 @@ curl -sS -X POST http://127.0.0.1:8080/responses \
 `GET /agent` returns the compiled agent's identity, copied Agent Card, and route
 links. `POST /responses` accepts `input`, optional `sessionId`, optional
 `metadata`, and optional boolean `stream`. Without a session ID it creates one.
+By default `input` is a non-empty string. With `Agent(input_schema=...)`, it is
+an object matching that Pydantic model; the same value shape is required in a
+WebSocket `response.create` frame. `Agent(output_schema=...)` adds the validated
+object as `result` to every completed transport response.
 The JSON response has this stable, provider-neutral shape:
 
 ```json
@@ -897,13 +1128,25 @@ socket with
 `{"type":"client_tool.result","requestId":"client_tool_...","output":...}`.
 Results are principal-bound and one-time. The caller owns execution policy,
 sandboxing, and result validation appropriate to its browser, desktop, or
-mobile environment.
+mobile environment. In the development playground, client-tool requests render
+as distinct host-result cards; submit JSON there to exercise the resume path
+without confusing a client-owned function with human approval. A client tool
+may also use `require_human_approval` in either decorator order: approval occurs
+before the request reaches the host, then the submitted host result resumes the
+same suspended invocation.
 
 Tool calls and results appear in `output` as ordered `tool_call` and
 `tool_result` items. Reuse the session ID for conversational continuity. Session
 CRUD is `GET /sessions`, `GET /sessions/{id}`, `PATCH /sessions/{id}` with the
 exact body `{"stateDelta": {...}}`, and `DELETE /sessions/{id}` (204). Sessions
-are process-local by default and disappear when the launcher stops.
+are process-local by default and disappear when the launcher stops. Returned
+session records contain `id`, `userId`, `state`, `createdAt`, `updatedAt`, and
+namespaced framework `metadata`.
+`GET /sessions/{id}/messages` returns `{sessionId,userId,messages}` as a
+self-describing ordered transcript. Each item has stable `id`, `role`,
+`content`, `createdAt`, and `metadata`; the portable fields are
+framework-neutral while `metadata.adk` or `metadata.langgraph` preserves the
+complete native message or event.
 
 Set `stream: true` on the same endpoint for named Server-Sent Events:
 
@@ -1078,6 +1321,12 @@ sampling variables accepted by the OpenTelemetry Python SDK. Put
 `OTEL_PYTHON_FASTAPI_EXCLUDED_URLS` is respected. The bundled exporter is
 `http/protobuf`; use an OpenTelemetry Collector for fan-out or protocol
 translation.
+
+For direct multi-destination export, root `extensions/**/*.py` files may declare
+repeatable `@lifecycle.telemetry_exporter` factories. Each runtime-only factory
+returns a uniquely named `TelemetryExporter` with `traces`, `logs`, or both;
+Harnest attaches one batch processor per supplied OpenTelemetry exporter and
+flushes it at shutdown. See [Runtime extensions](docs/extensions.md#telemetry-exporters).
 
 ## Development
 

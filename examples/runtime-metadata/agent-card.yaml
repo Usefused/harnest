@@ -1,0 +1,3 @@
+name: Runtime Metadata Demo
+description: Demonstrates typed ADK or LangGraph metadata on graph output.
+version: 0.1.0

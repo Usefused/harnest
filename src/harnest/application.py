@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .agent import _AdvancedAgentDefinition
 from .checkpoint import ADKStore, CheckpointAuthority
 from .context import ContextValue
+from .credentials import CredentialProvider
 from .output import OutputPolicy
 from .session import SessionStore
+from .structured import PydanticModel, validate_output_schema
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +28,11 @@ class CompiledApplication:
     extensions: Sequence[Any] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
+    credential_provider: CredentialProvider | None = field(default=None, repr=False)
     output_policy: OutputPolicy = OutputPolicy()
+    telemetry_exporters: Sequence[Any] = field(default=(), repr=False)
+    input_schema: PydanticModel | None = None
+    output_schema: PydanticModel | None = None
     checkpoint_metadata: dict[str, str] | None = None
     context_values: Sequence[ContextValue] = ()
     harnest_version: str | None = None
@@ -42,11 +48,24 @@ class CompiledApplication:
             raise ValueError(f"unsupported compiled mode: {self.mode}")
         if self.kind not in {"agent", "graph", "advanced"}:
             raise ValueError(f"unsupported compiled application kind: {self.kind}")
+        if self.credential_provider is not None and not isinstance(
+            self.credential_provider, CredentialProvider
+        ):
+            raise TypeError("credential_provider must implement CredentialProvider")
         object.__setattr__(self, "extensions", tuple(self.extensions))
+        object.__setattr__(
+            self, "telemetry_exporters", tuple(self.telemetry_exporters)
+        )
         object.__setattr__(
             self, "checkpoint_metadata", dict(self.checkpoint_metadata or {})
         )
         object.__setattr__(self, "context_values", tuple(self.context_values))
+        validate_output_schema(
+            self.input_schema, field_name="compiled application input_schema"
+        )
+        validate_output_schema(
+            self.output_schema, field_name="compiled application output_schema"
+        )
 
 
 __all__ = ["CompiledApplication"]

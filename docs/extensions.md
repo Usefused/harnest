@@ -35,10 +35,15 @@ competing authorities. See [checkpoints.md](checkpoints.md).
 
 ## Output policy
 
-Harnest suppresses intermediate subagent narration attached to tool calls by
-default. Tool calls, tool results, and the canonical reply remain visible. A
-use-case team that intentionally presents that narration can opt in with one
-optional root factory:
+`OutputPolicy` controls which model messages become public Harnest events; it
+does not modify prompts or model responses. The default
+`subagent_messages="suppress"` hides intermediate child-agent narration when
+that message accompanies a tool call. Root-agent messages, tool calls, tool
+results, and a terminal child or canonical answer remain visible. Hidden model
+reasoning is filtered separately and cannot be enabled by this policy.
+
+A team that intentionally presents pre-tool subagent narration can opt in with
+one optional root factory:
 
 ```python
 # extensions/output.py
@@ -51,11 +56,53 @@ def output_policy():
     return OutputPolicy(subagent_messages="include")
 ```
 
-The policy applies equally to managed and advanced roots and their subagents,
-and the neutral JSON, SSE, WebSocket, and playground surfaces share the same
-selected output. The factory must be synchronous, accept no arguments, and
-return `OutputPolicy`; duplicate factories fail compilation. It does not alter
-the authored `agent`, `tools`, `client`, or `smoke` test fixtures.
+The only accepted values are `"suppress"` and `"include"`; an invalid value
+fails when the application is compiled. The factory must be synchronous, accept
+no arguments, and return `OutputPolicy`. It is root-only, optional, and unique;
+duplicate or incorrectly typed factories fail compilation.
+
+The policy applies to managed and advanced roots and their subagents when they
+run through Harnest. Neutral JSON, SSE, WebSocket, and playground surfaces use
+the same selection in ADK and LangGraph. Direct native framework endpoints stay
+framework-owned. `"include"` may expose provisional text that the agent later
+revises, so keep the safe default unless the product deliberately presents
+agent progress. The policy does not alter authored `agent`, `tools`, `client`,
+or `smoke` fixtures.
+
+## Telemetry exporters
+
+Use one repeatable runtime factory per telemetry destination. Supplying
+`traces`, `logs`, or both selects the signals sent to that destination:
+
+```python
+# extensions/telemetry.py
+import os
+
+from harnest import TelemetryExporter, lifecycle
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+
+@lifecycle.telemetry_exporter
+def cloud_observability():
+    return TelemetryExporter(
+        name="cloud-observability",
+        traces=OTLPSpanExporter(endpoint=os.environ["CLOUD_TRACES_ENDPOINT"]),
+        logs=OTLPLogExporter(endpoint=os.environ["CLOUD_LOGS_ENDPOINT"]),
+    )
+```
+
+Factories are synchronous, zero-argument, root-only, and may be declared in
+multiple extension files. Harnest imports their modules during compilation but
+calls the factories only during runtime bootstrap, after deployment environment
+and secrets are available. Each factory must return one uniquely named
+`TelemetryExporter` containing OpenTelemetry `SpanExporter` and/or
+`LogRecordExporter` instances. Harnest adds a batch processor per signal,
+flushes it at the runtime boundary, and leaves signal omission explicit. The
+standard environment-configured OTLP destination remains additive. Exporters
+are root-owned and process-wide, so Harnest spans and logs produced while
+subagents run use the same destinations; nested agents cannot declare another
+exporter set.
 
 ```python
 # extensions/history.py
@@ -150,6 +197,15 @@ Harnest binds the context around `/responses`, `/live`, direct
 and subagents. A framework-native endpoint or native ADK/LangGraph target called
 outside that boundary has no Harnest context. Advanced code that needs context
 must therefore run through the compiled Harnest application.
+
+## Authentication and credentials
+
+Authentication establishes one complete `AuthPrincipal`; credential providers
+receive that principal unchanged in `CredentialRequest.principal`. Trusted
+tools and library functions resolve downstream credentials through
+`context.credentials`. See [authentication.md](authentication.md) for the
+request-header bridge, pass-through and token-exchange policies, redaction,
+queued-work behavior, and complete examples.
 
 ## Portable phases
 

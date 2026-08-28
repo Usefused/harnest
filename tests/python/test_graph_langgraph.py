@@ -12,6 +12,48 @@ LANGGRAPH_AVAILABLE = importlib.util.find_spec("langgraph") is not None
 
 @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
 class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
+    def test_pydantic_output_schema_is_passed_as_response_format(self):
+        from pydantic import BaseModel
+        from harnest.backends.langgraph import build_agent
+
+        class Answer(BaseModel):
+            value: str
+
+        definition = AgentDefinition(
+            name="root",
+            model="test:model",
+            instruction="Answer.",
+            output_schema=Answer,
+        )
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition)
+
+        self.assertIs(create.call_args.kwargs["response_format"], Answer)
+
+    def test_runtime_metadata_is_not_provider_generated(self):
+        from pydantic import BaseModel
+        from harnest.backends.langgraph import build_agent
+        from harnest.structured import FrameworkMetadata
+
+        class Details(BaseModel):
+            framework: str
+
+        class Answer(BaseModel):
+            value: str
+            metadata: FrameworkMetadata[Details]
+
+        definition = AgentDefinition(
+            name="root",
+            model="test:model",
+            instruction="Answer.",
+            output_schema=Answer,
+        )
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition)
+
+        provider_schema = create.call_args.kwargs["response_format"]
+        self.assertNotIn("metadata", provider_schema.model_fields)
+
     def test_native_middleware_is_passed_to_create_agent(self):
         from langchain.agents.middleware import AgentMiddleware
         from harnest.agent import AgentDefinition

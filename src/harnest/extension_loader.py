@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib.util
 import inspect
 from pathlib import Path
@@ -17,6 +17,7 @@ from .checkpoint import (
     HarnestStore,
 )
 from .context import ContextValue, registration_for as context_registration_for
+from .credentials import CredentialProvider
 from .lifecycle import LifecycleListener, registration_for
 from .output import OutputPolicy
 from .session import SessionStore
@@ -38,7 +39,9 @@ class DiscoveredExtensions:
     native: tuple[Any, ...] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
+    credential_provider: CredentialProvider | None = field(default=None, repr=False)
     output_policy: OutputPolicy = OutputPolicy()
+    telemetry_exporters: tuple[LifecycleListener, ...] = ()
     context_values: tuple[ContextValue, ...] = ()
 
 
@@ -59,7 +62,9 @@ def discover_extensions(
     checkpointer, checkpoint_listener, remaining = _create_checkpointer(
         remaining, framework
     )
+    credential_provider, remaining = _create_credential_provider(remaining)
     output_policy, remaining = _create_output_policy(remaining)
+    telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
     _validate_storage_ownership(session_store, checkpointer)
     portable, native_listeners = _partition_listeners(remaining, framework)
     native = tuple(_create_native(item, framework) for item in native_listeners)
@@ -73,9 +78,54 @@ def discover_extensions(
         native=native,
         session_store=session_store,
         checkpointer=checkpointer,
+        credential_provider=credential_provider,
         output_policy=output_policy,
+        telemetry_exporters=telemetry_exporters,
         context_values=context_values,
     )
+
+
+def _extract_telemetry_exporters(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[tuple[LifecycleListener, ...], tuple[LifecycleListener, ...]]:
+    """Retain repeatable exporter factories without invoking them at compile time."""
+
+    exporters = tuple(
+        item for item in listeners if item.phase == "telemetry_exporter"
+    )
+    remaining = tuple(
+        item for item in listeners if item.phase != "telemetry_exporter"
+    )
+    return exporters, remaining
+
+
+def _create_credential_provider(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[CredentialProvider | None, tuple[LifecycleListener, ...]]:
+    """Instantiate at most one private invocation credential authority."""
+
+    factories = tuple(
+        item for item in listeners if item.phase == "credential_provider"
+    )
+    if len(factories) > 1:
+        raise ExtensionDiscoveryError(
+            "root extensions may declare at most one "
+            "@lifecycle.credential_provider factory; "
+            f"found {len(factories)}"
+        )
+    remaining = tuple(
+        item for item in listeners if item.phase != "credential_provider"
+    )
+    if not factories:
+        return None, remaining
+    factory = factories[0]
+    value = _call_factory(factory, label="credential provider")
+    if not isinstance(value, CredentialProvider):
+        raise ExtensionDiscoveryError(
+            f"credential provider lifecycle factory {factory.identity} must "
+            f"return CredentialProvider; got {type(value).__name__}"
+        )
+    return value, remaining
 
 
 def _create_output_policy(
@@ -354,7 +404,9 @@ def _validate_listener_signature(
         "langgraph_middleware",
         "session_store",
         "checkpointer",
+        "credential_provider",
         "output_policy",
+        "telemetry_exporter",
         "resource",
         "context",
     }
@@ -422,13 +474,18 @@ def _create_native(listener: LifecycleListener, framework: str) -> Any:
 
 
 def _call_factory(listener: LifecycleListener, *, label: str) -> Any:
+    failure: ExtensionDiscoveryError | None = None
     try:
         value = listener.callback()
-    except Exception as exc:
-        raise ExtensionDiscoveryError(
+    except Exception as error:
+        failure = ExtensionDiscoveryError(
             f"{label} factory {listener.identity} failed with "
-            f"{type(exc).__name__}"
-        ) from exc
+            f"{type(error).__name__}"
+        )
+    if failure is not None:
+        # Raise outside the authored exception handler so secret-bearing
+        # constructor failures are not retained through __context__.
+        raise failure
     if inspect.isawaitable(value):
         closer = getattr(value, "close", None)
         if callable(closer):

@@ -20,6 +20,7 @@ from ..graph import (
     call_graph_node,
 )
 from ..model_lifecycle import propagate_litellm_lifecycles
+from ..structured import provider_output_schema
 
 
 def _langgraph_types():
@@ -150,6 +151,12 @@ def _build_ready_agent(
         "name": definition.name,
         "middleware": list(middleware),
     }
+    if definition.output_schema is not None:
+        # Passing the model class lets LangChain select provider-native output
+        # when available and its tool strategy for other capable providers.
+        kwargs["response_format"] = provider_output_schema(
+            definition.output_schema
+        )
     # Omitting the argument preserves LangGraph's own no-persistence default
     # for direct backend use; compiled Harnest roots always pass their authority.
     if checkpointer is not None:
@@ -342,6 +349,7 @@ def materialize_graph(
             edges=graph.edges,
             description=graph.description,
             max_concurrency=graph.max_concurrency,
+            output_schema=graph.output_schema,
         )
 
     resolved = resolve(plan.graph)

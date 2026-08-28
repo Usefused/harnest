@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
 import inspect
 from dataclasses import replace
 from typing import Any, AsyncIterator, Mapping, Sequence
@@ -17,12 +17,18 @@ from .context import (
     create_agent_context,
     revoke_context,
 )
+from .credentials import (
+    CredentialProvider,
+    CredentialProviderError,
+    _activate_credential_provider,
+)
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
     RuntimeDriver,
     RuntimeEvent,
+    SessionMessage,
     SessionRecord,
 )
 from .runtime_auth import (
@@ -157,6 +163,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         extensions: Sequence[LifecycleListener],
         *,
         context_values: Sequence[ContextValue] = (),
+        credential_provider: CredentialProvider | None = None,
+        manage_credential_provider: bool = True,
     ) -> None:
         if isinstance(extensions, (str, bytes)):
             raise TypeError("extensions must be a sequence")
@@ -165,9 +173,18 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             raise TypeError("extensions must contain only LifecycleListener values")
         values = tuple(context_values)
         _validate_context_exports(normalized, values)
+        if credential_provider is not None and not isinstance(
+            credential_provider, CredentialProvider
+        ):
+            raise TypeError("credential_provider must implement CredentialProvider")
+        if not isinstance(manage_credential_provider, bool):
+            raise TypeError("manage_credential_provider must be boolean")
         self._driver = driver
         self._extensions = normalized
         self._context_values = values
+        self._credential_provider = credential_provider
+        self._manage_credential_provider = manage_credential_provider
+        self._credential_provider_started = False
         self._application_resources: dict[str, Any] = {}
         self._resource_lock = asyncio.Lock()
         self._resource_stack: AsyncExitStack | None = None
@@ -195,23 +212,40 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             if self._closed:
                 raise RuntimeError("extension runtime is closed")
             stack = AsyncExitStack()
-            resources = {item.name: item.value for item in self._context_values}
+            provider_started = await self._start_private_provider()
             try:
-                for listener in self._listeners("resource"):
-                    value = await _enter_resource(stack, listener)
-                    if listener.context_name is not None:
-                        resources[listener.context_name] = value
+                resources = await self._enter_application_resources(stack)
             except BaseException as failure:
-                try:
-                    await stack.aclose()
-                except BaseException as cleanup:
-                    failure.add_note(
-                        "partial runtime resource cleanup also failed with "
-                        f"{type(cleanup).__name__}"
-                    )
+                await _unwind_resource_start(
+                    stack,
+                    self._credential_provider if provider_started else None,
+                    failure,
+                )
                 raise
             self._resource_stack = stack
             self._application_resources = resources
+            self._credential_provider_started = provider_started
+
+    async def _start_private_provider(self) -> bool:
+        """Start credentials only when this wrapper owns their lifecycle."""
+
+        provider = self._credential_provider
+        if provider is None or not self._manage_credential_provider:
+            return False
+        await _start_credential_provider(provider)
+        return True
+
+    async def _enter_application_resources(
+        self, stack: AsyncExitStack
+    ) -> dict[str, Any]:
+        """Enter extension resources and collect only explicit context exports."""
+
+        resources = {item.name: item.value for item in self._context_values}
+        for listener in self._listeners("resource"):
+            value = await _enter_resource(stack, listener)
+            if listener.context_name is not None:
+                resources[listener.context_name] = value
+        return resources
 
     async def create_session(
         self,
@@ -236,6 +270,16 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
         await self._start_resources()
         return await self._driver.list_sessions(user_id=user_id)
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None:
+        """Start application resources before reading the native transcript."""
+
+        await self._start_resources()
+        return await self._driver.get_session_messages(
+            session_id=session_id, user_id=user_id
+        )
 
     async def update_session(
         self,
@@ -348,7 +392,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
         try:
-            with activate_context(agent_context):
+            with activate_context(agent_context), self._credential_scope():
                 try:
                     await self._bind_invocation_resources(agent_context)
                     transformed_request = await self._before(lifecycle_context, request)
@@ -382,7 +426,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         agent_context = self._agent_context(request)
         iterator: AsyncIterator[RuntimeEvent] | None = None
         try:
-            with activate_context(agent_context):
+            with activate_context(agent_context), self._credential_scope():
                 await self._bind_invocation_resources(agent_context)
                 transformed_request = await self._before(lifecycle_context, request)
             events: list[RuntimeEvent] = []
@@ -399,18 +443,18 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 # The caller must not inherit agent capabilities while it handles
                 # a frame; context is rebound only while advancing the backend.
                 yield transformed_event
-            with activate_context(agent_context):
+            with activate_context(agent_context), self._credential_scope():
                 await self._after_stream(
                     lifecycle_context, _stream_result(transformed_request, events)
                 )
         except Exception as error:
-            with activate_context(agent_context):
+            with activate_context(agent_context), self._credential_scope():
                 await self._notify_error(lifecycle_context, error)
             raise
         finally:
             try:
                 if iterator is not None:
-                    with activate_context(agent_context):
+                    with activate_context(agent_context), self._credential_scope():
                         await _close_iterator(iterator)
             finally:
                 revoke_context(agent_context)
@@ -427,6 +471,13 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             metadata=request.metadata,
             resources=self._application_resources,
         )
+
+    def _credential_scope(self) -> Any:
+        """Bind credentials separately from enumerable agent resources."""
+
+        if self._credential_provider is None:
+            return nullcontext()
+        return _activate_credential_provider(self._credential_provider)
 
     async def _bind_invocation_resources(self, active: AgentContext) -> None:
         """Resolve ordinary providers once after application resources are visible."""
@@ -454,8 +505,10 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     ) -> RuntimeEvent | object:
         """Advance native streaming only while invocation capabilities are bound."""
 
-        with activate_context(agent_context), model_invocation_scope(
-            lifecycle_context
+        with (
+            activate_context(agent_context),
+            self._credential_scope(),
+            model_invocation_scope(lifecycle_context),
         ):
             try:
                 event = await anext(iterator)
@@ -473,23 +526,103 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             stack = self._resource_stack
             self._resource_stack = None
             self._application_resources = {}
-        failure: BaseException | None = None
-        try:
-            await self._driver.close()
-        except BaseException as exc:
-            failure = exc
+            provider_started = self._credential_provider_started
+            self._credential_provider_started = False
+        failure = await _cleanup_failure(self._driver.close)
         if stack is not None:
-            try:
-                await stack.aclose()
-            except BaseException as exc:
-                if failure is None:
-                    failure = exc
-                else:
-                    failure.add_note(
-                        f"runtime resource cleanup also failed with {type(exc).__name__}"
-                    )
+            cleanup = await _cleanup_failure(stack.aclose)
+            failure = _merge_cleanup_failure(
+                failure, cleanup, label="runtime resource"
+            )
+        if provider_started and self._credential_provider is not None:
+            cleanup = await _cleanup_failure(
+                lambda: _close_credential_provider(self._credential_provider)
+            )
+            failure = _merge_cleanup_failure(
+                failure, cleanup, label="credential provider"
+            )
         if failure is not None:
             raise failure
+
+
+async def _unwind_resource_start(
+    stack: AsyncExitStack,
+    provider: CredentialProvider | None,
+    failure: BaseException,
+) -> None:
+    """Unwind partial extension startup without replacing its primary failure."""
+
+    cleanup = await _cleanup_failure(stack.aclose)
+    _merge_cleanup_failure(failure, cleanup, label="partial runtime resource")
+    if provider is None:
+        return
+    cleanup = await _cleanup_failure(lambda: _close_credential_provider(provider))
+    _merge_cleanup_failure(failure, cleanup, label="credential provider")
+
+
+async def _cleanup_failure(callback: Any) -> BaseException | None:
+    """Capture one cleanup failure so callers can retain deterministic priority."""
+
+    try:
+        await callback()
+    except BaseException as failure:
+        return failure
+    return None
+
+
+def _merge_cleanup_failure(
+    primary: BaseException | None,
+    cleanup: BaseException | None,
+    *,
+    label: str,
+) -> BaseException | None:
+    """Retain the first failure and annotate it with later cleanup types."""
+
+    if cleanup is None:
+        return primary
+    if primary is None:
+        return cleanup
+    primary.add_note(f"{label} cleanup also failed with {type(cleanup).__name__}")
+    return primary
+
+
+async def _start_credential_provider(provider: CredentialProvider) -> None:
+    """Start a provider once and clean partial initialization on failure."""
+
+    failure = await _credential_provider_hook(provider, "start")
+    if failure is None:
+        return
+    cleanup = await _credential_provider_hook(provider, "close")
+    if cleanup is not None:
+        failure.add_note(
+            "credential provider cleanup also failed with "
+            f"{type(cleanup).__name__}"
+        )
+    raise failure
+
+
+async def _close_credential_provider(provider: CredentialProvider) -> None:
+    """Close a provider while keeping secret-bearing failures unreachable."""
+
+    failure = await _credential_provider_hook(provider, "close")
+    if failure is not None:
+        raise failure
+
+
+async def _credential_provider_hook(
+    provider: CredentialProvider, hook: str
+) -> BaseException | None:
+    """Call a lifecycle hook and return only a detached sanitized failure."""
+
+    try:
+        await getattr(provider, hook)()
+    except asyncio.CancelledError:
+        return asyncio.CancelledError()
+    except Exception as error:
+        return CredentialProviderError(
+            f"credential provider {hook} failed with {type(error).__name__}"
+        )
+    return None
 
 
 async def _enter_resource(

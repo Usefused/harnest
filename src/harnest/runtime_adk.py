@@ -19,15 +19,104 @@ from ._json import json_value
 from .application import CompiledApplication
 from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore
 from .model_lifecycle import close_litellm_lifecycles
+from .mcp_lifecycle import (
+    close_mcp_lifecycles,
+    mcp_lifecycle_bindings,
+    start_mcp_lifecycles,
+)
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
     InvocationResult,
     RuntimeDriver,
     SessionConflictError,
+    SessionMessage,
     SessionRecord,
 )
 from .output import OutputPolicy
+from .structured import (
+    framework_metadata_field,
+    validate_runtime_output,
+)
+
+
+def _model_input_text(value: Any) -> str:
+    """Render validated structured input for ADK's text content boundary."""
+
+    if isinstance(value, str):
+        return value
+    return json.dumps(json_value(value), ensure_ascii=False)
+
+
+def _validated_output_event(
+    item: dict[str, Any], schema: Any, *, metadata: Any = None
+) -> dict[str, Any]:
+    """Revalidate native structured events before they reach public transports."""
+
+    if schema is None or item.get("type") != "graph_output":
+        return item
+    model = validate_runtime_output(
+        schema,
+        item.get("output"),
+        metadata=metadata,
+        boundary="model output",
+    )
+    output = json_value(model)
+    return {**item, "output": output, "result": output}
+
+
+class _ADKTurnOutput:
+    """Own buffering, validation, and runtime metadata for one ADK turn."""
+
+    def __init__(self, schema: Any) -> None:
+        self.schema = schema
+        self.visible_text: list[str] = []
+        self.has_structured_output = False
+        self.structured_items: list[dict[str, Any]] = []
+        self.native_events: list[Any] = []
+        self.enriches_metadata = (
+            schema is not None and framework_metadata_field(schema) is not None
+        )
+
+    def capture_native(self, event: Any) -> None:
+        """Retain native events only when the authored result requests them."""
+
+        if self.enriches_metadata:
+            self.native_events.append(json_value(event))
+
+    def accept(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        """Return an immediately public item or buffer runtime-owned output."""
+
+        if self.enriches_metadata and item.get("type") == "graph_output":
+            self.has_structured_output = True
+            self.structured_items.append(item)
+            return None
+        public = _validated_output_event(item, self.schema)
+        if public.get("type") == "message":
+            self.visible_text.append(str(public.get("text", "")))
+        elif public.get("type") == "graph_output":
+            self.has_structured_output = True
+        return public
+
+    def complete(self) -> list[dict[str, Any]]:
+        """Inject metadata into terminal output after every native event is known."""
+
+        metadata = _adk_turn_metadata(self.native_events)
+        items = [
+            _validated_output_event(item, self.schema, metadata=metadata)
+            for item in self.structured_items
+        ]
+        if self.schema is None or self.has_structured_output:
+            return items
+        model = validate_runtime_output(
+            self.schema,
+            "".join(self.visible_text),
+            metadata=metadata,
+            boundary="model output",
+        )
+        output = json_value(model)
+        items.append({"type": "graph_output", "output": output, "result": output})
+        return items
 
 
 class ADKRuntimeDriver(RuntimeDriver):
@@ -64,6 +153,8 @@ class ADKRuntimeDriver(RuntimeDriver):
             framework=application.framework,
             mode=application.mode,
             extra_endpoints=dict(extra_endpoints or {}),
+            input_schema=application.input_schema,
+            output_schema=application.output_schema,
         )
         self._runner = _create_runner(application, session_service)
         self._closed = False
@@ -125,6 +216,19 @@ class ADKRuntimeDriver(RuntimeDriver):
             user_id=user_id,
         )
         return [_session_record(session) for session in response.sessions]
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> list[SessionMessage] | None:
+        """Return portable transcript items backed by complete native events."""
+
+        self._ensure_open()
+        session = await self._runner.session_service.get_session(
+            app_name=self.app_name,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        return None if session is None else _adk_session_messages(session)
 
     async def update_session(
         self,
@@ -206,17 +310,7 @@ class ADKRuntimeDriver(RuntimeDriver):
         """Yield privacy-safe neutral deltas from ADK's native event stream."""
 
         self._ensure_open()
-        try:
-            from google.adk.agents.run_config import RunConfig
-            from google.genai import types
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("Google ADK is required to run an ADK agent") from exc
-
-        message = types.Content(
-            role="user", parts=[types.Part(text=request.input)]
-        )
-        metadata = dict(request.metadata)
-        run_config = RunConfig(custom_metadata=metadata) if metadata else None
+        message, run_config = await self._prepare_stream_request(request)
         async with _session_execution_lease(
             self._runner.session_service,
             user_id=request.user_id,
@@ -238,18 +332,48 @@ class ADKRuntimeDriver(RuntimeDriver):
                 self.application.output_policy,
                 root_agent_name=getattr(self.application.target, "name", None),
             )
+            output = _ADKTurnOutput(self.application.output_schema)
             try:
                 async with aclosing(native_events):
                     async for event in native_events:
                         await self._save_checkpoint_event(request, event)
+                        output.capture_native(event)
                         for item in normalizer.feed(event):
-                            yield item
+                            public = output.accept(item)
+                            if public is not None:
+                                yield public
                 for item in normalizer.finish():
+                    public = output.accept(item)
+                    if public is not None:
+                        yield public
+                for item in output.complete():
                     yield item
             except BaseException:
                 await self._finish_checkpoint(request.invocation_id, "failed")
                 raise
             await self._finish_checkpoint(request.invocation_id, "completed")
+
+    async def _prepare_stream_request(
+        self, request: InvocationRequest
+    ) -> tuple[Any, Any]:
+        """Build native request values after application resources are ready."""
+
+        try:
+            from google.adk.agents.run_config import RunConfig
+            from google.genai import types
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("Google ADK is required to run an ADK agent") from exc
+
+        await start_mcp_lifecycles(
+            mcp_lifecycle_bindings(self.application.target)
+        )
+
+        message = types.Content(
+            role="user", parts=[types.Part(text=_model_input_text(request.input))]
+        )
+        metadata = dict(request.metadata)
+        run_config = RunConfig(custom_metadata=metadata) if metadata else None
+        return message, run_config
 
     async def close(self) -> None:
         """Close ADK resources exactly once."""
@@ -261,7 +385,27 @@ class ADKRuntimeDriver(RuntimeDriver):
             try:
                 await self._runner.close()
             finally:
-                await close_litellm_lifecycles(self.application.target)
+                await self._close_application_lifecycles()
+
+    async def _close_application_lifecycles(self) -> None:
+        """Close independent model and MCP resources even if one hook fails."""
+
+        failure: BaseException | None = None
+        try:
+            await close_litellm_lifecycles(self.application.target)
+        except BaseException as error:
+            failure = error
+        try:
+            # The runner closes adapter-owned sessions before application-level
+            # certificate, credential, and gateway resources are released.
+            await close_mcp_lifecycles(
+                mcp_lifecycle_bindings(self.application.target)
+            )
+        except BaseException as error:
+            if failure is None:
+                failure = error
+        if failure is not None:
+            raise failure
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -556,13 +700,115 @@ def _is_terminal_output(event: Any) -> bool:
 
 
 def _session_record(session: Any) -> SessionRecord:
+    """Preserve native ADK event metadata beside portable session state."""
+
     updated_at = _timestamp(getattr(session, "last_update_time", 0.0))
     return SessionRecord(
         id=session.id,
         user_id=session.user_id,
         state=json_value(session.state),
         updated_at=updated_at,
+        metadata=_adk_session_metadata(session),
     )
+
+
+def _adk_session_messages(session: Any) -> list[SessionMessage]:
+    """Project content-bearing ADK events while retaining each native event."""
+
+    messages: list[SessionMessage] = []
+    for index, event in enumerate(getattr(session, "events", ()) or ()):
+        record = json_value(event)
+        content = record.get("content") if isinstance(record, Mapping) else None
+        if not isinstance(content, Mapping):
+            continue
+        role = _adk_message_role(record, content)
+        messages.append(
+            SessionMessage(
+                id=str(record.get("id") or f"{session.id}:{index}"),
+                role=role,
+                content=_adk_message_content(content, role=role),
+                created_at=_timestamp(record.get("timestamp")),
+                metadata={"adk": record},
+            )
+        )
+    return messages
+
+
+def _adk_message_role(
+    event: Mapping[str, Any], content: Mapping[str, Any]
+) -> str:
+    """Normalize ADK authorship while recognizing tool response events."""
+
+    parts = content.get("parts")
+    if isinstance(parts, list) and any(
+        isinstance(part, Mapping) and part.get("functionResponse") is not None
+        for part in parts
+    ):
+        return "tool"
+    role = content.get("role")
+    if role == "user" or event.get("author") == "user":
+        return "user"
+    if role == "system":
+        return "system"
+    return "assistant"
+
+
+def _adk_message_content(content: Mapping[str, Any], *, role: str) -> Any:
+    """Expose visible text or structured tool output as portable content."""
+
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        return None
+    text = _adk_visible_text(parts)
+    if text:
+        return text
+    return _adk_tool_response(parts) if role == "tool" else None
+
+
+def _adk_visible_text(parts: list[Any]) -> str:
+    """Join user-visible ADK text while excluding private thought parts."""
+
+    texts = [
+        part["text"]
+        for part in parts
+        if isinstance(part, Mapping)
+        and part.get("thought") is not True
+        and isinstance(part.get("text"), str)
+    ]
+    return "".join(texts)
+
+
+def _adk_tool_response(parts: list[Any]) -> Any:
+    """Return one tool response directly and preserve multiple responses."""
+
+    responses = [
+        part["functionResponse"].get("response")
+        for part in parts
+        if isinstance(part, Mapping)
+        and isinstance(part.get("functionResponse"), Mapping)
+    ]
+    return responses[0] if len(responses) == 1 else responses
+
+
+def _adk_turn_metadata(events: list[Any]) -> dict[str, Any]:
+    """Namespace complete native turn events for an authored metadata model."""
+
+    return {"adk": {"events": events}}
+
+
+def _adk_session_metadata(session: Any) -> dict[str, Any]:
+    """Keep ADK-owned fields opaque while avoiding duplicate public state."""
+
+    record = json_value(session)
+    if not isinstance(record, Mapping):
+        return {"adk": record}
+    return {
+        "adk": {
+            key: value
+            for key, value in record.items()
+            if key not in {"id", "userId", "state"}
+        }
+    }
 
 
 def _timestamp(value: Any) -> str | None:
@@ -572,20 +818,68 @@ def _timestamp(value: Any) -> str | None:
 
 
 def _create_runner(application: CompiledApplication, session_service: Any) -> Any:
+    """Create ADK's runner while preserving actionable advanced-mode logs."""
+
     try:
         from google.adk.runners import InMemoryRunner, Runner
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("Google ADK is required to run an ADK agent") from exc
-    if session_service is None:
-        return InMemoryRunner(
+    from ._adk_warnings import suppress_managed_transfer_cache_warning
+    from .credentials_adk import adk_credential_service
+
+    credential_service = (
+        adk_credential_service(application.credential_provider)
+        if application.credential_provider is not None
+        else None
+    )
+
+    if application.mode == "managed":
+        # Managed authors cannot configure ADK's provider-specific App cache.
+        with suppress_managed_transfer_cache_warning():
+            return _build_adk_runner(
+                application,
+                session_service,
+                credential_service,
+                InMemoryRunner,
+                Runner,
+            )
+    return _build_adk_runner(
+        application,
+        session_service,
+        credential_service,
+        InMemoryRunner,
+        Runner,
+    )
+
+
+def _build_adk_runner(
+    application: CompiledApplication,
+    session_service: Any,
+    credential_service: Any,
+    in_memory_runner: Any,
+    runner: Any,
+) -> Any:
+    """Select the ADK runner that owns the configured session service."""
+
+    if session_service is None and credential_service is None:
+        return in_memory_runner(
             app=application.native_app,
             app_name=application.native_app.name,
         )
+    if session_service is None:
+        # InMemoryRunner does not expose ADK's credential-service seam, so use
+        # the general runner with the equivalent ephemeral session service.
+        from google.adk.sessions.in_memory_session_service import (
+            InMemorySessionService,
+        )
+
+        session_service = InMemorySessionService()
     _validate_session_service(session_service)
-    return Runner(
+    return runner(
         app=application.native_app,
         app_name=application.native_app.name,
         session_service=session_service,
+        credential_service=credential_service,
     )
 
 

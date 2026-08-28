@@ -8,6 +8,7 @@ from google.adk.models import BaseLlm, LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.workflow import JoinNode, Workflow
 from google.genai import types
+from pydantic import BaseModel
 
 from harnest.agent import Agent
 from harnest.graph import START, Edge, Event, Graph, GraphContext, Join
@@ -131,6 +132,26 @@ async def _run_routed_conversation(history: str) -> tuple[str, list[list[str]]]:
 
 
 class GraphAdkTests(unittest.TestCase):
+    def test_graph_accepts_a_pydantic_output_schema(self):
+        class Answer(BaseModel):
+            value: str
+
+        graph = Graph(
+            name="structured_graph",
+            nodes={"answer": lambda value: value},
+            edges=[Edge(START, "answer")],
+            output_schema=Answer,
+        )
+
+        self.assertIs(graph.output_schema, Answer)
+        with self.assertRaisesRegex(TypeError, "Pydantic BaseModel class"):
+            Graph(
+                name="invalid_schema",
+                nodes={"answer": lambda value: value},
+                edges=[Edge(START, "answer")],
+                output_schema=dict,  # type: ignore[arg-type]
+            )
+
     def test_agent_history_controls_native_multi_turn_graph_context(self):
         session_mode, session_seen = asyncio.run(_run_conversation("session"))
         turn_mode, turn_seen = asyncio.run(_run_conversation("turn"))

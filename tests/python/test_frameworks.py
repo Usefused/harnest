@@ -254,7 +254,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 {"type": "text", "text": "visible answer"},
             ]
         )
-        application = SimpleNamespace(bridge=None)
+        application = SimpleNamespace(bridge=None, output_schema=None)
 
         text_value, structured = _graph_output(
             application,
@@ -304,6 +304,71 @@ class FrameworkArtifactTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_langgraph_output_returns_configured_pydantic_result(self):
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            value: str
+
+        application = SimpleNamespace(bridge=None, output_schema=Answer)
+
+        text_value, result = _graph_output(
+            application,
+            {"structured_response": Answer(value="structured")},
+        )
+
+        self.assertEqual(text_value, '{"value": "structured"}')
+        self.assertEqual(result, {"value": "structured"})
+
+    def test_langgraph_output_injects_declared_current_turn_metadata(self):
+        from typing import Any
+
+        from pydantic import BaseModel
+
+        from harnest.structured import FrameworkMetadata
+
+        class Details(BaseModel):
+            langgraph: dict[str, Any]
+
+        class Answer(BaseModel):
+            value: str
+            metadata: FrameworkMetadata[Details]
+
+        application = SimpleNamespace(
+            bridge=None, output_schema=Answer, kind="agent"
+        )
+        _, result = _graph_output(
+            application,
+            {
+                "structured_response": {"value": "structured"},
+                "messages": [{"content": "old"}, {"content": "current"}],
+            },
+            turn_start=1,
+        )
+
+        self.assertEqual(result["value"], "structured")
+        self.assertEqual(
+            result["metadata"]["langgraph"]["messages"],
+            [{"content": "current"}],
+        )
+
+    def test_graph_output_schema_validates_the_terminal_value(self):
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            value: str
+
+        application = SimpleNamespace(
+            bridge=None, output_schema=Answer, kind="graph"
+        )
+
+        _, result = _graph_output(
+            application,
+            {"value": {"value": "structured"}, "messages": []},
+        )
+
+        self.assertEqual(result, {"value": "structured"})
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_managed_adk_artifact_executes_without_provisioner(self):
@@ -404,11 +469,18 @@ class FrameworkArtifactTests(unittest.TestCase):
                     headers={"x-user": "alice"},
                     json={"input": "hello", "sessionId": session.json()["id"]},
                 )
+                session_record = client.get(
+                    f"/sessions/{session.json()['id']}",
+                    headers={"x-user": "alice"},
+                )
 
             self.assertEqual(rejected.status_code, 401)
             self.assertEqual(session.status_code, 201)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["outputText"], "model saw checked:alice:hello")
+            self.assertIsNone(session_record.json()["createdAt"])
+            self.assertIsNotNone(session_record.json()["updatedAt"])
+            self.assertTrue(session_record.json()["metadata"]["adk"]["events"])
 
     @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
     def test_compiled_langgraph_authentication_flows_into_before_model(self):
@@ -433,11 +505,19 @@ class FrameworkArtifactTests(unittest.TestCase):
                     headers={"x-user": "alice"},
                     json={"input": "hello", "sessionId": session.json()["id"]},
                 )
+                session_record = client.get(
+                    f"/sessions/{session.json()['id']}",
+                    headers={"x-user": "alice"},
+                )
 
             self.assertEqual(rejected.status_code, 401)
             self.assertEqual(session.status_code, 201)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["outputText"], "model saw checked:alice:hello")
+            self.assertNotIn("messages", session_record.json()["state"])
+            self.assertTrue(
+                session_record.json()["metadata"]["langgraph"]["messages"]
+            )
 
     @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
     def test_compiled_runtime_owns_resource_startup_and_shutdown(self):

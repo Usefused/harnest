@@ -17,6 +17,12 @@ from typing import Any, Iterator, TypeVar, overload
 
 from .approval import ApprovalRun, bind_tool_arguments
 from .logging import get_logger
+from .structured import (
+    PydanticModel,
+    callable_output_schema,
+    validate_output_schema,
+    validate_output_value,
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 _CURRENT: contextvars.ContextVar["ClientToolExecution | None"] = contextvars.ContextVar(
@@ -39,6 +45,7 @@ class PendingClientTool:
     call_id: str
     name: str
     arguments: dict[str, Any]
+    output_schema: PydanticModel | None
     expires_at: float
     run: ApprovalRun = field(repr=False)
     future: asyncio.Future[Any] = field(repr=False)
@@ -69,6 +76,7 @@ class InMemoryClientToolStore:
         *,
         name: str,
         arguments: dict[str, Any],
+        output_schema: PydanticModel | None,
         timeout_seconds: int,
     ) -> Any:
         loop = asyncio.get_running_loop()
@@ -79,6 +87,7 @@ class InMemoryClientToolStore:
             call_id=run.call_id,
             name=name,
             arguments=arguments,
+            output_schema=output_schema,
             expires_at=self._clock() + timeout_seconds,
             run=run,
             future=loop.create_future(),
@@ -105,6 +114,15 @@ class InMemoryClientToolStore:
             raise ClientToolError("client tool request is expired")
         if pending.future.done():
             raise ClientToolError("client tool result was already submitted")
+        if pending.output_schema is not None:
+            try:
+                output = validate_output_value(
+                    pending.output_schema,
+                    output,
+                    boundary=f"client tool {pending.name!r} output",
+                )
+            except ValueError as exc:
+                raise ClientToolError(str(exc)) from exc
         pending.future.set_result(output)
         _audit(
             pending.name,
@@ -126,12 +144,18 @@ class ClientToolExecution:
     run: ApprovalRun
 
     async def execute(
-        self, *, name: str, arguments: dict[str, Any], timeout_seconds: int
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        output_schema: PydanticModel | None,
+        timeout_seconds: int,
     ) -> Any:
         return await self.store.suspend(
             self.run,
             name=name,
             arguments=arguments,
+            output_schema=output_schema,
             timeout_seconds=timeout_seconds,
         )
 
@@ -151,7 +175,10 @@ def client_tool(function: F) -> F: ...
 
 @overload
 def client_tool(
-    *, description: str | None = None, timeout_seconds: int = 300
+    *,
+    description: str | None = None,
+    timeout_seconds: int = 300,
+    output_schema: PydanticModel | None = None,
 ) -> Callable[[F], F]: ...
 
 
@@ -160,13 +187,18 @@ def client_tool(
     *,
     description: str | None = None,
     timeout_seconds: int = 300,
+    output_schema: PydanticModel | None = None,
 ):
     """Declare a typed tool implemented by the HTTP or WebSocket client."""
 
     if not isinstance(timeout_seconds, int) or timeout_seconds < 1:
         raise ValueError("client tool timeout_seconds must be a positive integer")
+    configured_schema = validate_output_schema(
+        output_schema, field_name="client tool output_schema"
+    )
 
     def decorate(fn: F) -> F:
+        schema = configured_schema or callable_output_schema(fn)
         from .context import registration_for as context_registration_for
         from .lifecycle import registration_for as lifecycle_registration_for
 
@@ -187,15 +219,34 @@ def client_tool(
                     f"client tool {fn.__name__!r} requires the managed Harnest runtime"
                 )
             arguments = bind_tool_arguments(fn, args, kwargs)
-            return await execution.execute(
+            output = await execution.execute(
                 name=fn.__name__,
                 arguments=arguments,
+                output_schema=schema,
                 timeout_seconds=timeout_seconds,
+            )
+            if schema is None:
+                return output
+            return validate_output_value(
+                schema, output, boundary=f"client tool {fn.__name__!r} output"
             )
 
         setattr(invoke, "__harnest_tool__", True)
         setattr(invoke, "__harnest_client_tool__", True)
-        return invoke  # type: ignore[return-value]
+        if schema is not None:
+            invoke.__annotations__ = {
+                **getattr(fn, "__annotations__", {}),
+                "return": schema,
+            }
+            invoke.__signature__ = inspect.signature(fn).replace(  # type: ignore[attr-defined]
+                return_annotation=schema
+            )
+            setattr(invoke, "__harnest_output_schema__", schema)
+        # Approval can sit above or below @client_tool. Resolve the wrapper only
+        # after the client-tool marker exists so both authored orders are safe.
+        from .approval import wrap_approved_tool
+
+        return wrap_approved_tool(invoke)  # type: ignore[return-value]
 
     return decorate(function) if function is not None else decorate
 

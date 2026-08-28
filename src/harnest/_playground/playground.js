@@ -70,6 +70,9 @@ const runtime = {
   logLevel: "all",
   traceTimer: null,
   toolCards: new Map(),
+  pendingToolCards: [],
+  responseAssistantTurn: null,
+  clientToolCards: new Map(),
 };
 
 const transportNotes = {
@@ -77,6 +80,14 @@ const transportNotes = {
   response: "Wait for one complete JSON response.",
   live: "WebSocket live mode uses same-origin cookie authentication.",
 };
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 const endpoints = {
   agent: "/agent",
@@ -107,7 +118,9 @@ async function responseError(response) {
   } catch (_error) {
     // Status text remains useful when an upstream proxy does not return JSON.
   }
-  return new Error(detail);
+  // Callers need the status to distinguish retryable transport failures from
+  // one-time resources that can no longer be resumed.
+  return new ApiError(detail, response.status);
 }
 
 function setStatus(message, tone = "pending") {
@@ -132,6 +145,7 @@ function pretty(value) {
   return JSON.stringify(value, null, 2) ?? "null";
 }
 
+/** Add a chat turn and bind pending tool metadata to an assistant reply. */
 function appendTurn(role, text = "") {
   ui.emptyState?.remove();
   const turn = document.createElement("article");
@@ -143,21 +157,32 @@ function appendTurn(role, text = "") {
   bubble.className = "bubble";
   bubble.textContent = text;
   turn.append(label, bubble);
+  if (role === "assistant" && text) {
+    runtime.responseAssistantTurn = turn;
+    attachPendingTools(turn);
+  }
   ui.conversation.append(turn);
   scrollConversation();
   return bubble;
 }
 
+/** Keep private reasoning private while making active processing unmistakable. */
 function showTypingIndicator() {
   clearTypingIndicator();
   const bubble = appendTurn("assistant");
   bubble.classList.add("typing-bubble");
   bubble.setAttribute("aria-label", "Agent is typing");
+  const label = document.createElement("span");
+  label.className = "typing-label";
+  label.textContent = "Thinking";
+  const dots = document.createElement("span");
+  dots.className = "typing-dots";
   for (let index = 0; index < 3; index += 1) {
     const dot = document.createElement("span");
     dot.className = "typing-dot";
-    bubble.append(dot);
+    dots.append(dot);
   }
+  bubble.append(label, dots);
   runtime.typingBubble = bubble;
 }
 
@@ -188,7 +213,7 @@ function createToolCard(name, callId) {
   const summary = document.createElement("summary");
   const mark = document.createElement("span");
   mark.className = "tool-mark";
-  mark.textContent = "↯";
+  mark.textContent = "⚙";
   const heading = document.createElement("span");
   heading.className = "tool-heading";
   const title = document.createElement("strong");
@@ -224,6 +249,7 @@ function appendToolCall(name, value, callId) {
   const card = createToolCard(name, callId);
   appendToolSection(card, "Arguments", value ?? {});
   runtime.toolCards.set(key, card);
+  rememberPendingTool(card);
   scrollConversation();
 }
 
@@ -234,7 +260,92 @@ function appendToolResult(name, value, callId) {
   card.detail.dataset.status = "completed";
   card.status.textContent = "Completed";
   runtime.toolCards.set(key, card);
+  rememberPendingTool(card);
   scrollConversation();
+}
+
+function rememberPendingTool(card) {
+  if (!runtime.pendingToolCards.includes(card)) runtime.pendingToolCards.push(card);
+}
+
+/** Move completed tool activity beneath the reply it contributed to. */
+function attachPendingTools(turn) {
+  if (!turn || !runtime.pendingToolCards.length) return;
+  let tray = turn.querySelector(".turn-tools");
+  if (!tray) {
+    tray = createToolTray();
+    tray.className = "turn-tools";
+    tray.setAttribute("aria-label", "Tools called by the agent");
+    turn.append(tray);
+  }
+  const list = tray.querySelector(".turn-tool-list");
+  for (const card of runtime.pendingToolCards) {
+    // Individual calls remain collapsed inside the group so several tools do
+    // not turn one assistant reply into a wall of implementation detail.
+    card.detail.open = false;
+    list.append(card.detail);
+    bindToolAccordion(card.detail, list);
+  }
+  runtime.pendingToolCards = [];
+  updateToolTraySummary(tray);
+}
+
+/** Allow only one tool payload in a grouped reply to be open at a time. */
+function bindToolAccordion(detail, list) {
+  if (detail.dataset.accordionBound) return;
+  detail.dataset.accordionBound = "true";
+  detail.addEventListener("toggle", () => {
+    if (!detail.open) return;
+    for (const sibling of list.querySelectorAll(".tool-event[open]")) {
+      if (sibling !== detail) sibling.open = false;
+    }
+  });
+}
+
+/** Build one disclosure that can summarize any number of tool calls. */
+function createToolTray() {
+  const tray = document.createElement("details");
+  const summary = document.createElement("summary");
+  const icon = document.createElement("span");
+  icon.className = "turn-tools-icon";
+  icon.textContent = "⚙";
+  const label = document.createElement("span");
+  label.className = "turn-tools-label";
+  const caret = createToolTrayCaret();
+  summary.append(icon, label, caret);
+  const list = document.createElement("div");
+  list.className = "turn-tool-list";
+  tray.append(summary, list);
+  return tray;
+}
+
+/** Create a consistently aligned chevron without relying on font glyph metrics. */
+function createToolTrayCaret() {
+  const namespace = "http://www.w3.org/2000/svg";
+  const caret = document.createElementNS(namespace, "svg");
+  caret.classList.add("turn-tools-caret");
+  caret.setAttribute("viewBox", "0 0 16 16");
+  caret.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(namespace, "path");
+  path.setAttribute("d", "M3.5 6 8 10.5 12.5 6");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  caret.append(path);
+  return caret;
+}
+
+/** Keep the collapsed tagline accurate as later tool calls join the reply. */
+function updateToolTraySummary(tray) {
+  const tools = [...tray.querySelectorAll(".tool-event")];
+  const names = tools.map((tool) => tool.querySelector(".tool-heading strong")?.textContent);
+  const label = tray.querySelector(".turn-tools-label");
+  label.textContent = tools.length === 1
+    ? `Used ${names[0] || "a tool"}`
+    : `Used ${tools.length} tools`;
+  tray.title = names.filter(Boolean).join(", ");
 }
 
 function appendResult(value) {
@@ -251,10 +362,14 @@ function scrollConversation() {
   ui.conversation.scrollTop = ui.conversation.scrollHeight;
 }
 
+/** Render canonical output while tolerating adapter-specific event ordering. */
 function renderOutput(items, fallback = "") {
   let displayedText = false;
   for (const item of items || []) displayedText = renderOutputItem(item) || displayedText;
   if (!displayedText && fallback) appendTurn("assistant", fallback);
+  // Adapters may report their canonical message before tool trace items. The
+  // completion boundary is the first point where either ordering is settled.
+  attachPendingTools(runtime.responseAssistantTurn);
 }
 
 function renderOutputItem(item) {
@@ -611,10 +726,10 @@ async function sendResponse(input) {
   else renderCompleted(await response.json());
 }
 
-function renderCompleted(response) {
+function renderCompleted(response, actionTransport = runtime.transport) {
   clearTypingIndicator();
   if (response.status === "requires_action") {
-    appendApproval(response.requiredAction);
+    renderRequiredAction(response.requiredAction, actionTransport);
     return;
   }
   renderOutput(response.output, response.outputText);
@@ -623,6 +738,20 @@ function renderCompleted(response) {
   }
 }
 
+/** Route resumable actions to the protocol endpoint that owns their ID. */
+function renderRequiredAction(action, transport) {
+  if (action?.type === "human_approval") {
+    appendApproval(action);
+    return;
+  }
+  if (action?.type === "client_tool") {
+    appendClientToolAction(action, transport);
+    return;
+  }
+  throw new Error(`Unsupported required action: ${action?.type || "missing type"}`);
+}
+
+/** Render a prominent decision card only while an approval is pending. */
 function appendApproval(action) {
   clearTypingIndicator();
   if (!action?.id) throw new Error("Approval response did not include an id");
@@ -655,24 +784,206 @@ function approvalButton(label, decision, className) {
   return button;
 }
 
+/** Submit a one-time decision and surface resumed agent work in the chat. */
 async function decideApproval(approvalId, decision, panel) {
   const buttons = panel.querySelectorAll("button");
   for (const button of buttons) button.disabled = true;
   clearError();
+  const resumesRun = decision === "approve";
+  if (resumesRun) startAgentResume("Resuming agent after approval…");
   try {
     const response = await api(`/approvals/${encodeURIComponent(approvalId)}`, {
       method: "POST",
       body: JSON.stringify({ decision }),
     });
     const body = await response.json();
-    panel.dataset.status = body.status;
-    if (body.status === "completed") renderCompleted(body);
-    setStatus(body.status === "denied" ? "Action denied" : "Approved response complete", "ok");
-    await loadSessionState();
+    await completeApprovalDecision(body, decision, panel);
   } catch (error) {
+    if (approvalIsUnavailable(error)) {
+      if (resumesRun) stopAgentResume();
+      markApprovalUnavailable(panel);
+      setStatus("Approval no longer available", "error");
+      return;
+    }
     for (const button of buttons) button.disabled = false;
-    showError(error);
+    if (resumesRun) finishFailedRequest(error);
+    else showError(error);
   }
+}
+
+function startAgentResume(message) {
+  runtime.busy = true;
+  runtime.responseAssistantTurn = null;
+  ui.send.disabled = true;
+  showTypingIndicator();
+  startTracePolling();
+  setStatus(message);
+}
+
+function stopAgentResume() {
+  runtime.busy = false;
+  ui.send.disabled = false;
+  clearTypingIndicator();
+  stopTracePolling();
+  loadTraces(true);
+}
+
+async function completeApprovalDecision(body, decision, panel) {
+  markApprovalResolved(panel, decision);
+  if (decision === "deny") {
+    setStatus("Action denied", "ok");
+    await loadSessionState();
+    return;
+  }
+  // The approval decision arrived over HTTP, so any following client-tool
+  // boundary must resume through its HTTP endpoint even if the run began Live.
+  renderCompleted(body, "response");
+  await finishRequest(
+    body.status === "requires_action" ? "Another action is required" : "Approved response complete",
+  );
+  if (body.status === "requires_action") {
+    const message = body.requiredAction?.type === "client_tool"
+      ? "Client tool result required"
+      : "Human approval required";
+    setStatus(message, "pending");
+  }
+}
+
+/** Collapse a consumed approval into a quiet, durable workflow event. */
+function markApprovalResolved(panel, decision) {
+  const approved = decision === "approve";
+  const action = panel.querySelector("strong")?.textContent || "Protected action";
+  const marker = document.createElement("span");
+  marker.className = "approval-resolution-marker";
+  marker.setAttribute("aria-hidden", "true");
+  marker.textContent = approved ? "✓" : "×";
+  const copy = document.createElement("span");
+  copy.className = "approval-resolution-copy";
+  const summary = document.createElement("span");
+  summary.textContent = approved
+    ? "You approved this workflow step"
+    : "You denied this workflow step";
+  const detail = document.createElement("small");
+  detail.textContent = action;
+  copy.append(summary, detail);
+  panel.className = "approval-resolution";
+  panel.dataset.status = approved ? "approved" : "denied";
+  panel.replaceChildren(marker, copy);
+}
+
+function approvalIsUnavailable(error) {
+  return error instanceof ApiError && [404, 409, 504].includes(error.status);
+}
+
+function markApprovalUnavailable(panel) {
+  // A suspended Python task cannot survive expiry or a server restart, so the
+  // card must not imply that retrying the same one-time decision can resume it.
+  panel.dataset.status = "unavailable";
+  const note = document.createElement("small");
+  note.className = "approval-note";
+  note.textContent = "This approval is no longer pending. Send the request again.";
+  panel.querySelector(".approval-actions")?.replaceWith(note);
+}
+
+/** Render a host-owned tool request without misrepresenting it as approval. */
+function appendClientToolAction(action, transport) {
+  if (!action?.id || !action?.name) throw new Error("Client tool response is incomplete");
+  if (runtime.clientToolCards.has(action.id)) return;
+  clearTypingIndicator();
+  const panel = document.createElement("section");
+  panel.className = "client-tool-action";
+  panel.dataset.status = "pending";
+  const heading = document.createElement("div");
+  heading.className = "client-tool-heading";
+  const title = document.createElement("strong");
+  title.textContent = action.name;
+  const status = document.createElement("small");
+  status.textContent = "Client tool · awaiting host result";
+  heading.append(title, status);
+  const argumentsLabel = document.createElement("span");
+  argumentsLabel.className = "client-tool-label";
+  argumentsLabel.textContent = "Arguments";
+  const argumentsValue = document.createElement("pre");
+  argumentsValue.textContent = pretty(action.arguments ?? {});
+  const form = clientToolResultForm(action, transport, panel);
+  panel.append(heading, argumentsLabel, argumentsValue, form);
+  runtime.clientToolCards.set(action.id, panel);
+  ui.conversation.append(panel);
+  scrollConversation();
+  setStatus("Client tool result required", "pending");
+}
+
+function clientToolResultForm(action, transport, panel) {
+  const form = document.createElement("form");
+  form.className = "client-tool-result";
+  const label = document.createElement("label");
+  label.textContent = "Result JSON";
+  const input = document.createElement("textarea");
+  input.rows = 3;
+  input.placeholder = '{"result": "..."}';
+  input.setAttribute("aria-label", `Result for ${action.name}`);
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "approval-button approval-button-approve";
+  submit.textContent = "Submit result";
+  label.append(input);
+  form.append(label, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitClientToolResult(action, transport, panel, input, submit);
+  });
+  return form;
+}
+
+async function submitClientToolResult(action, transport, panel, input, submit) {
+  clearError();
+  let output;
+  try {
+    output = JSON.parse(input.value);
+  } catch (_error) {
+    showError(new Error("Client tool result must be valid JSON"));
+    return;
+  }
+  submit.disabled = true;
+  panel.dataset.status = "submitting";
+  startAgentResume("Resuming agent with client tool result…");
+  try {
+    if (transport === "live") {
+      submitLiveClientToolResult(action.id, output);
+      markClientToolSubmitted(panel);
+      return;
+    }
+    const response = await api(`/client-tools/${encodeURIComponent(action.id)}`, {
+      method: "POST",
+      body: JSON.stringify({ output }),
+    });
+    const body = await response.json();
+    markClientToolSubmitted(panel);
+    renderCompleted(body, "response");
+    await finishRequest(
+      body.status === "requires_action" ? "Another action is required" : "Client tool response complete",
+    );
+    if (body.status === "requires_action") setStatus("Agent action required", "pending");
+  } catch (error) {
+    submit.disabled = false;
+    panel.dataset.status = "pending";
+    finishFailedRequest(error);
+  }
+}
+
+function submitLiveClientToolResult(requestId, output) {
+  if (runtime.socket?.readyState !== WebSocket.OPEN) {
+    throw new Error("Live connection is not available for this client tool result");
+  }
+  runtime.socket.send(JSON.stringify({ type: "client_tool.result", requestId, output }));
+}
+
+function markClientToolSubmitted(panel) {
+  panel.dataset.status = "submitted";
+  const note = document.createElement("small");
+  note.className = "client-tool-note";
+  note.textContent = "Result submitted. The agent is continuing.";
+  panel.querySelector(".client-tool-result")?.replaceWith(note);
 }
 
 async function consumeSse(response) {
@@ -706,10 +1017,14 @@ function handleStreamFrame(frame) {
   if (frame.type === "response.tool_call") {
     clearTypingIndicator();
     appendToolCall(frame.name, frame.arguments, frame.id);
+    if (runtime.busy) showTypingIndicator();
   }
   if (frame.type === "response.tool_result") {
     appendToolResult(frame.name, frame.output, frame.callId);
     if (runtime.busy && !runtime.streamingBubble) showTypingIndicator();
+  }
+  if (frame.type === "client_tool.requested") {
+    appendClientToolAction(frame.clientTool, runtime.transport);
   }
   if (frame.type === "response.completed") finishStreamingOutput(frame);
   if (frame.type === "error") throw new Error(frame.error || "Agent stream failed");
@@ -717,26 +1032,36 @@ function handleStreamFrame(frame) {
 
 function beginStreamingOutput() {
   runtime.streamingBubble = null;
+  runtime.responseAssistantTurn = null;
 }
 
+/** Stream visible text into the assistant turn that will own tool metadata. */
 function appendStreamingText(delta) {
   if (!runtime.streamingBubble) runtime.streamingBubble = takeTypingBubble() || appendTurn("assistant");
+  runtime.responseAssistantTurn = runtime.streamingBubble.closest(".turn");
+  attachPendingTools(runtime.responseAssistantTurn);
   runtime.streamingBubble.textContent += delta;
   scrollConversation();
 }
 
 function finishStreamingOutput(frame) {
   if (frame.status === "requires_action") {
-    appendApproval(frame.requiredAction);
+    renderRequiredAction(frame.requiredAction, runtime.transport);
     runtime.streamingBubble = null;
     return;
   }
+  // Tool transitions can create a fresh processing bubble after visible text;
+  // completion must remove that indicator without duplicating the text bubble.
+  if (runtime.streamingBubble) clearTypingIndicator();
   if (!runtime.streamingBubble && frame.outputText) {
     const bubble = takeTypingBubble() || appendTurn("assistant");
+    runtime.responseAssistantTurn = bubble.closest(".turn");
+    attachPendingTools(runtime.responseAssistantTurn);
     bubble.textContent = frame.outputText;
   } else if (!frame.outputText) {
     clearTypingIndicator();
   }
+  attachPendingTools(runtime.responseAssistantTurn);
   const graphOutputs = (frame.output || []).filter((item) => item.type === "output");
   for (const output of graphOutputs) appendResult(output.value);
   if (frame.result !== undefined && !graphOutputs.length) appendResult(frame.result);
@@ -832,6 +1157,7 @@ async function submitMessage(event) {
 function startRequest(input) {
   clearError();
   runtime.selectedTraceId = "";
+  runtime.responseAssistantTurn = null;
   runtime.busy = true;
   ui.send.disabled = true;
   ui.input.value = "";

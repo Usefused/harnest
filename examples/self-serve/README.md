@@ -12,13 +12,14 @@ then change at least:
    skills; and
 3. `agent.py` → the root `Agent` definition using explicit `harnest.*` imports;
 4. `instructions.md` → the required non-empty root instruction;
-5. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
-6. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
-7. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
-8. `extensions/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
-9. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
-10. `evals/<id>.evalset.json` → optional official ADK eval sets; and
-11. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
+5. `models/**/*.py` → shared Pydantic contracts imported through `harnest.models`;
+6. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
+7. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
+8. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
+9. `extensions/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
+10. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
+11. `evals/<id>.evalset.json` → optional official ADK eval sets; and
+12. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
     live-model tests.
 
 The existing `orchestrator.py` selects every child under `agents/`, so no Go

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol, runtime_checkable
+
+from .credentials import Credential
 
 
 ANONYMOUS_USER_ID = "_harnest_neutral"
@@ -29,13 +34,50 @@ class AuthPrincipal:
     claims: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    credentials: Mapping[str, Credential] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
 
     def __post_init__(self) -> None:
+        """Freeze selected claims and require opaque named credentials."""
+
         if not isinstance(self.user_id, str) or not self.user_id.strip():
             raise ValueError("authenticated user_id must be a non-empty string")
         if not isinstance(self.claims, Mapping):
             raise TypeError("authenticated claims must be a mapping")
+        if not isinstance(self.credentials, Mapping):
+            raise TypeError("authenticated credentials must be a mapping")
+        for name, credential in self.credentials.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("authenticated credential names must be non-empty strings")
+            if not isinstance(credential, Credential):
+                raise TypeError(
+                    "authenticated credential values must be Credential instances"
+                )
         object.__setattr__(self, "claims", MappingProxyType(dict(self.claims)))
+        object.__setattr__(
+            self, "credentials", MappingProxyType(dict(self.credentials))
+        )
+
+
+@dataclass(slots=True)
+class _PrincipalLifetime:
+    """Revoke authenticated identity in tasks copied from a finished request."""
+
+    active: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _PrincipalBinding:
+    """Carry verified identity privately without exposing claims to agents."""
+
+    principal: AuthPrincipal = field(repr=False)
+    lifetime: _PrincipalLifetime = field(repr=False)
+
+
+_ACTIVE_PRINCIPAL: ContextVar[_PrincipalBinding | None] = ContextVar(
+    "harnest_authenticated_principal", default=None
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +159,39 @@ class _AuthenticationMiddleware:
             await _reject(scope, receive, send, exc)
             return
         scope.setdefault("state", {})[_PRINCIPAL_STATE_KEY] = principal
-        await self._app(scope, receive, send)
+        # Native framework routes can accept caller-authored user fields. Keep
+        # the verified principal on a separate private channel so downstream
+        # credential policy never treats those fields as authentication.
+        with _activate_authenticated_principal(principal):
+            await self._app(scope, receive, send)
+
+
+@contextmanager
+def _activate_authenticated_principal(
+    principal: AuthPrincipal,
+) -> Iterator[None]:
+    """Bind verified identity for one request and revoke copied task contexts."""
+
+    if not isinstance(principal, AuthPrincipal):
+        raise TypeError("authenticated principal must be AuthPrincipal")
+    lifetime = _PrincipalLifetime()
+    token = _ACTIVE_PRINCIPAL.set(_PrincipalBinding(principal, lifetime))
+    try:
+        yield
+    finally:
+        # ContextVars are copied into framework-created tasks; explicit
+        # revocation prevents late work from retaining request authority.
+        lifetime.active = False
+        _ACTIVE_PRINCIPAL.reset(token)
+
+
+def _active_authenticated_principal() -> AuthPrincipal | None:
+    """Return the verified request principal without manufacturing a fallback."""
+
+    binding = _ACTIVE_PRINCIPAL.get()
+    if binding is None or not binding.lifetime.active:
+        return None
+    return binding.principal
 
 
 def _requires_authentication(scope: Mapping[str, Any]) -> bool:

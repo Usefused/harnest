@@ -290,7 +290,7 @@ def _apply_adk_request(value: Any, original: ModelCallRequest, updated: ModelCal
         if before.role != after.role:
             raise ModelLifecycleError("before_model cannot change ADK message roles")
         if before.text != after.text:
-            _replace_parts_text(content, after.text)
+            _replace_parts_text(content, after.text, phase="before_model")
 
 
 def _parts_text(content: Any) -> str:
@@ -299,10 +299,14 @@ def _parts_text(content: Any) -> str:
     )
 
 
-def _replace_parts_text(content: Any, text: str) -> None:
+def _replace_parts_text(content: Any, text: str, *, phase: str) -> None:
+    """Replace existing ADK text while preserving the responsible hook phase."""
+
     text_parts = [part for part in content.parts if isinstance(getattr(part, "text", None), str)]
     if not text_parts:
-        raise ModelLifecycleError("before_model cannot add text to a non-text ADK message")
+        raise ModelLifecycleError(
+            f"{phase} cannot add text to a non-text ADK message"
+        )
     text_parts[0].text = text
     for part in text_parts[1:]:
         part.text = ""
@@ -325,7 +329,7 @@ def _apply_adk_response(native: Any, updated: ModelCallResponse) -> Any:
     replacement = native.model_copy(deep=True)
     if replacement.content is None:
         raise ModelLifecycleError("after_model cannot add text to an empty ADK response")
-    _replace_parts_text(replacement.content, updated.text)
+    _replace_parts_text(replacement.content, updated.text, phase="after_model")
     return replacement
 
 

@@ -135,6 +135,17 @@ class _ContextAccess:
         return self.current().resource(name, expected_type)
 
     @property
+    def credentials(self) -> Any:
+        """Return the private credential resolver for the active invocation."""
+
+        # Import lazily because credential resolution itself depends on this
+        # context facade. The resolver is a capability, not stored context data.
+        self.current()
+        from .credentials import credentials
+
+        return credentials
+
+    @property
     def framework(self) -> str:
         return self.current().framework
 

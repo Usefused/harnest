@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from .structured import (
+    PydanticModel,
+    framework_metadata_field,
+    validate_output_schema,
+)
+
 
 START = "START"
 """The reserved source reference for graph entry edges."""
@@ -148,10 +154,14 @@ class Graph:
     edges: Sequence[Edge]
     description: str = ""
     max_concurrency: int | None = None
+    output_schema: PydanticModel | None = None
     _node_names: frozenset[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._validate_metadata()
+        validate_output_schema(self.output_schema, field_name="graph output_schema")
+        if self.output_schema is not None:
+            framework_metadata_field(self.output_schema)
         normalized_nodes = self._normalize_nodes()
         normalized_edges = self._normalize_edges()
         node_names = frozenset(normalized_nodes)

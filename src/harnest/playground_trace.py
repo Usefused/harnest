@@ -18,6 +18,7 @@ from .neutral_runtime import (
     InvocationResult,
     RuntimeDriver,
     RuntimeEvent,
+    SessionMessage,
     SessionRecord,
 )
 
@@ -211,6 +212,15 @@ class PlaygroundTraceRuntimeDriver(RuntimeDriver):
 
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
         return await self._driver.list_sessions(user_id=user_id)
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None:
+        """Delegate transcript reads without adding trace observations."""
+
+        return await self._driver.get_session_messages(
+            session_id=session_id, user_id=user_id
+        )
 
     async def update_session(
         self,

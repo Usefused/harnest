@@ -3,6 +3,9 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 import unittest
+from dataclasses import replace
+
+from pydantic import BaseModel, ConfigDict
 
 try:
     from fastapi.testclient import TestClient
@@ -19,6 +22,7 @@ from harnest.neutral_runtime import (
     NEUTRAL_USER_ID,
     RuntimeEvent,
     SessionConflictError,
+    SessionMessage,
     SessionRecord,
     create_neutral_app,
 )
@@ -46,6 +50,14 @@ def _browser_open(url: str) -> dict[str, str]:
     raise AssertionError("client tool declaration bodies must not run")
 
 
+@client_tool
+@require_human_approval(message="Approve opening {url} in the client?")
+def _protected_browser_open(url: str) -> dict[str, str]:
+    """Open an approved URL in the caller's browser."""
+
+    raise AssertionError("client tool declaration bodies must not run")
+
+
 class HeaderAuthenticator:
     async def authenticate(self, connection):
         user_id = connection.headers.get("x-test-user")
@@ -66,6 +78,7 @@ class FakeDriver:
             extra_endpoints={"native": "/native"},
         )
         self.sessions: dict[tuple[str, str], SessionRecord] = {}
+        self.session_messages: dict[tuple[str, str], list[SessionMessage]] = {}
         self.invocations: list[InvocationRequest] = []
         self.closed = False
         self.fail_stream = False
@@ -83,6 +96,7 @@ class FakeDriver:
             raise SessionConflictError(session_id)
         session = SessionRecord(id=session_id, user_id=user_id, state=dict(state))
         self.sessions[key] = session
+        self.session_messages[key] = []
         return session
 
     async def get_session(
@@ -96,6 +110,14 @@ class FakeDriver:
             for (owner, _), session in self.sessions.items()
             if owner == user_id
         ]
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None:
+        key = (user_id, session_id)
+        if key not in self.sessions:
+            return None
+        return tuple(self.session_messages[key])
 
     async def update_session(
         self,
@@ -117,7 +139,9 @@ class FakeDriver:
         return updated
 
     async def delete_session(self, *, session_id: str, user_id: str) -> bool:
-        return self.sessions.pop((user_id, session_id), None) is not None
+        key = (user_id, session_id)
+        self.session_messages.pop(key, None)
+        return self.sessions.pop(key, None) is not None
 
     def events(self) -> list[RuntimeEvent]:
         if self.empty_output:
@@ -142,6 +166,23 @@ class FakeDriver:
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         self.invocations.append(request)
+        messages = self.session_messages[(request.user_id, request.session_id)]
+        messages.extend(
+            (
+                SessionMessage(
+                    id=f"{request.invocation_id}:user",
+                    role="user",
+                    content=request.input,
+                    metadata={"fake": {"kind": "input"}},
+                ),
+                SessionMessage(
+                    id=f"{request.invocation_id}:assistant",
+                    role="assistant",
+                    content="hello",
+                    metadata={"fake": {"kind": "output"}},
+                ),
+            )
+        )
         return InvocationResult(
             text="" if self.empty_output else "hello",
             events=self.events(),
@@ -162,6 +203,19 @@ class FakeDriver:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class StructuredInput(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    query: str
+    limit: int
+
+
+class StructuredInputDriver(FakeDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.info = replace(self.info, input_schema=StructuredInput)
 
 
 class ApprovalDriver(FakeDriver):
@@ -222,6 +276,24 @@ class ClientToolDriver(FakeDriver):
             yield dict(event)
 
 
+class ApprovedClientToolDriver(FakeDriver):
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        result = await _protected_browser_open(request.input)
+        text = f"approved-opened:{result['title']}"
+        return InvocationResult(
+            text=text,
+            events=({"type": "message", "role": "assistant", "text": text},),
+            result=result,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+    async def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]:
+        result = await self.invoke(request)
+        for event in result.events:
+            yield dict(event)
+
+
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
 class NeutralRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -243,12 +315,26 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(agent["id"], "fake-agent")
         self.assertEqual(agent["framework"], "fake")
         self.assertEqual(agent["endpoints"]["native"], "/native")
+        self.assertEqual(
+            agent["endpoints"]["sessionMessages"],
+            "/sessions/{sessionId}/messages",
+        )
 
         created = self.client.post(
             "/sessions", json={"id": "one", "state": {"count": 1}}
         )
         self.assertEqual(created.status_code, 201)
-        self.assertEqual(created.json(), {"id": "one", "state": {"count": 1}})
+        self.assertEqual(
+            created.json(),
+            {
+                "id": "one",
+                "userId": NEUTRAL_USER_ID,
+                "state": {"count": 1},
+                "createdAt": None,
+                "updatedAt": None,
+                "metadata": {},
+            },
+        )
         self.assertEqual(
             self.client.post("/sessions", json={"id": "one"}).status_code, 409
         )
@@ -256,11 +342,26 @@ class NeutralRuntimeTests(unittest.TestCase):
             "/sessions/one", json={"stateDelta": {"ready": True}}
         )
         self.assertEqual(
-            updated.json(), {"id": "one", "state": {"count": 1, "ready": True}}
+            updated.json(),
+            {
+                "id": "one",
+                "userId": NEUTRAL_USER_ID,
+                "state": {"count": 1, "ready": True},
+                "createdAt": None,
+                "updatedAt": None,
+                "metadata": {},
+            },
         )
         self.assertEqual(self.client.get("/sessions").json(), {
             "sessions": [
-                {"id": "one", "state": {"count": 1, "ready": True}}
+                {
+                    "id": "one",
+                    "userId": NEUTRAL_USER_ID,
+                    "state": {"count": 1, "ready": True},
+                    "createdAt": None,
+                    "updatedAt": None,
+                    "metadata": {},
+                }
             ]
         })
         self.assertEqual(self.client.delete("/sessions/one").status_code, 204)
@@ -293,6 +394,21 @@ class NeutralRuntimeTests(unittest.TestCase):
             'approvalButton("Deny", "deny", "approval-button approval-button-deny")',
             javascript.text,
         )
+        self.assertIn("function approvalIsUnavailable(error)", javascript.text)
+        self.assertIn("function markApprovalResolved(panel, decision)", javascript.text)
+        self.assertIn("You approved this workflow step", javascript.text)
+        self.assertIn("You denied this workflow step", javascript.text)
+        self.assertIn("function startAgentResume(message)", javascript.text)
+        self.assertIn('startAgentResume("Resuming agent after approval…")', javascript.text)
+        self.assertIn("function renderRequiredAction(action, transport)", javascript.text)
+        self.assertIn('action?.type === "human_approval"', javascript.text)
+        self.assertIn('action?.type === "client_tool"', javascript.text)
+        self.assertIn("/client-tools/", javascript.text)
+        self.assertIn("Client tool · awaiting host result", javascript.text)
+        self.assertIn(
+            "This approval is no longer pending. Send the request again.",
+            javascript.text,
+        )
         self.assertIn('id="session-state-empty"', page.text)
         self.assertIn('id="session-menu"', page.text)
         self.assertIn('id="trace-timeline"', page.text)
@@ -315,8 +431,16 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("height: 100dvh", stylesheet.text)
         self.assertIn("overscroll-behavior: contain", stylesheet.text)
         self.assertIn("typing-bubble", stylesheet.text)
+        self.assertIn("typing-label", stylesheet.text)
+        self.assertIn("typing-glow", stylesheet.text)
         self.assertIn(".send-button { position: absolute", stylesheet.text)
         self.assertIn(".approval-button-approve", stylesheet.text)
+        self.assertIn('.approval-event[data-status="unavailable"]', stylesheet.text)
+        self.assertIn(".approval-note", stylesheet.text)
+        self.assertIn(".approval-resolution", stylesheet.text)
+        self.assertIn(".approval-resolution-marker", stylesheet.text)
+        self.assertIn(".client-tool-action", stylesheet.text)
+        self.assertIn(".client-tool-result", stylesheet.text)
         self.assertIn(".composer textarea::placeholder", stylesheet.text)
         self.assertIn("font-size: 14px; font-weight: 400", stylesheet.text)
         self.assertIn(':root[data-theme="light"]', stylesheet.text)
@@ -337,8 +461,20 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn('selectInspectorView("logs")', javascript.text)
         self.assertIn('logging ? "Logs" : tracing ? "Trace" : "State"', javascript.text)
         self.assertIn("appendToolResult", javascript.text)
+        self.assertIn("function attachPendingTools(turn)", javascript.text)
+        self.assertIn("function bindToolAccordion(detail, list)", javascript.text)
+        self.assertIn("function createToolTrayCaret()", javascript.text)
+        self.assertIn("function updateToolTraySummary(tray)", javascript.text)
+        self.assertIn("Used ${tools.length} tools", javascript.text)
+        self.assertIn('aria-label", "Tools called by the agent', javascript.text)
+        self.assertIn(".turn-tools", stylesheet.text)
+        self.assertIn(".turn-tool-list", stylesheet.text)
+        self.assertIn(".turn-tools[open]", stylesheet.text)
+        self.assertIn(".turn-tools > summary:focus-visible", stylesheet.text)
         self.assertIn('.dataset.active = runtime.transport', javascript.text)
         self.assertIn("showTypingIndicator()", javascript.text)
+        self.assertIn('label.textContent = "Thinking"', javascript.text)
+        self.assertIn("if (runtime.streamingBubble) clearTypingIndicator()", javascript.text)
         for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
             self.assertNotIn(native_endpoint, javascript.text)
         self.assertEqual(javascript.text.count("window.localStorage"), 2)
@@ -441,6 +577,36 @@ class NeutralRuntimeTests(unittest.TestCase):
         request = self.driver.invocations[-1]
         self.assertEqual(request.user_id, NEUTRAL_USER_ID)
         self.assertEqual(request.metadata, {"source": "test"})
+
+        transcript = self.client.get("/sessions/json/messages")
+        self.assertEqual(transcript.status_code, 200)
+        self.assertEqual(
+            transcript.json(),
+            {
+                "sessionId": "json",
+                "userId": NEUTRAL_USER_ID,
+                "messages": [
+                    {
+                        "id": f"{request.invocation_id}:user",
+                        "role": "user",
+                        "content": "hello",
+                        "createdAt": None,
+                        "metadata": {"fake": {"kind": "input"}},
+                    },
+                    {
+                        "id": f"{request.invocation_id}:assistant",
+                        "role": "assistant",
+                        "content": "hello",
+                        "createdAt": None,
+                        "metadata": {"fake": {"kind": "output"}},
+                    },
+                ],
+            },
+        )
+        self.assertEqual(
+            self.client.get("/sessions/missing/messages").status_code,
+            404,
+        )
 
         traces = self.client.get(
             "/_harnest/traces", params={"sessionId": "json"}
@@ -604,6 +770,67 @@ class NeutralRuntimeTests(unittest.TestCase):
             404,
         )
 
+    def test_response_request_is_strict_and_documented_by_pydantic(self):
+        schema = self.client.get("/openapi.json").json()
+        request_schema = schema["paths"]["/responses"]["post"]["requestBody"][
+            "content"
+        ]["application/json"]["schema"]
+
+        self.assertEqual(request_schema["additionalProperties"], False)
+        self.assertIn("sessionId", request_schema["properties"])
+        self.assertEqual(
+            self.client.post(
+                "/responses", json={"input": "hello", "stream": "true"}
+            ).status_code,
+            400,
+        )
+
+    def test_structured_input_is_shared_by_json_sse_and_websocket(self):
+        driver = StructuredInputDriver()
+        with TestClient(create_neutral_app(driver)) as client:
+            client.post("/sessions", json={"id": "structured"})
+            input_value = {"query": "status", "limit": 2}
+
+            response = client.post(
+                "/responses",
+                json={"input": input_value, "sessionId": "structured"},
+            )
+            stream = client.post(
+                "/responses",
+                json={
+                    "input": input_value,
+                    "sessionId": "structured",
+                    "stream": True,
+                },
+            )
+            with client.websocket_connect("/live") as websocket:
+                websocket.send_json({"type": "connect", "sessionId": "structured"})
+                websocket.receive_json()
+                websocket.send_json(
+                    {"type": "response.create", "input": input_value}
+                )
+                while websocket.receive_json()["type"] != "response.completed":
+                    pass
+
+            invalid = client.post(
+                "/responses",
+                json={
+                    "input": {"query": "status", "limit": "2"},
+                    "sessionId": "structured",
+                },
+            )
+            schema = client.get("/openapi.json").json()["paths"]["/responses"][
+                "post"
+            ]["requestBody"]["content"]["application/json"]["schema"]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: response.completed", stream.text)
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(driver.invocations[0].input, input_value)
+        self.assertEqual(driver.invocations[1].input, input_value)
+        self.assertEqual(driver.invocations[2].input, input_value)
+        self.assertIn("$defs", schema)
+
     def test_injected_authentication_scopes_sessions_and_invocations(self):
         driver = FakeDriver()
         app = create_neutral_app(driver, authenticator=HeaderAuthenticator())
@@ -639,6 +866,10 @@ class NeutralRuntimeTests(unittest.TestCase):
                 client.get("/sessions/shared", headers=bob).status_code,
                 404,
             )
+            self.assertEqual(
+                client.get("/sessions/shared/messages", headers=bob).status_code,
+                404,
+            )
             response = client.post(
                 "/responses",
                 headers=alice,
@@ -646,6 +877,11 @@ class NeutralRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(driver.invocations[-1].user_id, "alice")
+            transcript = client.get(
+                "/sessions/shared/messages", headers=alice
+            )
+            self.assertEqual(transcript.status_code, 200)
+            self.assertEqual(transcript.json()["userId"], "alice")
             alice_traces = client.get(
                 "/_harnest/traces", headers=alice
             ).json()["traces"]
@@ -878,6 +1114,28 @@ class ClientToolTransportTests(unittest.TestCase):
             completed = websocket.receive_json()
             self.assertEqual(completed["type"], "response.completed")
             self.assertEqual(completed["outputText"], "opened:Live Example")
+
+    def test_approved_client_tool_resumes_through_both_boundaries(self):
+        app = create_neutral_app(ApprovedClientToolDriver())
+        with TestClient(app) as client:
+            client.post("/sessions", json={"id": "approved-client"})
+            approval = client.post(
+                "/responses",
+                json={"input": "https://example.test", "sessionId": "approved-client"},
+            ).json()
+            client_action = client.post(
+                f"/approvals/{approval['requiredAction']['id']}",
+                json={"decision": "approve"},
+            ).json()
+            completed = client.post(
+                f"/client-tools/{client_action['requiredAction']['id']}",
+                json={"output": {"title": "Approved Example"}},
+            )
+
+        self.assertEqual(approval["requiredAction"]["type"], "human_approval")
+        self.assertEqual(client_action["requiredAction"]["type"], "client_tool")
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["outputText"], "approved-opened:Approved Example")
 
 
 if __name__ == "__main__":

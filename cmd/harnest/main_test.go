@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "pyproject.toml", "lib/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -61,13 +61,14 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
 	}
 	assertDirectories(t, target, []string{
-		"lib", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
+		"lib", "models", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
 		"harnest.lock":           "projectSchema: 3",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
+		"models/_README.md":      "from harnest.models.support import",
 		"lib/storage.py":         "store = MemoryStore()",
 		"extensions/storage.py":  "@lifecycle.checkpointer",
 		"tools/_README.md":       "Add one @tool callable",
@@ -259,15 +260,16 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 	}
 	assertFilesExist(t, directory, []string{"tools/_README.md"})
 	assertFilesContain(t, directory, map[string]string{
-		"lib/_README.md":   "from harnest.lib.audit import record_change",
-		"tools/_README.md": "Advanced mode owns framework wiring",
+		"lib/_README.md":    "from harnest.lib.audit import record_change",
+		"models/_README.md": "from harnest.models.support import",
+		"tools/_README.md":  "Advanced mode owns framework wiring",
 	})
 	assertOnlyPlaceholderResources(t, directory)
 }
 
 func assertOnlyPlaceholderResources(t *testing.T, root string) {
 	t.Helper()
-	for _, directory := range append([]string{"lib"}, managedResourceDirectories...) {
+	for _, directory := range append([]string{"lib", "models"}, managedResourceDirectories...) {
 		entries, err := os.ReadDir(filepath.Join(root, directory))
 		if err != nil {
 			t.Fatalf("read advanced optional folder %s: %v", directory, err)

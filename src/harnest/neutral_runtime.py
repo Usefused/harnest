@@ -14,6 +14,14 @@ import json
 from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
 import uuid
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    create_model,
+    field_validator,
+)
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.exceptions import HTTPException
@@ -52,6 +60,54 @@ NEUTRAL_USER_ID = ANONYMOUS_USER_ID
 RuntimeEvent = dict[str, Any]
 
 
+class _ResponseEnvelope(BaseModel):
+    """Fields shared by text and user-configured response request models."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    session_id: str | None = Field(default=None, alias="sessionId")
+    stream: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id")
+    @classmethod
+    def _non_empty_session_id(cls, value: str | None) -> str | None:
+        """Keep explicitly selected sessions unambiguous."""
+
+        if value is not None and not value.strip():
+            raise ValueError("sessionId must be non-empty")
+        return value
+
+
+class ResponseRequest(_ResponseEnvelope):
+    """Strict Pydantic body accepted by default by ``POST /responses``."""
+
+    input: str
+
+    @field_validator("input")
+    @classmethod
+    def _non_empty_input(cls, value: str) -> str:
+        """Reject input that cannot produce a meaningful model turn."""
+
+        if not value.strip():
+            raise ValueError("input must be non-empty")
+        return value
+
+
+def _response_request_model(input_schema: Any) -> type[BaseModel]:
+    """Create the transport envelope around one authored Pydantic input model."""
+
+    if input_schema is None:
+        return ResponseRequest
+    # A per-application model makes the user's contract visible under `input`
+    # in OpenAPI without turning session and streaming controls into model data.
+    return create_model(
+        "ResponseRequest",
+        __base__=_ResponseEnvelope,
+        input=(input_schema, ...),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AgentInfo:
     """Portable metadata needed by the neutral server."""
@@ -63,6 +119,8 @@ class AgentInfo:
     framework: str | None = None
     mode: str | None = None
     extra_endpoints: Mapping[str, str] = field(default_factory=dict)
+    input_schema: Any = None
+    output_schema: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +132,25 @@ class SessionRecord:
     state: Mapping[str, Any]
     created_at: str | None = None
     updated_at: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionMessage:
+    """One portable transcript item with lossless framework-owned metadata."""
+
+    id: str
+    role: str
+    content: Any
+    created_at: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class InvocationRequest:
     """The complete input passed from a transport to a runtime driver."""
 
-    input: str
+    input: Any
     user_id: str
     session_id: str
     invocation_id: str
@@ -121,6 +191,10 @@ class RuntimeDriver(Protocol):
 
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]: ...
 
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None: ...
+
     async def update_session(
         self,
         *,
@@ -160,7 +234,28 @@ def require_customer_facing_output(text: str, result: Any) -> None:
 
 
 def _session_payload(session: SessionRecord) -> dict[str, Any]:
-    return {"id": session.id, "state": dict(session.state)}
+    """Render the complete neutral record without flattening native metadata."""
+
+    return {
+        "id": session.id,
+        "userId": session.user_id,
+        "state": dict(session.state),
+        "createdAt": session.created_at,
+        "updatedAt": session.updated_at,
+        "metadata": dict(session.metadata),
+    }
+
+
+def _session_message_payload(message: SessionMessage) -> dict[str, Any]:
+    """Render one stable transcript item without flattening native metadata."""
+
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "createdAt": message.created_at,
+        "metadata": dict(message.metadata),
+    }
 
 
 def _public_output_item(event: RuntimeEvent) -> dict[str, Any]:
@@ -833,23 +928,44 @@ async def _live_session(websocket: Any, response_session: Any) -> SessionRecord 
     return session
 
 
-def _live_frame_error(frame: Any, max_request_bytes: int = MAX_REQUEST_BYTES) -> str | None:
+def _validated_live_frame(
+    frame: Any,
+    max_request_bytes: int = MAX_REQUEST_BYTES,
+    input_schema: Any = None,
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Validate and normalize one WebSocket request with the HTTP input contract."""
+
     if (
         not isinstance(frame, dict)
         or not set(frame) <= {"type", "input", "requestId", "metadata"}
         or frame.get("type") != "response.create"
-        or not isinstance(frame.get("input"), str)
-        or not frame["input"].strip()
     ):
-        return "Invalid live input frame"
-    if len(frame["input"].encode("utf-8")) > max_request_bytes:
-        return f"Input exceeds {format_byte_size(max_request_bytes)}"
+        return None, "Invalid live input frame"
+    normalized_input = _validated_live_input(frame.get("input"), input_schema)
+    if normalized_input is None:
+        return None, "Invalid live input frame"
+    encoded_input = json.dumps(normalized_input, ensure_ascii=False).encode("utf-8")
+    if len(encoded_input) > max_request_bytes:
+        return None, f"Input exceeds {format_byte_size(max_request_bytes)}"
     if not isinstance(frame.get("metadata", {}), dict):
-        return "metadata must be an object"
+        return None, "metadata must be an object"
     request_id = frame.get("requestId")
     if request_id is not None and not isinstance(request_id, str):
-        return "requestId must be a string"
-    return None
+        return None, "requestId must be a string"
+    return {**frame, "input": normalized_input}, None
+
+
+def _validated_live_input(value: Any, input_schema: Any) -> Any | None:
+    """Apply the configured input model without exposing validation details."""
+
+    if input_schema is None:
+        return value if isinstance(value, str) and value.strip() else None
+    try:
+        return input_schema.model_validate(value).model_dump(
+            mode="json", by_alias=True
+        )
+    except (ValidationError, ValueError, TypeError):
+        return None
 
 
 async def _serve_live_frame(
@@ -985,6 +1101,7 @@ def create_neutral_router(
     semaphore = asyncio.Semaphore(max_concurrency)
     approvals = approval_store or InMemoryApprovalStore()
     client_tools = client_tool_store or InMemoryClientToolStore()
+    response_request_model = _response_request_model(driver.info.input_schema)
 
     async def read_json(request: Request) -> dict[str, Any]:
         content_type = request.headers.get("content-type", "").partition(";")[0]
@@ -1001,24 +1118,22 @@ def create_neutral_router(
             raise HTTPException(status_code=400, detail="Expected a JSON object")
         return value
 
-    def parse_response(payload: Mapping[str, Any]) -> tuple[str, bool, dict[str, Any]]:
-        if not set(payload) <= {"input", "sessionId", "stream", "metadata"}:
-            raise HTTPException(status_code=400, detail="Invalid response request")
-        text = payload.get("input")
-        if not isinstance(text, str) or not text.strip():
-            raise HTTPException(status_code=400, detail="input must be non-empty")
-        if len(text.encode("utf-8")) > max_request_bytes:
+    def parse_response(payload: Mapping[str, Any]) -> BaseModel:
+        """Validate the public envelope without changing established HTTP errors."""
+
+        try:
+            parsed = response_request_model.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid response request"
+            ) from exc
+        input_value = parsed.input
+        if isinstance(input_value, str) and len(input_value.encode("utf-8")) > max_request_bytes:
             raise HTTPException(
                 status_code=413,
                 detail=f"Input exceeds {format_byte_size(max_request_bytes)}",
             )
-        stream = payload.get("stream", False)
-        if not isinstance(stream, bool):
-            raise HTTPException(status_code=400, detail="stream must be boolean")
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise HTTPException(status_code=400, detail="metadata must be an object")
-        return text, stream, metadata
+        return parsed
 
     async def response_session(
         payload: Mapping[str, Any], user_id: str
@@ -1076,6 +1191,7 @@ def create_neutral_router(
             "endpoints": {
                 "responses": "/responses",
                 "sessions": "/sessions",
+                "sessionMessages": "/sessions/{sessionId}/messages",
                 "live": "/live",
                 "approvals": "/approvals/{approvalId}",
                 "clientTools": "/client-tools/{requestId}",
@@ -1131,6 +1247,25 @@ def create_neutral_router(
             raise HTTPException(status_code=404, detail="Session not found")
         return _session_payload(session)
 
+    @router.get("/sessions/{session_id}/messages")
+    async def get_session_messages(
+        session_id: str, request: Request
+    ) -> dict[str, Any]:
+        """Return a self-describing transcript within the caller's scope."""
+
+        principal = principal_for(request)
+        messages = await driver.get_session_messages(
+            session_id=session_id,
+            user_id=principal.user_id,
+        )
+        if messages is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {
+            "sessionId": session_id,
+            "userId": principal.user_id,
+            "messages": [_session_message_payload(message) for message in messages],
+        }
+
     @router.patch("/sessions/{session_id}")
     async def update_session(session_id: str, request: Request) -> dict[str, Any]:
         payload = await read_json(request)
@@ -1157,10 +1292,26 @@ def create_neutral_router(
             raise HTTPException(status_code=404, detail="Session not found")
         return Response(status_code=204)
 
-    @router.post("/responses")
+    @router.post(
+        "/responses",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": response_request_model.model_json_schema(by_alias=True)
+                    }
+                },
+            }
+        },
+    )
     async def responses(request: Request) -> Any:
         payload = await read_json(request)
-        text, stream, metadata = parse_response(payload)
+        parsed = parse_response(payload)
+        text = parsed.input
+        if driver.info.input_schema is not None:
+            text = text.model_dump(mode="json", by_alias=True)
+        stream, metadata = parsed.stream, parsed.metadata
         user_id = principal_for(request).user_id
         session = await response_session(payload, user_id)
         response_id = f"resp_{uuid.uuid4().hex}"
@@ -1361,13 +1512,17 @@ def create_neutral_router(
                 if frame == {"type": "session.close"}:
                     await websocket.close(code=1000)
                     return
-                error = _live_frame_error(frame, max_request_bytes)
+                validated_frame, error = _validated_live_frame(
+                    frame,
+                    max_request_bytes,
+                    driver.info.input_schema,
+                )
                 if error is not None:
                     await websocket.send_json({"type": "error", "error": error})
                     continue
                 await _serve_live_frame(
                     websocket,
-                    frame,
+                    validated_frame,
                     session,
                     invocation=invocation,
                     semaphore=semaphore,
@@ -1447,9 +1602,11 @@ __all__ = [
     "MAX_REQUEST_BYTES",
     "NEUTRAL_USER_ID",
     "NoCustomerFacingOutputError",
+    "ResponseRequest",
     "RuntimeDriver",
     "RuntimeEvent",
     "SessionConflictError",
+    "SessionMessage",
     "SessionRecord",
     "create_neutral_app",
     "create_neutral_router",

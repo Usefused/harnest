@@ -11,6 +11,7 @@ from .neutral_runtime import (
     InvocationResult,
     RuntimeDriver,
     RuntimeEvent,
+    SessionMessage,
     SessionRecord,
 )
 from .session import SessionStore
@@ -71,6 +72,16 @@ class StorageRuntimeDriver(RuntimeDriver):
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
         await self._start()
         return await self._driver.list_sessions(user_id=user_id)
+
+    async def get_session_messages(
+        self, *, session_id: str, user_id: str
+    ) -> Sequence[SessionMessage] | None:
+        """Start storage before delegating transcript retrieval."""
+
+        await self._start()
+        return await self._driver.get_session_messages(
+            session_id=session_id, user_id=user_id
+        )
 
     async def update_session(
         self,

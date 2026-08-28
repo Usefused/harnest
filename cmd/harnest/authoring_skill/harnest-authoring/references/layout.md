@@ -19,18 +19,20 @@ file is the path and ownership contract it relies on.
 The usual entrypoint is `agent:root_agent`. Authored source is not a Python
 package and does not need `__init__.py`.
 
-## Reusable library
+## Reusable authored modules
 
 | Path | Contract |
 | --- | --- |
+| root `models/**/*.py` | Pydantic contracts imported below `harnest.models`; never discovered as a capability. |
 | root `lib/**/*.py` | Ordinary reusable Python imported below `harnest.lib`; never discovered as a tool, agent, MCP client, plugin, extension, or skill. |
 
-`lib/` is root-only and global to the compiled bundle in managed and advanced
-mode. `lib/audit.py` imports as `harnest.lib.audit`, while
+`models/` and `lib/` are root-only and global to the compiled bundle in managed
+and advanced mode. `models/support.py` imports as `harnest.models.support`;
+`lib/audit.py` imports as `harnest.lib.audit`, while
 `lib/storage/queries.py` imports as `harnest.lib.storage.queries`. Namespace
-packages need no `__init__.py`; do not import helpers as bare `lib.*`. Add an
-initializer only when the library itself needs initialization. Entry points and
-resources at any ownership depth may use the library.
+packages need no `__init__.py`; do not import them as bare `models.*` or
+`lib.*`. Add an initializer only for intentional package initialization. Entry
+points and resources at any ownership depth may use both namespaces.
 The same imports work during compilation, tests, evals, and standalone serving.
 
 ## Discovered resource folders
@@ -44,6 +46,8 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `plugins/<plugin>/mcp/<name>.py` | Plugin-owned `client()` factory using the same rule. |
 | `plugins/<plugin>/skills/<skill>/SKILL.md` | One progressive skill teaching the host agent when and how to use the plugin's MCP tools. |
 | `extensions/storage.py` | Generated home for the required zero-argument `@lifecycle.session_store` and `@lifecycle.checkpointer` factories. Return one shared store from root `lib/storage.py`; the listeners may be split across arbitrary extension files. |
+| `extensions/credentials.py` | Optional root `@lifecycle.credential_provider` factory returning one private `CredentialProvider`; never publish it with `@context`. |
+| `extensions/telemetry.py` | Optional repeatable root `@lifecycle.telemetry_exporter` factories, one uniquely named trace/log destination per factory; factories run only at runtime. |
 | `extensions/**/*.py` | Other arbitrary public root modules; explicit `@lifecycle.*` listeners and `@context` providers are discovered. Multiple listeners may share an invocation phase. |
 | `sandbox/sandbox.py` | Exports one `Sandbox` as `sandbox`; managed ADK only. |
 | `skills/<skill>/SKILL.md` | Progressive internal instructions. Frontmatter `name` matches `<skill>`; references, assets, and scripts may live below it. |
@@ -67,8 +71,9 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 - An inline `Agent` graph node defined in the root `agent.py` is root-scoped and
   uses the root folder's discovered resources.
 - Plugins and extensions are root-only; nested instances fail compilation.
-- `lib/` is also root-only, but its modules are globally importable throughout
-  the bundle rather than attached to an agent's discovered resource scope.
+- `models/` and `lib/` are also root-only, but their modules are globally
+  importable throughout the bundle rather than attached to an agent's
+  discovered resource scope.
 - Do not add `Agent` tool/skill name lists as access selectors. Location grants
   scope. There is no separate `SubAgent` class; nested definitions use `Agent`.
 - Keep executable eval assets at the root. Nested eval files may be validated

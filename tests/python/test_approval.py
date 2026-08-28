@@ -19,6 +19,7 @@ from harnest.approval import (
     require_human_approval,
 )
 from harnest.bundle import BundleExportError, BundleImportError, _discover_mcp
+from harnest.client_tool import client_tool
 from harnest.tool import tool
 from harnest.mcp import MCPClient
 
@@ -51,6 +52,34 @@ class ApprovalAuthoringTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(caught.exception.challenge.action, f"tool:{protected.__name__}")
                 self.assertEqual(caught.exception.challenge.message, "Delete customer-7?")
         self.assertEqual(calls, [])
+
+    async def test_client_tool_decorator_orders_both_require_approval_first(self):
+        @client_tool
+        @require_human_approval(message="Inspect {target}?")
+        def inner(target: str) -> dict[str, str]:
+            """Inspect a target in the connected client."""
+
+            raise AssertionError("client tool bodies are declarations")
+
+        @require_human_approval(message="Inspect {target}?")
+        @client_tool
+        def outer(target: str) -> dict[str, str]:
+            """Inspect a target in the connected client."""
+
+            raise AssertionError("client tool bodies are declarations")
+
+        for protected in (inner, outer):
+            with self.subTest(protected=protected.__name__):
+                execution = ApprovalExecution("user", "session", "call")
+                with approval_execution(execution), self.assertRaises(
+                    ApprovalRequired
+                ) as caught:
+                    await protected("page")
+                self.assertEqual(
+                    caught.exception.challenge.action,
+                    f"tool:{protected.__name__}",
+                )
+                self.assertEqual(caught.exception.challenge.message, "Inspect page?")
 
     async def test_approval_is_bound_to_arguments_and_consumed_once(self):
         calls = []

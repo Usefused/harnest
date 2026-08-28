@@ -9,7 +9,7 @@ def test_production_api_issue_is_urgent_technical_support(tools):
         production_blocked=True,
     )
 
-    assert result == {
+    assert result.model_dump() == {
         "queue": "technical-support",
         "priority": "urgent",
         "reason": "Production is blocked.",
