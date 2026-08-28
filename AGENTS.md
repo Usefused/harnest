@@ -14,6 +14,8 @@ verification requirements.
 
 ## Documentation ownership
 
+- Present Harnest as a product built and maintained by Fused. Keep the GitHub
+  README heading linked to `https://usefused.com`.
 - Canonical public Harnest documentation lives in the `Usefused/mintlify-docs`
   repository under `harnest/` and is authored as `.mdx`.
 - Link readers to `https://docs.usefused.com/harnest` and its deployed child

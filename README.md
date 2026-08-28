@@ -1,4 +1,4 @@
-# Harnest
+# Harnest by [Fused](https://usefused.com)
 
 Harnest is a lightweight agent harness that takes agent building from zero to a
 complete, testable agent in minutes. It manages the work around your agent:
