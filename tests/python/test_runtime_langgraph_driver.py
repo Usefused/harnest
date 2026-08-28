@@ -11,6 +11,7 @@ from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.graph import START, Edge, Graph
 from harnest.mcp import MCPClient
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
+from harnest.output import OutputPolicy
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
 from harnest.session import InMemorySessionStore
 
@@ -317,6 +318,82 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1", user_id="user-1"
         )
         self.assertEqual(session.state["counter"], 4)
+
+    async def test_pre_tool_narration_is_suppressed_by_default_and_can_be_included(self):
+        class NarratingTarget(_Target):
+            def _result(self, graph_input):
+                return {
+                    "messages": [
+                        *graph_input.get("messages", ()),
+                        _Message(
+                            "I'll inspect. ",
+                            tool_calls=[
+                                {
+                                    "id": "call-1",
+                                    "name": "inspect",
+                                    "args": {"selector": "main"},
+                                }
+                            ],
+                        ),
+                        _Message(
+                            "highlighted",
+                            message_type="tool",
+                            tool_call_id="call-1",
+                            name="inspect",
+                        ),
+                        _Message("Done."),
+                    ],
+                    "value": "Done.",
+                }
+
+            async def astream(self, graph_input, *, config, stream_mode):
+                self.inputs.append(graph_input)
+                self.configs.append(config)
+                result = self._result(graph_input)
+                for message in result["messages"][-3:]:
+                    yield "messages", (message, {"node": "researcher"})
+                yield "values", result
+
+        async def run(policy):
+            target = NarratingTarget()
+            application = replace(_application(target), output_policy=policy)
+            driver = LangGraphRuntimeDriver(application)
+            await driver.create_session(
+                session_id="session-1", user_id="user-1", state={}
+            )
+            invoked = await driver.invoke(_request())
+            streamed = [
+                event
+                async for event in driver.stream(
+                    _request(invocation_id="invocation-2")
+                )
+            ]
+            await driver.close()
+            return invoked, streamed
+
+        suppressed, suppressed_stream = await run(OutputPolicy())
+        included, included_stream = await run(
+            OutputPolicy(subagent_messages="include")
+        )
+
+        self.assertEqual(suppressed.text, "Done.")
+        self.assertNotIn(
+            "I'll inspect.",
+            "".join(
+                event.get("text", "") for event in suppressed_stream
+            ),
+        )
+        self.assertIn(
+            "tool_call", [event["type"] for event in suppressed_stream]
+        )
+        self.assertEqual(included.text, "I'll inspect. Done.")
+        self.assertEqual(
+            "".join(
+                event.get("text", "") for event in included_stream
+            ),
+            "I'll inspect. Done.",
+        )
+        self.assertIn("tool_call", [event["type"] for event in included_stream])
 
     async def test_advanced_bridge_controls_input_and_visible_output(self):
         target = _Target()

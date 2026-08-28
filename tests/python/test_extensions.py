@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
+from harnest.output import OutputPolicy
 from harnest.session import InMemorySessionStore
 
 
@@ -73,6 +74,49 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             result = discover_extensions(root, framework="langgraph")
 
         self.assertIsInstance(result.checkpointer, MemoryStore)
+
+    def test_output_policy_defaults_to_suppress_and_can_opt_in(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            default = discover_extensions(root, framework="langgraph")
+            (root / "output.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.output import OutputPolicy\n"
+                "@lifecycle.output_policy\n"
+                "def output_policy():\n"
+                "    return OutputPolicy(subagent_messages='include')\n",
+                encoding="utf-8",
+            )
+            configured = discover_extensions(root, framework="langgraph")
+
+        self.assertEqual(default.output_policy, OutputPolicy())
+        self.assertEqual(configured.output_policy.subagent_messages, "include")
+        self.assertNotIn(
+            "output_policy", [item.phase for item in configured.listeners]
+        )
+
+    def test_output_policy_factory_is_unique_and_typed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "output.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.output_policy\n"
+                "def output_policy(): return object()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "OutputPolicy"):
+                discover_extensions(root, framework="adk")
+            (root / "other_output.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.output import OutputPolicy\n"
+                "@lifecycle.output_policy\n"
+                "def other_output(): return OutputPolicy()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "at most one"):
+                discover_extensions(root, framework="adk")
 
     def test_requires_exactly_one_typed_checkpointer_factory(self):
         with tempfile.TemporaryDirectory() as temporary:

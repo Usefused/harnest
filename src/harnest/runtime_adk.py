@@ -27,6 +27,7 @@ from .neutral_runtime import (
     SessionConflictError,
     SessionRecord,
 )
+from .output import OutputPolicy
 
 
 class ADKRuntimeDriver(RuntimeDriver):
@@ -233,13 +234,18 @@ class ADKRuntimeDriver(RuntimeDriver):
                 state_delta=dict(request.state_delta),
                 run_config=run_config,
             )
-            normalizer = _ADKEventNormalizer()
+            normalizer = _ADKEventNormalizer(
+                self.application.output_policy,
+                root_agent_name=getattr(self.application.target, "name", None),
+            )
             try:
                 async with aclosing(native_events):
                     async for event in native_events:
                         await self._save_checkpoint_event(request, event)
                         for item in normalizer.feed(event):
                             yield item
+                for item in normalizer.finish():
+                    yield item
             except BaseException:
                 await self._finish_checkpoint(request.invocation_id, "failed")
                 raise
@@ -341,32 +347,126 @@ class ADKRuntimeDriver(RuntimeDriver):
 class _ADKEventNormalizer:
     """Turn ADK cumulative/partial events into small neutral event deltas."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        output_policy: OutputPolicy | None = None,
+        *,
+        root_agent_name: str | None = None,
+    ) -> None:
+        """Keep partial child output private until its tool intent is known."""
+
+        self._output_policy = output_policy or OutputPolicy()
+        self._root_agent_name = root_agent_name
         self._text = ""
+        self._author: str | None = None
+        self._pending_subagent_text = ""
+        self._pending_subagent_author: str | None = None
 
     def feed(self, event: Any) -> list[dict[str, Any]]:
+        """Normalize one event and apply the portable intermediate-output policy."""
+
+        self._start_event(event)
+        normalized = self._normalize_event(event)
+        self._replace_pending_subagent_message(event, normalized)
+        if not self._filters_subagent_event(event):
+            return normalized
+        return self._filter_subagent_messages(event, normalized)
+
+    def _start_event(self, event: Any) -> None:
+        """Reset cumulative state when native event authorship changes."""
+
+        author = getattr(event, "author", None)
+        if author != self._author:
+            self._text = ""
+            self._author = author
+
+    def _replace_pending_subagent_message(
+        self, event: Any, normalized: list[dict[str, Any]]
+    ) -> None:
+        """Drop a held child answer only when another author replaces it visibly."""
+
+        if not self._pending_subagent_text:
+            return
+        author = getattr(event, "author", None)
+        has_message = any(item.get("type") == "message" for item in normalized)
+        if author != self._pending_subagent_author and has_message:
+            # Empty graph bookkeeping events do not supersede a child answer;
+            # a later customer-facing message does and becomes canonical instead.
+            self._pending_subagent_text = ""
+            self._pending_subagent_author = None
+
+    def _normalize_event(self, event: Any) -> list[dict[str, Any]]:
+        """Convert content, output, and tool payloads into neutral deltas."""
+
         normalized: list[dict[str, Any]] = []
         for item in _event_items(event):
             if item["type"] != "message":
                 normalized.append(item)
                 continue
-            text = item["text"]
-            partial = bool(getattr(event, "partial", False))
-            if self._text and text.startswith(self._text):
-                delta = text[len(self._text) :]
-                self._text = text
-            elif not partial and self._text == text:
-                delta = ""
-            else:
-                delta = text
-                self._text = self._text + text if partial else text
+            delta = self._message_delta(event, str(item["text"]))
             if delta:
                 normalized.append(
                     {"type": "message", "role": "assistant", "text": delta}
                 )
-            if not partial:
+            if not getattr(event, "partial", False):
                 self._text = ""
         return normalized
+
+    def _message_delta(self, event: Any, text: str) -> str:
+        """Deduplicate ADK's cumulative final event against streamed partials."""
+
+        partial = bool(getattr(event, "partial", False))
+        if self._text and text.startswith(self._text):
+            delta = text[len(self._text) :]
+            self._text = text
+            return delta
+        if not partial and self._text == text:
+            return ""
+        self._text = self._text + text if partial else text
+        return text
+
+    def _filters_subagent_event(self, event: Any) -> bool:
+        """Limit buffering to child authors while preserving root token streaming."""
+
+        author = getattr(event, "author", None)
+        return (
+            self._output_policy.subagent_messages == "suppress"
+            and isinstance(author, str)
+            and bool(author)
+            and isinstance(self._root_agent_name, str)
+            and author != self._root_agent_name
+        )
+
+    def _filter_subagent_messages(
+        self, event: Any, normalized: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Buffer child deltas and discard them when the completed turn calls a tool."""
+
+        messages = [item for item in normalized if item.get("type") == "message"]
+        visible = [item for item in normalized if item.get("type") != "message"]
+        self._pending_subagent_text += "".join(
+            str(item.get("text", "")) for item in messages
+        )
+        self._pending_subagent_author = getattr(event, "author", None)
+        if getattr(event, "partial", False):
+            return visible
+        has_tool_calls = any(item.get("type") == "tool_call" for item in visible)
+        if has_tool_calls:
+            self._pending_subagent_text = ""
+            self._pending_subagent_author = None
+        # Hold a tool-free complete child message until the stream ends. A
+        # following tool-call event can then still classify it as narration.
+        return visible
+
+    def finish(self) -> list[dict[str, Any]]:
+        """Release a terminal child answer once no later tool call can follow it."""
+
+        text = self._pending_subagent_text
+        self._pending_subagent_text = ""
+        self._pending_subagent_author = None
+        if not text:
+            return []
+        return [{"type": "message", "role": "assistant", "text": text}]
 
 
 def _event_items(event: Any) -> list[dict[str, Any]]:

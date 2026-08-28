@@ -1183,6 +1183,14 @@ class AuthoringTests(unittest.TestCase):
             )
             self._write(root / "instructions.md", "Answer clearly.\n")
             self._write(
+                root / "extensions" / "output.py",
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.output import OutputPolicy\n\n"
+                "@lifecycle.output_policy\n"
+                "def output_policy():\n"
+                "    return OutputPolicy(subagent_messages='include')\n",
+            )
+            self._write(
                 root / "tools" / "double.py",
                 "from harnest.tool import tool\n\n"
                 "@tool\n"

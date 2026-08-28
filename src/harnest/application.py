@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from .agent import _AdvancedAgentDefinition
 from .checkpoint import ADKStore, CheckpointAuthority
 from .context import ContextValue
+from .output import OutputPolicy
 from .session import SessionStore
 
 
@@ -25,6 +26,7 @@ class CompiledApplication:
     extensions: Sequence[Any] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
+    output_policy: OutputPolicy = OutputPolicy()
     checkpoint_metadata: dict[str, str] | None = None
     context_values: Sequence[ContextValue] = ()
     harnest_version: str | None = None

@@ -33,6 +33,30 @@ asynchronous, incorrectly typed, or missing factories fail compilation.
 Session storage cannot also be injected by the host because that would create
 competing authorities. See [checkpoints.md](checkpoints.md).
 
+## Output policy
+
+Harnest suppresses intermediate subagent narration attached to tool calls by
+default. Tool calls, tool results, and the canonical reply remain visible. A
+use-case team that intentionally presents that narration can opt in with one
+optional root factory:
+
+```python
+# extensions/output.py
+from harnest.lifecycle import lifecycle
+from harnest.output import OutputPolicy
+
+
+@lifecycle.output_policy
+def output_policy():
+    return OutputPolicy(subagent_messages="include")
+```
+
+The policy applies equally to managed and advanced roots and their subagents,
+and the neutral JSON, SSE, WebSocket, and playground surfaces share the same
+selected output. The factory must be synchronous, accept no arguments, and
+return `OutputPolicy`; duplicate factories fail compilation. It does not alter
+the authored `agent`, `tools`, `client`, or `smoke` test fixtures.
+
 ```python
 # extensions/history.py
 from harnest.lifecycle import lifecycle

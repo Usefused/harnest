@@ -28,6 +28,7 @@ from .graph import START, Edge, Event, Graph, GraphContext, Join
 from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
 from .model_lifecycle import LiteLLMContext
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
+from .output import OutputPolicy
 from .lifecycle import DROP_EVENT, LifecycleContext, lifecycle
 from .logging import Logger, get_logger
 from .sandbox import Sandbox
@@ -71,6 +72,7 @@ __all__ = [
     "ModelConnector",
     "OllamaModel",
     "Orchestrator",
+    "OutputPolicy",
     "Sandbox",
     "START",
     "Tracer",

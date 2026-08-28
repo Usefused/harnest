@@ -18,6 +18,7 @@ from .checkpoint import (
 )
 from .context import ContextValue, registration_for as context_registration_for
 from .lifecycle import LifecycleListener, registration_for
+from .output import OutputPolicy
 from .session import SessionStore
 
 
@@ -37,6 +38,7 @@ class DiscoveredExtensions:
     native: tuple[Any, ...] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
+    output_policy: OutputPolicy = OutputPolicy()
     context_values: tuple[ContextValue, ...] = ()
 
 
@@ -57,6 +59,7 @@ def discover_extensions(
     checkpointer, checkpoint_listener, remaining = _create_checkpointer(
         remaining, framework
     )
+    output_policy, remaining = _create_output_policy(remaining)
     _validate_storage_ownership(session_store, checkpointer)
     portable, native_listeners = _partition_listeners(remaining, framework)
     native = tuple(_create_native(item, framework) for item in native_listeners)
@@ -66,12 +69,37 @@ def discover_extensions(
         (checkpoint_listener, checkpointer),
     )
     return DiscoveredExtensions(
-        portable,
-        native,
-        session_store,
-        checkpointer,
-        context_values,
+        listeners=portable,
+        native=native,
+        session_store=session_store,
+        checkpointer=checkpointer,
+        output_policy=output_policy,
+        context_values=context_values,
     )
+
+
+def _create_output_policy(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[OutputPolicy, tuple[LifecycleListener, ...]]:
+    """Instantiate the optional root policy or retain safe output defaults."""
+
+    factories = tuple(item for item in listeners if item.phase == "output_policy")
+    if len(factories) > 1:
+        raise ExtensionDiscoveryError(
+            "root extensions may declare at most one @lifecycle.output_policy "
+            f"factory; found {len(factories)}"
+        )
+    remaining = tuple(item for item in listeners if item.phase != "output_policy")
+    if not factories:
+        return OutputPolicy(), remaining
+    factory = factories[0]
+    value = _call_factory(factory, label="output policy")
+    if not isinstance(value, OutputPolicy):
+        raise ExtensionDiscoveryError(
+            f"output policy lifecycle factory {factory.identity} must return "
+            f"OutputPolicy; got {type(value).__name__}"
+        )
+    return value, remaining
 
 
 def _create_checkpointer(
@@ -326,6 +354,7 @@ def _validate_listener_signature(
         "langgraph_middleware",
         "session_store",
         "checkpointer",
+        "output_policy",
         "resource",
         "context",
     }

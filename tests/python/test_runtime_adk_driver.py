@@ -13,6 +13,7 @@ from harnest.neutral_runtime import (
     RuntimeDriver,
     SessionConflictError,
 )
+from harnest.output import OutputPolicy
 from harnest.runtime_adk import ADKRuntimeDriver, _ADKEventNormalizer
 
 
@@ -220,6 +221,92 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             get_function_responses=lambda: [],
         )
         self.assertEqual(_ADKEventNormalizer().feed(thought_only), [])
+
+    async def test_subagent_pre_tool_narration_is_configurable(self):
+        partial = python_types.SimpleNamespace(
+            author="researcher",
+            partial=True,
+            content=python_types.SimpleNamespace(
+                parts=[python_types.SimpleNamespace(text="I'll ", thought=False)]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+        completed = python_types.SimpleNamespace(
+            author="researcher",
+            partial=False,
+            content=python_types.SimpleNamespace(
+                parts=[
+                    python_types.SimpleNamespace(
+                        text="I'll inspect the page", thought=False
+                    )
+                ]
+            ),
+            output=None,
+            get_function_calls=lambda: [
+                python_types.SimpleNamespace(
+                    id="call-1", name="inspect", args={"selector": "main"}
+                )
+            ],
+            get_function_responses=lambda: [],
+        )
+        canonical = python_types.SimpleNamespace(
+            author="root",
+            partial=False,
+            content=python_types.SimpleNamespace(
+                parts=[python_types.SimpleNamespace(text="Done", thought=False)]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+
+        suppressed = _ADKEventNormalizer(root_agent_name="root")
+        suppressed_events = [
+            *suppressed.feed(partial),
+            *suppressed.feed(completed),
+            *suppressed.feed(canonical),
+        ]
+        included = _ADKEventNormalizer(
+            OutputPolicy(subagent_messages="include"), root_agent_name="root"
+        )
+        included_events = [
+            *included.feed(partial),
+            *included.feed(completed),
+            *included.feed(canonical),
+        ]
+
+        self.assertEqual(
+            [event["type"] for event in suppressed_events], ["tool_call", "message"]
+        )
+        self.assertEqual(suppressed_events[-1]["text"], "Done")
+        self.assertEqual(
+            "".join(
+                event["text"]
+                for event in included_events
+                if event["type"] == "message"
+            ),
+            "I'll inspect the pageDone",
+        )
+        self.assertIn("tool_call", [event["type"] for event in included_events])
+
+        terminal_child = _ADKEventNormalizer(root_agent_name="root")
+        terminal = python_types.SimpleNamespace(
+            author="researcher",
+            partial=False,
+            content=python_types.SimpleNamespace(
+                parts=[python_types.SimpleNamespace(text="Final answer", thought=False)]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+        self.assertEqual(terminal_child.feed(terminal), [])
+        self.assertEqual(
+            terminal_child.finish(),
+            [{"type": "message", "role": "assistant", "text": "Final answer"}],
+        )
 
 
 if __name__ == "__main__":

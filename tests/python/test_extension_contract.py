@@ -57,6 +57,17 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual(registration.phase, "checkpointer")
         self.assertIsNone(registration.framework)
 
+    def test_output_policy_decorator_registers_an_optional_root_factory(self):
+        @lifecycle.output_policy
+        def output_policy():
+            return object()
+
+        registration = registration_for(output_policy)
+
+        self.assertIsNotNone(registration)
+        self.assertEqual(registration.phase, "output_policy")
+        self.assertIsNone(registration.framework)
+
     def test_resource_decorator_registers_a_runtime_only_factory(self):
         @lifecycle.resource(order=5)
         def vector_client():

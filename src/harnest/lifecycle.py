@@ -28,6 +28,7 @@ _FACTORY_PHASES = frozenset(
         "langgraph_middleware",
         "session_store",
         "checkpointer",
+        "output_policy",
         "resource",
     }
 )
@@ -150,6 +151,7 @@ class _LifecycleDecorators:
     # owns committed conversation state and resumable in-progress state.
     session_store = _PhaseDecorator("session_store")
     checkpointer = _PhaseDecorator("checkpointer")
+    output_policy = _PhaseDecorator("output_policy")
     resource = _PhaseDecorator("resource")
     authenticate = _PhaseDecorator("authenticate")
     before_invoke = _PhaseDecorator("before_invoke")

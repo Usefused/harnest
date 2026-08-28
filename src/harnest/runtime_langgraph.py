@@ -34,6 +34,7 @@ from .neutral_runtime import (
     RuntimeDriver,
     SessionRecord,
 )
+from .output import OutputPolicy
 from .session import InMemorySessionStore, SessionLease, SessionStore
 
 
@@ -173,9 +174,17 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             await self._finish_checkpoint(request.invocation_id, "completed")
 
         text_value, public_result = _graph_output(self._application, result)
-        events = _result_events(result, text_value, public_result)
+        turn_start = _message_count(graph_input)
+        events = _result_events(
+            result,
+            text_value,
+            public_result,
+            self._application.output_policy,
+            turn_start=turn_start,
+        )
+        visible_text = _result_text(events, fallback=text_value)
         return InvocationResult(
-            text=text_value,
+            text=visible_text,
             events=tuple(events),
             result=public_result,
             session_id=session_id,
@@ -206,7 +215,13 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             config = self._execution_config(request.invocation_id)
             state = _StreamState()
             try:
-                async for event in _target_stream(target, graph_input, config, state):
+                async for event in _target_stream(
+                    target,
+                    graph_input,
+                    config,
+                    state,
+                    self._application.output_policy,
+                ):
                     yield event
                 state.final_state = (
                     state.final_state if state.final_state is not None else {}
@@ -466,8 +481,14 @@ def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> Agent
 
 
 async def _target_stream(
-    target: Any, graph_input: Any, config: Mapping[str, Any], state: _StreamState
+    target: Any,
+    graph_input: Any,
+    config: Mapping[str, Any],
+    state: _StreamState,
+    output_policy: OutputPolicy,
 ) -> AsyncIterator[dict[str, Any]]:
+    """Normalize target events while keeping tool traces independently visible."""
+
     stream = target.astream(graph_input, config=config, stream_mode=["messages", "values"])
     async with aclosing(stream):
         async for item in stream:
@@ -476,14 +497,23 @@ async def _target_stream(
                 state.final_state = value
                 continue
             message = value[0] if isinstance(value, tuple) else value
-            for event in _message_tool_events(message):
+            tool_events = _message_tool_events(message)
+            for event in tool_events:
                 identity = _event_identity(event)
                 if identity not in state.tools:
                     state.tools.add(identity)
                     yield event
             content = _message_text(message)
-            if content:
-                state.text += content
+            has_tool_calls = any(
+                event.get("type") == "tool_call" for event in tool_events
+            )
+            if content and output_policy.includes_intermediate_message(
+                has_tool_calls=has_tool_calls
+            ):
+                # Included narration is public but is not part of the canonical
+                # reply used to reconcile the graph's final values event.
+                if not has_tool_calls:
+                    state.text += content
                 yield {"type": "message", "role": "assistant", "text": content}
 
 
@@ -811,10 +841,20 @@ def _tool_events(result: Any) -> list[dict[str, Any]]:
 
 
 def _result_events(
-    result: Any, text_value: str, public_result: Any
+    result: Any,
+    text_value: str,
+    public_result: Any,
+    output_policy: OutputPolicy,
+    *,
+    turn_start: int,
 ) -> list[dict[str, Any]]:
-    events = _tool_events(result)
-    if text_value:
+    """Project one invocation using the same policy as the streaming boundary."""
+
+    if output_policy.subagent_messages == "include":
+        events = _included_message_events(result, turn_start=turn_start)
+    else:
+        events = _tool_events(result)
+    if text_value and not _events_end_with_text(events, text_value):
         events.append({"type": "message", "role": "assistant", "text": text_value})
     if public_result is not None:
         events.append(
@@ -825,6 +865,52 @@ def _result_events(
             }
         )
     return events
+
+
+def _included_message_events(result: Any, *, turn_start: int) -> list[dict[str, Any]]:
+    """Expose current-turn AI narration without replaying prior session messages."""
+
+    if not isinstance(result, Mapping):
+        return []
+    messages = result.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return []
+    events: list[dict[str, Any]] = []
+    for message in messages[turn_start:]:
+        content = _message_text(message)
+        if content:
+            events.append({"type": "message", "role": "assistant", "text": content})
+        events.extend(_message_tool_events(message))
+    return events
+
+
+def _events_end_with_text(events: Sequence[Mapping[str, Any]], text: str) -> bool:
+    """Avoid duplicating a canonical reply already present in included output."""
+
+    for event in reversed(events):
+        if event.get("type") == "message":
+            return event.get("text") == text
+    return False
+
+
+def _result_text(events: Sequence[Mapping[str, Any]], *, fallback: str) -> str:
+    """Build response text only from messages selected for public output."""
+
+    text = "".join(
+        str(event.get("text", ""))
+        for event in events
+        if event.get("type") == "message"
+    )
+    return text or fallback
+
+
+def _message_count(graph_input: Any) -> int:
+    """Locate the current turn without assuming an advanced adapter shape."""
+
+    if not isinstance(graph_input, Mapping):
+        return 0
+    messages = graph_input.get("messages")
+    return len(messages) if isinstance(messages, (list, tuple)) else 0
 
 
 def _event_identity(event: Mapping[str, Any]) -> tuple[Any, ...]:
