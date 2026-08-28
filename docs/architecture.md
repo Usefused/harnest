@@ -299,6 +299,14 @@ Privacy-safe OTEL audit records contain low-cardinality operation, trigger,
 outcome, and capability fields, never unique request IDs, arguments, prompts,
 rendered messages, results, headers, or credentials.
 
+An asynchronous tool or native callable may instead enter
+`request_human_approval(...)` after it evaluates an operation. The async context
+manager suspends the same live task at that point, binds the grant to a stable
+dynamic action plus canonical evaluated arguments, and records success or
+failure for only the protected block. Code before the block is neither approved
+nor replayed. This uses the same JSON, SSE, WebSocket, identity, session, expiry,
+and one-time decision machinery as declarative approval in both frameworks.
+
 Selective MCP approval names are checked against the server's discovered,
 unprefixed remote tool names in both frameworks. A missing name fails closed
 before invocation. Each configured LangGraph server is routed to its own policy,

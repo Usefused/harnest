@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import contextvars
 import asyncio
+import contextvars
 import functools
 import hashlib
 import inspect
 import json
+import re
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
@@ -24,6 +25,7 @@ Decision = Literal["approve", "deny"]
 
 _POLICY_ATTRIBUTE = "__harnest_approval__"
 _WRAPPED_ATTRIBUTE = "__harnest_approval_wrapped__"
+_DYNAMIC_ACTION = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
 _CURRENT_EXECUTION: contextvars.ContextVar["ApprovalExecution | None"] = (
     contextvars.ContextVar("harnest_approval_execution", default=None)
 )
@@ -450,6 +452,42 @@ def require_human_approval(
     return decorate
 
 
+@asynccontextmanager
+async def request_human_approval(
+    *,
+    action: str,
+    message: str,
+    arguments: Mapping[str, Any] | None = None,
+    timeout_seconds: int = 900,
+    on_timeout: Literal["deny"] = "deny",
+) -> AsyncIterator[None]:
+    """Protect only the dynamic operation inside this asynchronous block.
+
+    Callers may evaluate policy or risk before entering the block. The approval
+    is bound to a stable action name and canonical arguments, while the block
+    boundary lets Harnest audit whether the approved operation completed.
+    """
+
+    _validate_dynamic_action(action)
+    if arguments is not None and not isinstance(arguments, Mapping):
+        raise TypeError("approval arguments must be a mapping")
+    policy = ApprovalPolicy(
+        message=message,
+        timeout_seconds=timeout_seconds,
+        on_timeout=on_timeout,
+    )
+    grant = await _authorize(
+        "dynamic", action, _bound_arguments(arguments or {}), policy
+    )
+    try:
+        yield
+    except BaseException:
+        record_approved_failure(grant)
+        raise
+    else:
+        _record_executed(grant)
+
+
 def approval_policy(value: Any) -> ApprovalPolicy | None:
     policy = getattr(value, _POLICY_ATTRIBUTE, None)
     return policy if isinstance(policy, ApprovalPolicy) else None
@@ -668,6 +706,16 @@ def _validate_tool_names(tools: Sequence[str]) -> None:
         raise ValueError("approval tool names must be unique")
 
 
+def _validate_dynamic_action(action: str) -> None:
+    """Keep audited dynamic action names stable and free of customer payloads."""
+
+    if not isinstance(action, str) or _DYNAMIC_ACTION.fullmatch(action) is None:
+        raise ValueError(
+            "approval action must be a stable identifier containing only letters, "
+            "numbers, '.', '_', or '-'"
+        )
+
+
 __all__ = [
     "ApprovalEnforcementError",
     "ApprovalDenied",
@@ -685,6 +733,7 @@ __all__ = [
     "bind_tool_arguments",
     "record_approved_execution",
     "record_approved_failure",
+    "request_human_approval",
     "require_human_approval",
     "wrap_approved_tool",
 ]

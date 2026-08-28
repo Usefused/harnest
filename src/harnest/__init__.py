@@ -24,7 +24,7 @@ from .mcp import (
     MCPClientLifecycle,
     MCPHTTPClientOptions,
 )
-from .approval import require_human_approval
+from .approval import request_human_approval, require_human_approval
 from .client_tool import client_tool
 from .checkpoint import ADKStore, HarnestStore, LangGraphStore
 from .context import AgentContext, context
@@ -83,6 +83,7 @@ __all__ = [
     "MCPClientContext",
     "MCPClientLifecycle",
     "MCPHTTPClientOptions",
+    "request_human_approval",
     "require_human_approval",
     "LiteLLMContext",
     "LiteLLMLifecycle",

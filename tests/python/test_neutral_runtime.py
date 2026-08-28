@@ -30,7 +30,7 @@ from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
 )
-from harnest.approval import require_human_approval
+from harnest.approval import request_human_approval, require_human_approval
 from harnest.client_tool import client_tool
 from harnest.tool import tool
 
@@ -256,6 +256,41 @@ class MultipleApprovalDriver(ApprovalDriver):
             session_id=request.session_id,
             metadata=request.metadata,
         )
+
+
+class DynamicApprovalDriver(FakeDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.evaluations = 0
+        self.executions = 0
+
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        self.evaluations += 1
+        if request.input == "safe":
+            text = "skipped:low-risk"
+        else:
+            async with request_human_approval(
+                action="typescript.execute",
+                message="Execute TypeScript with network access?",
+                arguments={
+                    "capabilities": ["network"],
+                    "sourceHash": "sha256:fixture",
+                },
+            ):
+                self.executions += 1
+                text = "executed:typescript"
+        return InvocationResult(
+            text=text,
+            events=({"type": "message", "role": "assistant", "text": text},),
+            result=None,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+    async def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]:
+        result = await self.invoke(request)
+        for event in result.events:
+            yield dict(event)
 
 
 class ClientToolDriver(FakeDriver):
@@ -964,6 +999,37 @@ class ApprovalTransportTests(unittest.TestCase):
             self.assertEqual(completed.status_code, 200)
             self.assertEqual(driver.before_protected, 1)
             self.assertEqual(driver.after_protected, 1)
+
+    def test_dynamic_approval_runs_only_after_evaluation_and_does_not_replay_it(self):
+        driver = DynamicApprovalDriver()
+        app = create_neutral_app(driver)
+        with TestClient(app) as client:
+            client.post("/sessions", json={"id": "dynamic"})
+            safe = client.post(
+                "/responses", json={"input": "safe", "sessionId": "dynamic"}
+            ).json()
+            required = client.post(
+                "/responses", json={"input": "risky", "sessionId": "dynamic"}
+            ).json()
+
+            self.assertEqual(safe["status"], "completed")
+            self.assertEqual(required["status"], "requires_action")
+            self.assertEqual(
+                required["requiredAction"]["action"],
+                "dynamic:typescript.execute",
+            )
+            self.assertEqual(driver.evaluations, 2)
+            self.assertEqual(driver.executions, 0)
+
+            completed = client.post(
+                f"/approvals/{required['requiredAction']['id']}",
+                json={"decision": "approve"},
+            ).json()
+
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["outputText"], "executed:typescript")
+            self.assertEqual(driver.evaluations, 2)
+            self.assertEqual(driver.executions, 1)
 
     def test_multiple_sequential_approvals_resume_same_task(self):
         driver = MultipleApprovalDriver()

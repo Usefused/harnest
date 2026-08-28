@@ -651,7 +651,7 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(application.target.name, "native_adk")
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
-    def test_advanced_adk_root_uses_neutral_approval_governance(self):
+    def test_advanced_adk_root_uses_dynamic_approval_governance(self):
         from fastapi.testclient import TestClient
 
         with tempfile.TemporaryDirectory() as directory:
@@ -665,15 +665,20 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from google.adk.events import Event
                 from google.genai import types
                 from harnest.agent import Agent
-                from harnest.approval import require_human_approval
+                from harnest.approval import request_human_approval
                 from harnest.tool import tool
 
 
                 @tool
-                @require_human_approval(message="Approve advanced root?")
                 async def protected(value):
                     '''Run one protected native-root operation.'''
-                    return f"approved:{value}"
+                    risk = {"capability": "network", "value": value}
+                    async with request_human_approval(
+                        action="advanced.send",
+                        message="Approve {capability} access?",
+                        arguments=risk,
+                    ):
+                        return f"approved:{value}"
 
 
                 class ProtectedRoot(BaseAgent):
@@ -704,6 +709,9 @@ class FrameworkArtifactTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 required = response.json()
                 self.assertEqual(required["status"], "requires_action", required)
+                self.assertEqual(
+                    required["requiredAction"]["action"], "dynamic:advanced.send"
+                )
                 completed = client.post(
                     f"/approvals/{required['requiredAction']['id']}",
                     json={"decision": "approve"},
@@ -951,6 +959,98 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(manifest["framework"]["mode"], "advanced")
             self.assertEqual(result["text"], "advanced:hello")
             self.assertEqual(result["result"], "advanced:hello")
+
+    @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
+    def test_advanced_langgraph_root_uses_dynamic_approval_governance(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._write(
+                root / "agent.py",
+                """
+                from langgraph.graph import END, START, StateGraph
+                from harnest.agent import Agent
+                from harnest.approval import request_human_approval
+
+
+                async def reply(state):
+                    risk = {
+                        "capabilities": ["network"],
+                        "sourceHash": "sha256:fixture",
+                    }
+                    async with request_human_approval(
+                        action="typescript.execute",
+                        message="Execute TypeScript with network access?",
+                        arguments=risk,
+                    ):
+                        return {"answer": f"approved:{state['prompt']}"}
+
+
+                builder = StateGraph(dict)
+                builder.add_node("reply", reply)
+                builder.add_edge(START, "reply")
+                builder.add_edge("reply", END)
+                from harnest.lib.checkpoints import checkpoints
+
+
+                graph = builder.compile(
+                    checkpointer=checkpoints.as_langgraph_checkpointer()
+                )
+
+
+                def input_adapter(text, state):
+                    return {**state, "prompt": text}
+
+
+                def output_adapter(state):
+                    return state["answer"]
+
+
+                root_agent = Agent.advanced(
+                    graph,
+                    name="native_langgraph",
+                    input_adapter=input_adapter,
+                    output_adapter=output_adapter,
+                )
+                """,
+            )
+            self._card(root)
+            (root / "lib").mkdir()
+            (root / "lib" / "checkpoints.py").write_text(
+                "from harnest.checkpoint import MemoryStore\n"
+                "checkpoints = MemoryStore()\n",
+                encoding="utf-8",
+            )
+            (root / "extensions" / "checkpoints.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.lib.checkpoints import checkpoints\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpointer(): return checkpoints\n",
+                encoding="utf-8",
+            )
+
+            compile_artifact(root, output, framework="langgraph", mode="advanced")
+            with TestClient(create_fastapi_app(output)) as client:
+                session_id = client.post("/sessions", json={}).json()["id"]
+                required = client.post(
+                    "/responses",
+                    json={"input": "run", "sessionId": session_id},
+                ).json()
+                self.assertEqual(required["status"], "requires_action", required)
+                self.assertEqual(
+                    required["requiredAction"]["action"],
+                    "dynamic:typescript.execute",
+                )
+                completed = client.post(
+                    f"/approvals/{required['requiredAction']['id']}",
+                    json={"decision": "approve"},
+                ).json()
+
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["outputText"], "approved:run")
 
 
 if __name__ == "__main__":

@@ -297,6 +297,39 @@ def delete_customer(customer_id: str):
     ...
 ```
 
+When evaluation determines whether only part of an operation is risky, use an
+async protected block instead of decorating the whole tool:
+
+```python
+from harnest.approval import request_human_approval
+from harnest.tool import tool
+
+
+@tool
+async def execute_typescript(source: str) -> str:
+    """Evaluate policy, then execute permitted TypeScript."""
+
+    risk = evaluate_typescript(source)
+    if not risk.requires_approval:
+        return await execute(source)
+    async with request_human_approval(
+        action="typescript.execute",
+        message="Execute TypeScript with network access?",
+        arguments={
+            "sourceHash": risk.source_hash,
+            "capabilities": sorted(risk.capabilities),
+        },
+    ):
+        return await execute(source)
+```
+
+Evaluation completes before the task suspends and is not replayed after
+approval. `action` must be a stable, non-sensitive identifier. Bind the exact
+evaluated operation with serializable `arguments`; Harnest retains only their
+hash. The message is public to the approver. Only the block is approved, and
+leaving it records success or failure. Dynamic approval therefore requires an
+async callable and a managed Harnest invocation.
+
 `@client_tool` can be combined with `@require_human_approval` in either
 decorator order. The approval boundary runs first; after approval, the host
 receives the client-tool request and its result resumes the same invocation.

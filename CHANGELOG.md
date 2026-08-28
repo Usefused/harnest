@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Dynamic human approval
+
+* Added `request_human_approval(...)` for async tools and native callables that
+  evaluate risk before protecting only a specific operation. Approval resumes
+  the same task without replaying the evaluation.
+* Added a standalone live HTTP probe covering compilation, server startup,
+  suspension, approval, and completion of a dynamically protected operation.
+
 ## [0.2.0](https://github.com/creativeJoe007/harnest/compare/v0.1.21...v0.2.0) (2026-08-28)
 
 

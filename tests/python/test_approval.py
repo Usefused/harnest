@@ -16,6 +16,7 @@ from harnest.approval import (
     InMemoryApprovalStore,
     _bound_arguments,
     approval_execution,
+    request_human_approval,
     require_human_approval,
 )
 from harnest.bundle import BundleExportError, BundleImportError, _discover_mcp
@@ -335,6 +336,88 @@ class ApprovalAuthoringTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dynamic_approval_suspends_after_evaluation_and_resumes_block(self):
+        calls = []
+        store = InMemoryApprovalStore()
+        run = store.create_run(user_id="u", session_id="s", call_id="c")
+
+        async def execute_typescript() -> str:
+            calls.append("evaluated")
+            async with request_human_approval(
+                action="typescript.execute",
+                message="Execute with {capability}?",
+                arguments={"capability": "network", "sourceHash": "sha256:test"},
+            ):
+                calls.append("executed")
+                return "complete"
+
+        execution = ApprovalExecution("u", "s", "c", store=store, run=run)
+        with approval_execution(execution):
+            task = asyncio.create_task(execute_typescript())
+        kind, pending = await run.notifications.get()
+
+        self.assertEqual(kind, "approval")
+        self.assertEqual(calls, ["evaluated"])
+        self.assertEqual(pending.action, "dynamic:typescript.execute")
+        self.assertEqual(pending.message, "Execute with network?")
+        store.decide(pending.id, user_id="u", decision="approve")
+
+        self.assertEqual(await task, "complete")
+        self.assertEqual(calls, ["evaluated", "executed"])
+        self.assertEqual(pending.status, "executed")
+
+    async def test_dynamic_approval_is_conditional_and_fails_closed(self):
+        async def execute(*, risky: bool) -> str:
+            if not risky:
+                return "safe"
+            async with request_human_approval(
+                action="typescript.execute",
+                message="Execute TypeScript?",
+                arguments={"source": object()},
+            ):
+                return "executed"
+
+        self.assertEqual(await execute(risky=False), "safe")
+        with approval_execution(ApprovalExecution("u", "s", "c")):
+            with self.assertRaisesRegex(
+                ApprovalEnforcementError, "approval cannot bind argument type object"
+            ):
+                await execute(risky=True)
+        with self.assertRaisesRegex(ApprovalEnforcementError, "managed Harnest"):
+            async with request_human_approval(
+                action="typescript.execute", message="Execute TypeScript?"
+            ):
+                pass
+
+    async def test_dynamic_approval_records_failure_inside_protected_block(self):
+        store = InMemoryApprovalStore()
+        run = store.create_run(user_id="u", session_id="s", call_id="c")
+
+        async def fail() -> None:
+            async with request_human_approval(
+                action="database.delete",
+                message="Delete the selected rows?",
+                arguments={"queryHash": "sha256:test"},
+            ):
+                raise RuntimeError("operation failed")
+
+        execution = ApprovalExecution("u", "s", "c", store=store, run=run)
+        with approval_execution(execution):
+            task = asyncio.create_task(fail())
+        _kind, pending = await run.notifications.get()
+        store.decide(pending.id, user_id="u", decision="approve")
+
+        with self.assertRaisesRegex(RuntimeError, "operation failed"):
+            await task
+        self.assertEqual(pending.status, "execution_failed")
+
+    async def test_dynamic_approval_rejects_payload_shaped_action_names(self):
+        with self.assertRaisesRegex(ValueError, "stable identifier"):
+            async with request_human_approval(
+                action="execute customer source", message="Execute?"
+            ):
+                pass
+
     async def test_async_tool_executes_only_with_matching_grant(self):
         @tool
         @require_human_approval(message="Send {value}?")
