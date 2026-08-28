@@ -10,6 +10,13 @@ from typing import Annotated, Any, TypedDict
 
 from ..agent import AgentDefinition
 from ..graph import START, Edge, Event, Graph, Join
+from ..approval import (
+    ApprovalPolicy,
+    authorize_mcp,
+    record_approved_execution,
+    record_approved_failure,
+)
+from ..model_lifecycle import propagate_litellm_lifecycles
 
 
 def _langgraph_types():
@@ -124,13 +131,48 @@ def _build_ready_agent(
             "building a LangGraph agent requires langchain"
         ) from exc
 
-    return create_agent(
-        model=_resolve_langchain_model(definition.model),
+    model = _resolve_langchain_model(definition.model)
+    target = create_agent(
+        model=model,
         tools=_langchain_tools((*definition.tools, *tools)),
         system_prompt=definition.instruction,
         name=definition.name,
         middleware=list(middleware),
     )
+    return propagate_litellm_lifecycles(model, target)
+
+
+def mcp_approval_middleware(
+    policies: Mapping[str, tuple[str, str, ApprovalPolicy]],
+) -> Any | None:
+    """Create one LangChain gate for all discovered MCP tools in a plan."""
+
+    if not policies:
+        return None
+    try:
+        from langchain.agents.middleware import wrap_tool_call
+    except ImportError as exc:  # pragma: no cover - optional backend
+        raise RuntimeError("LangGraph approval requires langchain middleware") from exc
+
+    @wrap_tool_call
+    async def require_approval(request: Any, handler: Any) -> Any:
+        call = request.tool_call
+        configured = policies.get(str(call.get("name", "")))
+        if configured is None:
+            return await handler(request)
+        client_name, remote_name, policy = configured
+        grant = await authorize_mcp(
+            client_name, remote_name, call.get("args", {}), policy
+        )
+        try:
+            result = await handler(request)
+        except BaseException:
+            record_approved_failure(grant)
+            raise
+        record_approved_execution(grant)
+        return result
+
+    return require_approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,8 +427,11 @@ def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
     END, LANGGRAPH_START, StateGraph, add_messages, Pregel = _langgraph_types()
 
     builder = StateGraph(_graph_state(add_messages))
+    runtime_nodes = []
     for name, value in graph.nodes.items():
-        builder.add_node(name, _lower_node(value, Pregel, middleware))
+        runtime_node = _lower_node(value, Pregel, middleware)
+        runtime_nodes.append(runtime_node)
+        builder.add_node(name, runtime_node)
     outgoing, join_inputs = _classified_edges(graph)
     _add_outgoing_edges(builder, outgoing, LANGGRAPH_START, END)
     _add_join_edges(builder, join_inputs, LANGGRAPH_START)
@@ -395,6 +440,8 @@ def _build_ready_graph(graph: Graph, middleware: Sequence[Any] = ()) -> Any:
     compiled = builder.compile(name=graph.name)
     if graph.max_concurrency is not None:
         compiled = compiled.with_config(max_concurrency=graph.max_concurrency)
+    for runtime_node in runtime_nodes:
+        propagate_litellm_lifecycles(runtime_node, compiled)
     return compiled
 
 

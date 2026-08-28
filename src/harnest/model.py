@@ -6,6 +6,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
 
+from .model_lifecycle import (
+    LiteLLMLifecycle,
+    _LifecycleLiteLLMClient,
+    _attach_lifecycle_resource,
+    create_adk_lifecycle_client,
+)
+
 if TYPE_CHECKING:
     from google.adk.models import BaseLlm
 
@@ -89,6 +96,27 @@ def _langgraph_completion_args(
     return arguments
 
 
+def _litellm_model_name(model: str) -> str:
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("LiteLLM provider-qualified model name is required")
+    qualified = model.strip()
+    provider, separator, provider_model = qualified.partition("/")
+    if not separator or not provider.strip() or not provider_model.strip():
+        raise ValueError("LiteLLM model must be provider-qualified as 'provider/model'")
+    if any(character.isspace() for character in qualified):
+        raise ValueError("LiteLLM provider-qualified model cannot contain whitespace")
+    return qualified
+
+
+def _validate_lifecycle(
+    lifecycle: LiteLLMLifecycle | None, completion_args: Mapping[str, Any]
+) -> None:
+    if lifecycle is not None and not isinstance(lifecycle, LiteLLMLifecycle):
+        raise TypeError("LiteLLM lifecycle must be a LiteLLMLifecycle")
+    if lifecycle is not None and "client" in completion_args:
+        raise ValueError("LiteLLM client and lifecycle cannot be configured together")
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class LiteLLMModel(ModelConnector):
     """A provider-neutral model routed through a framework LiteLLM adapter.
@@ -102,27 +130,20 @@ class LiteLLMModel(ModelConnector):
 
     model: str
     completion_args: Mapping[str, Any] = field(repr=False)
+    lifecycle: LiteLLMLifecycle | None = field(default=None, repr=False)
 
     def __init__(
         self,
         model: str,
         *,
         thinking: bool | None = None,
+        lifecycle: LiteLLMLifecycle | None = None,
         **completion_args: Any,
     ) -> None:
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("LiteLLM provider-qualified model name is required")
-        qualified = model.strip()
-        provider, separator, provider_model = qualified.partition("/")
-        if not separator or not provider.strip() or not provider_model.strip():
-            raise ValueError(
-                "LiteLLM model must be provider-qualified as 'provider/model'"
-            )
-        if any(character.isspace() for character in qualified):
-            raise ValueError(
-                "LiteLLM provider-qualified model cannot contain whitespace"
-            )
+        qualified = _litellm_model_name(model)
+        _validate_lifecycle(lifecycle, completion_args)
         object.__setattr__(self, "model", qualified)
+        object.__setattr__(self, "lifecycle", lifecycle)
         object.__setattr__(
             self,
             "completion_args",
@@ -139,7 +160,19 @@ class LiteLLMModel(ModelConnector):
                 "LiteLLMModel requires Google ADK's LiteLLM support; install "
                 "harnest with its runtime dependencies"
             ) from exc
-        return LiteLlm(model=self.model, **dict(self.completion_args))
+        if self.lifecycle is None:
+            return LiteLlm(model=self.model, **dict(self.completion_args))
+        from google.adk.models.lite_llm import LiteLLMClient
+
+        client = create_adk_lifecycle_client(
+            LiteLLMClient, self.lifecycle, model=self.model
+        )
+        adapter = LiteLlm(
+            model=self.model,
+            llm_client=client,
+            **dict(self.completion_args),
+        )
+        return _attach_lifecycle_resource(adapter, client)
 
     def build_langgraph(self) -> Any:
         """Build LangChain's LiteLLM chat model without contacting the provider."""
@@ -151,7 +184,16 @@ class LiteLLMModel(ModelConnector):
                 "LiteLLMModel with LangGraph requires langchain-litellm"
             ) from exc
         kwargs = _langgraph_completion_args(ChatLiteLLM, self.completion_args)
-        return ChatLiteLLM(model=self.model, **kwargs)
+        adapter = ChatLiteLLM(model=self.model, **kwargs)
+        if self.lifecycle is None:
+            return adapter
+        client = _LifecycleLiteLLMClient(
+            adapter.client, self.lifecycle, model=self.model, framework="langgraph"
+        )
+        # ChatLiteLLM validates by replacing `client` with the LiteLLM module.
+        # Assigning after construction scopes the wrapper to this model only.
+        adapter.client = client
+        return _attach_lifecycle_resource(adapter, client)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -247,3 +289,13 @@ def resolve_model_for(model: ModelInput, framework: str) -> Any:
     """Resolve a connector for one compiler backend."""
 
     return model.build_for(framework) if isinstance(model, ModelConnector) else model
+
+
+__all__ = [
+    "LiteLLMLifecycle",
+    "LiteLLMModel",
+    "ModelConnector",
+    "OllamaModel",
+    "resolve_model",
+    "resolve_model_for",
+]

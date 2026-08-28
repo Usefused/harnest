@@ -170,7 +170,7 @@ func createScaffoldDirectories(
 		filepath.Join("tests", "smoke"),
 	)
 	if mode == "managed" && example {
-		directories = append(directories, filepath.Join("skills", "getting-started"), filepath.Join("extensions", "starter"), filepath.Join("plugins", "starter"), filepath.Join("plugins", "starter", "mcp"), filepath.Join("plugins", "starter", "skills"), filepath.Join("plugins", "starter", "skills", "starter-guidance"))
+		directories = append(directories, filepath.Join("skills", "getting-started"), filepath.Join("plugins", "starter"), filepath.Join("plugins", "starter", "mcp"), filepath.Join("plugins", "starter", "skills"), filepath.Join("plugins", "starter", "skills", "starter-guidance"))
 	}
 	for _, relative := range directories {
 		path := filepath.Join(root, relative)
@@ -290,6 +290,8 @@ spec:
 `, name, title, framework),
 		"server.yaml": `apiVersion: harnest.dev/v1alpha1
 kind: Server
+# Replace a setting value with exact ${NAME} to resolve it at startup.
+# Partial interpolation and $NAME references are intentionally unsupported.
 http:
   host: 127.0.0.1
   port: 8080
@@ -376,7 +378,9 @@ guide; replace it with Python modules as needed.
 `,
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,
-		"mcp/_README.md": `Add direct MCP client connections here. Put an MCP client and the
+		"mcp/_README.md": `Add direct MCP client connections here. Each public file exports a
+zero-argument client() factory returning MCPClient; its filename is the client
+identity. Put an MCP client and the
 skills that teach the agent how to use it together under plugins/<name>/ when
 they form one reusable capability.
 `,
@@ -385,20 +389,20 @@ they form one reusable capability.
 from harnest.mcp import MCPClient
 
 
-# Set HARNEST_MCP_URL to enable this plugin's starter MCP client connection.
+# Set HARNEST_MCP_URL to replace this local example endpoint.
 # Legacy SSE servers can use MCPClient.sse(os.environ["HARNEST_MCP_URL"]).
-starter = (
-    MCPClient.streamable_http(os.environ["HARNEST_MCP_URL"], prefix="starter")
-    if os.getenv("HARNEST_MCP_URL")
-    else None
-)
+def client():
+    return MCPClient.streamable_http(
+        os.getenv("HARNEST_MCP_URL", "http://127.0.0.1:9000/mcp"),
+        prefix="starter",
+    )
 `,
-		"extensions/starter/lifecycle.py": `from harnest.extension import Extension
+		"extensions/starter.py": `from harnest.lifecycle import lifecycle
 
 
-# Add portable lifecycle hooks to this Extension as the agent grows. Optional
-# adk.py or langgraph.py files in this folder can provide tighter framework-specific control.
-extension = Extension(name="starter")
+@lifecycle.after_invoke
+def observe_result(_context, _result):
+    """Observe completed invocations without replacing their result."""
 `,
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
@@ -497,7 +501,6 @@ description: Apply the agent's core instructions when answering a general reques
 			"tools/echo.py",
 			"subagents/__init__.py",
 			"mcp/_README.md",
-			"extensions/starter/lifecycle.py",
 			"plugins/starter/mcp/starter.py",
 			"plugins/starter/skills/starter-guidance/SKILL.md",
 			"sandbox/_README.md",
@@ -508,7 +511,7 @@ description: Apply the agent's core instructions when answering a general reques
 			delete(files, relative)
 		}
 		for _, directory := range managedResourceDirectories {
-			files[directory+"/_README.md"] = "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
+			files[directory+"/_README.md"] = optionalFolderGuide(directory, mode)
 		}
 		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_advanced_agent_name(agent):
     assert agent.name == %q
@@ -521,6 +524,8 @@ from google.adk.models.lite_llm import LiteLlm
 from harnest.agent import Agent
 
 
+# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
+# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
 root_agent = Agent.advanced(
     name=%q,
     target=LlmAgent(
@@ -541,6 +546,8 @@ from langchain_litellm import ChatLiteLLM
 from harnest.agent import Agent
 
 
+# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
+# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
 root_agent = Agent.advanced(
     name=%q,
     target=create_agent(
@@ -570,7 +577,7 @@ func minimalScaffoldFiles(
 		"tools/echo.py",
 		"subagents/__init__.py",
 		"mcp/_README.md",
-		"extensions/starter/lifecycle.py",
+		"extensions/starter.py",
 		"plugins/starter/mcp/starter.py",
 		"plugins/starter/skills/starter-guidance/SKILL.md",
 		"sandbox/_README.md",
@@ -597,14 +604,14 @@ func minimalScaffoldFiles(
 }
 
 func optionalFolderGuide(directory, mode string) string {
-	if mode == "advanced" {
+	if mode == "advanced" && directory != "extensions" {
 		return "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
 	}
 	guides := map[string]string{
 		"tools":      "Add one @tool callable per public Python file.\n",
 		"subagents":  "Add subagent definitions here; use folders when they own resources.\n",
 		"mcp":        "Add direct MCPClient connections here.\n",
-		"extensions": "Add lifecycle extensions here.\n",
+		"extensions": "Add @lifecycle-decorated functions in arbitrary public Python files here.\n",
 		"plugins":    "Add capability bundles combining MCP clients and skills here.\n",
 		"sandbox":    "Add sandbox.py only when managed ADK needs code isolation.\n",
 		"skills":     "Add one Agent Skill directory per progressive instruction pack.\n",

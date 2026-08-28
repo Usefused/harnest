@@ -60,6 +60,159 @@ class FrameworkArtifactTests(unittest.TestCase):
         )
         self._card(root)
 
+    def _approval_source(self, root: Path) -> None:
+        self._write(
+            root / "agent.py",
+            """
+            from google.adk.models import BaseLlm, LlmResponse
+            from google.genai import types
+            from harnest.agent import Agent
+
+
+            class ApprovalLlm(BaseLlm):
+                async def generate_content_async(self, request, stream=False):
+                    has_result = any(
+                        part.function_response is not None
+                        for content in request.contents
+                        for part in content.parts
+                    )
+                    part = (
+                        types.Part(text="approved response")
+                        if has_result
+                        else types.Part(function_call=types.FunctionCall(
+                            id="protected-call",
+                            name="protected_send",
+                            args={"value": "record"},
+                        ))
+                    )
+                    yield LlmResponse(content=types.Content(
+                        role="model", parts=[part]
+                    ))
+
+
+            root_agent = Agent(name="approval_agent", model=ApprovalLlm(model="approval"))
+            """,
+        )
+        self._write(root / "instructions.md", "Call protected_send once.\n")
+        self._write(
+            root / "tools" / "protected_send.py",
+            """
+            from harnest.approval import require_human_approval
+            from harnest.tool import tool
+
+
+            @tool
+            @require_human_approval(message="Approve sending {value}?")
+            def protected_send(value: str) -> str:
+                \"\"\"Send one protected value.\"\"\"
+                return f"sent:{value}"
+            """,
+        )
+        self._card(root)
+
+    def _lifecycle_source(self, root: Path) -> None:
+        self._write(
+            root / "agent.py",
+            """
+            from google.adk.models import BaseLlm, LlmResponse
+            from google.genai import types
+            from harnest.agent import Agent
+
+
+            class LifecycleLlm(BaseLlm):
+                async def generate_content_async(self, request, stream=False):
+                    del stream
+                    text = next(
+                        part.text
+                        for content in reversed(request.contents)
+                        for part in reversed(content.parts)
+                        if part.text
+                    )
+                    yield LlmResponse(content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=f"model saw {text}")],
+                    ))
+
+
+            root_agent = Agent(
+                name="lifecycle_agent",
+                model=LifecycleLlm(model="lifecycle"),
+            )
+            """,
+        )
+        self._lifecycle_extension(root)
+
+    def _langgraph_lifecycle_source(self, root: Path) -> None:
+        self._write(
+            root / "agent.py",
+            """
+            from langchain_core.language_models.chat_models import BaseChatModel
+            from langchain_core.messages import AIMessage
+            from langchain_core.outputs import ChatGeneration, ChatResult
+            from harnest.agent import Agent
+
+
+            class LifecycleModel(BaseChatModel):
+                @property
+                def _llm_type(self):
+                    return "lifecycle"
+
+                def bind_tools(self, tools, **kwargs):
+                    del tools, kwargs
+                    return self
+
+                def _generate(
+                    self, messages, stop=None, run_manager=None, **kwargs
+                ):
+                    del stop, run_manager, kwargs
+                    return ChatResult(generations=[ChatGeneration(
+                        message=AIMessage(
+                            content=f"model saw {messages[-1].content}"
+                        )
+                    )])
+
+
+            root_agent = Agent(
+                name="lifecycle_agent",
+                model=LifecycleModel(),
+            )
+            """,
+        )
+        self._lifecycle_extension(root)
+
+    def _lifecycle_extension(self, root: Path) -> None:
+        self._write(root / "instructions.md", "Answer with the model response.\n")
+        self._write(
+            root / "extensions" / "gateway.py",
+            """
+            from dataclasses import replace
+
+            from harnest.lifecycle import lifecycle
+            from harnest.runtime_auth import AuthPrincipal, AuthenticationError
+
+
+            @lifecycle.authenticate
+            def authenticate(connection, principal):
+                del principal
+                user_id = connection.headers.get("x-user")
+                if not user_id:
+                    raise AuthenticationError()
+                return AuthPrincipal(user_id)
+
+
+            @lifecycle.before_model
+            def identify_model_request(context, request):
+                messages = list(request.messages)
+                latest = messages[-1]
+                messages[-1] = replace(
+                    latest,
+                    text=f"checked:{context.user_id}:{latest.text}",
+                )
+                return replace(request, messages=tuple(messages))
+            """,
+        )
+        self._card(root)
+
     def test_langgraph_output_extracts_structured_cloud_model_text(self):
         message = SimpleNamespace(
             content=[
@@ -133,6 +286,91 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(result["text"], "compiled-graph")
             self.assertEqual(result["result"], "compiled-graph")
             self.assertEqual(load_compiled_application(output).kind, "graph")
+
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_managed_adk_http_pauses_and_resumes_protected_tool(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._approval_source(root)
+            compile_artifact(root, output, framework="adk")
+
+            with TestClient(create_fastapi_app(output)) as client:
+                session_id = client.post("/sessions", json={}).json()["id"]
+                required = client.post(
+                    "/responses",
+                    json={"input": "send", "sessionId": session_id},
+                ).json()
+                resumed = client.post(
+                    f"/approvals/{required['requiredAction']['id']}",
+                    json={"decision": "approve"},
+                )
+
+            self.assertEqual(required["status"], "requires_action")
+            self.assertEqual(resumed.status_code, 200)
+            self.assertEqual(resumed.json()["status"], "completed")
+            self.assertEqual(resumed.json()["outputText"], "approved response")
+
+    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
+    def test_compiled_adk_authentication_flows_into_before_model(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._lifecycle_source(root)
+            compile_artifact(root, output, framework="adk")
+
+            with TestClient(create_fastapi_app(output)) as client:
+                rejected = client.post("/responses", json={"input": "hello"})
+                session = client.post(
+                    "/sessions",
+                    headers={"x-user": "alice"},
+                    json={},
+                )
+                response = client.post(
+                    "/responses",
+                    headers={"x-user": "alice"},
+                    json={"input": "hello", "sessionId": session.json()["id"]},
+                )
+
+            self.assertEqual(rejected.status_code, 401)
+            self.assertEqual(session.status_code, 201)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["outputText"], "model saw checked:alice:hello")
+
+    @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
+    def test_compiled_langgraph_authentication_flows_into_before_model(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "source"
+            output = Path(directory) / "artifact"
+            root.mkdir()
+            self._langgraph_lifecycle_source(root)
+            compile_artifact(root, output, framework="langgraph")
+
+            with TestClient(create_fastapi_app(output)) as client:
+                rejected = client.post("/responses", json={"input": "hello"})
+                session = client.post(
+                    "/sessions",
+                    headers={"x-user": "alice"},
+                    json={},
+                )
+                response = client.post(
+                    "/responses",
+                    headers={"x-user": "alice"},
+                    json={"input": "hello", "sessionId": session.json()["id"]},
+                )
+
+            self.assertEqual(rejected.status_code, 401)
+            self.assertEqual(session.status_code, 201)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["outputText"], "model saw checked:alice:hello")
 
     @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
     def test_managed_langgraph_http_json_sse_and_live(self):

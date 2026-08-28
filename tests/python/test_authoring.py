@@ -620,8 +620,8 @@ class AuthoringTests(unittest.TestCase):
                 ")\n",
             )
             self._write(
-                root / "mcp" / "optional.py",
-                "optional = None\n",
+                root / "mcp" / "_README.md",
+                "Add a client() factory when MCP is required.\n",
             )
 
             with patch.dict(sys.modules, _fake_adk_modules()):
@@ -724,7 +724,9 @@ class AuthoringTests(unittest.TestCase):
             self._write(root / "__pycache__" / "ignored.pyc", "ignored")
             self._write(root / ".adk" / "eval_history" / "run.json", "{}")
             self._write(root / ".env", "TOKEN=local-secret\n")
-            authored_server = DEFAULT_SERVER_YAML.replace("1MiB", "2MiB")
+            # Deployment references remain authored bytes in both copies; the
+            # launcher resolves them only after the artifact reaches its host.
+            authored_server = DEFAULT_SERVER_YAML.replace("1MiB", "${MAX_BYTES}")
             self._write(root / "server.yaml", authored_server)
 
             with patch.dict(sys.modules, _fake_adk_modules()):
@@ -1043,6 +1045,50 @@ class AuthoringTests(unittest.TestCase):
                     )
                     websocket.send_json({"type": "session.close"})
 
+    def test_advanced_native_and_neutral_transports_use_discovered_auth_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "authored"
+            output = workspace / "compiled"
+            self._write(root / "agent.py", _deterministic_adk_source(advanced=True))
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "agent-card.yaml",
+                json.dumps({"name": "Root", "description": "Test agent"}),
+            )
+            self._write(
+                root / "extensions" / "gateway.py",
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.runtime_auth import AuthPrincipal, AuthenticationError\n"
+                "@lifecycle.authenticate\n"
+                "def authenticate(connection, principal):\n"
+                "    user = connection.headers.get('x-user')\n"
+                "    if not user: raise AuthenticationError()\n"
+                "    return AuthPrincipal(user)\n",
+            )
+            compile_artifact(root, output, mode="advanced")
+            app = create_fastapi_app(output, bind_host="testserver")
+
+            from fastapi.testclient import TestClient
+            from starlette.websockets import WebSocketDisconnect
+
+            with TestClient(app) as client:
+                self.assertEqual(client.post("/run", json={}).status_code, 401)
+                self.assertEqual(
+                    client.post(
+                        "/responses", json={"input": "hello", "stream": True}
+                    ).status_code,
+                    401,
+                )
+                with self.assertRaises(WebSocketDisconnect) as rejected:
+                    with client.websocket_connect("/live"):
+                        pass
+                self.assertEqual(rejected.exception.code, 4401)
+                authorized = client.post(
+                    "/sessions", headers={"x-user": "alice"}, json={"id": "one"}
+                )
+                self.assertEqual(authorized.status_code, 201)
+
     def test_compile_cli_emits_manifest_for_explicit_authoring_imports(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
@@ -1336,11 +1382,12 @@ class AuthoringTests(unittest.TestCase):
             self._write(
                 root / "mcp" / "knowledge.py",
                 "from harnest.mcp import MCPClient\n"
-                "knowledge = MCPClient.streamable_http('https://mcp.example/mcp')\n",
+                "def client():\n"
+                "    return MCPClient.streamable_http('https://mcp.example/mcp')\n",
             )
             self._write(
-                root / "mcp" / "optional.py",
-                "optional = None\n",
+                root / "mcp" / "_optional.py",
+                "# Private helpers are not discovered.\n",
             )
 
             modules = _fake_adk_modules()

@@ -6,7 +6,7 @@ import inspect
 from dataclasses import replace
 from typing import Any, AsyncIterator, Mapping, Sequence
 
-from .extension import DROP_EVENT, Extension, LifecycleContext
+from .lifecycle import DROP_EVENT, LifecycleContext, LifecycleListener
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -15,6 +15,12 @@ from .neutral_runtime import (
     RuntimeEvent,
     SessionRecord,
 )
+from .runtime_auth import (
+    AuthPrincipal,
+    AuthenticationError,
+    ConnectionContext,
+)
+from .model_hooks import model_invocation_scope
 
 
 class ExtensionTransformError(TypeError):
@@ -112,13 +118,13 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     """Decorate one backend driver with framework-neutral lifecycle hooks."""
 
     def __init__(
-        self, driver: RuntimeDriver, extensions: Sequence[Extension]
+        self, driver: RuntimeDriver, extensions: Sequence[LifecycleListener]
     ) -> None:
         if isinstance(extensions, (str, bytes)):
             raise TypeError("extensions must be a sequence")
         normalized = tuple(extensions)
-        if any(not isinstance(extension, Extension) for extension in normalized):
-            raise TypeError("extensions must contain only Extension values")
+        if any(not isinstance(item, LifecycleListener) for item in normalized):
+            raise TypeError("extensions must contain only LifecycleListener values")
         self._driver = driver
         self._extensions = normalized
 
@@ -127,8 +133,11 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         return self._driver.info
 
     @property
-    def extensions(self) -> tuple[Extension, ...]:
+    def extensions(self) -> tuple[LifecycleListener, ...]:
         return self._extensions
+
+    def _listeners(self, phase: str) -> tuple[LifecycleListener, ...]:
+        return tuple(item for item in self._extensions if item.phase == phase)
 
     async def create_session(
         self,
@@ -173,16 +182,14 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self, context: LifecycleContext, request: InvocationRequest
     ) -> InvocationRequest:
         current = request
-        for extension in self._extensions:
-            hook = extension.before_invoke
-            if hook is None:
-                continue
+        for listener in self._listeners("before_invoke"):
+            hook = listener.callback
             replacement = await _resolve(hook(context, current))
             if replacement is None:
                 continue
             if not isinstance(replacement, InvocationRequest):
                 raise ExtensionTransformError(
-                    f"extension {extension.name!r} before_invoke must return "
+                    f"extension {listener.identity} before_invoke must return "
                     "InvocationRequest or None"
                 )
             if (
@@ -191,7 +198,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 replacement.session_id,
             ) != (current.invocation_id, current.user_id, current.session_id):
                 raise ExtensionTransformError(
-                    f"extension {extension.name!r} before_invoke cannot replace "
+                    f"extension {listener.identity} before_invoke cannot replace "
                     "invocation_id, user_id, or session_id"
                 )
             current = replacement
@@ -201,10 +208,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self, context: LifecycleContext, event: RuntimeEvent
     ) -> RuntimeEvent | object:
         current = event
-        for extension in self._extensions:
-            hook = extension.on_event
-            if hook is None:
-                continue
+        for listener in self._listeners("on_event"):
+            hook = listener.callback
             replacement = await _resolve(hook(context, current))
             if replacement is DROP_EVENT:
                 return DROP_EVENT
@@ -212,7 +217,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 continue
             if not isinstance(replacement, dict):
                 raise ExtensionTransformError(
-                    f"extension {extension.name!r} on_event must return a runtime "
+                    f"extension {listener.identity} on_event must return a runtime "
                     "event, DROP_EVENT, or None"
                 )
             current = replacement
@@ -222,16 +227,14 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self, context: LifecycleContext, result: InvocationResult
     ) -> InvocationResult:
         current = result
-        for extension in self._extensions:
-            hook = extension.after_invoke
-            if hook is None:
-                continue
+        for listener in self._listeners("after_invoke"):
+            hook = listener.callback
             replacement = await _resolve(hook(context, current))
             if replacement is None:
                 continue
             if not isinstance(replacement, InvocationResult):
                 raise ExtensionTransformError(
-                    f"extension {extension.name!r} after_invoke must return "
+                    f"extension {listener.identity} after_invoke must return "
                     "InvocationResult or None"
                 )
             current = replacement
@@ -240,24 +243,20 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     async def _after_stream(
         self, context: LifecycleContext, result: InvocationResult
     ) -> None:
-        for extension in self._extensions:
-            hook = extension.after_invoke
-            if hook is None:
-                continue
+        for listener in self._listeners("after_invoke"):
+            hook = listener.callback
             replacement = await _resolve(hook(context, result))
             if replacement is not None:
                 raise StreamingResultTransformationError(
-                    f"extension {extension.name!r} after_invoke cannot replace a "
+                    f"extension {listener.identity} after_invoke cannot replace a "
                     "result after streamed events have been emitted"
                 )
 
     async def _notify_error(
         self, context: LifecycleContext, error: BaseException
     ) -> None:
-        for extension in self._extensions:
-            hook = extension.on_error
-            if hook is None:
-                continue
+        for listener in self._listeners("on_error"):
+            hook = listener.callback
             try:
                 await _resolve(hook(context, error))
             except BaseException:
@@ -269,7 +268,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         context = _context(self._driver, request)
         try:
             transformed_request = await self._before(context, request)
-            result = await self._driver.invoke(transformed_request)
+            with model_invocation_scope(context):
+                result = await self._driver.invoke(transformed_request)
             if not isinstance(result, InvocationResult):
                 raise ExtensionTransformError(
                     "wrapped runtime driver returned a non-InvocationResult value"
@@ -293,12 +293,13 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         try:
             transformed_request = await self._before(context, request)
             events: list[RuntimeEvent] = []
-            async for event in self._driver.stream(transformed_request):
-                transformed_event = await self._event(context, event)
-                if transformed_event is DROP_EVENT:
-                    continue
-                events.append(transformed_event)
-                yield transformed_event
+            with model_invocation_scope(context):
+                async for event in self._driver.stream(transformed_request):
+                    transformed_event = await self._event(context, event)
+                    if transformed_event is DROP_EVENT:
+                        continue
+                    events.append(transformed_event)
+                    yield transformed_event
             await self._after_stream(
                 context, _stream_result(transformed_request, events)
             )
@@ -310,9 +311,58 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         await self._driver.close()
 
 
+class LifecycleAuthenticator:
+    """Resolve one connection through all ordered authentication listeners."""
+
+    def __init__(self, listeners: Sequence[LifecycleListener]) -> None:
+        self._listeners = tuple(
+            item for item in listeners if item.phase == "authenticate"
+        )
+        if not self._listeners:
+            raise ValueError("authentication lifecycle requires at least one listener")
+
+    async def authenticate(self, connection: ConnectionContext) -> AuthPrincipal:
+        principal: AuthPrincipal | None = None
+        for listener in self._listeners:
+            replacement = await _resolve(listener.callback(connection, principal))
+            principal = _replace_principal(principal, replacement, listener)
+        if principal is None:
+            raise AuthenticationError()
+        return principal
+
+
+def lifecycle_authenticator(
+    listeners: Sequence[LifecycleListener],
+) -> LifecycleAuthenticator | None:
+    """Build the application's single auth pipeline when hooks exist."""
+
+    selected = tuple(item for item in listeners if item.phase == "authenticate")
+    return LifecycleAuthenticator(selected) if selected else None
+
+
+def _replace_principal(
+    current: AuthPrincipal | None,
+    replacement: Any,
+    listener: LifecycleListener,
+) -> AuthPrincipal | None:
+    if replacement is None:
+        return current
+    if not isinstance(replacement, AuthPrincipal):
+        raise TypeError(
+            f"authentication listener {listener.identity} must return "
+            "AuthPrincipal or None"
+        )
+    if current is not None and current.user_id != replacement.user_id:
+        # Identity may be enriched but never swapped after downstream policy saw it.
+        raise AuthenticationError("Authentication policy rejected identity", status_code=403)
+    return replacement
+
+
 __all__ = [
     "DROP_EVENT",
     "ExtensionRuntimeDriver",
     "ExtensionTransformError",
+    "LifecycleAuthenticator",
     "StreamingResultTransformationError",
+    "lifecycle_authenticator",
 ]

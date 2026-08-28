@@ -108,14 +108,27 @@ playground toggle. It does not configure authentication, persistent sessions,
 TLS, secrets, or deployment resources. The request-size limit covers all HTTP
 bodies and WebSocket frames. Explicit serve flags are temporary overrides.
 
+Use an exact `${NAME}` value when deployment should supply a setting through the
+environment. Harnest preserves it during compilation, resolves it at startup,
+and validates the result as the field's declared type. Do not use `$NAME` or
+partial interpolation. A missing, empty, or invalid variable stops startup
+without printing its value.
+
 The neutral server includes `/agent`, `/sessions`, `/responses`, and WebSocket
-`/live`; streaming `POST /responses` uses SSE. `/openapi.json`, `/docs`, and
+`/live`; streaming `POST /responses` uses SSE. Approval-protected work returns
+`requires_action` and continues the exact suspended task through
+`POST /approvals/{approvalId}` after an `approve` decision. It does not rerun
+the invocation or replay earlier side effects; later protected calls request
+their own approval. `deny` and expiry never execute the action. The bundled
+store and suspended tasks are process-local, so restart invalidates outstanding
+development approvals. `/openapi.json`, `/docs`, and
 `/redoc` describe that surface in every mode. Only an advanced-mode ADK artifact
 additionally exposes ADK-native endpoints.
 
 Open `/` to test any compiled ADK or LangGraph agent in Harnest's neutral
 playground. Create or select a session, inspect state, choose JSON response, SSE
-streaming, or WebSocket live mode, and verify visible output plus tool activity.
+streaming, or WebSocket live mode, approve or deny protected actions, and verify
+visible output plus tool activity.
 The UI never calls framework-native endpoints. Bearer tokens stay in page memory
 for HTTP/SSE; authenticated browser WebSockets require a same-origin cookie.
 

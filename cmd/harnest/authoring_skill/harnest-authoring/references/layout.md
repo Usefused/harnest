@@ -9,7 +9,7 @@ file is the path and ownership contract it relies on.
 | Path | Purpose |
 | --- | --- |
 | `config.yaml` | Deployment resources, runtime environment, entrypoint, framework, and mode. |
-| `server.yaml` | Standalone server binding, request limits, and playground policy; never secrets, auth, storage, or TLS. |
+| `server.yaml` | Standalone server binding, request limits, and playground policy. Setting values may be exact `${NAME}` environment references; never put secrets, auth, storage, or TLS here. |
 | `agent-card.yaml` | Public agent identity, interfaces, capabilities, and advertised A2A skills. |
 | `agent.py` | Exports a managed `Agent`/portable `Graph`, or an `Agent` created with `Agent.advanced(...)`. |
 | `instructions.md` | Non-empty root instructions. Managed `Agent` definitions may omit `instruction`; the compiler supplies this file. |
@@ -39,12 +39,10 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `tools/<name>.py` | Exports one `@tool`-decorated callable named `<name>`. |
 | `subagents/<name>.py` | Exports one `AgentDefinition` named `<name>` with an explicit instruction. |
 | `subagents/<name>/agent.py` | Recursively composed subagent named `<name>` with its own folder-scoped `instructions.md`, tools, MCP clients, sandbox, and skills. ADK also permits child subagents; LangGraph does not. Plugins and extensions remain root-only. |
-| `mcp/<name>.py` | Exports `MCPClient` or `None` as `<name>`. `None` disables an optional connection. |
-| `plugins/<plugin>/mcp/<name>.py` | Plugin-owned MCP client using the same export rule. |
+| `mcp/<name>.py` | Exports one literally zero-parameter `client()` factory returning `MCPClient`; `<name>` is its local identity. |
+| `plugins/<plugin>/mcp/<name>.py` | Plugin-owned `client()` factory using the same rule. |
 | `plugins/<plugin>/skills/<skill>/SKILL.md` | One progressive skill teaching the host agent when and how to use the plugin's MCP tools. |
-| `extensions/<name>/lifecycle.py` | Exports portable `Extension` as `extension`; its declared name matches the folder. |
-| `extensions/<name>/adk.py` | Optional ADK `BasePlugin` exported as `extension`. |
-| `extensions/<name>/langgraph.py` | Optional LangChain `AgentMiddleware` exported as `extension`. |
+| `extensions/**/*.py` | Arbitrary public root modules; only `@lifecycle.*` functions are discovered. Multiple listeners may share a phase. |
 | `sandbox/sandbox.py` | Exports one `Sandbox` as `sandbox`; managed ADK only. |
 | `skills/<skill>/SKILL.md` | Progressive internal instructions. Frontmatter `name` matches `<skill>`; references, assets, and scripts may live below it. |
 | root `evals/<id>.evalset.json` | ADK `EvalSet` whose ID matches the filename. Optional root `evals/test_config.json` configures evaluation. |
@@ -81,12 +79,16 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
   guides; `--example` is the explicit working-sample scaffold.
 - Once a public resource exists, the full convention is strict.
 - Resource discovery is deterministic by path name.
-- Duplicate tool, MCP configuration, subagent, or skill identities fail.
+- Duplicate tool, MCP configuration, subagent, or skill identities fail. MCP
+  configuration equality ignores compiler identity and approval metadata.
+- MCP capabilities receive deterministic path-scoped runtime identities, so
+  same-named direct, plugin, and subagent clients remain distinct.
 - Library modules are copied and importable, but their callables are never
   discovered or injected into an agent.
 - Public symlinks are rejected so compiled artifacts remain self-contained.
 - Compilation validates `server.yaml` and copies a mutable operational copy
-  beside `harnest-agent`; the authored copy remains under `source/`.
+  beside `harnest-agent`; the authored copy remains under `source/`. Exact
+  `${NAME}` values are preserved and resolved only when the launcher starts.
 - Do not edit or commit `.harnest/`; it is disposable compiler output.
 - Runtime `skills/` are not the same as `.agents/skills/harnest-authoring/`,
   which teaches a coding agent how to modify this project.

@@ -221,9 +221,64 @@ async function sendResponse(input) {
 }
 
 function renderCompleted(response) {
+  if (response.status === "requires_action") {
+    appendApproval(response.requiredAction);
+    return;
+  }
   renderOutput(response.output, response.outputText);
   if (response.result !== undefined && !(response.output || []).some((item) => item.type === "output")) {
     appendResult(response.result);
+  }
+}
+
+function appendApproval(action) {
+  if (!action?.id) throw new Error("Approval response did not include an id");
+  const panel = document.createElement("section");
+  panel.className = "approval-event";
+  const title = document.createElement("strong");
+  title.textContent = action.action || "Human approval required";
+  const message = document.createElement("p");
+  message.textContent = action.message || "Approve this protected action?";
+  const controls = document.createElement("div");
+  controls.className = "approval-actions";
+  const deny = approvalButton("Deny", "deny", "secondary-button");
+  const approve = approvalButton("Approve", "approve", "send-button");
+  for (const button of [deny, approve]) {
+    button.addEventListener("click", () => decideApproval(action.id, button.dataset.decision, panel));
+  }
+  controls.append(deny, approve);
+  panel.append(title, message, controls);
+  ui.conversation.append(panel);
+  scrollConversation();
+  setStatus("Human approval required", "pending");
+}
+
+function approvalButton(label, decision, className) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.dataset.decision = decision;
+  button.textContent = label;
+  return button;
+}
+
+async function decideApproval(approvalId, decision, panel) {
+  const buttons = panel.querySelectorAll("button");
+  for (const button of buttons) button.disabled = true;
+  clearError();
+  try {
+    const response = await api(`/approvals/${encodeURIComponent(approvalId)}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const body = await response.json();
+    panel.dataset.status = body.status;
+    if (body.status === "completed") renderCompleted(body);
+    setStatus(body.status === "denied" ? "Action denied" : "Approved response complete", "ok");
+    await loadSessionState();
+  } catch (error) {
+    for (const button of buttons) button.disabled = false;
+    showError(error);
   }
 }
 
@@ -273,6 +328,11 @@ function appendStreamingText(delta) {
 }
 
 function finishStreamingOutput(frame) {
+  if (frame.status === "requires_action") {
+    appendApproval(frame.requiredAction);
+    runtime.streamingBubble = null;
+    return;
+  }
   if (!runtime.streamingBubble && frame.outputText) appendTurn("assistant", frame.outputText);
   const graphOutputs = (frame.output || []).filter((item) => item.type === "output");
   for (const output of graphOutputs) appendResult(output.value);
@@ -324,7 +384,10 @@ function handleLiveMessage(event, socket, resolve, reject) {
   }
   try {
     handleStreamFrame(frame);
-    if (frame.type === "response.completed") finishRequest("Live response complete");
+    if (frame.type === "response.completed") {
+      const message = frame.status === "requires_action" ? "Approval required" : "Live response complete";
+      finishRequest(message);
+    }
   } catch (error) {
     reject(error);
     finishFailedRequest(error);

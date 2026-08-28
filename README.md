@@ -259,6 +259,51 @@ If a provider completes with reasoning only and no visible answer or structured
 result, JSON returns `502` and streaming transports emit an `error` event rather
 than reporting a successful empty response.
 
+Teams that route models through a gateway can give `LiteLLMModel` a
+`LiteLLMLifecycle` instead of patching LiteLLM globally. Its per-model hooks
+create a provider client once, transform each request and response, observe
+errors, and release the client at agent shutdown:
+
+```python
+import os
+
+import httpx
+from openai import AsyncOpenAI
+
+from harnest.model import LiteLLMLifecycle, LiteLLMModel
+
+
+class TeamGateway(LiteLLMLifecycle):
+    async def create_transport(self, context):
+        self.http = httpx.AsyncClient(
+            cert=("/run/secrets/model.crt", "/run/secrets/model.key")
+        )
+        return AsyncOpenAI(
+            base_url="https://models.internal/v1",
+            api_key=os.environ["MODEL_GATEWAY_TOKEN"],
+            http_client=self.http,
+        )
+
+    async def before_request(self, request, context):
+        request.setdefault("extra_headers", {})["X-Team-ID"] = "support"
+        return request
+
+    async def close(self, context):
+        await self.http.aclose()
+
+
+model = LiteLLMModel("openai/support", lifecycle=TeamGateway())
+```
+
+The object returned by `create_transport` is passed through LiteLLM's supported
+per-call `client` option; return a provider SDK client such as `AsyncOpenAI`,
+not a bare HTTP client. Hooks may be synchronous or asynchronous. Async hooks
+require async model execution, and one built model cannot mix sync and async
+calls. For streamed calls, `after_response` runs as an observer only after the
+stream is exhausted successfully, while iteration failures reach `on_error`.
+Shutdown waits for in-flight calls and retries remain possible after failed
+cleanup. Lifecycle instances and transports are never shared implicitly.
+
 `advanced` mode is the framework-native escape hatch. It still exports the
 public `Agent` type, constructed with `Agent.advanced(...)`. Harnest validates
 an ADK `App`/`BaseAgent`/`BaseNode` or a compiled LangGraph `Pregel` and retains
@@ -283,9 +328,14 @@ re-export either framework. Ordinary `harnest.graph.Graph` construction stays
 in managed mode—advanced mode is only for framework behavior that the portable
 API cannot express.
 
-Advanced mode does not perform managed filesystem composition: the authored
-framework application owns its tools, MCP clients, subagents, prompts,
-checkpointer, and lifecycle behavior.
+Advanced mode does not perform managed capability composition: authored source
+owns native tools, MCP clients, subagents, prompts, routing, state, checkpoints,
+middleware/plugins, framework upgrades, and arbitrary native model calls.
+Harnest still owns the neutral server, decorated authentication, and portable
+invocation extensions. Advanced source owns tool/MCP approval wiring because
+its native capabilities are not automatically wrapped. Portable model interception is guaranteed only
+through Harnest-managed or wrapped model boundaries; otherwise use an explicit
+native lifecycle factory.
 
 To assess an existing edited project without rewriting any source, run:
 
@@ -294,7 +344,8 @@ harnest mode advanced support-agent --check
 ```
 
 The check is read-only: it reports the current framework, mode, entrypoint, and
-managed folders that need explicit framework wiring. It never regenerates
+managed folders that need explicit framework wiring and clearly separates what
+Harnest still owns from native responsibilities. It never regenerates
 `agent.py`, moves resources, changes `config.yaml`, or discards user
 modifications. Use
 `harnest init support-agent --mode advanced` only when creating a new project;
@@ -312,8 +363,8 @@ public Python files from `tools/`, `subagents/`, and `mcp/`. Each filename is
 its export contract: `tools/lookup_order.py` must
 export an `@tool` callable named `lookup_order`;
 `subagents/order_specialist.py` must export an `AgentDefinition` named
-`order_specialist`; and `mcp/catalog.py` must export an `MCPClient` (or
-`None`) named `catalog`.
+`order_specialist`; and `mcp/catalog.py` must export a zero-argument `client()`
+factory returning `MCPClient`. The filename supplies the identity `catalog`.
 
 ### Reusable Python library
 
@@ -371,11 +422,12 @@ the Agent Skills layout. A non-empty plugin requires both halves; plugins never
 contain agents or lifecycle behavior.
 See the [plugin contract](docs/plugins.md).
 
-`extensions/<name>/lifecycle.py` exports an `Extension` named `extension` for
-portable request and output lifecycle behavior. Optional `adk.py` or
-`langgraph.py` files provide tighter native integration for the selected
-framework. Use extensions for persistence, guardrails, auditing, and similar
-runtime concerns. See the [runtime extension contract](docs/extensions.md).
+Root `extensions/**/*.py` files may use `@lifecycle.*` decorators on any number
+of functions. Multiple files can share a phase and run by explicit order, then
+source path. Portable hooks cover authentication, invocation, events, errors,
+and managed model calls; explicit `@lifecycle.adk_plugin` and
+`@lifecycle.langgraph_middleware` factories retain native framework control.
+See the [runtime extension contract](docs/extensions.md).
 
 An optional `sandbox/sandbox.py` exports one `Sandbox`. Built-in container
 sandboxes deny network access by default; provider packages can supply another
@@ -507,25 +559,27 @@ the underlying MCP protocol discovers the separate client-to-server message
 endpoint from that stream:
 
 ```python
+import os
+
 from harnest.mcp import MCPClient
 
 
-modern = MCPClient.streamable_http(
-    "${CATALOG_MCP_URL}",
-    headers={"Authorization": "Bearer ${CATALOG_MCP_TOKEN}"},
-)
-
-legacy = MCPClient.sse(
-    "${LEGACY_MCP_URL}/sse",
-    headers={"Authorization": "Bearer ${LEGACY_MCP_TOKEN}"},
-    timeout_seconds=10,
-    sse_read_timeout_seconds=600,
-)
+def client():
+    return MCPClient.streamable_http(
+        os.environ["CATALOG_MCP_URL"],
+        headers={"Authorization": f"Bearer {os.environ['CATALOG_MCP_TOKEN']}"},
+    )
 ```
 
+Use `MCPClient.sse(...)` inside the same factory for a legacy SSE server.
 `timeout_seconds` bounds connection and MCP operation work;
 `sse_read_timeout_seconds` independently controls how long an idle SSE stream
-may remain quiet. The default is five minutes for both ADK and LangGraph.
+may remain quiet. The default is five minutes for both ADK and LangGraph. The
+`client()` signature must literally have no parameters; use `os.environ` or
+other ordinary Python inside the body. Harnest redacts factory exception
+messages, assigns each discovered client a stable path-scoped capability ID,
+and rejects duplicate connection configurations even when approval metadata or
+local identities differ.
 
 ## Folder contract
 
@@ -548,7 +602,7 @@ Every deployable directory must contain:
 - optional sibling `tools/`, `subagents/`, `mcp/`, and `sandbox/` directories
   whose public files follow the filename-matched export conventions above;
   root-only `plugins/<name>/{mcp,skills}` capability bundles; and root-only
-  `extensions/<name>/` runtime lifecycle directories. Folder-based nested
+  `extensions/**/*.py` decorated runtime lifecycle modules. Folder-based nested
   subagents get their own supported sibling resource scope as described above.
 - optional root-only `lib/` containing ordinary reusable Python imported below
   `harnest.lib`; it is global to the bundle and is not resource discovery.
@@ -633,17 +687,25 @@ already compiled artifact, then restart it; malformed, symlinked, or missing
 configuration fails closed. Explicit `harnest serve` or launcher flags remain
 temporary operator overrides, while the file is the durable source of truth.
 
+Any setting scalar may instead be an exact `${NAME}` environment reference.
+The launcher resolves it at startup and then applies the field's normal string,
+boolean, integer, number, or binary-size validation. Missing, empty, or invalid
+values fail startup while naming only the variable and field. `$NAME`, partial
+interpolation such as `server-${HOST}`, and environment references in
+`apiVersion` or `kind` are rejected. Compilation preserves references verbatim;
+resolved values never enter the source copy, manifest, or diagnostics.
+
 ```yaml
 apiVersion: harnest.dev/v1alpha1
 kind: Server
 http:
   host: 127.0.0.1
-  port: 8080
+  port: ${AGENT_PORT}
   allowRemote: false
   requestTimeoutSeconds: 300
   maxConcurrentRequests: 8
 limits:
-  maxRequestBytes: 10MiB
+  maxRequestBytes: ${AGENT_MAX_REQUEST_BYTES}
 playground:
   enabled: true
 ```
@@ -685,6 +747,21 @@ The JSON response has this stable, provider-neutral shape:
 }
 ```
 
+Tools and MCP calls decorated with `require_human_approval` stop before
+execution. JSON returns `status: "requires_action"`; SSE and `/live` emit
+`approval.requested` followed by a completed `requires_action` response. Submit
+`{"decision":"approve"}` or `{"decision":"deny"}` to
+`POST /approvals/{approvalId}`. Approval is principal-, session-, invocation-,
+action-, and argument-bound, expires closed, and is consumed once. Approval
+continues the exact suspended task: the invocation is not rerun, earlier side
+effects are not replayed, and a later protected call can request another
+approval. The standalone store is process-local, so pending approvals and
+suspended tasks do not survive restart. Decorated
+calls in advanced targets fail closed because Harnest does not expose an
+advanced capability-wrapping API. Keep approval-protected capabilities managed
+or implement the framework-native approval integration explicitly.
+The bundled playground renders the same request with Approve and Deny controls.
+
 Tool calls and results appear in `output` as ordered `tool_call` and
 `tool_result` items. Reuse the session ID for conversational continuity. Session
 CRUD is `GET /sessions`, `GET /sessions/{id}`, `PATCH /sessions/{id}` with the
@@ -720,9 +797,10 @@ message, tool-call, and tool-result items. Provider names, model versions,
 reasoning details, and framework bookkeeping are not exposed. Before a stream
 starts, request errors use FastAPI's JSON `{"detail":"..."}` shape with normal
 HTTP status codes; SSE and WebSocket execution errors use a typed `error` event.
-The executable server has no configured identity provider by default. An
-embedding production host can inject authentication independently from session
-storage. `Authenticator.authenticate(connection)` returns an `AuthPrincipal`;
+The executable server has no configured identity provider by default. A root
+`@lifecycle.authenticate` pipeline or embedding host can resolve the existing
+`AuthPrincipal` independently from session storage. It receives a stable,
+read-only Harnest connection context rather than a FastAPI object;
 that principal's `user_id` scopes every neutral session, response, SSE stream,
 and WebSocket. The middleware also requires authentication for advanced ADK
 native routes, but their native user fields still require deployment

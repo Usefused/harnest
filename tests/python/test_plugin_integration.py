@@ -39,7 +39,8 @@ class PluginIntegrationTests(unittest.TestCase):
         self._write(
             root / "plugins" / "support" / "mcp" / "support.py",
             "from harnest.mcp import MCPClient\n"
-            f"support = MCPClient.streamable_http({url!r}, prefix='support')\n",
+            "def client():\n"
+            f"    return MCPClient.streamable_http({url!r}, prefix='support')\n",
         )
 
     def _plugin_skill(self, root: Path, name: str = "support-guide") -> None:
@@ -64,6 +65,10 @@ class PluginIntegrationTests(unittest.TestCase):
 
                 self.assertEqual(len(compiled.target.mcp), 1)
                 self.assertEqual(compiled.target.mcp[0].tool_name_prefix, "support")
+                self.assertEqual(
+                    compiled.target.mcp[0].capability_id,
+                    "plugin__support__mcp__support",
+                )
                 if framework == "langgraph":
                     tools = {tool.__name__: tool for tool in compiled.target.tools}
                     self.assertEqual(
@@ -127,12 +132,12 @@ class PluginIntegrationTests(unittest.TestCase):
             self._root_agent(root)
             self._write(
                 root / "plugins" / "support" / "mcp" / "support.py",
-                "support = object()\n",
+                "def client():\n    return object()\n",
             )
             self._plugin_skill(root)
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 with self.assertRaisesRegex(
-                    BundleExportError, "must export MCPClient 'support'"
+                    BundleExportError, "must return MCPClient"
                 ):
                     compile_application(
                         root, entrypoint="agent:root_agent", framework="langgraph"
@@ -144,7 +149,8 @@ class PluginIntegrationTests(unittest.TestCase):
             self._root_agent(root)
             source = (
                 "from harnest.mcp import MCPClient\n"
-                "support = MCPClient.streamable_http("
+                "def client():\n"
+                "    return MCPClient.streamable_http("
                 "'https://mcp.example/mcp', prefix='support')\n"
             )
             self._write(root / "mcp" / "support.py", source)

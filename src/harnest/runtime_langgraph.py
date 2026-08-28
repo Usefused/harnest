@@ -13,10 +13,12 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .application import CompiledApplication
+from .model_lifecycle import close_litellm_lifecycles
+from .mcp import _validate_approval_tools
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -229,7 +231,12 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 if isinstance(plan, ManagedAgentPlan)
                 else managed_graph_mcp_clients(plan)
             )
-            tool_groups = await self._resolve_tool_groups(configured)
+            tool_groups, approval_policies = await self._resolve_tool_groups(configured)
+            from .backends.langgraph import mcp_approval_middleware
+
+            middleware = mcp_approval_middleware(approval_policies)
+            if middleware is not None:
+                plan = replace(plan, middleware=(*plan.middleware, middleware))
             self._target = (
                 materialize_agent(plan, tool_groups[0])
                 if isinstance(plan, ManagedAgentPlan)
@@ -243,31 +250,47 @@ class LangGraphRuntimeDriver(RuntimeDriver):
 
     async def _resolve_tool_groups(
         self, configured_groups: Sequence[tuple[Any, ...]]
-    ) -> list[list[Any]]:
-        resolved: list[tuple[tuple[Any, ...], list[Any]]] = []
+    ) -> tuple[list[list[Any]], dict[str, tuple[str, str, Any]]]:
+        resolved: list[
+            tuple[
+                tuple[Any, ...],
+                list[Any],
+                dict[str, tuple[str, str, Any]],
+            ]
+        ] = []
         groups: list[list[Any]] = []
+        policies: dict[str, tuple[str, str, Any]] = {}
         for configured in configured_groups:
             # Reuse an identical MCP group so nested graph nodes do not open
             # duplicate connections or repeat remote tool discovery.
-            shared = next((tools for existing, tools in resolved if existing == configured), None)
-            if shared is None:
-                shared = await self._resolve_tool_group(configured)
-                resolved.append((configured, shared))
-            groups.append(shared)
-        return groups
+            cached = next(
+                (item for item in resolved if item[0] == configured), None
+            )
+            if cached is None:
+                tools, group_policies = await self._resolve_tool_group(configured)
+                cached = (configured, tools, group_policies)
+                resolved.append(cached)
+            groups.append(cached[1])
+            policies.update(cached[2])
+        return groups, policies
 
-    async def _resolve_tool_group(self, configured_group: tuple[Any, ...]) -> list[Any]:
+    async def _resolve_tool_group(
+        self, configured_group: tuple[Any, ...]
+    ) -> tuple[list[Any], dict[str, tuple[str, str, Any]]]:
         client_type = _mcp_client_type()
         connections, names = _mcp_connections(configured_group)
         client = client_type(connections, tool_name_prefix=True)
         self._mcp_clients.append(client)
         tools: list[Any] = []
+        policies: dict[str, tuple[str, str, Any]] = {}
         for server_name, configured in names:
             discovered = await client.get_tools(server_name=server_name)
-            tools.extend(_filtered_mcp_tools(
+            selected = _filtered_mcp_tools(
                 discovered, server_name=server_name, allowed=configured.tool_filter
-            ))
-        return tools
+            )
+            tools.extend(selected)
+            policies.update(_approval_policies(selected, server_name, configured))
+        return tools, policies
 
     async def _session_id_for_request(self, request: InvocationRequest) -> str:
         self._ensure_open()
@@ -404,12 +427,37 @@ def _mcp_connections(
     connections: dict[str, dict[str, Any]] = {}
     names: list[tuple[str, Any]] = []
     for index, configured in enumerate(configured_group):
-        name = configured.tool_name_prefix or f"mcp_{index + 1}"
+        name = (
+            configured.capability_id
+            or configured.identity
+            or configured.tool_name_prefix
+            or f"mcp_{index + 1}"
+        )
         if name in connections:
             raise ValueError(f"duplicate LangGraph MCP client name {name!r}")
         names.append((name, configured))
         connections[name] = configured.to_langgraph_connection()
     return connections, names
+
+
+def _approval_policies(
+    tools: Sequence[Any], server_name: str, configured: Any
+) -> dict[str, tuple[str, str, Any]]:
+    policy = configured.approval
+    if policy is None:
+        return {}
+    prefix = f"{server_name}_"
+    remote_names = tuple(
+        str(getattr(tool, "name", "")).removeprefix(prefix) for tool in tools
+    )
+    _validate_approval_tools(policy, remote_names, capability_id=server_name)
+    result: dict[str, tuple[str, str, Any]] = {}
+    for tool in tools:
+        exposed_name = str(getattr(tool, "name", ""))
+        remote_name = exposed_name.removeprefix(prefix)
+        if policy.applies_to(remote_name):
+            result[exposed_name] = (server_name, remote_name, policy)
+    return result
 
 
 def _require_identifier(value: Any, field_name: str) -> None:
@@ -448,14 +496,16 @@ def _filtered_mcp_tools(
 
 
 async def _close_resource(resource: Any) -> None:
-    closer = getattr(resource, "aclose", None)
-    if not callable(closer):
-        closer = getattr(resource, "close", None)
-    if not callable(closer):
-        return
-    result = closer()
-    if inspect.isawaitable(result):
-        await result
+    try:
+        closer = getattr(resource, "aclose", None)
+        if not callable(closer):
+            closer = getattr(resource, "close", None)
+        if callable(closer):
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+    finally:
+        await close_litellm_lifecycles(resource)
 
 
 def _graph_input(

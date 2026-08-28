@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
+import os
 from pathlib import Path
 import re
 import shutil
 import stat
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import yaml
 
@@ -17,6 +18,7 @@ SERVER_CONFIG_FILENAME = "server.yaml"
 _API_VERSION = "harnest.dev/v1alpha1"
 _MAX_CONFIG_BYTES = 64 * 1024
 _MAX_REQUEST_BYTES = 1024 * 1024 * 1024
+_ENVIRONMENT_REFERENCE_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _SIZE_PATTERN = re.compile(r"^([1-9][0-9]*)(B|KiB|MiB|GiB)?$")
 _SIZE_MULTIPLIERS = {
     None: 1,
@@ -124,8 +126,28 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
-def load_server_config(path: str | Path) -> ServerConfig:
-    """Load one required server.yaml without following a symlink."""
+def load_server_config(
+    path: str | Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> ServerConfig:
+    """Load server.yaml and resolve exact environment references."""
+
+    effective_environment = os.environ if environment is None else environment
+    return _load_server_config(path, effective_environment)
+
+
+def validate_server_config_template(path: str | Path) -> None:
+    """Validate authored structure without resolving deployment environment."""
+
+    _load_server_config(path, None)
+
+
+def _load_server_config(
+    path: str | Path,
+    environment: Mapping[str, str] | None,
+) -> ServerConfig:
+    """Read once so compilation and startup share parsing and validation."""
 
     config_path = Path(path)
     contents = _read_config(config_path)
@@ -133,20 +155,21 @@ def load_server_config(path: str | Path) -> ServerConfig:
         value = yaml.load(contents, Loader=_UniqueKeyLoader)
     except (ServerConfigError, yaml.YAMLError) as exc:
         raise ServerConfigError(f"invalid {config_path}: {exc}") from exc
-    return _decode_config(value, config_path)
+    return _decode_config(value, config_path, environment)
 
 
-def materialize_server_config(source: str | Path, destination: str | Path) -> ServerConfig:
+def materialize_server_config(source: str | Path, destination: str | Path) -> None:
     """Validate authored policy and place its mutable copy beside the launcher."""
 
     source_path = Path(source)
     destination_path = Path(destination)
     if source_path.exists() or source_path.is_symlink():
-        config = load_server_config(source_path)
+        # Compilation must preserve references for the deployment environment;
+        # only the standalone launcher is allowed to resolve their values.
+        validate_server_config_template(source_path)
         shutil.copyfile(source_path, destination_path)
-        return config
+        return
     destination_path.write_text(DEFAULT_SERVER_YAML, encoding="utf-8")
-    return DEFAULT_SERVER_CONFIG
 
 
 def format_byte_size(value: int) -> str:
@@ -177,7 +200,11 @@ def _read_config(path: Path) -> str:
         raise ServerConfigError(f"read {path}: {exc}") from exc
 
 
-def _decode_config(value: Any, path: Path) -> ServerConfig:
+def _decode_config(
+    value: Any,
+    path: Path,
+    environment: Mapping[str, str] | None,
+) -> ServerConfig:
     root = _mapping(value, "server.yaml")
     _require_keys(root, {"apiVersion", "kind", "http", "limits", "playground"}, "server.yaml")
     if root["apiVersion"] != _API_VERSION or root["kind"] != "Server":
@@ -186,13 +213,16 @@ def _decode_config(value: Any, path: Path) -> ServerConfig:
             f"{root['apiVersion']!r}/{root['kind']!r}"
         )
     return ServerConfig(
-        http=_decode_http(root["http"]),
-        limits=_decode_limits(root["limits"]),
-        playground=_decode_playground(root["playground"]),
+        http=_decode_http(root["http"], environment),
+        limits=_decode_limits(root["limits"], environment),
+        playground=_decode_playground(root["playground"], environment),
     )
 
 
-def _decode_http(value: Any) -> HTTPServerConfig:
+def _decode_http(
+    value: Any,
+    environment: Mapping[str, str] | None,
+) -> HTTPServerConfig:
     data = _mapping(value, "http")
     _require_keys(
         data,
@@ -207,17 +237,27 @@ def _decode_http(value: Any) -> HTTPServerConfig:
     )
     return _validate_http(
         HTTPServerConfig(
-            host=_text(data["host"], "http.host"),
-            port=_integer(data["port"], "http.port", minimum=1, maximum=65535),
-            allow_remote=_boolean(data["allowRemote"], "http.allowRemote"),
-            request_timeout_seconds=_number(
+            host=_resolved_text(data["host"], "http.host", environment),
+            port=_resolved_integer(
+                data["port"],
+                "http.port",
+                environment,
+                minimum=1,
+                maximum=65535,
+            ),
+            allow_remote=_resolved_boolean(
+                data["allowRemote"], "http.allowRemote", environment
+            ),
+            request_timeout_seconds=_resolved_number(
                 data["requestTimeoutSeconds"],
                 "http.requestTimeoutSeconds",
+                environment,
                 maximum=86400,
             ),
-            max_concurrent_requests=_integer(
+            max_concurrent_requests=_resolved_integer(
                 data["maxConcurrentRequests"],
                 "http.maxConcurrentRequests",
+                environment,
                 minimum=1,
                 maximum=100000,
             ),
@@ -243,16 +283,28 @@ def _validate_http(config: HTTPServerConfig) -> HTTPServerConfig:
     return HTTPServerConfig(host, port, allow_remote, timeout, concurrency)
 
 
-def _decode_limits(value: Any) -> ServerLimits:
+def _decode_limits(
+    value: Any,
+    environment: Mapping[str, str] | None,
+) -> ServerLimits:
     data = _mapping(value, "limits")
     _require_keys(data, {"maxRequestBytes"}, "limits")
-    return ServerLimits(_byte_size(data["maxRequestBytes"], "limits.maxRequestBytes"))
+    return ServerLimits(
+        _resolved_byte_size(
+            data["maxRequestBytes"], "limits.maxRequestBytes", environment
+        )
+    )
 
 
-def _decode_playground(value: Any) -> PlaygroundConfig:
+def _decode_playground(
+    value: Any,
+    environment: Mapping[str, str] | None,
+) -> PlaygroundConfig:
     data = _mapping(value, "playground")
     _require_keys(data, {"enabled"}, "playground")
-    return PlaygroundConfig(_boolean(data["enabled"], "playground.enabled"))
+    return PlaygroundConfig(
+        _resolved_boolean(data["enabled"], "playground.enabled", environment)
+    )
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -272,6 +324,161 @@ def _require_keys(value: Mapping[str, Any], expected: set[str], name: str) -> No
         if unknown:
             detail.append(f"unknown {unknown}")
         raise ServerConfigError(f"{name} fields are invalid: {', '.join(detail)}")
+
+
+def _resolve_scalar(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+    *,
+    placeholder: Any,
+    expected: str,
+    parser: Callable[[Any, bool], Any],
+) -> Any:
+    reference = (
+        _ENVIRONMENT_REFERENCE_PATTERN.fullmatch(value)
+        if isinstance(value, str)
+        else None
+    )
+    if reference is None:
+        if isinstance(value, str) and "$" in value:
+            raise ServerConfigError(
+                f"{name} environment references must use exact ${{NAME}} syntax"
+            )
+        return parser(value, False)
+
+    variable = reference.group(1)
+    if environment is None:
+        return placeholder
+    if variable not in environment:
+        raise ServerConfigError(
+            f"environment variable {variable} required by {name} is unset"
+        )
+    raw_value = environment[variable]
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        raise ServerConfigError(
+            f"environment variable {variable} required by {name} is empty"
+        )
+    try:
+        return parser(raw_value.strip(), True)
+    except (TypeError, ValueError):
+        # Environment values may contain credentials or gateway details, so a
+        # diagnostic identifies only the variable and destination field.
+        raise ServerConfigError(
+            f"environment variable {variable} is invalid for {name}; expected {expected}"
+        ) from None
+
+
+def _resolved_text(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+) -> str:
+    return _resolve_scalar(
+        value,
+        name,
+        environment,
+        placeholder="environment-reference",
+        expected="a non-empty string",
+        parser=lambda item, _from_environment: _text(item, name),
+    )
+
+
+def _resolved_boolean(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+) -> bool:
+    return _resolve_scalar(
+        value,
+        name,
+        environment,
+        placeholder=False,
+        expected="true or false",
+        parser=lambda item, from_environment: _boolean(
+            _environment_boolean(item) if from_environment else item,
+            name,
+        ),
+    )
+
+
+def _resolved_integer(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    return _resolve_scalar(
+        value,
+        name,
+        environment,
+        placeholder=minimum,
+        expected=f"an integer between {minimum} and {maximum}",
+        parser=lambda item, from_environment: _integer(
+            _environment_integer(item) if from_environment else item,
+            name,
+            minimum=minimum,
+            maximum=maximum,
+        ),
+    )
+
+
+def _resolved_number(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+    *,
+    maximum: float,
+) -> float:
+    return _resolve_scalar(
+        value,
+        name,
+        environment,
+        placeholder=1.0,
+        expected=f"a number greater than zero and at most {maximum:g}",
+        parser=lambda item, from_environment: _number(
+            _environment_number(item) if from_environment else item,
+            name,
+            maximum=maximum,
+        ),
+    )
+
+
+def _resolved_byte_size(
+    value: Any,
+    name: str,
+    environment: Mapping[str, str] | None,
+) -> int:
+    return _resolve_scalar(
+        value,
+        name,
+        environment,
+        placeholder=1024,
+        expected="bytes between 1KiB and 1GiB",
+        parser=lambda item, _from_environment: _byte_size(item, name),
+    )
+
+
+def _environment_boolean(value: Any) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError("invalid environment boolean")
+
+
+def _environment_integer(value: Any) -> int:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
+        raise ValueError("invalid environment integer")
+    return int(value)
+
+
+def _environment_number(value: Any) -> float:
+    if not isinstance(value, str):
+        raise ValueError("invalid environment number")
+    return float(value)
 
 
 def _text(value: Any, name: str) -> str:
@@ -329,5 +536,6 @@ __all__ = [
     "format_byte_size",
     "load_server_config",
     "materialize_server_config",
+    "validate_server_config_template",
     "validate_max_request_bytes",
 ]

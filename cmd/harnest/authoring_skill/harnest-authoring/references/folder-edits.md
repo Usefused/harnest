@@ -33,11 +33,11 @@ and extended examples into that skill's linked `references/` files.
 | Change the agent's general behavior | Owning `instructions.md` | Keep it non-empty; do not duplicate it into `agent.py` unless dynamic instructions are required. |
 | Add one callable capability | Owning `tools/<name>.py` | Export one `@tool` callable named exactly `<name>`. |
 | Add model-facing operational guidance | Owning `skills/<skill>/SKILL.md` | Give it distinct frontmatter name/description and put supporting files below that skill. |
-| Connect one MCP server | Owning `mcp/<name>.py` | Export `<name>` as `MCPClient` or `None`; declare credentials through environment/secrets. |
+| Connect one MCP server | Owning `mcp/<name>.py` | Export zero-argument `client()` returning `MCPClient`; the filename supplies identity and ordinary Python reads environment/secrets. |
 | Bundle reusable MCP access plus usage guidance | Root `plugins/<plugin>/mcp/` and `plugins/<plugin>/skills/` | A populated plugin needs at least one MCP client and one skill; it never contains agents or lifecycle code. |
 | Add a simple subagent | Owning `subagents/<name>.py` | Export `AgentDefinition` as `<name>` with an explicit instruction. |
 | Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. |
-| Add invocation policy, persistence, guardrails, or event transforms | Root `extensions/<name>/lifecycle.py` | Export `extension`; add `adk.py` or `langgraph.py` only for tighter native control. |
+| Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use explicit native factory decorators only for tighter framework control. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
 | Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
 | Add offline behavior coverage | Root `tests/unit/test_*.py` | Use compiler fixtures; do not manually import the compiled agent. |
@@ -45,7 +45,7 @@ and extended examples into that skill's linked `references/` files.
 | Add ADK evaluations | Root `evals/` | Keep executable evals at root; expected responses contain visible output only. |
 | Change public identity or advertised capability | Root `agent-card.yaml` | Do not use the card as runtime wiring. |
 | Change resources, environment, framework, mode, or entrypoint | Root `config.yaml` | Treat framework/mode changes as migrations, not incidental edits. |
-| Change standalone host, request limits, concurrency, timeout, or playground | Root `server.yaml` | Keep auth, storage, TLS, secrets, and deployment scaling outside this file. |
+| Change standalone host, request limits, concurrency, timeout, or playground | Root `server.yaml` | Use exact `${NAME}` for startup environment values; keep auth, storage, TLS, secrets, and deployment scaling outside this file. |
 
 ## Wire managed resources correctly
 

@@ -3,6 +3,12 @@
   "$id": "https://harnest.dev/schemas/server.schema.json",
   "title": "Harnest compiled agent server configuration",
   "type": "object",
+  "$defs": {
+    "environmentReference": {
+      "type": "string",
+      "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+    }
+  },
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "http", "limits", "playground"],
   "properties": {
@@ -23,18 +29,39 @@
         "maxConcurrentRequests"
       ],
       "properties": {
-        "host": {"type": "string", "minLength": 1},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "allowRemote": {"type": "boolean"},
+        "host": {
+          "anyOf": [
+            {"type": "string", "minLength": 1, "pattern": "^[^$]*$"},
+            {"$ref": "#/$defs/environmentReference"}
+          ]
+        },
+        "port": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1, "maximum": 65535},
+            {"$ref": "#/$defs/environmentReference"}
+          ]
+        },
+        "allowRemote": {
+          "oneOf": [
+            {"type": "boolean"},
+            {"$ref": "#/$defs/environmentReference"}
+          ]
+        },
         "requestTimeoutSeconds": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 86400
+          "oneOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 86400
+            },
+            {"$ref": "#/$defs/environmentReference"}
+          ]
         },
         "maxConcurrentRequests": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 100000
+          "oneOf": [
+            {"type": "integer", "minimum": 1, "maximum": 100000},
+            {"$ref": "#/$defs/environmentReference"}
+          ]
         }
       }
     },
@@ -49,7 +76,8 @@
             {
               "type": "string",
               "pattern": "^[1-9][0-9]*(B|KiB|MiB|GiB)?$"
-            }
+            },
+            {"$ref": "#/$defs/environmentReference"}
           ]
         }
       }
@@ -59,7 +87,12 @@
       "additionalProperties": false,
       "required": ["enabled"],
       "properties": {
-        "enabled": {"type": "boolean"}
+        "enabled": {
+          "oneOf": [
+            {"type": "boolean"},
+            {"$ref": "#/$defs/environmentReference"}
+          ]
+        }
       }
     }
   }

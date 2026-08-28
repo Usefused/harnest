@@ -23,6 +23,10 @@ var managedResourceDirectories = []string{
 	"evals",
 }
 
+var advancedExplicitResourceDirectories = []string{
+	"tools", "subagents", "mcp", "plugins", "sandbox", "skills",
+}
+
 type populatedManagedResource struct {
 	Name      string
 	FileCount int
@@ -77,8 +81,8 @@ with a coding agent after reviewing the audit.`,
 }
 
 func findPopulatedManagedResources(root string) ([]populatedManagedResource, error) {
-	resources := make([]populatedManagedResource, 0, len(managedResourceDirectories))
-	for _, name := range managedResourceDirectories {
+	resources := make([]populatedManagedResource, 0, len(advancedExplicitResourceDirectories))
+	for _, name := range advancedExplicitResourceDirectories {
 		directory := filepath.Join(root, name)
 		count := 0
 		err := filepath.WalkDir(directory, countManagedResourceFiles(directory, &count))
@@ -143,11 +147,21 @@ func writeAdvancedModeAudit(
 			fmt.Fprintf(output, "  - %s/ (%d %s)\n", resource.Name, resource.FileCount, label)
 		}
 	}
+	fmt.Fprintln(output, "Harnest still owns:")
+	fmt.Fprintln(output, "  - neutral HTTP/SSE/WebSocket serving and server.yaml policy")
+	fmt.Fprintln(output, "  - decorated authentication lifecycle and principal-scoped sessions")
+	fmt.Fprintln(output, "  - portable extension hooks around neutral invocations")
+	fmt.Fprintln(output, "You own in advanced mode:")
+	fmt.Fprintln(output, "  - native graph routing, state, checkpoint, and framework semantics")
+	fmt.Fprintln(output, "  - native middleware/plugin registration and framework upgrades")
+	fmt.Fprintln(output, "  - native object validation beyond Harnest's entrypoint checks")
+	fmt.Fprintln(output, "  - tool and MCP approval wiring; advanced targets have no automatic Harnest capability wrapper")
+	fmt.Fprintln(output, "  - arbitrary native model calls; portable model hooks are not auto-injected into advanced targets, so use a LiteLLM lifecycle or native plugin/middleware")
 
 	fmt.Fprintln(output, "Next steps:")
 	fmt.Fprintln(output, "  1. Preserve agent.py and expose the framework target with Agent.advanced(...).")
 	if len(resources) > 0 {
-		fmt.Fprintln(output, "  2. Import and wire every listed managed resource explicitly from agent.py.")
+		fmt.Fprintln(output, "  2. Wire every listed runtime resource explicitly from agent.py; keep evals as test-only inputs.")
 	} else {
 		fmt.Fprintln(output, "  2. Confirm agent.py owns every framework-specific dependency and lifecycle hook.")
 	}

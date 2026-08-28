@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .mcp import MCPClient
 from .model import ModelInput, resolve_model
+from .model_lifecycle import propagate_litellm_lifecycles
 from .sandbox import Sandbox
 
 Tool = Callable[..., Any] | Any
@@ -121,7 +122,12 @@ class AgentDefinition:
                 "google-adk is required to build an agent; install the harnest package"
             ) from exc
 
-        return LlmAgent(**self._build_kwargs())
+        kwargs = self._build_kwargs()
+        built = LlmAgent(**kwargs)
+        propagate_litellm_lifecycles(kwargs["model"], built)
+        for child in kwargs["sub_agents"]:
+            propagate_litellm_lifecycles(child, built)
+        return built
 
     def _build_kwargs(self) -> dict[str, Any]:
         children = [

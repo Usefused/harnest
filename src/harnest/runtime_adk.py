@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .application import CompiledApplication
+from .model_lifecycle import close_litellm_lifecycles
 from .neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -233,7 +234,10 @@ class ADKRuntimeDriver(RuntimeDriver):
             if self._closed:
                 return
             self._closed = True
-            await self._runner.close()
+            try:
+                await self._runner.close()
+            finally:
+                await close_litellm_lifecycles(self.application.target)
 
     def _ensure_open(self) -> None:
         if self._closed:

@@ -50,10 +50,13 @@ harnest mode advanced AGENT_DIR --check
 ```
 
 This command is read-only. It reports the current framework, mode, entrypoint,
-and managed folders that must be wired explicitly in advanced source; it does
-not update `config.yaml`, move resources, or rewrite code. After reviewing the
-report, migrate the existing implementation semantically and preserve unrelated
-user changes.
+managed folders that need explicit wiring, and the responsibility boundary. In
+advanced mode Harnest keeps the neutral server, authentication, and portable
+invocation extensions. The agent owns native routing, state, checkpoints,
+middleware/plugins, approval wiring, framework upgrades, and arbitrary native
+model calls. Portable model hooks are guaranteed only at Harnest-managed/wrapped
+model boundaries. The check never updates files; migrate semantically and
+preserve unrelated changes.
 
 ## Framework changes
 
@@ -102,3 +105,11 @@ the provider default. LiteLLM maps the non-thinking mode to Ollama's
 is required. Harnest filters native ADK thought parts and LangGraph thinking
 blocks at its public boundary while leaving them available to the framework for
 multi-turn continuity.
+
+For a team model gateway, pass a `LiteLLMLifecycle` to `LiteLLMModel`. Use
+`create_transport` to return a LiteLLM-supported provider SDK client configured
+with custom HTTP or mTLS behavior. Use `before_request`, `after_response`, and
+`on_error` for per-call routing, headers, normalization, and diagnostics; close
+owned resources in `close`. Hooks may be ordinary or async methods, but async
+hooks require async execution and one built model cannot mix call modes. The
+lifecycle is per model adapter and never patches LiteLLM globals.

@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from typing import AsyncIterator, Mapping, Sequence
 
-from harnest.extension import Extension
+from harnest.lifecycle import LifecycleListener
 from harnest.neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -16,7 +16,9 @@ from harnest.runtime_extensions import (
     ExtensionRuntimeDriver,
     ExtensionTransformError,
     StreamingResultTransformationError,
+    LifecycleAuthenticator,
 )
+from harnest.runtime_auth import AuthPrincipal, AuthenticationError, ConnectionContext
 
 
 class FakeDriver:
@@ -106,6 +108,10 @@ def request() -> InvocationRequest:
     )
 
 
+def listener(phase, callback, *, name="hook", order=0):
+    return LifecycleListener(phase, callback, order, f"{name}.py", 1, name)
+
+
 class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
     async def test_invoke_runs_transformations_in_order_with_one_context(self):
         driver = FakeDriver()
@@ -131,12 +137,9 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         wrapped = ExtensionRuntimeDriver(
             driver,
             [
-                Extension(
-                    name="guardrails",
-                    before_invoke=before,
-                    on_event=on_event,
-                    after_invoke=after,
-                )
+                listener("before_invoke", before, name="guardrails_before"),
+                listener("on_event", on_event, name="guardrails_event"),
+                listener("after_invoke", after, name="guardrails_after"),
             ],
         )
 
@@ -167,7 +170,10 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         wrapped = ExtensionRuntimeDriver(
             driver,
-            [Extension(name="history", on_event=on_event, after_invoke=after)],
+            [
+                listener("on_event", on_event, name="history_event"),
+                listener("after_invoke", after, name="history_after"),
+            ],
         )
 
         events = [event async for event in wrapped.stream(request())]
@@ -182,7 +188,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         driver = FakeDriver()
         wrapped = ExtensionRuntimeDriver(
             driver,
-            [Extension(name="invalid", after_invoke=lambda _ctx, result: result)],
+            [listener("after_invoke", lambda _ctx, result: result, name="invalid")],
         )
 
         with self.assertRaisesRegex(
@@ -205,8 +211,8 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         wrapped = ExtensionRuntimeDriver(
             driver,
             [
-                Extension(name="first", on_error=first),
-                Extension(name="second", on_error=second),
+                listener("on_error", first, name="first"),
+                listener("on_error", second, name="second"),
             ],
         )
 
@@ -222,11 +228,16 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         wrapped = ExtensionRuntimeDriver(
             FakeDriver(),
             [
-                Extension(
+                listener(
+                    "before_invoke",
+                    lambda _context, _request: "wrong",
                     name="invalid",
-                    before_invoke=lambda _context, _request: "wrong",
-                    on_error=lambda _context, error: notified.append(str(error)),
-                )
+                ),
+                listener(
+                    "on_error",
+                    lambda _context, error: notified.append(str(error)),
+                    name="notify",
+                ),
             ],
         )
 
@@ -250,6 +261,66 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         await wrapped.close()
         self.assertTrue(driver.closed)
+
+
+class LifecycleAuthenticatorTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def context():
+        return ConnectionContext(
+            transport="http",
+            method="POST",
+            path="/responses",
+            headers={"x-user": "martins"},
+            cookies={},
+            query={},
+        )
+
+    async def test_multiple_listeners_resolve_then_enrich_one_identity(self):
+        async def resolve(connection, principal):
+            self.assertIsNone(principal)
+            return AuthPrincipal(connection.headers["x-user"])
+
+        def enrich(_connection, principal):
+            return AuthPrincipal(principal.user_id, {"team": "runtime"})
+
+        authenticator = LifecycleAuthenticator(
+            [
+                listener("authenticate", resolve, name="resolve"),
+                listener("authenticate", enrich, name="enrich"),
+            ]
+        )
+        principal = await authenticator.authenticate(self.context())
+        self.assertEqual(principal.user_id, "martins")
+        self.assertEqual(principal.claims, {"team": "runtime"})
+
+    async def test_authentication_fails_closed_and_identity_cannot_change(self):
+        empty = LifecycleAuthenticator(
+            [listener("authenticate", lambda _connection, _principal: None)]
+        )
+        with self.assertRaises(AuthenticationError):
+            await empty.authenticate(self.context())
+
+        changed = LifecycleAuthenticator(
+            [
+                listener(
+                    "authenticate",
+                    lambda _connection, _principal: AuthPrincipal("one"),
+                    name="one",
+                ),
+                listener(
+                    "authenticate",
+                    lambda _connection, _principal: AuthPrincipal("two"),
+                    name="two",
+                ),
+            ]
+        )
+        with self.assertRaisesRegex(AuthenticationError, "rejected"):
+            await changed.authenticate(self.context())
+
+    def test_connection_context_is_read_only(self):
+        context = self.context()
+        with self.assertRaises(TypeError):
+            context.headers["x-user"] = "spoofed"
 
 
 if __name__ == "__main__":

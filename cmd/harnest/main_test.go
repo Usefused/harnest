@@ -67,13 +67,14 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"tools/_README.md":       "Add one @tool callable",
 		"plugins/_README.md":     "capability bundles",
-		"extensions/_README.md":  "lifecycle extensions",
+		"extensions/_README.md":  "@lifecycle-decorated functions",
 		"tests/unit/_README.md":  "offline test_*.py",
 		"tests/smoke/_README.md": "opt-in test_*.py",
 	})
 	serverConfig := string(mustReadTestFile(t, filepath.Join(target, "server.yaml")))
 	assertContainsAll(t, "generated server.yaml", serverConfig, []string{
 		"apiVersion: harnest.dev/v1alpha1", "kind: Server",
+		"exact ${NAME}", "Partial interpolation and $NAME",
 		"host: 127.0.0.1", "port: 8080", "allowRemote: false",
 		"requestTimeoutSeconds: 300", "maxConcurrentRequests: 8",
 		"maxRequestBytes: 1MiB", "enabled: true",
@@ -92,7 +93,7 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 	assertFilesContain(t, target, map[string]string{
 		"tools/echo.py":                                    "from harnest.tool import tool",
 		"skills/getting-started/SKILL.md":                  "name: getting-started",
-		"extensions/starter/lifecycle.py":                  "extension = Extension(name=\"starter\")",
+		"extensions/starter.py":                            "@lifecycle.after_invoke",
 		"plugins/starter/mcp/starter.py":                   "from harnest.mcp import MCPClient",
 		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"evals/starter.evalset.json":                       "answers_greeting",

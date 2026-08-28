@@ -1,86 +1,53 @@
 import unittest
 
-from harnest.extension import DROP_EVENT, Extension, LifecycleContext
+from harnest.lifecycle import (
+    DROP_EVENT,
+    LifecycleContext,
+    lifecycle,
+    registration_for,
+)
 
 
-class ExtensionContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_portable_hooks_are_explicit(self):
-        calls = []
+class ExtensionContractTests(unittest.TestCase):
+    def test_direct_and_configured_decorators_attach_explicit_metadata(self):
+        @lifecycle.before_invoke
+        def before(_context, value):
+            return value
 
-        def before(context, request):
-            context.attributes["started"] = True
-            calls.append(("before", request))
-            return {"input": "checked"}
+        @lifecycle.after_invoke(order=20)
+        async def after(_context, value):
+            return value
 
-        async def after(context, result):
-            calls.append(("after", result, context.attributes["started"]))
-            return {"output": "guarded"}
-
-        extension = Extension(
-            name="guardrails",
-            before_invoke=before,
-            after_invoke=after,
-        )
-        context = LifecycleContext(
-            framework="adk",
-            agent_name="support",
-            invocation_id="invoke-1",
-            user_id="user-1",
-            session_id="session-1",
-        )
-
-        self.assertEqual(
-            extension.before_invoke(context, {"input": "raw"}),
-            {"input": "checked"},
-        )
-        after_hook = extension.after_invoke
-        self.assertIsNotNone(after_hook)
-        assert after_hook is not None
-        self.assertEqual(
-            await after_hook(context, {"output": "raw"}),
-            {"output": "guarded"},
-        )
-        self.assertEqual(
-            calls,
-            [
-                ("before", {"input": "raw"}),
-                ("after", {"output": "raw"}, True),
-            ],
-        )
-
-    async def test_event_transforms_and_error_is_notification_only(self):
-        errors = []
-
-        def on_event(_context, event):
-            return {**event, "stored": True}
-
-        async def on_error(_context, error):
-            errors.append(str(error))
-
-        extension = Extension(
-            name="bigquery_history",
-            on_event=on_event,
-            on_error=on_error,
-        )
-        context = LifecycleContext(
-            framework="langgraph",
-            agent_name="support",
-            invocation_id="invoke-1",
-            user_id="user-1",
-            session_id="session-1",
-        )
-
-        event_hook = extension.on_event
-        error_hook = extension.on_error
-        assert event_hook is not None
-        assert error_hook is not None
-        self.assertEqual(
-            event_hook(context, {"type": "message"}),
-            {"type": "message", "stored": True},
-        )
-        self.assertIsNone(await error_hook(context, RuntimeError("failed")))
-        self.assertEqual(errors, ["failed"])
+        self.assertEqual(registration_for(before).phase, "before_invoke")
+        self.assertEqual(registration_for(before).order, 0)
+        self.assertEqual(registration_for(after).order, 20)
         self.assertEqual(repr(DROP_EVENT), "DROP_EVENT")
+
+    def test_native_decorators_are_framework_specific(self):
+        @lifecycle.adk_plugin(order=3)
+        def adk():
+            return object()
+
+        @lifecycle.langgraph_middleware
+        def langgraph():
+            return object()
+
+        self.assertEqual(registration_for(adk).phase, "adk_plugin")
+        self.assertEqual(registration_for(adk).framework, "adk")
+        self.assertEqual(
+            registration_for(langgraph).phase, "langgraph_middleware"
+        )
+
+    def test_decorator_validation_rejects_ambiguous_registration(self):
+        with self.assertRaisesRegex(TypeError, "integer"):
+            lifecycle.on_event(order=True)
+
+        with self.assertRaisesRegex(TypeError, "only one"):
+
+            @lifecycle.on_error
+            @lifecycle.after_invoke
+            def duplicated(_context, _value):
+                return None
 
     def test_context_has_an_invocation_scoped_scratchpad(self):
         first = LifecycleContext(
@@ -97,18 +64,12 @@ class ExtensionContractTests(unittest.IsolatedAsyncioTestCase):
             user_id="user-1",
             session_id="session-1",
         )
-
         first.attributes["value"] = 1
-
         self.assertEqual(first.attributes, {"value": 1})
         self.assertEqual(second.attributes, {})
 
-    def test_contract_validation_is_strict(self):
-        with self.assertRaisesRegex(ValueError, "extension name"):
-            Extension(name="bad-name")
-        with self.assertRaisesRegex(TypeError, "before_invoke"):
-            Extension(name="guardrails", before_invoke=object())
-        with self.assertRaisesRegex(ValueError, "unsupported extension framework"):
+    def test_context_validation_is_strict(self):
+        with self.assertRaisesRegex(ValueError, "unsupported lifecycle framework"):
             LifecycleContext(
                 framework="other",
                 agent_name="support",

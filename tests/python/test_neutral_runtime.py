@@ -25,6 +25,16 @@ from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
 )
+from harnest.approval import require_human_approval
+from harnest.tool import tool
+
+
+@tool
+@require_human_approval(message="Approve sending {value}?")
+def _protected_send(value: str) -> str:
+    """Send a protected value."""
+
+    return f"sent:{value}"
 
 
 class HeaderAuthenticator:
@@ -145,6 +155,46 @@ class FakeDriver:
         self.closed = True
 
 
+class ApprovalDriver(FakeDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.before_protected = 0
+        self.after_protected = 0
+
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        self.before_protected += 1
+        value = await _protected_send(request.input)
+        self.after_protected += 1
+        return InvocationResult(
+            text=value,
+            events=({"type": "message", "role": "assistant", "text": value},),
+            result=None,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+    async def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]:
+        result = await self.invoke(request)
+        for event in result.events:
+            yield dict(event)
+
+
+class MultipleApprovalDriver(ApprovalDriver):
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        self.before_protected += 1
+        first = await _protected_send(f"{request.input}:one")
+        second = await _protected_send(f"{request.input}:two")
+        self.after_protected += 1
+        text = f"{first},{second}"
+        return InvocationResult(
+            text=text,
+            events=({"type": "message", "role": "assistant", "text": text},),
+            result=None,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
 class NeutralRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -204,6 +254,8 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("text/javascript", javascript.headers["content-type"])
         for endpoint in ('"/agent"', '"/sessions"', '"/responses"', '"/live"'):
             self.assertIn(endpoint, javascript.text)
+        self.assertIn("/approvals/", javascript.text)
+        self.assertIn("Human approval required", javascript.text)
         for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
             self.assertNotIn(native_endpoint, javascript.text)
         self.assertNotIn("localStorage", javascript.text)
@@ -421,6 +473,145 @@ class NeutralRuntimeTests(unittest.TestCase):
                     websocket.receive_json()["type"], "session.connected"
                 )
                 websocket.send_json({"type": "session.close"})
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
+class ApprovalTransportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.context = TestClient(create_neutral_app(ApprovalDriver()))
+        self.client = self.context.__enter__()
+        self.client.post("/sessions", json={"id": "approval-session"})
+
+    def tearDown(self) -> None:
+        self.context.__exit__(None, None, None)
+
+    def test_json_approval_resumes_once_and_denial_does_not_execute(self):
+        response = self.client.post(
+            "/responses",
+            json={"input": "record", "sessionId": "approval-session"},
+        )
+        self.assertEqual(response.status_code, 200)
+        required = response.json()
+        self.assertEqual(required["status"], "requires_action")
+        self.assertEqual(required["requiredAction"]["type"], "human_approval")
+        approval_id = required["requiredAction"]["id"]
+
+        resumed = self.client.post(
+            f"/approvals/{approval_id}", json={"decision": "approve"}
+        )
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual(resumed.json()["status"], "completed")
+        self.assertEqual(resumed.json()["outputText"], "sent:record")
+        self.assertEqual(
+            self.client.post(
+                f"/approvals/{approval_id}", json={"decision": "approve"}
+            ).status_code,
+            409,
+        )
+
+        denied_request = self.client.post(
+            "/responses",
+            json={"input": "deny", "sessionId": "approval-session"},
+        ).json()
+        denied = self.client.post(
+            f"/approvals/{denied_request['requiredAction']['id']}",
+            json={"decision": "deny"},
+        )
+        self.assertEqual(denied.json()["status"], "denied")
+
+    def test_approval_continues_exact_task_without_replaying_prior_work(self):
+        driver = ApprovalDriver()
+        app = create_neutral_app(driver)
+        with TestClient(app) as client:
+            client.post("/sessions", json={"id": "s"})
+            required = client.post(
+                "/responses", json={"input": "once", "sessionId": "s"}
+            ).json()
+            self.assertEqual(driver.before_protected, 1)
+            self.assertEqual(driver.after_protected, 0)
+            completed = client.post(
+                f"/approvals/{required['requiredAction']['id']}",
+                json={"decision": "approve"},
+            )
+            self.assertEqual(completed.status_code, 200)
+            self.assertEqual(driver.before_protected, 1)
+            self.assertEqual(driver.after_protected, 1)
+
+    def test_multiple_sequential_approvals_resume_same_task(self):
+        driver = MultipleApprovalDriver()
+        app = create_neutral_app(driver)
+        with TestClient(app) as client:
+            client.post("/sessions", json={"id": "s"})
+            first = client.post(
+                "/responses", json={"input": "sequence", "sessionId": "s"}
+            ).json()
+            second = client.post(
+                f"/approvals/{first['requiredAction']['id']}",
+                json={"decision": "approve"},
+            ).json()
+            self.assertEqual(second["status"], "requires_action")
+            completed = client.post(
+                f"/approvals/{second['requiredAction']['id']}",
+                json={"decision": "approve"},
+            ).json()
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(
+                completed["outputText"], "sent:sequence:one,sent:sequence:two"
+            )
+            self.assertEqual(driver.before_protected, 1)
+            self.assertEqual(driver.after_protected, 1)
+
+    def test_sse_and_live_emit_approval_requested(self):
+        response = self.client.post(
+            "/responses",
+            json={
+                "input": "stream",
+                "sessionId": "approval-session",
+                "stream": True,
+            },
+        )
+        self.assertIn("event: approval.requested", response.text)
+        self.assertIn('"status": "requires_action"', response.text)
+
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json(
+                {"type": "connect", "sessionId": "approval-session"}
+            )
+            websocket.receive_json()
+            websocket.send_json({"type": "response.create", "input": "live"})
+            self.assertEqual(websocket.receive_json()["type"], "response.created")
+            self.assertEqual(websocket.receive_json()["type"], "approval.requested")
+            self.assertEqual(
+                websocket.receive_json()["status"], "requires_action"
+            )
+            websocket.send_json({"type": "session.close"})
+
+    def test_approval_decision_is_scoped_to_authenticated_principal(self):
+        app = create_neutral_app(
+            ApprovalDriver(), authenticator=HeaderAuthenticator()
+        )
+        with TestClient(app) as client:
+            alice = {"x-test-user": "alice"}
+            bob = {"x-test-user": "bob"}
+            client.post("/sessions", headers=alice, json={"id": "alice-session"})
+            required = client.post(
+                "/responses",
+                headers=alice,
+                json={"input": "private", "sessionId": "alice-session"},
+            ).json()
+            endpoint = f"/approvals/{required['requiredAction']['id']}"
+            self.assertEqual(
+                client.post(
+                    endpoint, headers=bob, json={"decision": "approve"}
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                client.post(
+                    endpoint, headers=alice, json={"decision": "approve"}
+                ).status_code,
+                200,
+            )
 
 
 if __name__ == "__main__":

@@ -27,12 +27,13 @@ teach the deployed agent how to perform tasks.
    Do not use `lib/` for a discovered capability; `__init__.py` is unnecessary.
 5. Import authoring symbols explicitly from `harnest.*`; no magic globals or
    compatibility aliases exist.
-6. Match required paths, exports, and declared names. Missing or empty optional
-   folders are skipped; populated invalid folders fail compilation.
+6. Match path/export contracts. MCP `client()` factories declare no parameters.
+   Decorate executable extension listeners with `@lifecycle.*`; helpers stay
+   ignored. Invalid resources fail compile.
 7. Put dependencies in `requirements.txt`, deployment settings in `config.yaml`,
-   standalone HTTP policy in `server.yaml`, secrets in environment/secret
-   references, and public identity in `agent-card.yaml`. Keep framework
-   versions within this Harnest release's supported range.
+   and standalone HTTP policy in `server.yaml`; use exact `${NAME}` references
+   for startup environment values. Put public identity in `agent-card.yaml`.
+   Keep framework versions within this Harnest release's supported range.
 
 ## Load only relevant guidance
 

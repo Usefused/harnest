@@ -454,6 +454,9 @@ def _build_fastapi_app(
 
     card = load_agent_card(artifact)
     _apply_observability_defaults(application.framework)
+    authenticator = _resolve_lifecycle_authenticator(
+        application.extensions, authenticator
+    )
 
     from .neutral_runtime import create_neutral_app, create_neutral_router
     from .playground import create_playground_router
@@ -534,6 +537,19 @@ def _build_fastapi_app(
     instrument_fastapi(app, telemetry)
     _attach_library_lifecycle(app, Path(artifact).resolve() / "source")
     return app
+
+
+def _resolve_lifecycle_authenticator(
+    listeners: Any, authenticator: Authenticator | None
+) -> Authenticator | None:
+    from .runtime_extensions import lifecycle_authenticator
+
+    discovered = lifecycle_authenticator(listeners)
+    if discovered is not None and authenticator is not None:
+        raise AgentRuntimeError(
+            "auth lifecycle listeners cannot be combined with an injected authenticator"
+        )
+    return discovered or authenticator
 
 
 def _resolve_adk_session_service(

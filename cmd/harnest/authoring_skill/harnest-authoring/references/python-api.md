@@ -106,6 +106,51 @@ customer responses, streams, or eval expectations. Treat
 `Agent completed without customer-facing output` as a provider/model completion
 failure: the model reasoned but did not emit a final answer or structured result.
 
+For programmable gateway access, subclass `LiteLLMLifecycle` and pass one
+instance as `lifecycle=`. `create_transport(context)` runs once per built model
+and returns the provider SDK client that LiteLLM accepts through `client=`.
+`before_request(request, context)` may mutate the call mapping or return a
+replacement. `after_response`, `on_error`, and `close` handle normalization,
+diagnostics, and cleanup. Use async hooks for Harnest's async runtime; use only
+ordinary hooks when invoking a LangChain model synchronously. A built model
+rejects mixed sync/async use, and a lifecycle cannot be combined with a direct
+`client=` completion argument. For streams, `after_response` observes successful
+exhaustion and `on_error` observes iteration failures. Shutdown waits for active
+calls and a failed cleanup can be retried.
+`LiteLLMContext` exposes the qualified `model`, selected `framework`, and the
+created `transport` (which is `None` during `create_transport`).
+
+Build mTLS at the provider-client boundary rather than in Harnest networking:
+
+```python
+import os
+
+import httpx
+from openai import AsyncOpenAI
+
+from harnest.model import LiteLLMLifecycle
+
+
+class Gateway(LiteLLMLifecycle):
+    async def create_transport(self, context):
+        self.http = httpx.AsyncClient(
+            cert=(os.environ["MODEL_CERT"], os.environ["MODEL_KEY"]),
+            verify=os.environ["MODEL_CA"],
+        )
+        return AsyncOpenAI(
+            base_url=os.environ["MODEL_URL"],
+            api_key=os.environ["MODEL_TOKEN"],
+            http_client=self.http,
+        )
+
+    async def before_request(self, request, context):
+        request.setdefault("extra_headers", {})["X-Team"] = "support"
+        return request
+
+    async def close(self, context):
+        await self.http.aclose()
+```
+
 ## MCP clients
 
 ```python
@@ -114,45 +159,100 @@ import os
 from harnest.mcp import MCPClient
 
 
-knowledge = (
-    MCPClient.streamable_http(
+def client():
+    return MCPClient.streamable_http(
         os.environ["KNOWLEDGE_MCP_URL"],
-        headers={"Authorization": "Bearer ${KNOWLEDGE_MCP_TOKEN}"},
+        headers={"Authorization": f"Bearer {os.environ['KNOWLEDGE_MCP_TOKEN']}"},
         tools=("search",),
         prefix="knowledge",
     )
-    if os.getenv("KNOWLEDGE_MCP_URL")
-    else None
-)
 ```
 
 Available constructors are `stdio`, `streamable_http`, and legacy `sse`.
 `${ENV_VAR}` placeholders are resolved when connecting, not during discovery.
-Use a prefix to prevent tool-name collisions.
+Each file exports exactly one literally zero-parameter `client()` factory; its
+filename is the local client identity. Optional parameters, `*args`, and
+`**kwargs` are rejected. The factory remains ordinary Python, so direct
+`os.environ`, `os.getenv`, custom credentials, and third-party code are
+available. Factory failures identify the exception type without echoing its
+potentially sensitive message. Use a prefix to control exposed names; Harnest
+separately assigns a stable path-scoped capability identity so same-named
+clients in direct, plugin, and subagent scopes cannot collide.
+
+For `@require_human_approval(tools=[...])`, use the MCP server's original tool
+names before `prefix=` is applied. Harnest validates the selection after
+discovery in both frameworks and fails closed when a name is absent. Identical
+connection configurations are rejected even when capability identity or
+approval policy differs, preventing duplicate sessions to one configured
+server.
+
+## Human approval
+
+Declare protected local tools beside their implementation:
+
+```python
+from harnest.approval import require_human_approval
+from harnest.tool import tool
+
+
+@tool
+@require_human_approval(message="Approve deleting {customer_id}?")
+def delete_customer(customer_id: str):
+    """Delete one customer."""
+    ...
+```
+
+Decorate an MCP `client()` to protect every remote tool or a selected list:
+
+```python
+@require_human_approval(
+    tools=["merge_pull_request"],
+    message="Approve this GitHub write?",
+)
+def client():
+    return MCPClient.streamable_http(os.environ["GITHUB_MCP_URL"])
+```
+
+The neutral JSON response returns `status: requires_action`; SSE and `/live`
+emit `approval.requested` before `response.completed`. Submit `approve` or
+`deny` to `POST /approvals/{approvalId}`. Approval binds to the authenticated
+user, session, invocation, action, and argument hash, is consumed once, and
+expires fail-closed. Approving continues the exact task suspended before the
+call; it does not rerun the invocation or repeat earlier side effects. Each
+later protected call creates a separate approval. Unique request IDs,
+arguments, messages, credentials, and results never enter approval audit logs.
+Pending approvals and suspended tasks are process-local. Calls outside
+Harnest's managed execution boundary fail closed. Advanced apps have no
+automatic Harnest capability wrapper, including through neutral `/responses`
+and `/live`; keep protected capabilities managed or implement framework-native
+approval explicitly.
 
 ## Plugins versus extensions
 
 A plugin is a filesystem bundle of MCP client modules and progressive skills.
 There is no Python plugin object and no plugin agent.
 
-An extension changes invocation behavior. Portable lifecycle hooks are
-`before_invoke`, `after_invoke`, `on_event`, and `on_error`:
+An extension changes application behavior. Arbitrary public Python files below
+root `extensions/` may contain helpers, but only decorated functions execute:
 
 ```python
-from harnest.extension import Extension
+from harnest.lifecycle import lifecycle
 
 
+@lifecycle.after_invoke(order=20)
 async def after_invoke(context, result):
     await store.write(context.invocation_id, result.text)
-
-
-extension = Extension(name="conversation_store", after_invoke=after_invoke)
 ```
 
-The extension name must match its directory. Return `None` from transforming
-hooks to keep the value, return a replacement to transform it, and return
-`DROP_EVENT` from `on_event` to suppress an output event. Native `adk.py` or
-`langgraph.py` integrations may accompany the portable lifecycle.
+Multiple listeners may share a phase. Return `None` to keep a transforming
+value, a replacement to transform it, and `DROP_EVENT` from `on_event` to
+suppress an event. `authenticate` resolves the existing `AuthPrincipal` from a
+read-only connection context. `before_model`, `after_model`, and
+`on_model_error` receive only Harnest-neutral types and are guaranteed for
+managed model boundaries. Portable v1 changes visible text or short-circuits;
+structural message/model control requires zero-argument `@lifecycle.adk_plugin` or
+`@lifecycle.langgraph_middleware` factories for native framework callbacks.
+Read `docs/extensions.md` for phase and advanced-mode guarantees.
 
 ## Logging, tracing, and sandboxing
 

@@ -38,6 +38,25 @@ class AuthPrincipal:
         object.__setattr__(self, "claims", MappingProxyType(dict(self.claims)))
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectionContext:
+    """Framework-independent, read-only connection data for authentication."""
+
+    transport: str
+    method: str | None
+    path: str
+    headers: Mapping[str, str]
+    cookies: Mapping[str, str]
+    query: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if self.transport not in {"http", "websocket"}:
+            raise ValueError("connection transport must be http or websocket")
+        object.__setattr__(self, "headers", _readonly_strings(self.headers))
+        object.__setattr__(self, "cookies", _readonly_strings(self.cookies))
+        object.__setattr__(self, "query", _readonly_strings(self.query))
+
+
 class AuthenticationError(RuntimeError):
     """A request did not satisfy the deployment authentication policy."""
 
@@ -110,10 +129,27 @@ async def _authenticate_scope(
 ) -> AuthPrincipal:
     from starlette.requests import HTTPConnection
 
-    principal = await authenticator.authenticate(HTTPConnection(scope))
+    principal = await authenticator.authenticate(_connection_context(HTTPConnection(scope)))
     if not isinstance(principal, AuthPrincipal):
         raise TypeError("authenticator must return AuthPrincipal")
     return principal
+
+
+def _connection_context(connection: Any) -> ConnectionContext:
+    return ConnectionContext(
+        transport=connection.scope["type"],
+        method=connection.scope.get("method"),
+        path=connection.url.path,
+        headers=dict(connection.headers),
+        cookies=dict(connection.cookies),
+        query=dict(connection.query_params),
+    )
+
+
+def _readonly_strings(values: Mapping[str, Any]) -> Mapping[str, str]:
+    if not isinstance(values, Mapping):
+        raise TypeError("connection context values must be mappings")
+    return MappingProxyType({str(key): str(value) for key, value in values.items()})
 
 
 async def _reject(
@@ -134,6 +170,7 @@ __all__ = [
     "AuthenticationError",
     "Authenticator",
     "AnonymousAuthenticator",
+    "ConnectionContext",
     "install_authentication",
     "principal_for",
 ]

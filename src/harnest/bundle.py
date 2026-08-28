@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -34,7 +35,9 @@ from ._library import (
     LibraryImportError as AuthoredLibraryImportError,
     authored_library,
 )
-from .mcp import MCPClient
+from .mcp import MCPClient, _mcp_connection_configuration
+from .model_hooks import portable_model_extension
+from .approval import approval_policy
 from .plugin import PluginConventionError, PluginResources, discover_plugins
 from .sandbox import Sandbox
 from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
@@ -217,6 +220,7 @@ def _compile_advanced_application(
         predicate=lambda item: isinstance(item, _AdvancedAgentDefinition),
     )
     _reject_advanced_filesystem_resources(anchor.parent, framework=framework)
+    discovered_extensions = _load_extensions(anchor.parent, framework)
     try:
         advanced = backend.validate_advanced(
             value, fallback_name=anchor.parent.name
@@ -225,6 +229,9 @@ def _compile_advanced_application(
         raise BundleImportError(str(exc)) from exc
     except AdvancedBackendValidationError as exc:
         raise BundleExportError(str(exc)) from exc
+    advanced = _attach_advanced_native_extensions(
+        advanced, discovered_extensions.native, framework=framework
+    )
     return CompiledApplication(
         name=advanced.name,
         framework=framework,
@@ -233,6 +240,7 @@ def _compile_advanced_application(
         native_app=advanced.native_app,
         kind="advanced",
         bridge=value,
+        extensions=discovered_extensions.listeners,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -262,13 +270,12 @@ def _compile_managed_application(
         predicate=lambda item: isinstance(item, (AgentDefinition, Graph)),
     )
     discovered_extensions = _load_extensions(anchor.parent, framework)
-    portable_extensions = tuple(
-        item.portable
-        for item in discovered_extensions
-        if item.portable is not None
+    portable_extensions = discovered_extensions.listeners
+    model_extension = portable_model_extension(
+        portable_extensions, framework=framework
     )
-    native_extensions = tuple(
-        item.native for item in discovered_extensions if item.native is not None
+    native_extensions = discovered_extensions.native + (
+        (model_extension,) if model_extension is not None else ()
     )
     if isinstance(value, AgentDefinition):
         definition = _compose_definition(anchor, value, framework=framework)
@@ -305,11 +312,35 @@ def _compile_managed_application(
     )
 
 
-def _load_extensions(bundle_root: Path, framework: str) -> tuple[Any, ...]:
+def _load_extensions(bundle_root: Path, framework: str) -> Any:
     try:
         return discover_extensions(bundle_root / "extensions", framework=framework)
     except ExtensionDiscoveryError as exc:
         raise BundleConventionError(str(exc)) from exc
+
+
+def _attach_advanced_native_extensions(
+    advanced: Any, native_extensions: Sequence[Any], *, framework: str
+) -> Any:
+    if not native_extensions:
+        return advanced
+    if framework == "langgraph":
+        raise BundleConventionError(
+            "advanced LangGraph applications cannot attach discovered middleware "
+            "after graph compilation; apply it before Agent.advanced(...)"
+        )
+    app = advanced.native_app
+    if app is None:
+        raise BundleConventionError("advanced ADK lifecycle plugins require an ADK App")
+    plugins = tuple(getattr(app, "plugins", ())) + tuple(native_extensions)
+    names = [getattr(plugin, "name", None) for plugin in plugins]
+    duplicates = sorted({name for name in names if name and names.count(name) > 1})
+    if duplicates:
+        raise BundleConventionError(
+            "duplicate ADK application plugin names: " + ", ".join(duplicates)
+        )
+    native_app = app.model_copy(update={"plugins": list(plugins)})
+    return replace(advanced, native_app=native_app)
 
 
 def compile_artifact(
@@ -611,11 +642,9 @@ def _reject_advanced_filesystem_resources(bundle_root: Path, *, framework: str) 
         "tools",
         "subagents",
         "mcp",
-        "extensions",
         "plugins",
         "sandbox",
         "skills",
-        "evals",
     )
     populated = [
         name
@@ -653,7 +682,9 @@ def _resolve_graph_resources(
 ) -> Graph:
     """Resolve string graph nodes from filesystem-discovered tools/subagents."""
 
-    resources = _discover_folder_resources(anchor.parent, framework, is_root=True)
+    resources = _discover_folder_resources(
+        anchor.parent, framework, is_root=True, capability_scope=""
+    )
     has_root_agent_node = _graph_contains_agent(graph)
     referenced = _graph_string_references(graph)
     registry, resource_kinds = _graph_resource_registry(resources)
@@ -770,11 +801,17 @@ def _compose_definition(
     is_root: bool = True,
     framework: str = "adk",
     graph_resource_context: bool = False,
+    capability_scope: str = "",
 ) -> AgentDefinition:
     bundle_root = anchor.parent
     _validate_folder_scope(bundle_root, is_root)
     instruction = _resolve_instruction(bundle_root, root.instruction)
-    resources = _discover_folder_resources(bundle_root, framework, is_root=is_root)
+    resources = _discover_folder_resources(
+        bundle_root,
+        framework,
+        is_root=is_root,
+        capability_scope=capability_scope,
+    )
     tools = _merge_named_sources(
         "tool",
         ("explicit", root.tools),
@@ -830,11 +867,21 @@ def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
 
 
 def _discover_folder_resources(
-    bundle_root: Path, framework: str, *, is_root: bool
+    bundle_root: Path,
+    framework: str,
+    *,
+    is_root: bool,
+    capability_scope: str,
 ) -> _DiscoveredResources:
     tools = _discover_tools(bundle_root / "tools")
-    subagents = _discover_subagents(bundle_root / "subagents", framework=framework)
-    discovered_mcp = _discover_mcp(bundle_root / "mcp")
+    subagents = _discover_subagents(
+        bundle_root / "subagents",
+        framework=framework,
+        capability_scope=capability_scope,
+    )
+    discovered_mcp = _discover_mcp(
+        bundle_root / "mcp", capability_scope=_mcp_scope(capability_scope)
+    )
     plugins = _discover_capability_plugins(bundle_root / "plugins") if is_root else ()
     plugin_mcp = _discover_plugin_mcp(plugins)
     mcp = _merge_mcp_sources(
@@ -962,7 +1009,7 @@ def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
 
 
 def _discover_subagents(
-    directory: Path, *, framework: str = "adk"
+    directory: Path, *, framework: str = "adk", capability_scope: str = ""
 ) -> tuple[AgentDefinition, ...]:
     if directory.is_symlink():
         raise BundleConventionError(
@@ -978,7 +1025,9 @@ def _discover_subagents(
         for path in directory.iterdir()
         if (entry := _subagent_entry(path)) is not None
     ]
-    return _load_subagent_entries(entries, framework=framework)
+    return _load_subagent_entries(
+        entries, framework=framework, capability_scope=capability_scope
+    )
 
 
 def _subagent_entry(path: Path) -> tuple[str, Path, bool] | None:
@@ -1014,7 +1063,10 @@ def _nested_subagent_entry(path: Path) -> tuple[str, Path, bool]:
 
 
 def _load_subagent_entries(
-    entries: Sequence[tuple[str, Path, bool]], *, framework: str
+    entries: Sequence[tuple[str, Path, bool]],
+    *,
+    framework: str,
+    capability_scope: str,
 ) -> tuple[AgentDefinition, ...]:
     agents = []
     seen_exports: dict[str, Path] = {}
@@ -1050,7 +1102,11 @@ def _load_subagent_entries(
             )
         agents.append(
             _compose_definition(
-                path, value, is_root=False, framework=framework
+                path,
+                value,
+                is_root=False,
+                framework=framework,
+                capability_scope=_agent_scope(capability_scope, export_name),
             )
             if nested
             else value
@@ -1071,39 +1127,89 @@ def _discover_plugin_mcp(
     """Load each plugin's MCP clients without an aggregation module."""
 
     return tuple(
-        (plugin, _discover_mcp(plugin.directory / "mcp"))
+        (
+            plugin,
+            _discover_mcp(
+                plugin.directory / "mcp",
+                capability_scope=f"plugin__{plugin.name}__mcp",
+            ),
+        )
         for plugin in plugins
     )
 
 
-def _discover_mcp(directory: Path) -> tuple[MCPClient, ...]:
+def _discover_mcp(
+    directory: Path, *, capability_scope: str = "mcp"
+) -> tuple[MCPClient, ...]:
     clients = []
     for path in _resource_files(directory, kind="mcp"):
         name = path.stem
-        module, value = _load_export(path, name)
-        if value is None:
-            _reject_extra_exports(
-                module,
-                path,
-                name,
-                kind="MCP client",
-                predicate=lambda item: isinstance(item, MCPClient),
+        module, factory = _load_export(path, "client")
+        if not callable(factory):
+            raise BundleExportError(
+                f"MCP module {path} must export callable client(); "
+                f"got {type(factory).__name__}"
             )
-            continue
+        value = _call_mcp_factory(path, factory)
         if not isinstance(value, MCPClient):
             raise BundleExportError(
-                f"MCP module {path} must export MCPClient {name!r} or set it "
-                f"to None to disable it; got {type(value).__name__}"
+                f"MCP client() factory in {path} must return MCPClient; "
+                f"got {type(value).__name__}"
             )
+        value = replace(
+            value,
+            identity=name,
+            capability_id=f"{capability_scope}__{name}",
+            approval=approval_policy(factory),
+        )
         _reject_extra_exports(
             module,
             path,
-            name,
+            "client",
             kind="MCP client",
-            predicate=lambda item: isinstance(item, MCPClient),
+            predicate=lambda item: isinstance(item, MCPClient)
+            or (
+                callable(item)
+                and getattr(item, "__module__", None) == module.__name__
+            ),
         )
         clients.append(value)
     return tuple(clients)
+
+
+def _call_mcp_factory(path: Path, factory: Callable[..., Any]) -> Any:
+    try:
+        signature = inspect.signature(factory)
+    except Exception as exc:
+        # Exotic callables can execute user code while exposing a signature;
+        # redact that boundary for the same reason as factory invocation.
+        raise BundleImportError(
+            f"MCP client() factory in {path} signature failed with "
+            f"{type(exc).__name__}"
+        ) from None
+    if signature.parameters:
+        raise BundleExportError(
+            f"MCP client() factory in {path} must accept no arguments and "
+            "declare zero parameters"
+        )
+    try:
+        return factory()
+    except Exception as exc:
+        # Factory exceptions may carry credentials or complete headers, so
+        # diagnostics identify the failing boundary without echoing values.
+        raise BundleImportError(
+            f"MCP client() factory in {path} failed with {type(exc).__name__}"
+        ) from None
+
+
+def _mcp_scope(capability_scope: str) -> str:
+    return f"{capability_scope}__mcp" if capability_scope else "mcp"
+
+
+def _agent_scope(capability_scope: str, name: str) -> str:
+    if capability_scope.startswith("agent__"):
+        return f"{capability_scope}__{name}"
+    return f"agent__{name}"
 
 
 def _discover_sandbox(directory: Path) -> Sandbox | None:
@@ -1568,15 +1674,16 @@ def _merge_mcp_sources(
     *sources: tuple[str, Sequence[MCPClient]],
 ) -> tuple[MCPClient, ...]:
     merged = []
-    origins: list[str] = []
+    origins: dict[tuple[Any, ...], str] = {}
     for source, values in sources:
         for client in values:
-            if client in merged:
-                previous = origins[merged.index(client)]
+            configuration = _mcp_connection_configuration(client)
+            previous = origins.get(configuration)
+            if previous is not None:
                 raise BundleDuplicateError(
                     "duplicate MCP client configuration: "
                     f"{previous} and {source} resources"
                 )
             merged.append(client)
-            origins.append(source)
+            origins[configuration] = source
     return tuple(merged)

@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Mapping, Sequence
 
+from .approval import (
+    ApprovalPolicy,
+    authorize_mcp,
+    record_approved_execution,
+    record_approved_failure,
+)
+
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 __all__ = ["MCPClient"]
@@ -40,6 +47,9 @@ class MCPClient:
     tool_name_prefix: str | None = None
     timeout_seconds: float = 30
     sse_read_timeout_seconds: float = 300
+    approval: ApprovalPolicy | None = field(default=None, repr=False)
+    identity: str | None = field(default=None, repr=False)
+    capability_id: str | None = field(default=None, repr=False)
 
     @classmethod
     def stdio(
@@ -134,11 +144,50 @@ class MCPClient:
 
         classes = _adk_mcp_classes()
         connection = self._adk_connection(classes)
-        return classes[0](
+        toolset_type = self._adk_toolset_type(classes[0])
+        return toolset_type(
             connection_params=connection,
             tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
             tool_name_prefix=self.tool_name_prefix,
         )
+
+    def _adk_toolset_type(self, base: Any) -> Any:
+        policy = self.approval
+        if policy is None:
+            return base
+        client_name = (
+            self.capability_id or self.identity or self.tool_name_prefix or "mcp"
+        )
+        exposed_prefix = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
+
+        class ApprovalMcpToolset(base):
+            """Attach Harnest gates after ADK discovers remote tool names."""
+
+            async def get_tools(self, readonly_context: Any = None) -> list[Any]:
+                tools = await super().get_tools(readonly_context)
+                names = tuple(
+                    str(getattr(tool, "name", "")).removeprefix(exposed_prefix)
+                    for tool in tools
+                )
+                _validate_approval_tools(policy, names, capability_id=client_name)
+                for remote_tool in tools:
+                    exposed_name = str(getattr(remote_tool, "name", ""))
+                    name = exposed_name.removeprefix(exposed_prefix)
+                    if not policy.applies_to(name):
+                        continue
+
+                    # ADK creates MCP tools only after discovery. Wrapping its
+                    # public execution method is the only point that can audit
+                    # success after transport I/O without copying MCP internals.
+                    remote_tool.run_async = _guard_adk_mcp_tool(
+                        remote_tool.run_async,
+                        client_name=client_name,
+                        tool_name=name,
+                        policy=policy,
+                    )
+                return tools
+
+        return ApprovalMcpToolset
 
     def _adk_connection(self, classes: tuple[Any, ...]) -> Any:
         _, sse_params, stdio_params, stream_params, server_parameters = classes
@@ -187,6 +236,63 @@ class MCPClient:
                 "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
             },
         }
+
+
+def _guard_adk_mcp_tool(
+    operation: Any,
+    *,
+    client_name: str,
+    tool_name: str,
+    policy: ApprovalPolicy,
+) -> Any:
+    async def guarded(*, args: dict[str, Any], tool_context: Any) -> Any:
+        grant = await authorize_mcp(client_name, tool_name, args, policy)
+        try:
+            result = await operation(args=args, tool_context=tool_context)
+        except BaseException:
+            record_approved_failure(grant)
+            raise
+        record_approved_execution(grant)
+        return result
+
+    return guarded
+
+
+def _mcp_connection_configuration(client: MCPClient) -> tuple[Any, ...]:
+    """Return semantic connection fields without compiler policy metadata."""
+
+    if not isinstance(client, MCPClient):
+        raise TypeError("MCP connection configuration requires MCPClient")
+    return (
+        client.transport,
+        client.command,
+        tuple(client.args),
+        tuple(sorted(client.env.items())),
+        client.url,
+        tuple(sorted(client.headers.items())),
+        tuple(sorted(client.tool_filter)) if client.tool_filter is not None else None,
+        client.tool_name_prefix,
+        client.timeout_seconds,
+        client.sse_read_timeout_seconds,
+    )
+
+
+def _validate_approval_tools(
+    policy: ApprovalPolicy | None,
+    remote_names: Sequence[str],
+    *,
+    capability_id: str,
+) -> None:
+    """Fail closed when a selective policy names an unavailable remote tool."""
+
+    if policy is None or policy.tools is None:
+        return
+    missing = sorted(set(policy.tools) - set(remote_names))
+    if missing:
+        raise ValueError(
+            f"MCP capability {capability_id!r} approval references unavailable "
+            f"tools: {', '.join(missing)}"
+        )
 
 
 def _adk_mcp_classes() -> tuple[Any, ...]:

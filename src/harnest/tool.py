@@ -17,11 +17,11 @@ def tool(*, description: str | None = None) -> Callable[[F], F]: ...
 
 
 def tool(function: F | None = None, *, description: str | None = None):
-    """Mark a typed Python function as an ADK tool.
+    """Mark a typed Python function as a managed Harnest tool.
 
-    ADK already auto-wraps callables. This decorator keeps the function intact,
-    checks that the model will receive a description, and optionally supplies a
-    docstring when one cannot be written inline.
+    Both managed backends wrap callables natively. This decorator preserves the
+    function's typed signature, checks that the model receives a description,
+    and installs declared execution policy before backend lowering.
     """
 
     def decorate(fn: F) -> F:
@@ -33,6 +33,10 @@ def tool(function: F | None = None, *, description: str | None = None):
             name = getattr(fn, "__name__", type(fn).__name__)
             raise ValueError(f"tool {name!r} needs a docstring or description")
         setattr(fn, "__harnest_tool__", True)
-        return fn
+        # Approval may be written above or below @tool. Delaying the wrapper
+        # choice until both markers are present keeps both natural orders safe.
+        from .approval import wrap_approved_tool
+
+        return wrap_approved_tool(fn)
 
     return decorate(function) if function is not None else decorate

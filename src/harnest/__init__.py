@@ -19,10 +19,12 @@ from .bundle import (
     discover_evals,
 )
 from .mcp import MCPClient
+from .approval import require_human_approval
 from .graph import START, Edge, Event, Graph, Join
-from .model import LiteLLMModel, ModelConnector, OllamaModel
+from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
+from .model_lifecycle import LiteLLMContext
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
-from .extension import DROP_EVENT, Extension, LifecycleContext
+from .lifecycle import DROP_EVENT, LifecycleContext, lifecycle
 from .logging import Logger, get_logger
 from .sandbox import Sandbox
 from .tool import tool
@@ -46,10 +48,13 @@ __all__ = [
     "Graph",
     "Join",
     "MCPClient",
+    "require_human_approval",
+    "LiteLLMContext",
+    "LiteLLMLifecycle",
     "LiteLLMModel",
-    "Extension",
     "DROP_EVENT",
     "LifecycleContext",
+    "lifecycle",
     "Logger",
     "ModelConnector",
     "OllamaModel",

@@ -84,6 +84,16 @@ response normalizers expose only customer-facing text and structured output. A
 reasoning-only completion fails the public response contract instead of
 becoming a successful response with an empty body.
 
+`LiteLLMModel(..., lifecycle=LiteLLMLifecycle())` is the programmable gateway
+boundary. Harnest wraps ADK's per-model `LiteLLMClient` or the individual
+LangChain adapter client, never LiteLLM module globals. `create_transport` runs
+once per built model and its result is supplied as LiteLLM's provider `client`;
+`before_request`, `after_response`, and `on_error` wrap each completion, while
+`close` runs during runtime shutdown. This supports provider SDK clients backed
+by mTLS/custom HTTP transports without coupling Harnest to certificate or
+gateway configuration. Sync hooks serve sync calls; async hooks require the
+framework's async path, and a model instance rejects mixed execution modes.
+
 ## Filesystem-first composition
 
 An agent folder is itself the Python authoring unit; there is no required wrapper
@@ -190,12 +200,10 @@ marked root-only:
 | `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
 | `subagents/<name>.py` | Exactly one `AgentDefinition` named `<name>`. |
-| `mcp/<name>.py` | An `MCPClient` or `None` named `<name>`. |
-| `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `MCPClient` or `None` named `<client>`. |
+| `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
+| `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `client()` factory using the same rule. |
 | `plugins/<name>/skills/<skill>/SKILL.md` (root-only) | Plugin-owned progressive skills. |
-| `extensions/<name>/lifecycle.py` (root-only) | One portable `Extension` exported as `extension`. |
-| `extensions/<name>/adk.py` (root-only) | Optional native ADK plugin integration. |
-| `extensions/<name>/langgraph.py` (root-only) | Optional native LangGraph middleware integration. |
+| `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners and native factories. |
 | `sandbox/sandbox.py` | One optional ADK-only `Sandbox` defining the agent's lazy code-execution backend. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
 | `evals/<id>.evalset.json` (root test lane) | A test-only, ADK-only `EvalSet` whose `eval_set_id` matches its filename. |
@@ -216,19 +224,47 @@ smoke tests, evals, and standalone serving. This boundary allows reuse without
 turning the authored root into an installable package or coupling independently
 discovered resource modules to each other.
 
-`None` is an intentional MCP state, not an error. Optional integrations should
-check all required environment variables in their definition module and export
-`None` when configuration is incomplete. This keeps importing, local runs, and
-deployments safe from half-configured connections. Enabled definitions should
-retain `${ENV_VAR}` placeholders rather than interpolating credentials;
-`MCPClient` expands them only when constructing the selected framework's MCP
-connection. ADK creates `McpToolset`; LangGraph uses
+Each MCP module is ordinary Python and may read `os.environ`, call a credential
+provider, or construct headers dynamically inside `client()`. Missing required
+configuration fails compilation instead of silently removing a capability.
+Optional parameters, `*args`, and `**kwargs` are invalid factory signatures.
+Factory failures report only the exception type because exception messages can
+contain credential or header values. The compiler assigns a deterministic,
+path-scoped capability identity independently of the filename, keeping
+same-named direct, plugin, and nested-agent clients distinct. Duplicate
+connection detection excludes that compiler identity and approval metadata, so
+the same configured server cannot be opened twice under aliases.
+Literal `${ENV_VAR}` placeholders remain available when connection-time
+resolution is preferable. ADK creates `McpToolset`; LangGraph uses
 `langchain-mcp-adapters` and defers asynchronous tool discovery until runtime.
 The descriptor supports `stdio`, modern `streamable-http`, and legacy `sse`.
 ADK receives the matching connection-parameter type; LangGraph receives the
 matching `langchain-mcp-adapters` connection dictionary. HTTP request timeouts
 and long-lived SSE idle-read timeouts are separate so quiet legacy servers do
 not disconnect at the normal request deadline.
+
+`@require_human_approval` adds policy metadata to a local `@tool` or an MCP
+`client()` factory. Managed ADK wraps function execution and discovered MCP
+tools; managed LangGraph uses callable wrappers and tool-call middleware. The
+neutral runtime stops immediately before the call, binds the request to the
+principal, session, invocation, action, and canonical argument hash, then
+returns `requires_action`. JSON, SSE, and WebSocket use the same approval ID;
+`POST /approvals/{approvalId}` atomically denies or grants one matching resume.
+An approval continues the exact in-memory task suspended at that protected
+call; it never starts the invocation again or replays earlier side effects. A
+later protected call creates a new independently bound approval. Timeout,
+changed arguments, a second decision, or a second execution fail closed.
+Privacy-safe OTEL audit records contain low-cardinality operation, trigger,
+outcome, and capability fields, never unique request IDs, arguments, prompts,
+rendered messages, results, headers, or credentials.
+
+Selective MCP approval names are checked against the server's discovered,
+unprefixed remote tool names in both frameworks. A missing name fails closed
+before invocation. Advanced applications have no automatic Harnest tool or MCP
+capability wrapper, including through neutral `/responses` and `/live`; keep
+protected capabilities managed or implement framework-native approval wiring.
+The default approval store and suspended tasks are process local and intended
+for standalone development; restarting invalidates pending requests.
 
 Outside root `lib/`, the compiler ignores `__init__.py`, dotfiles, cache
 directories, and files whose names start with `_`. It imports public resource
@@ -243,15 +279,18 @@ while the skills teach the host agent when and how to use those tools. A plugin
 must contain at least one of each and never contributes an agent or execution
 path. See [Plugins](plugins.md).
 
-Runtime extensions are discovered separately in sorted directory order. Each
-`extensions/<name>/lifecycle.py` exports a portable `Extension` named
-`extension`. Optional `adk.py` and `langgraph.py` files add native integration
-for the selected framework without requiring the other backend. Portable and
-native pieces are additive: portable behavior surrounds the neutral runtime,
-while native behavior runs inside the framework. See [Runtime
+Runtime extensions are decorated functions in arbitrary public
+`extensions/**/*.py` modules. Multiple listeners share a phase in explicit
+order with source path as a deterministic tie-breaker. Portable behavior covers
+authentication, invocation, normalized events, errors, and managed model calls.
+Explicit ADK-plugin and LangGraph-middleware factories preserve native callbacks
+without exposing native request types through portable hooks. See [Runtime
 extensions](extensions.md).
 
-Advanced mode continues to own lifecycle wiring in `agent.py`. Managed
+Advanced mode continues to own arbitrary native model calls, graph routing,
+state/checkpoint semantics, approval wiring, and native integration wiring.
+Harnest still owns its neutral HTTP, authentication, and server boundaries, but
+does not automatically wrap advanced native tools or MCP calls. Managed
 LangGraph also rejects ADK sandbox executors, `output_key`,
 `generate_content_config`, and implicit subagent delegation rather than
 silently ignoring them.
@@ -374,6 +413,12 @@ and `playground.enabled` controls the bundled UI. Explicit launcher flags are
 short-lived operator overrides. Authentication, session storage, TLS, secrets,
 and deployment scaling remain separate injection or hosting boundaries.
 
+Setting scalars may use exact `${NAME}` environment references. Compilation
+validates their position and preserves the template bytes; the launcher resolves
+them before typed validation. Short `$NAME` syntax and partial interpolation are
+rejected so environment content cannot alter YAML structure. Startup errors name
+the variable and field without exposing the resolved value.
+
 The artifact can be served without the Go provisioner. Harnest's primary public
 surface is deliberately transport- and provider-neutral:
 
@@ -443,8 +488,9 @@ This is a process boundary, not a deployment boundary: the interpreter still
 needs Harnest, the selected framework, model adapters, and agent dependencies.
 The standalone server does not interpret deployment resources, resolve secrets,
 enforce permissions, scale replicas, or choose an identity provider. Session
-storage and authentication are separate injection boundaries. An
-`Authenticator` resolves HTTP and WebSocket connections to `AuthPrincipal`;
+storage and authentication are separate boundaries. Ordered root
+`@lifecycle.authenticate` listeners or an injected `Authenticator` resolve HTTP
+and WebSocket connections to `AuthPrincipal`;
 the principal ID scopes all neutral execution and session operations. The
 middleware authenticates advanced ADK native routes, but deployment policy must
 still authorize their native user fields. Health and discovery remain public.

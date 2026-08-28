@@ -51,8 +51,9 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write(
             root / "mcp" / "root_mcp.py",
             "from harnest.mcp import MCPClient\n"
-            "root_mcp = MCPClient.streamable_http(\n"
-            "    'https://root.example/mcp', prefix='root')\n",
+            "def client():\n"
+            "    return MCPClient.streamable_http(\n"
+            "        'https://root.example/mcp', prefix='root')\n",
         )
         self._write(
             root / "skills" / "root_skill" / "SKILL.md",
@@ -77,8 +78,9 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write(
             nested / "mcp" / "local_mcp.py",
             "from harnest.mcp import MCPClient\n"
-            "local_mcp = MCPClient.streamable_http(\n"
-            "    'https://local.example/mcp', prefix='local')\n",
+            "def client():\n"
+            "    return MCPClient.streamable_http(\n"
+            "        'https://local.example/mcp', prefix='local')\n",
         )
         self._write(
             nested / "skills" / "local_skill" / "SKILL.md",
@@ -192,7 +194,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self.assertEqual(researcher.tools[1].skill_names, ("local_skill",))
         self.assertEqual([client.tool_name_prefix for client in inline.mcp], ["root"])
         self.assertEqual(
+            [client.capability_id for client in inline.mcp], ["mcp__root_mcp"]
+        )
+        self.assertEqual(
             [client.tool_name_prefix for client in researcher.mcp], ["local"]
+        )
+        self.assertEqual(
+            [client.capability_id for client in researcher.mcp],
+            ["agent__researcher__mcp__local_mcp"],
         )
         self.assertEqual(inline.sandbox.backend, "root-sandbox")
         self.assertEqual(researcher.sandbox.backend, "local-sandbox")
@@ -226,7 +235,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         )
         self.assertEqual([client.tool_name_prefix for client in inline.mcp], ["root"])
         self.assertEqual(
+            [client.capability_id for client in inline.mcp], ["mcp__root_mcp"]
+        )
+        self.assertEqual(
             [client.tool_name_prefix for client in researcher.mcp], ["local"]
+        )
+        self.assertEqual(
+            [client.capability_id for client in researcher.mcp],
+            ["agent__researcher__mcp__local_mcp"],
         )
 
     def test_nested_reference_does_not_consume_any_root_resource(self):
@@ -241,7 +257,8 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             ),
             "mcp/root_mcp.py": (
                 "from harnest.mcp import MCPClient\n"
-                "root_mcp = MCPClient.streamable_http('https://root.example/mcp')\n",
+                "def client():\n"
+                "    return MCPClient.streamable_http('https://root.example/mcp')\n",
                 "MCP clients but no Agent node in the root graph",
             ),
             "skills/root_skill/SKILL.md": (
@@ -282,16 +299,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                             root, entrypoint="agent:root_agent", framework="adk"
                         )
 
-    def test_advanced_mode_rejects_every_populated_discovery_folder(self):
+    def test_advanced_mode_rejects_managed_capability_folders(self):
         resources = {
             "tools": "lookup.py",
             "subagents": "helper.py",
             "mcp": "server.py",
-            "extensions": "support.py",
             "plugins": "audit.py",
             "sandbox": "sandbox.py",
             "skills": "research/SKILL.md",
-            "evals": "smoke.evalset.json",
         }
         for directory, relative in resources.items():
             with self.subTest(directory=directory), tempfile.TemporaryDirectory() as temp:
@@ -382,7 +397,8 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             ),
             "mcp/server.py": (
                 "from harnest.mcp import MCPClient\n"
-                "server = MCPClient.streamable_http('https://mcp.example/mcp')\n",
+                "def client():\n"
+                "    return MCPClient.streamable_http('https://mcp.example/mcp')\n",
                 "has MCP clients but no Agent node",
             ),
             "skills/research/SKILL.md": (

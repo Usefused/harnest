@@ -8,6 +8,7 @@ from typing import Any
 
 from harnest.agent import AgentDefinition
 from harnest.graph import START, Event, Graph, Join
+from harnest.model_lifecycle import propagate_litellm_lifecycles
 
 
 def _adk_route(route: Any) -> Any:
@@ -73,6 +74,12 @@ def _callable_adapter(value: Any, *, name: str) -> Any:
     return invoke
 
 
+def _own_node_lifecycles(workflow: Any, native_nodes: dict[str, Any]) -> Any:
+    for native in native_nodes.values():
+        propagate_litellm_lifecycles(native, workflow)
+    return workflow
+
+
 def lower_graph(graph: Graph) -> Any:
     """Build a validated native ``google.adk.workflow.Workflow``."""
 
@@ -101,8 +108,11 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
             elif isinstance(value, Graph):
                 nested = _lower_graph(value, active=active)
                 native = adk_node(nested, name=name)
+                propagate_litellm_lifecycles(nested, native)
             elif isinstance(value, AgentDefinition):
-                native = adk_node(value.build(), name=name)
+                built_agent = value.build()
+                native = adk_node(built_agent, name=name)
+                propagate_litellm_lifecycles(built_agent, native)
             elif callable(value):
                 native = adk_node(
                     _callable_adapter(value, name=name),
@@ -128,11 +138,14 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
             )
             for edge in graph.edges
         ]
-        return Workflow(
-            name=graph.name,
-            description=graph.description,
-            edges=native_edges,
-            max_concurrency=graph.max_concurrency,
+        return _own_node_lifecycles(
+            Workflow(
+                name=graph.name,
+                description=graph.description,
+                edges=native_edges,
+                max_concurrency=graph.max_concurrency,
+            ),
+            native_nodes,
         )
     finally:
         active.remove(identity)
