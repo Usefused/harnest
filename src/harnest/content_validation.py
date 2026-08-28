@@ -247,7 +247,11 @@ def _field_annotation(annotation: Any, metadata: list[Any]) -> Any:
             ),
         )
     )
-    return Annotated[annotation, *constraints] if constraints else annotation
+    if not constraints:
+        return annotation
+    # A tuple subscript preserves dynamic metadata without using starred
+    # subscripts, whose grammar is unavailable on supported Python 3.10.
+    return Annotated[(annotation, *constraints)]
 
 
 def _tuple_annotations(arguments: tuple[Any, ...], size: int) -> tuple[Any, ...]:
