@@ -1,35 +1,45 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Release Please tag to package
+        required: true
+        type: string
+      release_sha:
+        description: Commit selected by Release Please
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing Release Please tag to package
+        required: true
+        type: string
+      release_sha:
+        description: Optional expected commit for the tag
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: release-${{ inputs.tag_name }}
   cancel-in-progress: false
 
 jobs:
   goreleaser:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     env:
-      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      EXPECTED_SHA: ${{ inputs.release_sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_SHA }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -47,34 +57,40 @@ jobs:
       - name: Install Python build and runtime dependencies
         run: python -m pip install --upgrade build
 
-      - name: Verify release tag
-        id: release
+      - name: Verify release source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          tag=$(git tag --points-at "${RELEASE_SHA}" --list 'v[0-9]*' | sort -V | tail -n 1)
-          if [ -z "${tag}" ]; then
-            echo "No release tag points to validated commit ${RELEASE_SHA}." >&2
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag ${RELEASE_TAG} is not a supported semantic version." >&2
             exit 1
           fi
 
-          tagged_sha=$(git rev-list -n 1 "${tag}")
-          if [ "${tagged_sha}" != "${RELEASE_SHA}" ]; then
-            echo "${tag} points to ${tagged_sha}, not the validated commit ${RELEASE_SHA}." >&2
+          tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
+          if [ "$(git rev-parse HEAD)" != "${tagged_sha}" ]; then
+            echo "Checkout does not match ${RELEASE_TAG}." >&2
             exit 1
           fi
 
-          publish=true
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            publish=false
+          if [ -n "${EXPECTED_SHA}" ] && [ "${tagged_sha}" != "${EXPECTED_SHA}" ]; then
+            echo "${RELEASE_TAG} points to ${tagged_sha}, not ${EXPECTED_SHA}." >&2
+            exit 1
           fi
 
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+          project_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          source_version=$(sed -n 's/^_SOURCE_VERSION = "\([^"]*\)".*/\1/p' src/harnest/compatibility.py)
+          tag_version=${RELEASE_TAG#v}
+          if [ "${project_version}" != "${tag_version}" ] || [ "${source_version}" != "${tag_version}" ]; then
+            echo "${RELEASE_TAG}, pyproject.toml (${project_version}), and compatibility.py (${source_version}) must match." >&2
+            exit 1
+          fi
 
-      - name: Publish GitHub release
-        if: steps.release.outputs.publish == 'true'
+          # Packaging only enriches the release that owns this source commit;
+          # it must never create an unreviewed release independently.
+          gh release view "${RELEASE_TAG}" >/dev/null
+
+      - name: Attach release artifacts
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -82,7 +98,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Report existing release
-        if: steps.release.outputs.publish != 'true'
-        run: echo "${{ steps.release.outputs.tag }} is already published; leaving it unchanged."

@@ -6,12 +6,17 @@ release:
   github:
     owner: creativeJoe007
     name: harnest
+  # Release Please owns the reviewed notes; GoReleaser only adds artifacts.
+  mode: keep-existing
 
 before:
   hooks:
     - python3 -c "import pathlib; [item.unlink() for item in pathlib.Path('internal/runtimewheel/assets').glob('*.whl')]"
     - python3 scripts/prepare_uv_assets.py
-    - env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel --outdir internal/runtimewheel/assets
+    - >-
+      python3 scripts/build_runtime_wheel.py --version {{ .Version }}
+      {{ if .IsSnapshot }}--allow-version-override{{ end }}
+      --outdir internal/runtimewheel/assets
 
 builds:
   - id: harnest

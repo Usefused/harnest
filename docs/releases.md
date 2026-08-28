@@ -142,12 +142,17 @@ GoReleaser also publishes `checksums.txt` with SHA-256 checksums for every
 archive. Releases are explicitly targeted at `creativeJoe007/harnest`, matching
 the installer's default source.
 
-The static version in `pyproject.toml` establishes the release-line baseline;
-keep the source-tree fallback in `src/harnest/compatibility.py` aligned with it.
-CI uses that exact version when available and advances only the patch component
-when an immutable tag already owns it. GoReleaser supplies the selected tag to
-both the Go build and Python wheel build, so every published binary embeds a
-wheel with the same effective version. Whenever framework support changes, update the
+Release Please derives semantic versions from Conventional Commit messages and
+maintains a reviewable release PR. `fix:` produces a patch, `feat:` produces a
+minor, and a `!` or `BREAKING CHANGE:` produces a major. Documentation, tests,
+and maintenance commits do not release by themselves. The release PR updates
+`pyproject.toml`, `src/harnest/compatibility.py`, the release manifest, and the
+changelog together. Merging it creates the matching tag and GitHub Release.
+
+GoReleaser refuses to package a tag unless both checked-in version sources match
+it. It builds the embedded wheel from disposable staged inputs; this preserves
+the reviewed source version for releases while allowing local snapshot versions
+without modifying the checkout. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
 machine needs Go 1.24 or newer, Python 3.10 or newer, the Python `build`
@@ -164,12 +169,10 @@ goreleaser release --snapshot --clean
 ```
 
 Inspect the snapshot archives under `dist/` and run `harnest runtime install`
-from an extracted binary to verify its embedded wheel.
-To publish a clean `vX.Y.Z` tag:
-
-```bash
-GITHUB_TOKEN=... goreleaser release --clean
-```
+from an extracted binary to verify its embedded wheel. Normal publication is
+performed by merging the Release Please PR; do not create release tags by hand.
+To retry artifact packaging for an existing Release Please release, dispatch
+the `Release` workflow with its `vX.Y.Z` tag and, optionally, its expected SHA.
 
 The release package is the standalone compiler, test runner, and agent server.
 After installation, the normal local workflow is `harnest init`, `harnest
@@ -187,15 +190,17 @@ when the project should receive the release's updated authoring guidance.
 ## GitHub Actions
 
 `.github/workflows/ci.yml` runs the quality matrix for pull requests and branch
-pushes. After a successful `main` run, its release-tag job reads
-`project.version` from `pyproject.toml`. It creates that tag when available or
-selects the next unused patch tag when the baseline is already released.
-Existing tags are never moved. Concurrent successful runs refetch and retry so
-ordinary pushes do not require manual patch bumps.
+pushes but never changes versions or tags commits. After a successful `main`
+run, `.github/workflows/release-please.yml` opens or updates the release PR. Set
+the `RELEASE_PLEASE_TOKEN` repository secret to a fine-grained token with
+contents, issues, and pull-request write access so GitHub runs normal CI on that
+generated PR. The workflow falls back to `GITHUB_TOKEN`, but GitHub suppresses
+workflows caused by that token, so repositories requiring PR checks should
+configure the dedicated token.
 
-`.github/workflows/release.yml` is a separate packaging pipeline. It runs after
-successful CI on `main`, discovers the tag owned by CI's exact validated commit,
-and then uses GoReleaser to publish the platform archives with the matching
-Python wheel embedded in each executable, plus checksums. Separating
-validation/tagging from packaging makes failed
-release builds rerunnable without weakening the immutable-tag check.
+When the release PR is merged and its `main` CI run succeeds, Release Please
+creates the version tag and GitHub Release. It then calls the separate reusable
+`.github/workflows/release.yml` packaging workflow with the exact tag and SHA.
+That workflow verifies the tag, source versions, and existing release before
+GoReleaser attaches platform archives and checksums. A manual dispatch reruns
+packaging without moving the tag or replacing Release Please's release notes.

@@ -1,13 +1,15 @@
-import os
+import json
 import re
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+import zipfile
 from pathlib import Path
 
 import yaml
+from packaging.version import Version
 
 try:
     import tomllib
@@ -86,113 +88,73 @@ def write_installer_fakes(directory: Path, version: str):
     )
 
 
-def run_git(directory: Path, *arguments: str) -> str:
-    """Run isolated repository operations without inheriting user Git settings."""
-
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=directory,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 class ReleaseWorkflowTests(unittest.TestCase):
-    def test_ci_validates_before_owning_the_release_tag(self):
+    def test_ci_only_validates_source_changes(self):
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]
-        tag_job = workflow["jobs"]["release-tag"]
         quality_step = next(
             step for step in quality_job["steps"] if step["name"] == "Run quality gates"
         )
 
         self.assertEqual(workflow_events(workflow)["push"]["branches"], ["**"])
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
-        self.assertEqual(tag_job["needs"], "quality")
-        self.assertEqual(tag_job["permissions"]["contents"], "write")
-        self.assertIn("refs/heads/main", tag_job["if"])
+        self.assertNotIn("release-tag", workflow["jobs"])
+        self.assertEqual(workflow["permissions"]["contents"], "read")
+
+    def test_release_please_runs_after_successful_main_ci(self):
+        workflow = load_yaml(".github/workflows/release-please.yml")
+        events = workflow_events(workflow)
+        release_job = workflow["jobs"]["release-please"]
+        release_step = release_job["steps"][0]
+        package_job = workflow["jobs"]["package"]
+
+        self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
+        self.assertIn("workflow_run.conclusion == 'success'", release_job["if"])
+        self.assertIn("workflow_run.head_branch == 'main'", release_job["if"])
+        self.assertEqual(
+            release_step["uses"], "googleapis/release-please-action@v4"
+        )
+        self.assertEqual(workflow["permissions"]["issues"], "write")
+        self.assertIn("RELEASE_PLEASE_TOKEN", release_step["with"]["token"])
+        self.assertEqual(package_job["needs"], "release-please")
+        self.assertEqual(package_job["uses"], "./.github/workflows/release.yml")
+
+    def test_release_please_updates_both_source_versions(self):
+        config = json.loads((ROOT / "release-please-config.json").read_text())
+        manifest = json.loads(
+            (ROOT / ".release-please-manifest.json").read_text()
+        )
+        package = config["packages"]["."]
+        compatibility = (ROOT / "src/harnest/compatibility.py").read_text()
+
+        self.assertEqual(package["release-type"], "python")
+        self.assertFalse(package["include-component-in-tag"])
+        self.assertTrue(package["include-v-in-tag"])
         self.assertIn(
-            "git push origin",
-            tag_job["steps"][-1]["run"],
+            {"type": "generic", "path": "src/harnest/compatibility.py"},
+            package["extra-files"],
         )
-        tag_script = tag_job["steps"][-1]["run"]
-        self.assertIn('git tag --points-at "${GITHUB_SHA}"', tag_script)
-        self.assertIn("patch=$((patch + 1))", tag_script)
-        self.assertIn("for attempt in 1 2 3", tag_script)
-        self.assertNotIn("bump project.version", tag_script)
+        self.assertIn("x-release-please-version", compatibility)
+        self.assertEqual(tuple(manifest), (".",))
+        project_version = tomllib.loads((ROOT / "pyproject.toml").read_text())[
+            "project"
+        ]["version"]
+        # The bootstrap manifest may lead the stale source once; the generated
+        # release PR brings both forward to the same reviewed version.
+        self.assertGreaterEqual(Version(manifest["."]), Version(project_version))
 
-    def test_ci_allocates_next_patch_and_is_idempotent(self):
-        workflow = load_yaml(".github/workflows/ci.yml")
-        tag_script = workflow["jobs"]["release-tag"]["steps"][-1]["run"]
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            origin = root / "origin.git"
-            checkout = root / "checkout"
-            run_git(root, "init", "--bare", str(origin))
-            run_git(root, "init", str(checkout))
-            run_git(checkout, "config", "user.name", "Release Test")
-            run_git(checkout, "config", "user.email", "release@example.test")
-            run_git(checkout, "remote", "add", "origin", str(origin))
-            (checkout / "pyproject.toml").write_text(
-                '[project]\nversion = "1.2.3"\n', encoding="utf-8"
-            )
-            marker = checkout / "marker.txt"
-            marker.write_text("first\n", encoding="utf-8")
-            run_git(checkout, "add", ".")
-            run_git(checkout, "commit", "-m", "first")
-
-            first_sha = run_git(checkout, "rev-parse", "HEAD")
-            self._run_tag_script(checkout, tag_script, first_sha)
-            marker.write_text("second\n", encoding="utf-8")
-            run_git(checkout, "add", "marker.txt")
-            run_git(checkout, "commit", "-m", "second")
-            second_sha = run_git(checkout, "rev-parse", "HEAD")
-            self._run_tag_script(checkout, tag_script, second_sha)
-            self._run_tag_script(checkout, tag_script, second_sha)
-
-            tags = run_git(origin, "tag", "--list", "--sort=version:refname").splitlines()
-            self.assertEqual(tags, ["v1.2.3", "v1.2.4"])
-            self.assertEqual(run_git(origin, "rev-list", "-n", "1", "v1.2.3"), first_sha)
-            self.assertEqual(run_git(origin, "rev-list", "-n", "1", "v1.2.4"), second_sha)
-
-    def _run_tag_script(self, checkout: Path, script: str, commit: str):
-        python_directory = checkout.parent / "python-bin"
-        python_directory.mkdir(exist_ok=True)
-        python_command = python_directory / "python"
-        if not python_command.exists():
-            python_command.symlink_to(sys.executable)
-        environment = dict(
-            os.environ,
-            GITHUB_SHA=commit,
-            PATH=f"{python_directory}:{os.environ.get('PATH', '')}",
-        )
-        result = subprocess.run(
-            ["bash", "-e", "-u", "-o", "pipefail", "-c", script],
-            cwd=checkout,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_release_runs_after_ci_and_never_creates_tags(self):
+    def test_packaging_verifies_release_please_tag_and_source_versions(self):
         workflow = load_yaml(".github/workflows/release.yml")
         events = workflow_events(workflow)
         release_job = workflow["jobs"]["goreleaser"]
-        scripts = "\n".join(
-            step.get("run", "") for step in release_job["steps"]
-        )
+        scripts = "\n".join(step.get("run", "") for step in release_job["steps"])
 
-        self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
-        self.assertNotIn("push", events)
-        self.assertIn("workflow_run.head_sha", release_job["env"]["RELEASE_SHA"])
-        self.assertIn('git tag --points-at "${RELEASE_SHA}"', scripts)
-        self.assertIn('tagged_sha=$(git rev-list -n 1 "${tag}")', scripts)
-        self.assertNotIn('pathlib.Path("pyproject.toml")', scripts)
+        self.assertIn("workflow_call", events)
+        self.assertEqual(release_job["env"]["RELEASE_TAG"], "${{ inputs.tag_name }}")
+        self.assertIn('tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")', scripts)
+        self.assertIn('pathlib.Path("pyproject.toml")', scripts)
+        self.assertIn("src/harnest/compatibility.py", scripts)
+        self.assertIn('gh release view "${RELEASE_TAG}"', scripts)
         self.assertNotIn("git tag --annotate", scripts)
         self.assertNotIn("git push origin", scripts)
 
@@ -204,9 +166,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(uv_hook, "python3 scripts/prepare_uv_assets.py")
         self.assertEqual(
             wheel_hook,
-            "env HATCH_BUILD_VERSION={{ .Version }} python3 -m build --wheel "
+            "python3 scripts/build_runtime_wheel.py --version {{ .Version }} "
+            "{{ if .IsSnapshot }}--allow-version-override{{ end }} "
             "--outdir internal/runtimewheel/assets",
         )
+        self.assertEqual(config["release"]["mode"], "keep-existing")
         self.assertEqual(config["archives"][0]["ids"], ["harnest"])
         self.assertEqual(config["builds"][0]["tags"], ["harnest_release"])
         self.assertEqual(
@@ -214,6 +178,54 @@ class ReleaseWorkflowTests(unittest.TestCase):
             ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/uv-LICENSE-MIT", "README.md"],
         )
         self.assertEqual(config["snapshot"]["version_template"], "{{ incpatch .Version }}.dev0")
+
+    def test_snapshot_wheel_uses_the_explicit_build_version(self):
+        snapshot_version = "9.8.7.dev0"
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/build_runtime_wheel.py"),
+                    "--version",
+                    snapshot_version,
+                    "--outdir",
+                    temporary,
+                    "--allow-version-override",
+                    "--no-isolation",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            wheel = next(Path(temporary).glob("harnest-*.whl"))
+            with zipfile.ZipFile(wheel) as archive:
+                metadata_path = next(
+                    name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+                )
+                metadata_text = archive.read(metadata_path).decode("utf-8")
+
+        self.assertIn(f"Version: {snapshot_version}\n", metadata_text)
+
+    def test_release_wheel_rejects_a_version_not_in_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/build_runtime_wheel.py"),
+                    "--version",
+                    "9.8.7",
+                    "--outdir",
+                    temporary,
+                    "--no-isolation",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match source", result.stderr)
 
     def test_goreleaser_changelog_omits_commit_identity(self):
         config = load_yaml(".goreleaser.yaml")
@@ -307,7 +319,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         project_version = re.search(r'^version = "([^"]+)"$', project, re.MULTILINE)
         source_version = re.search(
-            r'^_SOURCE_VERSION = "([^"]+)"$', compatibility, re.MULTILINE
+            r'^_SOURCE_VERSION = "([^"]+)"', compatibility, re.MULTILINE
         )
 
         self.assertIsNotNone(project_version)
