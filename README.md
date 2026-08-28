@@ -761,6 +761,11 @@ calls in advanced targets fail closed because Harnest does not expose an
 advanced capability-wrapping API. Keep approval-protected capabilities managed
 or implement the framework-native approval integration explicitly.
 The bundled playground renders the same request with Approve and Deny controls.
+Its Trace inspector keeps a bounded, process-local history of request stages,
+tool activity, failures, and structured `harnest.agent.*` logs for the current
+authenticated principal. This development view complements the durable OTLP
+export below; disabling the playground also disables its trace buffer and
+private `/_harnest/traces` routes.
 
 Tool calls and results appear in `output` as ordered `tool_call` and
 `tool_result` items. Reuse the session ID for conversational continuity. Session

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 import unittest
@@ -247,6 +248,8 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("Harnest Playground", page.text)
         self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertEqual(stylesheet.headers["cache-control"], "no-cache")
+        self.assertEqual(javascript.headers["cache-control"], "no-cache")
         self.assertIn("default-src 'self'", page.headers["content-security-policy"])
         self.assertEqual(stylesheet.status_code, 200)
         self.assertIn("text/css", stylesheet.headers["content-type"])
@@ -256,10 +259,76 @@ class NeutralRuntimeTests(unittest.TestCase):
             self.assertIn(endpoint, javascript.text)
         self.assertIn("/approvals/", javascript.text)
         self.assertIn("Human approval required", javascript.text)
+        self.assertIn('id="session-state-empty"', page.text)
+        self.assertIn('id="session-menu"', page.text)
+        self.assertIn('id="trace-timeline"', page.text)
+        self.assertIn('id="trace-tab"', page.text)
+        self.assertIn('aria-haspopup="listbox"', page.text)
+        self.assertIn('data-active="stream"', page.text)
+        self.assertLess(
+            page.text.index('id="session-select"'),
+            page.text.index('<main class="workspace">'),
+        )
+        self.assertIn("height: 100dvh", stylesheet.text)
+        self.assertIn("overscroll-behavior: contain", stylesheet.text)
+        self.assertIn("typing-bubble", stylesheet.text)
+        self.assertIn(".trace-entry", stylesheet.text)
+        self.assertIn('.tool-event[data-status="completed"]', stylesheet.text)
+        self.assertIn(".session-option[aria-selected=\"true\"]", stylesheet.text)
+        self.assertIn("renderSessionState(session.state || {})", javascript.text)
+        self.assertIn("ui.sessionState.hidden = false", javascript.text)
+        self.assertIn("syncSessionPicker()", javascript.text)
+        self.assertIn('traces: "/_harnest/traces"', javascript.text)
+        self.assertIn("appendToolResult", javascript.text)
+        self.assertIn('.dataset.active = runtime.transport', javascript.text)
+        self.assertIn("showTypingIndicator()", javascript.text)
         for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
             self.assertNotIn(native_endpoint, javascript.text)
         self.assertNotIn("localStorage", javascript.text)
         self.assertNotIn("sessionStorage", javascript.text)
+
+    def test_playground_renders_nested_application_state_updates(self):
+        self.client.post(
+            "/sessions",
+            json={
+                "id": "state-render",
+                "state": {"workflow": {"stage": "new"}},
+            },
+        )
+        state_delta = {
+            "customer": {
+                "id": "cus_demo_123",
+                "tier": "enterprise",
+                "preferences": {
+                    "locale": "en-GB",
+                    "notifications": True,
+                },
+            },
+            "workflow": {
+                "stage": "triaged",
+                "tags": ["api", "urgent"],
+            },
+            "counters": {"messages": 3, "toolCalls": 1},
+        }
+
+        updated = self.client.patch(
+            "/sessions/state-render",
+            json={"stateDelta": state_delta},
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["state"], state_delta)
+        self.assertEqual(
+            self.client.get("/sessions/state-render").json()["state"],
+            state_delta,
+        )
+        javascript = self.client.get("/_harnest/playground.js").text
+        self.assertIn("renderSessionState(session.state || {})", javascript)
+        self.assertIn(
+            "ui.sessionState.textContent = pretty(state || {})",
+            javascript,
+        )
+        self.assertIn("ui.sessionStateEmpty.hidden = !empty", javascript)
 
     def test_server_policy_controls_request_limit_and_playground(self):
         app = create_neutral_app(
@@ -269,6 +338,7 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         with TestClient(app) as client:
             self.assertEqual(client.get("/").status_code, 404)
+            self.assertEqual(client.get("/_harnest/traces").status_code, 404)
             response = client.post(
                 "/sessions",
                 json={"id": "large", "state": {"value": "x" * 1024}},
@@ -313,6 +383,42 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(request.user_id, NEUTRAL_USER_ID)
         self.assertEqual(request.metadata, {"source": "test"})
 
+        traces = self.client.get(
+            "/_harnest/traces", params={"sessionId": "json"}
+        ).json()["traces"]
+        self.assertEqual(traces[0]["id"], body["id"])
+        self.assertEqual(traces[0]["status"], "completed")
+        self.assertEqual(traces[0]["transport"], "response")
+        self.assertIn(
+            "tool", {entry["category"] for entry in traces[0]["entries"]}
+        )
+        detail = self.client.get(f"/_harnest/traces/{body['id']}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn("userId", detail.json())
+
+    def test_playground_trace_captures_structured_agent_logs(self):
+        class LoggingDriver(FakeDriver):
+            async def invoke(self, request):
+                logging.getLogger("harnest.agent.test").warning(
+                    "catalog.lookup.completed",
+                    extra={"result_count": 3},
+                )
+                return await super().invoke(request)
+
+        driver = LoggingDriver()
+        with TestClient(create_neutral_app(driver)) as client:
+            client.post("/sessions", json={"id": "logged"})
+            response = client.post(
+                "/responses",
+                json={"input": "hello", "sessionId": "logged"},
+            )
+            trace = client.get(
+                f"/_harnest/traces/{response.json()['id']}"
+            ).json()
+        logs = [entry for entry in trace["entries"] if entry["category"] == "log"]
+        self.assertEqual(logs[0]["message"], "catalog.lookup.completed")
+        self.assertEqual(logs[0]["detail"]["result_count"], 3)
+
     def test_sse_owns_event_names_sequence_and_error_framing(self):
         self.client.post("/sessions", json={"id": "stream"})
         response = self.client.post(
@@ -343,6 +449,16 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertIn("event: error", failed.text)
         self.assertIn('"error": "driver failed"', failed.text)
+        stream_traces = self.client.get(
+            "/_harnest/traces", params={"sessionId": "stream"}
+        ).json()["traces"]
+        self.assertEqual(
+            [trace["status"] for trace in stream_traces[:2]],
+            ["failed", "completed"],
+        )
+        self.assertTrue(
+            all(trace["transport"] == "stream" for trace in stream_traces[:2])
+        )
 
     def test_reasoning_only_completion_is_never_reported_as_success(self):
         self.driver.empty_output = True
@@ -404,6 +520,11 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertTrue(all(frame["requestId"] == "request-1" for frame in frames))
         self.assertEqual(frames[-1]["outputText"], "hello")
         self.assertEqual(frames[-1]["metadata"], {"source": "live"})
+        live_trace = self.client.get(
+            "/_harnest/traces", params={"sessionId": "live"}
+        ).json()["traces"][0]
+        self.assertEqual(live_trace["status"], "completed")
+        self.assertEqual(live_trace["transport"], "live")
 
     def test_validation_is_shared_by_all_drivers(self):
         self.assertEqual(
@@ -435,6 +556,7 @@ class NeutralRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(client.get("/agent").status_code, 200)
             self.assertEqual(client.get("/sessions").status_code, 401)
+            self.assertEqual(client.get("/_harnest/traces").status_code, 401)
             self.assertEqual(
                 client.post(
                     "/responses",
@@ -465,6 +587,17 @@ class NeutralRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(driver.invocations[-1].user_id, "alice")
+            alice_traces = client.get(
+                "/_harnest/traces", headers=alice
+            ).json()["traces"]
+            self.assertEqual(len(alice_traces), 1)
+            self.assertEqual(
+                client.get(
+                    f"/_harnest/traces/{alice_traces[0]['id']}",
+                    headers=bob,
+                ).status_code,
+                404,
+            )
             with client.websocket_connect(
                 "/live", headers=alice
             ) as websocket:

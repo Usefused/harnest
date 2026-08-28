@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from importlib.resources import files
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+try:
+    from starlette.requests import Request
+except ImportError:  # pragma: no cover - optional runtime dependency
+    Request = Any  # type: ignore[misc,assignment]
+
+if TYPE_CHECKING:
+    from .playground_trace import PlaygroundTraceStore
 
 
 _ASSET_DIRECTORY = "_playground"
@@ -18,11 +26,11 @@ _SECURITY_HEADERS = {
 }
 
 
-def create_playground_router() -> Any:
+def create_playground_router(trace_store: PlaygroundTraceStore | None = None) -> Any:
     """Expose the same bundled UI for every Harnest runtime driver."""
 
     try:
-        from fastapi import APIRouter
+        from fastapi import APIRouter, HTTPException
         from fastapi.responses import FileResponse
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("The development playground requires FastAPI") from exc
@@ -53,6 +61,29 @@ def create_playground_router() -> Any:
             headers=_headers(cache=True),
         )
 
+    if trace_store is not None:
+        from .runtime_auth import principal_for
+
+        @router.get("/_harnest/traces", include_in_schema=False)
+        async def playground_traces(
+            request: Request, sessionId: str | None = None
+        ) -> dict[str, Any]:
+            traces = trace_store.list(
+                user_id=principal_for(request).user_id,
+                session_id=sessionId,
+            )
+            return {"traces": traces}
+
+        @router.get("/_harnest/traces/{trace_id}", include_in_schema=False)
+        async def playground_trace(trace_id: str, request: Request) -> dict[str, Any]:
+            trace = trace_store.get(
+                trace_id,
+                user_id=principal_for(request).user_id,
+            )
+            if trace is None:
+                raise HTTPException(status_code=404, detail="Trace not found")
+            return trace
+
     return router
 
 
@@ -63,9 +94,9 @@ def _asset_path(filename: str) -> Any:
 
 
 def _headers(*, cache: bool) -> dict[str, str]:
-    # HTML revalidates so an upgraded runtime cannot retain references to older
-    # assets; versioned wheels make short-lived asset caching safe.
-    cache_control = "public, max-age=3600" if cache else "no-store"
+    # The playground is a development surface and its stable asset paths span
+    # package upgrades, so browsers must revalidate rather than retain stale UI.
+    cache_control = "no-cache" if cache else "no-store"
     return {**_SECURITY_HEADERS, "Cache-Control": cache_control}
 
 

@@ -6,7 +6,13 @@ const ui = {
   agentFramework: document.querySelector("#agent-framework"),
   agentMode: document.querySelector("#agent-mode"),
   sessionSelect: document.querySelector("#session-select"),
+  sessionPicker: document.querySelector("#session-picker"),
+  sessionTrigger: document.querySelector("#session-trigger"),
+  sessionValue: document.querySelector("#session-value"),
+  sessionValueDetail: document.querySelector("#session-value-detail"),
+  sessionMenu: document.querySelector("#session-menu"),
   sessionState: document.querySelector("#session-state"),
+  sessionStateEmpty: document.querySelector("#session-state-empty"),
   sessionId: document.querySelector("#session-id"),
   conversation: document.querySelector("#conversation"),
   emptyState: document.querySelector("#empty-state"),
@@ -18,6 +24,20 @@ const ui = {
   error: document.querySelector("#error-banner"),
   token: document.querySelector("#bearer-token"),
   transportNote: document.querySelector("#transport-note"),
+  inspector: document.querySelector("#session-inspector"),
+  inspectorToggle: document.querySelector("#toggle-inspector"),
+  inspectorRefresh: document.querySelector("#refresh-state"),
+  stateTab: document.querySelector("#state-tab"),
+  traceTab: document.querySelector("#trace-tab"),
+  stateView: document.querySelector("#state-view"),
+  traceView: document.querySelector("#trace-view"),
+  traceCount: document.querySelector("#trace-count"),
+  traceTitle: document.querySelector("#trace-title"),
+  traceStatus: document.querySelector("#trace-status"),
+  traceRuns: document.querySelector("#trace-runs"),
+  traceEmpty: document.querySelector("#trace-empty"),
+  traceTimeline: document.querySelector("#trace-timeline"),
+  traceId: document.querySelector("#trace-id"),
 };
 
 const runtime = {
@@ -27,6 +47,12 @@ const runtime = {
   liveSessionId: "",
   busy: false,
   streamingBubble: null,
+  typingBubble: null,
+  inspectorView: "state",
+  traces: [],
+  selectedTraceId: "",
+  traceTimer: null,
+  toolCards: new Map(),
 };
 
 const transportNotes = {
@@ -40,6 +66,7 @@ const endpoints = {
   sessions: "/sessions",
   responses: "/responses",
   live: "/live",
+  traces: "/_harnest/traces",
 };
 
 function requestHeaders() {
@@ -104,15 +131,92 @@ function appendTurn(role, text = "") {
   return bubble;
 }
 
-function appendTool(title, value) {
+function showTypingIndicator() {
+  clearTypingIndicator();
+  const bubble = appendTurn("assistant");
+  bubble.classList.add("typing-bubble");
+  bubble.setAttribute("aria-label", "Agent is typing");
+  for (let index = 0; index < 3; index += 1) {
+    const dot = document.createElement("span");
+    dot.className = "typing-dot";
+    bubble.append(dot);
+  }
+  runtime.typingBubble = bubble;
+}
+
+function takeTypingBubble() {
+  const bubble = runtime.typingBubble;
+  if (!bubble) return null;
+  bubble.replaceChildren();
+  bubble.classList.remove("typing-bubble");
+  bubble.removeAttribute("aria-label");
+  runtime.typingBubble = null;
+  return bubble;
+}
+
+function clearTypingIndicator() {
+  runtime.typingBubble?.closest(".turn")?.remove();
+  runtime.typingBubble = null;
+}
+
+function toolKey(name, callId) {
+  return callId || name || `tool-${runtime.toolCards.size + 1}`;
+}
+
+function createToolCard(name, callId) {
   const detail = document.createElement("details");
   detail.className = "tool-event";
+  detail.dataset.status = "running";
+  detail.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = title;
+  const mark = document.createElement("span");
+  mark.className = "tool-mark";
+  mark.textContent = "↯";
+  const heading = document.createElement("span");
+  heading.className = "tool-heading";
+  const title = document.createElement("strong");
+  title.textContent = name || "Unnamed tool";
+  const identifier = document.createElement("small");
+  identifier.textContent = callId || "Agent tool call";
+  heading.append(title, identifier);
+  const status = document.createElement("span");
+  status.className = "tool-status";
+  status.textContent = "Running";
+  summary.append(mark, heading, status);
+  const sections = document.createElement("div");
+  sections.className = "tool-sections";
+  detail.append(summary, sections);
+  ui.conversation.append(detail);
+  return { detail, sections, status };
+}
+
+function appendToolSection(card, label, value) {
+  const section = document.createElement("section");
+  section.className = "tool-section";
+  const heading = document.createElement("span");
+  heading.className = "tool-section-label";
+  heading.textContent = label;
   const contents = document.createElement("pre");
   contents.textContent = pretty(value);
-  detail.append(summary, contents);
-  ui.conversation.append(detail);
+  section.append(heading, contents);
+  card.sections.append(section);
+}
+
+function appendToolCall(name, value, callId) {
+  const key = toolKey(name, callId);
+  const card = createToolCard(name, callId);
+  appendToolSection(card, "Arguments", value ?? {});
+  runtime.toolCards.set(key, card);
+  scrollConversation();
+}
+
+function appendToolResult(name, value, callId) {
+  const key = toolKey(name, callId);
+  const card = runtime.toolCards.get(key) || createToolCard(name, callId);
+  appendToolSection(card, "Result", value);
+  card.detail.dataset.status = "completed";
+  card.status.textContent = "Completed";
+  runtime.toolCards.set(key, card);
   scrollConversation();
 }
 
@@ -142,8 +246,8 @@ function renderOutputItem(item) {
     if (text) appendTurn("assistant", text);
     return Boolean(text);
   }
-  if (item.type === "tool_call") appendTool(`Tool call · ${item.name || "unnamed"}`, item.arguments);
-  if (item.type === "tool_result") appendTool(`Tool result · ${item.name || item.callId || "unnamed"}`, item.output);
+  if (item.type === "tool_call") appendToolCall(item.name, item.arguments, item.id);
+  if (item.type === "tool_result") appendToolResult(item.name, item.output, item.callId);
   if (item.type === "output") appendResult(item.value);
   return false;
 }
@@ -166,19 +270,83 @@ async function loadSessions(preferredId = runtime.sessionId) {
 
 function replaceSessionOptions(sessions, preferredId) {
   ui.sessionSelect.replaceChildren();
-  if (!sessions.length) addSessionOption("", "No session");
-  for (const session of sessions) addSessionOption(session.id, session.id);
+  ui.sessionMenu.replaceChildren();
+  if (!sessions.length) addSessionOption("", "No session", "Create one to begin", 0);
+  sessions.forEach((session, index) => addSessionOption(session.id, `Session ${index + 1}`, compactSessionId(session.id), index));
   const available = sessions.some((session) => session.id === preferredId);
   runtime.sessionId = available ? preferredId : (sessions[0]?.id || "");
   ui.sessionSelect.value = runtime.sessionId;
+  syncSessionPicker();
   ui.sessionId.textContent = runtime.sessionId || "Not created";
 }
 
-function addSessionOption(value, label) {
+function addSessionOption(value, label, detail, index) {
   const option = document.createElement("option");
   option.value = value;
   option.textContent = label;
+  option.dataset.detail = detail;
   ui.sessionSelect.append(option);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "session-option";
+  button.dataset.value = value;
+  button.setAttribute("role", "option");
+  button.setAttribute("aria-label", value ? `${label}, ${value}` : label);
+  button.innerHTML = `<span class="session-option-mark" aria-hidden="true">✓</span><span class="session-option-copy"><strong></strong><small></small></span><span class="session-option-status">Active</span>`;
+  button.querySelector("strong").textContent = label;
+  button.querySelector("small").textContent = detail;
+  button.addEventListener("click", () => chooseSession(value));
+  button.addEventListener("keydown", (event) => moveSessionFocus(event, index));
+  ui.sessionMenu.append(button);
+}
+
+function compactSessionId(sessionId) {
+  if (!sessionId) return "Create one to begin";
+  if (sessionId.length <= 20) return sessionId;
+  return `${sessionId.slice(0, 12)}…${sessionId.slice(-6)}`;
+}
+
+function syncSessionPicker() {
+  const selected = ui.sessionSelect.selectedOptions[0];
+  ui.sessionValue.textContent = selected?.textContent || "No session";
+  ui.sessionValueDetail.textContent = selected?.dataset.detail || "Create one to begin";
+  for (const option of ui.sessionMenu.querySelectorAll(".session-option")) {
+    option.setAttribute("aria-selected", String(option.dataset.value === runtime.sessionId));
+  }
+}
+
+function toggleSessionMenu(force) {
+  const open = force ?? ui.sessionMenu.hidden;
+  ui.sessionMenu.hidden = !open;
+  ui.sessionTrigger.setAttribute("aria-expanded", String(open));
+  if (open) ui.sessionMenu.querySelector('[aria-selected="true"]')?.focus();
+}
+
+function chooseSession(sessionId) {
+  toggleSessionMenu(false);
+  ui.sessionSelect.value = sessionId;
+  syncSessionPicker();
+  changeSession(sessionId);
+  ui.sessionTrigger.focus();
+}
+
+function moveSessionFocus(event, index) {
+  const options = [...ui.sessionMenu.querySelectorAll(".session-option")];
+  let target = index;
+  if (event.key === "ArrowDown") target = (index + 1) % options.length;
+  else if (event.key === "ArrowUp") target = (index - 1 + options.length) % options.length;
+  else if (event.key === "Home") target = 0;
+  else if (event.key === "End") target = options.length - 1;
+  else if (event.key === "Escape") return closeSessionMenu();
+  else return;
+  event.preventDefault();
+  options[target].focus();
+}
+
+function closeSessionMenu() {
+  toggleSessionMenu(false);
+  ui.sessionTrigger.focus();
 }
 
 async function createSession() {
@@ -198,14 +366,149 @@ async function ensureSession() {
 
 async function loadSessionState() {
   if (!runtime.sessionId) {
-    ui.sessionState.textContent = "{}";
+    renderSessionState({});
     ui.sessionId.textContent = "Not created";
     return;
   }
   const response = await api(`${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}`, { method: "GET" });
   const session = await response.json();
-  ui.sessionState.textContent = pretty(session.state || {});
+  renderSessionState(session.state || {});
   ui.sessionId.textContent = session.id;
+}
+
+function renderSessionState(state) {
+  const empty = !state || typeof state !== "object" || Object.keys(state).length === 0;
+  ui.sessionState.hidden = false;
+  ui.sessionStateEmpty.hidden = !empty;
+  ui.sessionState.textContent = pretty(state || {});
+}
+
+async function loadTraces(silent = false) {
+  if (!runtime.sessionId) {
+    renderTraces([]);
+    return;
+  }
+  try {
+    const query = new URLSearchParams({ sessionId: runtime.sessionId });
+    const response = await api(`${endpoints.traces}?${query}`, { method: "GET" });
+    const body = await response.json();
+    renderTraces(body.traces || []);
+  } catch (error) {
+    if (!silent) throw error;
+  }
+}
+
+function renderTraces(traces) {
+  runtime.traces = traces;
+  ui.traceCount.textContent = String(traces.length);
+  const selected = traces.find((trace) => trace.id === runtime.selectedTraceId) || traces[0];
+  runtime.selectedTraceId = selected?.id || "";
+  renderTraceRuns();
+  renderTrace(selected);
+}
+
+function renderTraceRuns() {
+  ui.traceRuns.replaceChildren();
+  runtime.traces.slice(0, 6).forEach((trace, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "trace-run";
+    button.textContent = `Run ${runtime.traces.length - index}`;
+    button.classList.toggle("active", trace.id === runtime.selectedTraceId || (!runtime.selectedTraceId && index === 0));
+    button.addEventListener("click", () => selectTrace(trace.id));
+    ui.traceRuns.append(button);
+  });
+}
+
+function selectTrace(traceId) {
+  runtime.selectedTraceId = traceId;
+  renderTraceRuns();
+  renderTrace(runtime.traces.find((trace) => trace.id === traceId));
+}
+
+function renderTrace(trace) {
+  const available = Boolean(trace);
+  ui.traceEmpty.hidden = available;
+  ui.traceTimeline.hidden = !available;
+  ui.traceTimeline.replaceChildren();
+  ui.traceTitle.textContent = available ? traceTitle(trace) : "No trace yet";
+  ui.traceStatus.textContent = trace?.status || "Idle";
+  ui.traceStatus.dataset.status = trace?.status || "idle";
+  ui.traceId.textContent = trace?.id || "Not created";
+  for (const entry of trace?.entries || []) ui.traceTimeline.append(traceEntry(entry));
+}
+
+function traceTitle(trace) {
+  const duration = trace.durationMs == null ? "in progress" : `${Math.round(trace.durationMs)} ms`;
+  const labels = { response: "JSON response", stream: "SSE stream", live: "Live WebSocket" };
+  return `${labels[trace.transport] || "Agent request"} · ${duration}`;
+}
+
+function traceEntry(entry) {
+  const item = document.createElement("li");
+  item.className = "trace-entry";
+  item.dataset.category = entry.category;
+  const mark = document.createElement("span");
+  mark.className = "trace-entry-mark";
+  mark.textContent = traceMark(entry.category);
+  const copy = document.createElement("div");
+  copy.className = "trace-entry-copy";
+  const title = document.createElement("strong");
+  title.textContent = entry.message;
+  const category = document.createElement("small");
+  category.textContent = entry.category === "log" ? `${entry.level} log` : entry.category;
+  copy.append(title, category);
+  appendTraceDetail(copy, entry.detail);
+  const time = document.createElement("time");
+  time.textContent = `+${Math.max(0, Math.round(Number(entry.offsetMs) || 0))}ms`;
+  item.append(mark, copy, time);
+  return item;
+}
+
+function traceMark(category) {
+  if (category === "tool") return "↯";
+  if (category === "log") return "≡";
+  if (category === "error") return "!";
+  return "•";
+}
+
+function appendTraceDetail(parent, detail) {
+  if (!detail || !Object.keys(detail).length) return;
+  const disclosure = document.createElement("details");
+  disclosure.className = "trace-detail";
+  const summary = document.createElement("summary");
+  summary.textContent = "Details";
+  const contents = document.createElement("pre");
+  contents.textContent = pretty(detail);
+  disclosure.append(summary, contents);
+  parent.append(disclosure);
+}
+
+function selectInspectorView(view) {
+  runtime.inspectorView = view;
+  const tracing = view === "trace";
+  ui.stateView.hidden = tracing;
+  ui.traceView.hidden = !tracing;
+  ui.stateTab.classList.toggle("active", !tracing);
+  ui.traceTab.classList.toggle("active", tracing);
+  ui.stateTab.setAttribute("aria-selected", String(!tracing));
+  ui.traceTab.setAttribute("aria-selected", String(tracing));
+  if (tracing) runAction(loadTraces);
+}
+
+function refreshInspector() {
+  return runtime.inspectorView === "trace" ? loadTraces() : loadSessionState();
+}
+
+function startTracePolling() {
+  stopTracePolling();
+  loadTraces(true);
+  runtime.traceTimer = window.setInterval(() => loadTraces(true), 600);
+}
+
+function stopTracePolling() {
+  if (runtime.traceTimer !== null) window.clearInterval(runtime.traceTimer);
+  runtime.traceTimer = null;
 }
 
 async function sendResponse(input) {
@@ -221,6 +524,7 @@ async function sendResponse(input) {
 }
 
 function renderCompleted(response) {
+  clearTypingIndicator();
   if (response.status === "requires_action") {
     appendApproval(response.requiredAction);
     return;
@@ -232,6 +536,7 @@ function renderCompleted(response) {
 }
 
 function appendApproval(action) {
+  clearTypingIndicator();
   if (!action?.id) throw new Error("Approval response did not include an id");
   const panel = document.createElement("section");
   panel.className = "approval-event";
@@ -310,19 +615,24 @@ function parseSseFrame(chunk) {
 function handleStreamFrame(frame) {
   if (frame.type === "response.created") beginStreamingOutput();
   if (frame.type === "response.text.delta") appendStreamingText(frame.delta || "");
-  if (frame.type === "response.tool_call") appendTool(`Tool call · ${frame.name || "unnamed"}`, frame.arguments);
-  if (frame.type === "response.tool_result") appendTool(`Tool result · ${frame.name || frame.callId || "unnamed"}`, frame.output);
+  if (frame.type === "response.tool_call") {
+    clearTypingIndicator();
+    appendToolCall(frame.name, frame.arguments, frame.id);
+  }
+  if (frame.type === "response.tool_result") {
+    appendToolResult(frame.name, frame.output, frame.callId);
+    if (runtime.busy && !runtime.streamingBubble) showTypingIndicator();
+  }
   if (frame.type === "response.completed") finishStreamingOutput(frame);
   if (frame.type === "error") throw new Error(frame.error || "Agent stream failed");
 }
 
 function beginStreamingOutput() {
   runtime.streamingBubble = null;
-  setStatus("Agent is responding…");
 }
 
 function appendStreamingText(delta) {
-  if (!runtime.streamingBubble) runtime.streamingBubble = appendTurn("assistant");
+  if (!runtime.streamingBubble) runtime.streamingBubble = takeTypingBubble() || appendTurn("assistant");
   runtime.streamingBubble.textContent += delta;
   scrollConversation();
 }
@@ -333,7 +643,12 @@ function finishStreamingOutput(frame) {
     runtime.streamingBubble = null;
     return;
   }
-  if (!runtime.streamingBubble && frame.outputText) appendTurn("assistant", frame.outputText);
+  if (!runtime.streamingBubble && frame.outputText) {
+    const bubble = takeTypingBubble() || appendTurn("assistant");
+    bubble.textContent = frame.outputText;
+  } else if (!frame.outputText) {
+    clearTypingIndicator();
+  }
   const graphOutputs = (frame.output || []).filter((item) => item.type === "output");
   for (const output of graphOutputs) appendResult(output.value);
   if (frame.result !== undefined && !graphOutputs.length) appendResult(frame.result);
@@ -420,7 +735,7 @@ async function submitMessage(event) {
   startRequest(input);
   try {
     await sendResponse(input);
-    if (runtime.transport !== "live") finishRequest("Response complete");
+    if (runtime.transport !== "live") await finishRequest("Response complete");
   } catch (error) {
     finishFailedRequest(error);
   }
@@ -428,19 +743,23 @@ async function submitMessage(event) {
 
 function startRequest(input) {
   clearError();
+  runtime.selectedTraceId = "";
   runtime.busy = true;
   ui.send.disabled = true;
   ui.input.value = "";
+  resizeComposer();
   appendTurn("user", input);
-  setStatus("Sending…");
+  showTypingIndicator();
+  startTracePolling();
 }
 
 async function finishRequest(message) {
   runtime.busy = false;
   ui.send.disabled = false;
   setStatus(message, "ok");
+  stopTracePolling();
   try {
-    await loadSessionState();
+    await Promise.all([loadSessionState(), loadTraces()]);
   } catch (error) {
     showError(error);
   }
@@ -449,11 +768,15 @@ async function finishRequest(message) {
 function finishFailedRequest(error) {
   runtime.busy = false;
   ui.send.disabled = false;
+  clearTypingIndicator();
+  stopTracePolling();
+  loadTraces(true);
   showError(error);
 }
 
 function selectTransport(button) {
   runtime.transport = button.dataset.transport;
+  button.closest(".segmented").dataset.active = runtime.transport;
   for (const candidate of document.querySelectorAll(".transport")) {
     const active = candidate === button;
     candidate.classList.toggle("active", active);
@@ -466,6 +789,7 @@ function selectTransport(button) {
 
 function bindEvents() {
   ui.composer.addEventListener("submit", submitMessage);
+  ui.input.addEventListener("input", resizeComposer);
   ui.input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
@@ -473,11 +797,34 @@ function bindEvents() {
   });
   document.querySelector("#new-session").addEventListener("click", () => runAction(createSession));
   document.querySelector("#refresh-sessions").addEventListener("click", () => runAction(loadSessions));
-  document.querySelector("#refresh-state").addEventListener("click", () => runAction(loadSessionState));
+  ui.inspectorRefresh.addEventListener("click", () => runAction(refreshInspector));
+  ui.stateTab.addEventListener("click", () => selectInspectorView("state"));
+  ui.traceTab.addEventListener("click", () => selectInspectorView("trace"));
+  ui.inspectorToggle.addEventListener("click", toggleInspector);
+  ui.sessionTrigger.addEventListener("click", () => toggleSessionMenu());
+  ui.sessionTrigger.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      toggleSessionMenu(true);
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!ui.sessionPicker.contains(event.target)) toggleSessionMenu(false);
+  });
   ui.sessionSelect.addEventListener("change", () => changeSession(ui.sessionSelect.value));
   for (const button of document.querySelectorAll(".transport")) {
     button.addEventListener("click", () => selectTransport(button));
   }
+}
+
+function toggleInspector() {
+  const open = ui.inspector.classList.toggle("open");
+  ui.inspectorToggle.setAttribute("aria-expanded", String(open));
+}
+
+function resizeComposer() {
+  ui.input.style.height = "auto";
+  ui.input.style.height = `${Math.min(ui.input.scrollHeight, 160)}px`;
 }
 
 async function runAction(action) {
@@ -491,16 +838,21 @@ async function runAction(action) {
 
 async function changeSession(sessionId) {
   runtime.sessionId = sessionId;
+  runtime.selectedTraceId = "";
+  ui.sessionSelect.value = sessionId;
+  syncSessionPicker();
   closeLiveSocket();
-  await runAction(loadSessionState);
-  setStatus(sessionId ? "Session selected" : "Create a session to begin", sessionId ? "ok" : "pending");
+  await runAction(() => Promise.all([loadSessionState(), loadTraces()]));
+  setStatus(sessionId ? "Session selected" : "No session", sessionId ? "ok" : "pending");
 }
 
 async function initialize() {
   bindEvents();
+  resizeComposer();
   try {
     await Promise.all([loadAgent(), loadSessions()]);
-    setStatus(runtime.sessionId ? "Ready" : "Create a session to begin", "ok");
+    await loadTraces(true);
+    setStatus(runtime.sessionId ? "Ready" : "No session", "ok");
   } catch (error) {
     showError(error);
   }

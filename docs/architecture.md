@@ -484,6 +484,14 @@ bearer token stays in page memory for HTTP/SSE calls. Browser WebSockets use
 same-origin cookie authentication because their API cannot set arbitrary
 authorization headers.
 
+When the playground is enabled, its runtime wrapper also retains the latest 50
+invocation traces in process memory. The protected `/_harnest/traces` routes
+scope results to the authenticated principal and expose normalized runtime
+stages, tool events, failures, and authored `harnest.agent.*` log records to the
+Trace inspector. The wrapper does not change public agent results and is absent
+when the playground is disabled. This short-lived diagnostic buffer complements
+rather than replaces OTLP export.
+
 This is a process boundary, not a deployment boundary: the interpreter still
 needs Harnest, the selected framework, model adapters, and agent dependencies.
 The standalone server does not interpret deployment resources, resolve secrets,

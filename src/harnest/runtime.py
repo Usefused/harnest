@@ -272,6 +272,7 @@ async def _run_agent_message(
         invocation_id=f"direct_{uuid.uuid4().hex}",
         metadata={},
         state_delta={},
+        transport="direct",
     )
     from .logging import get_logger
     from .tracing import span
@@ -486,10 +487,19 @@ def _build_fastapi_app(
             extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
             adk_session_service=adk_session_service,
         )
+        trace_store = None
+        if playground_enabled:
+            from .playground_trace import (
+                PlaygroundTraceRuntimeDriver,
+                PlaygroundTraceStore,
+            )
+
+            trace_store = PlaygroundTraceStore()
+            driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
         # ADK's generated FastAPI app owns a flat route table, so the bundled
         # playground follows the same mounting path as the neutral endpoints.
         if playground_enabled:
-            app.router.routes.extend(create_playground_router().routes)
+            app.router.routes.extend(create_playground_router(trace_store).routes)
         neutral_router = create_neutral_router(
             driver,
             request_timeout=request_timeout,

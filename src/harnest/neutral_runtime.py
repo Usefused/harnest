@@ -79,6 +79,7 @@ class InvocationRequest:
     invocation_id: str
     metadata: Mapping[str, Any]
     state_delta: Mapping[str, Any]
+    transport: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,7 +719,12 @@ async def _serve_live_frame(
         }
     )
     run = invocation(
-        frame["input"], session.id, response_id, metadata, session.user_id
+        frame["input"],
+        session.id,
+        response_id,
+        metadata,
+        session.user_id,
+        transport="live",
     )
     state = _LiveStreamState()
     approval_run = _start_approval_run(approval_store, driver, run, stream=True)
@@ -875,6 +881,7 @@ def create_neutral_router(
         response_id: str,
         metadata: Mapping[str, Any],
         user_id: str,
+        transport: str | None = None,
     ) -> InvocationRequest:
         return InvocationRequest(
             input=text,
@@ -883,6 +890,7 @@ def create_neutral_router(
             invocation_id=response_id,
             metadata=dict(metadata),
             state_delta={},
+            transport=transport,
         )
 
     @router.get("/healthz", include_in_schema=False)
@@ -991,7 +999,14 @@ def create_neutral_router(
         user_id = principal_for(request).user_id
         session = await response_session(payload, user_id)
         response_id = f"resp_{uuid.uuid4().hex}"
-        run = invocation(text, session.id, response_id, metadata, user_id)
+        run = invocation(
+            text,
+            session.id,
+            response_id,
+            metadata,
+            user_id,
+            transport="stream" if stream else "response",
+        )
         if not stream:
             approval_run = _start_approval_run(approvals, driver, run, stream=False)
             try:
@@ -1173,18 +1188,29 @@ def create_neutral_app(
         try:
             yield
         finally:
-            await driver.close()
+            await runtime_driver.close()
 
-    app = FastAPI(title=f"Harnest: {driver.info.name}", lifespan=lifespan)
+    runtime_driver = driver
+    trace_store = None
+    if playground_enabled:
+        from .playground_trace import (
+            PlaygroundTraceRuntimeDriver,
+            PlaygroundTraceStore,
+        )
+
+        trace_store = PlaygroundTraceStore()
+        runtime_driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
+
+    app = FastAPI(title=f"Harnest: {runtime_driver.info.name}", lifespan=lifespan)
     from .playground import create_playground_router
     from .server_limits import install_request_size_limit
 
     install_request_size_limit(app, max_request_bytes)
     if playground_enabled:
-        app.include_router(create_playground_router())
+        app.include_router(create_playground_router(trace_store))
     app.include_router(
         create_neutral_router(
-            driver,
+            runtime_driver,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,

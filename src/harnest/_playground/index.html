@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>Harnest Playground</title>
-    <link rel="stylesheet" href="/_harnest/playground.css">
+    <link rel="stylesheet" href="/_harnest/playground.css?v=5">
   </head>
   <body>
     <div class="shell">
@@ -15,7 +15,7 @@
           <span>Harnest</span>
         </a>
 
-        <section class="agent-card" aria-labelledby="agent-name">
+        <section class="agent-summary" aria-labelledby="agent-name">
           <span class="eyebrow">Connected agent</span>
           <h1 id="agent-name">Loading agent…</h1>
           <p id="agent-description">Reading the neutral agent card.</p>
@@ -25,53 +25,69 @@
           </div>
         </section>
 
-        <section class="control-group" aria-labelledby="session-heading">
+        <section class="session-panel" aria-labelledby="session-heading">
           <div class="section-heading">
-            <h2 id="session-heading">Session</h2>
-            <button id="new-session" class="icon-button" type="button" title="Create session">+</button>
+            <span class="toolbar-label" id="session-heading">Session</span>
+            <div class="session-actions">
+              <button id="new-session" class="icon-button" type="button" title="Create session" aria-label="Create session">+</button>
+              <button id="refresh-sessions" class="icon-button" type="button" title="Refresh sessions" aria-label="Refresh sessions">↻</button>
+            </div>
           </div>
           <label class="sr-only" for="session-select">Active session</label>
-          <select id="session-select" aria-label="Active session">
+          <select id="session-select" class="sr-only" aria-label="Active session" tabindex="-1">
             <option value="">No session</option>
           </select>
-          <button id="refresh-sessions" class="secondary-button" type="button">Refresh sessions</button>
-        </section>
-
-        <section class="control-group" aria-labelledby="transport-heading">
-          <h2 id="transport-heading">Transport</h2>
-          <div class="segmented" role="radiogroup" aria-label="Response transport">
-            <button class="transport active" data-transport="stream" role="radio" aria-checked="true" type="button">Stream</button>
-            <button class="transport" data-transport="response" role="radio" aria-checked="false" type="button">Response</button>
-            <button class="transport" data-transport="live" role="radio" aria-checked="false" type="button">Live</button>
+          <div id="session-picker" class="session-picker">
+            <button id="session-trigger" class="session-trigger" type="button" aria-haspopup="listbox" aria-controls="session-menu" aria-expanded="false">
+              <span class="session-trigger-mark" aria-hidden="true"></span>
+              <span class="session-trigger-copy">
+                <strong id="session-value">No session</strong>
+                <small id="session-value-detail">Create one to begin</small>
+              </span>
+              <span class="session-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="session-menu" class="session-menu" role="listbox" aria-label="Available sessions" hidden></div>
           </div>
-          <p id="transport-note" class="note">SSE streams response events as they arrive.</p>
         </section>
 
         <details class="auth-panel">
           <summary>Bearer authentication</summary>
-          <label for="bearer-token">Token</label>
-          <input id="bearer-token" type="password" autocomplete="off" placeholder="Kept in page memory only">
-          <p>Used only for HTTP and SSE requests. Browser WebSockets require same-origin cookie authentication.</p>
+          <div class="auth-content">
+            <label for="bearer-token">Token</label>
+            <input id="bearer-token" type="password" autocomplete="off" placeholder="Kept in page memory only">
+            <p>Used for HTTP and SSE. Live WebSockets require a same-origin authentication cookie.</p>
+          </div>
         </details>
 
         <nav class="links" aria-label="Developer links">
-          <a href="/docs" target="_blank" rel="noreferrer">API docs <span>↗</span></a>
-          <a href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI <span>↗</span></a>
+          <a href="/docs" target="_blank" rel="noreferrer">API documentation <span>↗</span></a>
+          <a href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI schema <span>↗</span></a>
           <a href="/agent" target="_blank" rel="noreferrer">Agent metadata <span>↗</span></a>
         </nav>
       </aside>
 
+      <header class="topbar">
+        <div class="conversation-title">
+          <span class="eyebrow">Development playground</span>
+          <h2>Conversation</h2>
+        </div>
+        <section class="transport-toolbar" aria-labelledby="transport-heading">
+          <span class="toolbar-label" id="transport-heading">Transport</span>
+          <div class="segmented" role="radiogroup" aria-label="Response transport" data-active="stream">
+            <button class="transport active" data-transport="stream" role="radio" aria-checked="true" type="button">Stream</button>
+            <button class="transport" data-transport="response" role="radio" aria-checked="false" type="button">Response</button>
+            <button class="transport" data-transport="live" role="radio" aria-checked="false" type="button">Live</button>
+          </div>
+        </section>
+        <div id="connection-status" class="status" data-tone="pending">
+          <span class="status-dot"></span>
+          <span id="status-text">Connecting…</span>
+        </div>
+        <button id="toggle-inspector" class="inspector-toggle" type="button" aria-controls="session-inspector" aria-expanded="false">State</button>
+        <p id="transport-note" class="sr-only">SSE streams response events as they arrive.</p>
+      </header>
+
       <main class="workspace">
-        <header class="topbar">
-          <div>
-            <span class="eyebrow">Development playground</span>
-            <h2>Conversation</h2>
-          </div>
-          <div id="connection-status" class="status" data-tone="pending">
-            <span class="status-dot"></span>
-            <span id="status-text">Connecting…</span>
-          </div>
-        </header>
 
         <div id="error-banner" class="error-banner" role="alert" hidden></div>
 
@@ -79,7 +95,7 @@
           <div id="empty-state" class="empty-state">
             <div class="empty-mark">⌁</div>
             <h3>Test the compiled agent</h3>
-            <p>Messages, tool activity, streaming output, and session state appear here through Harnest’s neutral runtime.</p>
+            <p>Messages and tool activity stream here while application state stays visible alongside the conversation.</p>
           </div>
         </section>
 
@@ -92,21 +108,50 @@
         </form>
       </main>
 
-      <aside class="inspector">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Current session</span>
-            <h2>State</h2>
+      <aside id="session-inspector" class="inspector">
+        <div class="inspector-heading">
+          <span class="eyebrow">Current session</span>
+          <div class="inspector-heading-row">
+            <div class="inspector-tabs" role="tablist" aria-label="Session inspector">
+              <button id="state-tab" class="inspector-tab active" type="button" role="tab" aria-selected="true" aria-controls="state-view">State</button>
+              <button id="trace-tab" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="trace-view">Trace <span id="trace-count">0</span></button>
+            </div>
+            <button id="refresh-state" class="icon-button" type="button" title="Refresh inspector" aria-label="Refresh inspector">↻</button>
           </div>
-          <button id="refresh-state" class="icon-button" type="button" title="Refresh state">↻</button>
         </div>
-        <pre id="session-state">{}</pre>
-        <div class="inspector-footer">
-          <span>Session ID</span>
-          <code id="session-id">Not created</code>
-        </div>
+        <section id="state-view" class="inspector-view" role="tabpanel" aria-labelledby="state-tab">
+          <h2>Application state</h2>
+          <div id="session-state-empty" class="state-empty">
+            <strong>State is empty</strong>
+            <p>This session has not written any application-state keys yet.</p>
+          </div>
+          <pre id="session-state">{}</pre>
+          <div class="inspector-footer">
+            <span>Session ID</span>
+            <code id="session-id">Not created</code>
+          </div>
+        </section>
+        <section id="trace-view" class="inspector-view trace-view" role="tabpanel" aria-labelledby="trace-tab" hidden>
+          <div class="trace-overview">
+            <div>
+              <span class="eyebrow">Latest request</span>
+              <h2 id="trace-title">No trace yet</h2>
+            </div>
+            <span id="trace-status" class="trace-status" data-status="idle">Idle</span>
+          </div>
+          <div id="trace-runs" class="trace-runs" aria-label="Recent request traces"></div>
+          <div id="trace-empty" class="trace-empty">
+            <strong>Send a message to trace it</strong>
+            <p>Runtime stages, structured logs, and tool activity will appear here.</p>
+          </div>
+          <ol id="trace-timeline" class="trace-timeline" aria-label="Request flow" hidden></ol>
+          <div class="inspector-footer">
+            <span>Trace ID</span>
+            <code id="trace-id">Not created</code>
+          </div>
+        </section>
       </aside>
     </div>
-    <script src="/_harnest/playground.js" defer></script>
+    <script src="/_harnest/playground.js?v=5" defer></script>
   </body>
 </html>
