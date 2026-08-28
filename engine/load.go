@@ -238,7 +238,7 @@ func validateAgentConfig(directory string, config AgentConfig) error {
 	if err := validateFrameworkAndResources(directory, config); err != nil {
 		return err
 	}
-	if err := validateRuntimeRequirements(directory, config); err != nil {
+	if err := validateDependencyProject(directory, config); err != nil {
 		return err
 	}
 	for name := range config.Spec.Environment {
@@ -267,15 +267,16 @@ func validateConfigIdentity(directory string, config AgentConfig) error {
 	return nil
 }
 
-func validateRuntimeRequirements(directory string, config AgentConfig) error {
-	if config.Spec.Runtime.RequirementsFile != "" {
-		if filepath.IsAbs(config.Spec.Runtime.RequirementsFile) {
-			return fmt.Errorf("%s/config.yaml: requirementsFile escapes the agent directory", directory)
-		}
-		requirementsPath := filepath.Join(directory, filepath.Clean(config.Spec.Runtime.RequirementsFile))
-		if _, err := containedRegularFile(directory, requirementsPath); err != nil {
-			return fmt.Errorf("%s/config.yaml: requirementsFile does not exist: %w", directory, err)
-		}
+func validateDependencyProject(directory string, config AgentConfig) error {
+	if config.Spec.Runtime.DependencyFile == "" {
+		return fmt.Errorf("%s/config.yaml: dependencyFile is required", directory)
+	}
+	if config.Spec.Runtime.DependencyFile != "pyproject.toml" {
+		return fmt.Errorf("%s/config.yaml: dependencyFile must be pyproject.toml", directory)
+	}
+	dependencyPath := filepath.Join(directory, config.Spec.Runtime.DependencyFile)
+	if _, err := containedRegularFile(directory, dependencyPath); err != nil {
+		return fmt.Errorf("%s/config.yaml: dependencyFile does not exist: %w", directory, err)
 	}
 	return nil
 }

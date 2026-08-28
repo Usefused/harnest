@@ -107,7 +107,11 @@ root_agent = Agent(...)
 
 That `Agent` is the supported one-agent managed form. Harnest builds an ADK
 `LlmAgent` or a LangGraph/LangChain tool-loop agent depending on
-`spec.framework.name`.
+`spec.framework.name`. Its portable `history` field defaults to `"session"`,
+making earlier user and assistant turns in the Harnest session available to the
+model. `history="turn"` projects only the current invocation. ADK chat modes and
+LangGraph message projection remain backend details; neither creates another
+session or checkpoint authority.
 
 The primary graph-like managed form exports the small neutral graph API:
 
@@ -138,13 +142,21 @@ root_agent = Graph(
 agent definitions, callables, nested graphs, joins, supported backend-native
 nodes, or strings naming filesystem-discovered tools/subagents. `START` marks
 entry edges. A callable receives the prior node output and may return a plain
-value or `Event(output=..., route=..., message=...)`; routed edges compare
+value or `Event(output=..., route=..., message=..., state_delta=...)`; routed edges compare
 against the event route. A `Join` is the explicit fan-in marker for incoming
 branches. `max_concurrency`, when set, is passed to the backend workflow.
 
+A callable that declares `context` receives a framework-neutral
+`GraphContext`. Its read-only `state` is the public Harnest session state;
+`Event.state_delta` is the only managed graph write path. ADK commits that
+delta through event actions, while LangGraph merges it into an internal
+namespaced channel and Harnest exposes only public state through session CRUD.
+Stateful orchestration therefore needs neither an ADK plugin nor a LangGraph
+checkpointer.
+
 The ADK backend lowers this IR to `google.adk.workflow.Workflow`, `Edge`, and
 `JoinNode`. The LangGraph backend lowers it to a `StateGraph` with message,
-value, and route state, an in-memory checkpointer, conditional edges, and
+value, route, and namespaced session state, no checkpointer, conditional edges, and
 LangGraph joins. Nested graph cycles and framework-invalid native nodes are
 rejected during lowering.
 
@@ -181,7 +193,7 @@ The root and resource files explicitly import their authoring types but do not
 import or register one another. For example, tools use
 `from harnest.tool import tool` and MCP client definitions use
 `from harnest.mcp import MCPClient`. The compiler/runtime owns this namespace,
-so agents do not declare Harnest in `requirements.txt`. Normal standard-library
+so agents do not declare Harnest in `pyproject.toml`. Normal standard-library
 and third-party imports remain valid. Root `lib/` supplies the one intentional
 authored import namespace: `lib/audit.py` becomes `harnest.lib.audit`, and
 `lib/storage/queries.py` becomes `harnest.lib.storage.queries`. Namespace
@@ -492,26 +504,31 @@ Trace inspector. The wrapper does not change public agent results and is absent
 when the playground is disabled. This short-lived diagnostic buffer complements
 rather than replaces OTLP export.
 
-This is a process boundary, not a deployment boundary: the interpreter still
-needs Harnest, the selected framework, model adapters, and agent dependencies.
+This is a process boundary, not a deployment boundary. The CLI creates a
+fingerprinted agent environment containing Harnest, the selected framework,
+model adapters, and the dependencies locked from `pyproject.toml`.
 The standalone server does not interpret deployment resources, resolve secrets,
 enforce permissions, scale replicas, or choose an identity provider. Session
-storage and authentication are separate boundaries. Ordered root
+storage and authentication are separate boundaries. Every compiled application
+must contain exactly one root `@lifecycle.session_store` factory. Harnest owns the
+returned `SessionStore`, adapts it to the selected framework, and shares it
+across neutral and native session routes until shutdown. Ordered root
 `@lifecycle.authenticate` listeners or an injected `Authenticator` resolve HTTP
 and WebSocket connections to `AuthPrincipal`;
 the principal ID scopes all neutral execution and session operations. The
 middleware authenticates advanced ADK native routes, but deployment policy must
 still authorize their native user fields. Health and discovery remain public.
 
-LangGraph accepts a deployment-owned `SessionStore`. Its exclusive lease keeps
-one session execution serialized without turning a LangGraph checkpointer into
-a second authority. The development default is `InMemorySessionStore`.
+The generated `extensions/sessions.py` explicitly returns
+`InMemorySessionStore` for development. Removing it or declaring multiple
+factories fails compilation.
 Production stores must use durable writes, set-based listing, distributed
-leases, and emit privacy-safe OTEL audit signals after committed mutations. ADK
-uses its native session abstraction through `ADKSessionStorage`, including its
-URI and database options; advanced native and neutral ADK routes point at that
-same durable backend. Authentication does not persist sessions, and session
-storage does not authenticate callers.
+leases, and emit privacy-safe OTEL audit signals after committed mutations.
+The LangGraph driver consumes the store directly. Harnest's ADK session-service
+adapter persists native state and event history through that same store, so
+advanced native and neutral ADK routes do not create a second authority.
+Authentication does not persist sessions, and session storage does not
+authenticate callers.
 
 The serving path is deliberately one-way:
 
@@ -556,8 +573,8 @@ the engine must apply defaults explicitly rather than assuming a validator
 mutated the manifests.
 
 The engine should inject `spec.environment` and resolved `spec.secrets`, enforce
-the declared network/filesystem permissions, install the requirements file under
-the requested Python version, invoke `harnest compile` with the configured
+the declared network/filesystem permissions, synchronize the dependency project
+under the requested Python version, invoke `harnest compile` with the configured
 framework and mode, import the generated artifact, and assert that `application`
 is a matching `CompiledApplication` before accepting traffic.
 
@@ -575,9 +592,9 @@ Framework compatibility follows the Harnest release rather than the config API
 version. A release publishes bounded ADK and LangGraph dependency ranges and is
 tested only inside those ranges. Using a newer unsupported framework therefore
 requires upgrading Harnest to a release that supports it; advanced mode and
-direct framework imports do not relax this rule. Agent `requirements.txt`
-constraints may narrow the supported range, but must not widen it beyond the
-installed Harnest release. The exact framework version and Harnest version are
+direct framework imports do not relax this rule. Agent `pyproject.toml` files
+cannot declare the selected framework or its compiler-owned adapters; those
+packages come only from the release wheel. The exact framework and Harnest versions are
 captured in every compiled manifest for deployment diagnostics.
 
 The agent card implements a strict, intentionally small subset of the A2A 1.0
@@ -592,7 +609,7 @@ other optional A2A fields need matching Go types before they can be accepted.
 
 Each `AgentSource` scans only its immediate child directories. A child becomes a
 candidate when it contains `config.yaml`; the corresponding `agent-card.yaml`,
-entrypoint module, and optional requirements file must then validate. Sources are
+entrypoint module, and required dependency project must then validate. Sources are
 kept within `projectRoot`, candidates are sorted, duplicate metadata names fail
 the whole discovery run, and disabled agents are validated before being skipped.
 
@@ -626,7 +643,8 @@ Keep secret resolution in the engine. The config carries references, never
 credentials, and the Go runtime does not expand or log them. The production
 adapter must also:
 
-- create the requested Python environment and install `requirementsFile`;
+- reuse Harnest environment synchronization or equivalently install the locked
+  `dependencyFile` under the requested Python version;
 - inject `spec.environment` and resolved `spec.secrets` without logging values;
 - enforce resource limits and network/filesystem permissions;
 - compile the source folder with the declared framework/mode, import the
@@ -662,8 +680,18 @@ Prompt text, response text, metadata, credentials, headers, and raw session IDs
 are excluded from Harnest spans and logs. Scaffolds set GenAI and ADK content
 capture off. Collector credentials remain engine-resolved secrets.
 
+Client-tool request and result-submission transitions emit agent/user-triggered
+audit events through the same OTEL logging pipeline. Only the declared tool
+name crosses that boundary; arguments, results, principal IDs, and request IDs
+are excluded.
+
 The ADK eval lane prepends an eval-only event filter before authored plugins.
 It removes parts marked as model thoughts using the same customer-facing rule
 as the neutral runtime, then lets the official ADK evaluator score the remaining
 visible text and tool trajectory. This compensates for ADK response matchers
 that otherwise concatenate every text part, including hidden reasoning.
+Each eval suite emits a balanced user-triggered start/finish audit event.
+Closed pytest-capture handlers are detached before ADK runs; handlers installed
+by evaluation dependencies are removed and closed at lane completion. This
+prevents native plugin teardown logs from writing to a closed capture stream
+while retaining Harnest's OTEL audit path.

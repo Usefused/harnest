@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -128,7 +129,7 @@ func createScaffoldForModeProfile(
 	directory, name, framework, mode string,
 	example bool,
 ) (returnErr error) {
-	requirements, err := frameworkRequirements(framework)
+	_, err := compatibilityForFramework(framework)
 	if err != nil {
 		return err
 	}
@@ -153,7 +154,7 @@ func createScaffoldForModeProfile(
 	if err := createScaffoldDirectories(directory, mode, example, &created); err != nil {
 		return err
 	}
-	files := scaffoldFilesForMode(name, framework, mode, requirements, example)
+	files := scaffoldFilesForMode(name, framework, mode, example)
 	return createScaffoldFiles(directory, files, &created)
 }
 
@@ -253,12 +254,16 @@ func prepareScaffoldDirectory(directory string) (bool, error) {
 }
 
 func scaffoldFilesForMode(
-	name, framework, mode, requirements string,
+	name, framework, mode string,
 	example bool,
 ) map[string]string {
 	adkIdentifier := adkName(name)
 	title := displayName(name)
 	files := map[string]string{
+		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
+kind: ProjectLock
+projectSchema: 2
+`,
 		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent
 metadata:
@@ -272,7 +277,7 @@ spec:
     mode: managed
   runtime:
     version: "3.12"
-    requirementsFile: requirements.txt
+    dependencyFile: pyproject.toml
   resources:
     cpu: "1"
     memory: 1Gi
@@ -343,6 +348,7 @@ root_agent = Graph(
                 ),
             ),
             instruction="Answer clearly and use available tools when they help.",
+            history="session",
         ),
     },
     edges=(Edge(START, "respond"),),
@@ -404,6 +410,15 @@ def client():
 def observe_result(_context, _result):
     """Observe completed invocations without replacing their result."""
 `,
+		"extensions/sessions.py": `from harnest.lifecycle import lifecycle
+from harnest.session import InMemorySessionStore
+
+
+@lifecycle.session_store
+def session_store():
+    """Create the application-owned session store once at startup."""
+    return InMemorySessionStore()
+`,
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
 description: Use the starter MCP capability when its tools can answer the request.
@@ -443,7 +458,7 @@ sandbox = Sandbox.container(
 
 Answer clearly, acknowledge uncertainty, and use discovered tools when they are relevant.
 `, title),
-		"requirements.txt": requirements,
+		"pyproject.toml": agentPyproject(name),
 		"skills/getting-started/SKILL.md": `---
 name: getting-started
 description: Apply the agent's core instructions when answering a general request that does not require a more specialized skill.
@@ -578,6 +593,7 @@ func minimalScaffoldFiles(
 		"subagents/__init__.py",
 		"mcp/_README.md",
 		"extensions/starter.py",
+		"extensions/sessions.py",
 		"plugins/starter/mcp/starter.py",
 		"plugins/starter/skills/starter-guidance/SKILL.md",
 		"sandbox/_README.md",
@@ -620,6 +636,21 @@ func optionalFolderGuide(directory, mode string) string {
 	return guides[directory]
 }
 
+func agentPyproject(name string) string {
+	return fmt.Sprintf(`[project]
+name = %s
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.uv]
+package = false
+`, strconv.Quote(name))
+}
+
 func minimalManagedAgentSource(agentName string) string {
 	return fmt.Sprintf(`import os
 
@@ -629,6 +660,7 @@ from harnest.model import LiteLLMModel
 
 root_agent = Agent(
     name=%q,
+    history="session",
     model=LiteLLMModel(
         model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
         api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),

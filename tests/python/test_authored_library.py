@@ -18,6 +18,7 @@ from harnest.runtime import (
     run_agent_message,
 )
 from harnest.testing import run_agent_tests
+from _session_store_fixture import write_session_store
 
 
 class AuthoredLibraryTests(unittest.TestCase):
@@ -38,6 +39,7 @@ class AuthoredLibraryTests(unittest.TestCase):
         )
 
     def _write_agent(self, root: Path, *, lazy_import: bool = False) -> None:
+        write_session_store(root)
         self._write(
             root / "agent.py",
             "from harnest.agent import Agent\n"
@@ -108,6 +110,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "    return value.strip().lower()\n",
             )
             self._write(root / "instructions.md", "Help.\n")
+            write_session_store(root)
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 application = compile_application(
                     root, entrypoint="agent:root_agent"
@@ -125,6 +128,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "root_agent = Agent.advanced(APP)\n",
             )
             self._write(root / "lib" / "values.py", "APP = object()\n")
+            write_session_store(root)
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 application = compile_application(
                     root,

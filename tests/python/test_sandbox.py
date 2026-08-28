@@ -13,6 +13,7 @@ from harnest.bundle import (
     compile_agent,
 )
 from harnest.sandbox import Sandbox
+from _session_store_fixture import write_session_store
 
 
 class _RecordingExecutor(BaseCodeExecutor):
@@ -27,6 +28,7 @@ class SandboxTests(unittest.TestCase):
 
     def _root(self, directory: str) -> Path:
         root = Path(directory)
+        write_session_store(root)
         self._write(
             root / "agent.py",
             "from harnest.agent import Agent\n"
@@ -135,6 +137,7 @@ class SandboxTests(unittest.TestCase):
                 ")\n",
             )
             self._write(root / "instructions.md", "Use isolation.\n")
+            write_session_store(root)
             self._write(
                 root / "sandbox" / "sandbox.py",
                 "from harnest.sandbox import Sandbox\n"

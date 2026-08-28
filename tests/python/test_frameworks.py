@@ -15,6 +15,7 @@ from harnest.runtime import (
     run_agent_message,
 )
 from harnest.runtime_langgraph import _graph_output, _tool_events
+from _session_store_fixture import write_session_store
 
 
 ADK_AVAILABLE = importlib.util.find_spec("google.adk") is not None
@@ -25,6 +26,8 @@ class FrameworkArtifactTests(unittest.TestCase):
     def _write(self, path: Path, value: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(value).lstrip(), encoding="utf-8")
+        if path.name == "agent.py" and "subagents" not in path.parts:
+            write_session_store(path.parent)
 
     def _card(self, root: Path) -> None:
         self._write(
@@ -223,11 +226,17 @@ class FrameworkArtifactTests(unittest.TestCase):
         application = SimpleNamespace(bridge=None)
 
         text_value, structured = _graph_output(
-            application, {"messages": [message], "value": "stale input"}
+            application,
+            {
+                "messages": [message],
+                "value": "stale input",
+                "_harnest_turn_start": 0,
+            },
         )
 
         self.assertEqual(text_value, "visible answer")
         self.assertEqual(structured["value"], "stale input")
+        self.assertNotIn("_harnest_turn_start", structured)
 
         thought_only = SimpleNamespace(
             content=[{"type": "thinking", "thinking": "private reasoning"}]

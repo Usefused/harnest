@@ -22,6 +22,9 @@ _PHASES = frozenset(
         "on_model_error",
     }
 )
+_FACTORY_PHASES = frozenset(
+    {"adk_plugin", "langgraph_middleware", "session_store"}
+)
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
 
@@ -136,6 +139,7 @@ class _PhaseDecorator:
 
 
 class _LifecycleDecorators:
+    session_store = _PhaseDecorator("session_store")
     authenticate = _PhaseDecorator("authenticate")
     before_invoke = _PhaseDecorator("before_invoke")
     after_invoke = _PhaseDecorator("after_invoke")
@@ -165,7 +169,7 @@ class _LifecycleDecorators:
 def _registration_decorator(
     phase: str, *, order: int, framework: str | None = None
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    if phase not in _PHASES | {"adk_plugin", "langgraph_middleware"}:
+    if phase not in _PHASES | _FACTORY_PHASES:
         raise ValueError(f"unsupported lifecycle phase {phase!r}")
     if not isinstance(order, int) or isinstance(order, bool):
         raise TypeError("lifecycle order must be an integer")

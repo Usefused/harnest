@@ -163,8 +163,14 @@ def _runtime_driver(
 ) -> Any:
     """Select a backend once, at the process boundary."""
 
+    lifecycle_store = application.session_store
     if application.framework == "adk":
         from .runtime_adk import ADKRuntimeDriver
+
+        if lifecycle_store is not None and adk_session_service is None:
+            from .session_adk import create_adk_session_service
+
+            adk_session_service = create_adk_session_service(lifecycle_store)
 
         driver = ADKRuntimeDriver(
             application,
@@ -175,13 +181,27 @@ def _runtime_driver(
     elif application.framework == "langgraph":
         from .runtime_langgraph import LangGraphRuntimeDriver
 
+        if lifecycle_store is not None and langgraph_session_store is not None:
+            raise AgentRuntimeError(
+                "@lifecycle.session_store cannot be combined with an injected "
+                "LangGraph session store"
+            )
+
         driver = LangGraphRuntimeDriver(
             application,
             card=card,
-            session_store=langgraph_session_store,
+            session_store=(
+                lifecycle_store
+                if lifecycle_store is not None
+                else langgraph_session_store
+            ),
         )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
+    if lifecycle_store is not None:
+        from .runtime_session import SessionStoreRuntimeDriver
+
+        driver = SessionStoreRuntimeDriver(driver, lifecycle_store)
     if application.extensions:
         from .runtime_extensions import ExtensionRuntimeDriver
 
@@ -314,7 +334,7 @@ def _create_adk_fastapi_app(
     *,
     application: Any,
     bind_host: str,
-    session_storage: ADKSessionStorage | None,
+    session_service: Any,
 ) -> Any:
     """Create ADK's official app without inspecting private route closures."""
 
@@ -365,14 +385,6 @@ def _create_adk_fastapi_app(
     kwargs: dict[str, Any] = {
         "agents_dir": str(agents_dir),
         "agent_loader": CompiledAgentLoader(),
-        "session_service_uri": (
-            session_storage.uri if session_storage is not None else "memory://"
-        ),
-        "session_db_kwargs": (
-            dict(session_storage.database_kwargs)
-            if session_storage is not None
-            else None
-        ),
         "artifact_service_uri": "memory://",
         "memory_service_uri": "memory://",
         "use_local_storage": False,
@@ -386,7 +398,12 @@ def _create_adk_fastapi_app(
     if "bind_host" in inspect.signature(get_fast_api_app).parameters:
         kwargs["bind_host"] = bind_host
     try:
-        return get_fast_api_app(**kwargs)
+        if session_service is None:
+            return get_fast_api_app(session_service_uri="memory://", **kwargs)
+        from .session_adk import register_adk_session_service
+
+        with register_adk_session_service(session_service) as service_uri:
+            return get_fast_api_app(session_service_uri=service_uri, **kwargs)
     except Exception:
         shutil.rmtree(runtime_root, ignore_errors=True)
         raise
@@ -453,79 +470,37 @@ def _build_fastapi_app(
 ) -> Any:
     """Construct the server after its authored library has been acquired."""
 
+    _validate_session_storage_choice(
+        application, adk_session_storage, langgraph_session_store
+    )
     card = load_agent_card(artifact)
     _apply_observability_defaults(application.framework)
     authenticator = _resolve_lifecycle_authenticator(
         application.extensions, authenticator
     )
 
-    from .neutral_runtime import create_neutral_app, create_neutral_router
-    from .playground import create_playground_router
-    from .server_limits import install_request_size_limit
+    from .neutral_runtime import create_neutral_app
     from .telemetry import configure_observability, instrument_fastapi
 
-    native_adk = _exposes_native_adk_api(application)
-    if native_adk:
-        os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
-        app = _create_adk_fastapi_app(
-            artifact,
-            application=application,
-            bind_host=bind_host,
-            session_storage=adk_session_storage,
-        )
-
-    adk_session_service = _resolve_adk_session_service(
+    adk_session_service = _runtime_adk_session_service(
         artifact,
         application,
         adk_session_storage,
         langgraph_session_store,
     )
+    native_adk = _exposes_native_adk_api(application)
     if native_adk:
-        driver = _runtime_driver(
-            application,
+        app, telemetry = _build_native_adk_app(
+            artifact,
+            application=application,
+            bind_host=bind_host,
             card=card,
-            extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
             adk_session_service=adk_session_service,
-        )
-        trace_store = None
-        if playground_enabled:
-            from .playground_trace import (
-                PlaygroundTraceRuntimeDriver,
-                PlaygroundTraceStore,
-            )
-
-            trace_store = PlaygroundTraceStore()
-            driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
-        # ADK's generated FastAPI app owns a flat route table, so the bundled
-        # playground follows the same mounting path as the neutral endpoints.
-        if playground_enabled:
-            app.router.routes.extend(create_playground_router(trace_store).routes)
-        neutral_router = create_neutral_router(
-            driver,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
-        )
-        # FastAPI 0.135+ retains included routers as private lazy route-table
-        # entries. ADK exposes its native routes as a flat public table, so keep
-        # that contract when adding Harnest's dependency-free neutral routes.
-        app.router.routes.extend(neutral_router.routes)
-        app.router.add_event_handler("shutdown", driver.close)
-        install_authentication(app, authenticator)
-        install_request_size_limit(app, max_request_bytes)
-        adk_owns_otel = any(
-            os.getenv(name, "").strip()
-            for name in (
-                "OTEL_EXPORTER_OTLP_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-            )
-        )
-        telemetry = configure_observability(
-            application.name,
-            framework=application.framework,
-            use_global_providers=adk_owns_otel,
+            playground_enabled=playground_enabled,
+            authenticator=authenticator,
         )
     else:
         telemetry = configure_observability(
@@ -547,6 +522,109 @@ def _build_fastapi_app(
     instrument_fastapi(app, telemetry)
     _attach_library_lifecycle(app, Path(artifact).resolve() / "source")
     return app
+
+
+def _validate_session_storage_choice(
+    application: Any,
+    adk_storage: ADKSessionStorage | None,
+    langgraph_store: SessionStore | None,
+) -> None:
+    if application.session_store is not None and (
+        adk_storage is not None or langgraph_store is not None
+    ):
+        raise AgentRuntimeError(
+            "@lifecycle.session_store cannot be combined with injected session storage"
+        )
+
+
+def _runtime_adk_session_service(
+    artifact: str | Path,
+    application: Any,
+    adk_storage: ADKSessionStorage | None,
+    langgraph_store: SessionStore | None,
+) -> Any | None:
+    service = _resolve_adk_session_service(
+        artifact, application, adk_storage, langgraph_store
+    )
+    if (
+        application.framework != "adk"
+        or service is not None
+        or application.session_store is None
+    ):
+        return service
+    from .session_adk import create_adk_session_service
+
+    return create_adk_session_service(application.session_store)
+
+
+def _build_native_adk_app(
+    artifact: str | Path,
+    *,
+    application: Any,
+    bind_host: str,
+    card: Mapping[str, Any],
+    adk_session_service: Any,
+    request_timeout: float,
+    max_concurrency: int,
+    max_request_bytes: int,
+    playground_enabled: bool,
+    authenticator: Authenticator | None,
+) -> tuple[Any, Any]:
+    from .neutral_runtime import create_neutral_router
+    from .playground import create_playground_router
+    from .server_limits import install_request_size_limit
+    from .telemetry import configure_observability
+
+    os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
+    app = _create_adk_fastapi_app(
+        artifact,
+        application=application,
+        bind_host=bind_host,
+        session_service=adk_session_service,
+    )
+    driver = _runtime_driver(
+        application,
+        card=card,
+        extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
+        adk_session_service=adk_session_service,
+    )
+    trace_store = None
+    if playground_enabled:
+        from .playground_trace import (
+            PlaygroundTraceRuntimeDriver,
+            PlaygroundTraceStore,
+        )
+
+        trace_store = PlaygroundTraceStore()
+        driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
+        app.router.routes.extend(create_playground_router(trace_store).routes)
+    neutral = create_neutral_router(
+        driver,
+        request_timeout=request_timeout,
+        max_concurrency=max_concurrency,
+        max_request_bytes=max_request_bytes,
+    )
+    # ADK owns a flat public route table, so preserve it when adding neutral APIs.
+    app.router.routes.extend(neutral.routes)
+    app.router.add_event_handler("shutdown", driver.close)
+    install_authentication(app, authenticator)
+    install_request_size_limit(app, max_request_bytes)
+    telemetry = configure_observability(
+        application.name,
+        framework=application.framework,
+        use_global_providers=_adk_owns_otel(),
+    )
+    return app, telemetry
+
+
+def _adk_owns_otel() -> bool:
+    names = (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    )
+    return any(os.getenv(name, "").strip() for name in names)
 
 
 def _resolve_lifecycle_authenticator(

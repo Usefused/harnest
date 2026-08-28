@@ -5,6 +5,28 @@ adding tools, agents, MCP clients, or skills. Files and nested directories may
 have any valid public Python name. Harnest ignores ordinary helper functions and
 discovers only functions decorated through `harnest.lifecycle`.
 
+An agent may declare one root session-store factory. `harnest init --example`
+creates `extensions/sessions.py` with the development-only in-memory store:
+
+```python
+from harnest.lifecycle import lifecycle
+from harnest.session import InMemorySessionStore
+
+
+@lifecycle.session_store
+def session_store():
+    return InMemorySessionStore()
+```
+
+The optional synchronous zero-argument factory runs once when the compiled
+application is created. Harnest starts its returned `SessionStore` before first use, shares
+it across JSON, SSE, WebSocket, and framework adapters, and closes it with the
+application. Replace the return value with a durable Harnest store or a custom
+`SessionStore` implementation for production. Duplicate, asynchronous, or
+incorrectly typed factories fail compilation. A missing factory keeps the
+development fallback. Session storage cannot also be
+injected by the host, because that would create competing authorities.
+
 ```python
 # extensions/history.py
 from harnest.lifecycle import lifecycle

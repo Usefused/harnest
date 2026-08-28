@@ -1,12 +1,15 @@
 import asyncio
 import unittest
+from typing import Any
 
 from google.adk.apps import App
+from google.adk.models import BaseLlm, LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.workflow import JoinNode, Workflow
 from google.genai import types
 
-from harnest.graph import START, Edge, Event, Graph, Join
+from harnest.agent import Agent
+from harnest.graph import START, Edge, Event, Graph, GraphContext, Join
 
 
 async def _run(graph: Graph, message: str = "start"):
@@ -30,7 +33,72 @@ async def _run(graph: Graph, message: str = "start"):
         await runner.close()
 
 
+class _RecordingLlm(BaseLlm):
+    seen: list[list[str]] = []
+
+    async def generate_content_async(self, request, stream=False):
+        del stream
+        self.seen.append(
+            [
+                part.text
+                for content in request.contents
+                for part in content.parts
+                if part.text
+            ]
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=f"reply-{len(self.seen)}")],
+            )
+        )
+
+
+async def _run_conversation(history: str) -> tuple[str, list[list[str]]]:
+    model = _RecordingLlm(model=f"recording-{history}")
+    graph = Graph(
+        name=f"{history}_conversation",
+        nodes={
+            "assistant": Agent(
+                name="assistant",
+                model=model,
+                instruction="Remember the conversation.",
+                history=history,
+            )
+        },
+        edges=[Edge(START, "assistant")],
+    )
+    workflow = graph.build()
+    native = next(node for node in workflow.graph.nodes if node.name == "assistant")
+    runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
+    await runner.session_service.create_session(
+        app_name=graph.name, user_id="test-user", session_id="test-session"
+    )
+    try:
+        for message in ("first", "second"):
+            async for _ in runner.run_async(
+                user_id="test-user",
+                session_id="test-session",
+                new_message=types.Content(
+                    role="user", parts=[types.Part(text=message)]
+                ),
+            ):
+                pass
+    finally:
+        await runner.close()
+    return native.mode, model.seen
+
+
 class GraphAdkTests(unittest.TestCase):
+    def test_agent_history_controls_native_multi_turn_graph_context(self):
+        session_mode, session_seen = asyncio.run(_run_conversation("session"))
+        turn_mode, turn_seen = asyncio.run(_run_conversation("turn"))
+
+        self.assertEqual(session_mode, "chat")
+        self.assertEqual(session_seen[1], ["first", "reply-1", "second"])
+        self.assertEqual(turn_mode, "single_turn")
+        self.assertEqual(turn_seen[1], ["second"])
+
     def test_ir_validates_references_duplicates_and_reachability(self):
         with self.assertRaisesRegex(ValueError, "unknown target"):
             Graph(
@@ -106,6 +174,57 @@ class GraphAdkTests(unittest.TestCase):
         self.assertEqual(
             [event.output for event in events if event.output is not None],
             ["start-alpha", "start-alpha-omega"],
+        )
+
+    def test_callable_context_reads_and_persists_session_state(self):
+        seen = []
+
+        def remember(value: str, context: GraphContext) -> Event:
+            count = int(context.state.get("count", 0)) + 1
+            seen.append(dict(context.state))
+            return Event(output=f"{value}:{count}", state_delta={"count": count})
+
+        graph = Graph(
+            name="stateful",
+            nodes={"remember": remember},
+            edges=[Edge(START, "remember")],
+        )
+
+        async def exercise() -> tuple[list[Any], dict[str, Any]]:
+            workflow = graph.build()
+            runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
+            await runner.session_service.create_session(
+                app_name=graph.name,
+                user_id="test-user",
+                session_id="test-session",
+                state={"count": 2},
+            )
+            events = []
+            try:
+                async for event in runner.run_async(
+                    user_id="test-user",
+                    session_id="test-session",
+                    new_message=types.Content(
+                        role="user", parts=[types.Part(text="remember")]
+                    ),
+                ):
+                    events.append(event)
+                session = await runner.session_service.get_session(
+                    app_name=graph.name,
+                    user_id="test-user",
+                    session_id="test-session",
+                )
+                return events, dict(session.state)
+            finally:
+                await runner.close()
+
+        events, state = asyncio.run(exercise())
+
+        self.assertEqual(seen, [{"count": 2}])
+        self.assertEqual(state["count"], 3)
+        self.assertEqual(
+            [event.output for event in events if event.output is not None],
+            ["remember:3"],
         )
 
     def test_executes_only_the_selected_routed_branch(self):

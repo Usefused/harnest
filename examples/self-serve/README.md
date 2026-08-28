@@ -15,9 +15,10 @@ then change at least:
 5. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
 6. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
 7. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
-8. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
-9. `evals/<id>.evalset.json` → optional official ADK eval sets; and
-10. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
+8. `extensions/sessions.py` → the required application-owned `SessionStore`;
+9. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
+10. `evals/<id>.evalset.json` → optional official ADK eval sets; and
+11. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
     live-model tests.
 
 The existing `orchestrator.py` selects every child under `agents/`, so no Go
@@ -32,11 +33,11 @@ make plan
 make dry-run
 ```
 
-`plan` shows the versioned JSON consumed by Go. `dry-run` performs discovery,
-manifest validation, and source compilation before printing the immutable bundle
-digest; it does not install requirements or serve the agent. Install the declared
-Python dependencies first. URLs and secret references in this example are
-placeholders for the deployment environment.
+`plan` shows the versioned JSON consumed by Go. `dry-run` exercises the source
+tree's existing development environment. The installed CLI instead runs
+`harnest env sync examples/self-serve/agents/helpdesk`, creates the isolated
+agent environment, and locks declared dependencies before compile, test, or
+serve. URLs and secret references remain deployment placeholders.
 
 ## Live local run with Ollama
 
@@ -158,9 +159,9 @@ artifacts additionally mount official ADK `/run`, `/run_sse`, `/run_live`, and
 `/apps/{app}/users/{user}/sessions` routes. Inspect `/docs` or `/openapi.json`
 for the exact compiled surface.
 
-The artifact is independently launchable, not dependency-free: its interpreter
-still needs Harnest, Google ADK, LiteLLM, and the agent's requirements, plus a
-reachable model and any enabled MCP services. The standalone server does not
+The artifact runs through the synchronized agent interpreter selected by
+`harnest serve`; it still needs a reachable model and any enabled MCP services.
+The standalone server does not
 read deployment environment from `config.yaml` or provide the provisioner's
 secret resolution, resource enforcement, permissions, scaling, authentication,
 or TLS. The Make target exports the Ollama settings; export any optional MCP
@@ -178,9 +179,14 @@ Agent-owned source imports its compiler-provided types explicitly. The root uses
 `from harnest.tool import tool`; model connectors use
 `from harnest.model import LiteLLMModel`; and MCP files use
 `from harnest.mcp import MCPClient`. Harnest belongs to the compiler/runtime, so
-it is not listed in the agent's `requirements.txt`. The compiler examines
+it is not listed in the agent's `pyproject.toml`. The compiler examines
 sibling resource directories, so root code still never maintains an import or
 registration list.
+
+Managed `Agent` definitions default to `history="session"`, including graph
+nodes, so reusing a `/responses` or `/live` session provides portable multi-turn
+context on ADK and LangGraph. Use `history="turn"` only for intentional model
+isolation; do not maintain a second transcript in graph state.
 
 `harnest compile` is the source entrypoint and supplies the namespace while
 loading authored code; ADK receives only the generated package. Authored files

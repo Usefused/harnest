@@ -3,12 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestFrameworkRequirementsAreReleaseOwned(t *testing.T) {
 	tests := map[string]string{
-		"adk": "google-adk[eval,mcp]>=2.8,<3\n",
+		"adk": "google-adk[eval,extensions,mcp]>=2.8,<3\n",
 		"langgraph": "langgraph>=1.2,<2\n" +
 			"langchain>=1.3,<2\n" +
 			"langchain-litellm>=0.7,<1\n" +
@@ -29,7 +30,7 @@ func TestFrameworkRequirementsAreReleaseOwned(t *testing.T) {
 	}
 }
 
-func TestScaffoldUsesReleaseFrameworkRequirements(t *testing.T) {
+func TestScaffoldKeepsFrameworkRequirementsCompilerOwned(t *testing.T) {
 	for _, framework := range []string{"adk", "langgraph"} {
 		framework := framework
 		t.Run(framework, func(t *testing.T) {
@@ -37,7 +38,7 @@ func TestScaffoldUsesReleaseFrameworkRequirements(t *testing.T) {
 			if err := createScaffoldForFramework(directory, framework+"-agent", framework); err != nil {
 				t.Fatal(err)
 			}
-			contents, err := os.ReadFile(filepath.Join(directory, "requirements.txt"))
+			contents, err := os.ReadFile(filepath.Join(directory, "pyproject.toml"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,9 +46,18 @@ func TestScaffoldUsesReleaseFrameworkRequirements(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(contents) != expected {
-				t.Fatalf("generated requirements = %q, want %q", contents, expected)
+			for _, requirement := range strings.Fields(expected) {
+				if strings.Contains(string(contents), requirement) {
+					t.Fatalf("generated pyproject exposes compiler-owned %q:\n%s", requirement, contents)
+				}
 			}
+			assertContainsAll(t, "generated pyproject", string(contents), []string{
+				`name = "` + framework + `-agent"`,
+				`requires-python = ">=3.12,<3.13"`,
+				`dependencies = []`,
+				`[tool.uv]`,
+				`package = false`,
+			})
 		})
 	}
 }

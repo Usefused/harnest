@@ -45,8 +45,8 @@ must match the release's published SHA-256 checksum before anything is
 installed. The installer uses an existing Python 3.10+ when possible and falls
 back to managed CPython 3.12 through its embedded `uv`; set
 `HARNEST_BOOTSTRAP_PYTHON` only to require an exact host interpreter. The
-managed runtime installs both supported compiler backends;
-model-provider and agent-specific packages remain declared by each agent. Pin
+managed runtime installs the compiler's core only; the selected framework,
+provider-specific, and agent-specific packages live in each agent environment. Pin
 or redirect the source with `HARNEST_VERSION` and
 `HARNEST_REPO=owner/repository`. See [Installation and
 releases](docs/releases.md) for verification, private-repository, upgrade, and
@@ -57,6 +57,7 @@ Create and exercise an agent with compiler-owned authoring imports:
 ```bash
 harnest skills install
 harnest init support-agent
+harnest env sync support-agent
 harnest test support-agent
 harnest compile support-agent --output .harnest/support-agent
 harnest serve support-agent
@@ -66,6 +67,36 @@ harnest serve support-agent
 `_README.md` guides in optional resource and test folders. Those guides are not
 compiled. Use `harnest init support-agent --example` when you want the complete
 working graph, tool, plugin, skill, extension, eval, and test examples.
+
+Each agent has an isolated, compiler-managed environment below
+`AGENT_DIR/.harnest/environments/`. `harnest env sync AGENT_DIR` resolves its
+`pyproject.toml`, writes or refreshes `uv.lock`, installs the release's embedded
+Harnest wheel with only the selected framework extra, and caches the resulting
+interpreter by dependency fingerprint. Users do not activate this environment.
+`compile`, `test`, and `serve` synchronize it automatically; CI can run
+`harnest env sync AGENT_DIR --frozen` to require the committed lock without
+changing it. Add provider, tool, and library packages to `[project].dependencies`.
+Do not add ADK, LangGraph, or their Harnest-owned adapters: the selected
+framework is installed from the matching Harnest release and direct declarations
+are rejected before dependency resolution.
+
+Upgrade an agent created with an older Harnest filesystem contract in two
+explicit steps:
+
+```bash
+harnest upgrade existing-agent
+harnest upgrade existing-agent --apply
+```
+
+The first command is read-only and lists every create, rewrite, and move plus
+anything that requires manual resolution. `--apply` refuses blocked plans,
+prints its fresh effective plan before mutation, verifies its source hashes,
+and backs up every affected file
+under `existing-agent/.harnest/upgrade-backups/`, and only then migrates it. It
+preserves authored business logic while updating recognized structural
+contracts such as `requirements.txt` to `pyproject.toml`, `mcp_servers/`, MCP
+exports, and legacy extension wiring.
+After applying, review the diff and run `harnest test existing-agent`.
 
 The runtime directory is internal to Harnest. Do not activate it or invoke its
 Python modules directly; the native `harnest` CLI selects it automatically. The
@@ -125,11 +156,13 @@ examples/self-serve/
 └── agents/
     └── helpdesk/
         ├── config.yaml              Compute, scaling, env, secrets, permissions
+        ├── harnest.lock             Committed project-schema migration marker
         ├── server.yaml              Standalone HTTP limits and playground policy
         ├── agent-card.yaml          A2A 1.0 discovery metadata
         ├── agent.py                 Root definition using harnest.* imports
         ├── instructions.md           Required root instructions
-        ├── requirements.txt
+        ├── pyproject.toml            Agent dependency declarations
+        ├── uv.lock                   Resolved dependency lock after sync
         ├── lib/                      Reusable Python under harnest.lib
         ├── tools/                    Decorated callable exports
         ├── subagents/                AgentDefinition exports
@@ -163,18 +196,17 @@ spec:
 
 Framework support is release-bound. Each Harnest release declares the ADK and
 LangGraph version ranges it can compile and run; the current ranges are the
-`google-adk` and `langgraph` constraints published in `pyproject.toml` and in
-newly generated `requirements.txt` files. The compiler checks the installed
-framework distribution before loading authored agent code and fails when its
-version falls outside the selected Harnest release's range.
+`google-adk` and `langgraph` constraints published in Harnest's own package.
+Generated agent `pyproject.toml` files contain only agent-owned dependencies.
+The compiler rejects selected-framework declarations there and checks the
+installed distribution before loading authored agent code.
 
 This contract applies equally to managed and advanced mode. Advanced authors
 still import ADK or LangGraph directly, but direct imports are an authoring
 escape hatch rather than a way to bypass Harnest's tested runtime boundary. To
-adopt a newer unsupported framework release, upgrade Harnest to a release that
-declares support for it, then update the agent dependency range and run its
-tests. Do not widen the agent's framework constraint independently and assume
-compatibility.
+adopt a newer framework release, upgrade Harnest to a release that declares
+support for it and run the agent tests. Agent metadata cannot independently
+override that framework contract.
 
 Compiled manifests record the Harnest version and the installed selected
 framework version, alongside the effective framework name and mode. A deployed
@@ -219,7 +251,10 @@ single-input callables, nested `Graph` values, `Join()` markers, supported
 backend-native nodes, or strings naming discovered tools/subagents. `Edge.route` accepts a
 boolean, integer, string, or a non-empty sequence of those values. A callable
 may return a plain downstream value or `Event(output=..., route=...,
-message=...)`; `message` emits assistant text. `START` marks entry edges and a
+message=..., state_delta=...)`; `message` emits assistant text. To build
+stateful orchestration without a framework plugin, declare a `context`
+parameter, read its immutable `GraphContext.state`, and return only intended
+session changes through `state_delta`. `START` marks entry edges and a
 `Join` waits for all incoming branches. Graph construction rejects unknown edge
 references, duplicate edges, and unreachable nodes before either backend runs.
 
@@ -234,6 +269,7 @@ from harnest.model import LiteLLMModel
 
 root_agent = Agent(
     name="support",
+    history="session",
     model=LiteLLMModel(
         model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
         api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
@@ -244,10 +280,13 @@ root_agent = Agent(
 ```
 
 For ADK this builds an `LlmAgent`; for LangGraph it builds a LangChain tool-loop
-graph. The Harnest runtime remains the single session authority for both.
+graph. `history="session"` is the default and exposes prior user/assistant turns
+from the same Harnest session. Set `history="turn"` for an intentionally
+isolated model call. This contract also applies to `Agent` nodes inside a
+portable `Graph`; the Harnest runtime remains the single session authority.
 `LiteLLMModel` and `OllamaModel` have
 adapters for both frameworks. Provider-specific Python dependencies still
-belong in the agent's `requirements.txt`.
+belong in the agent's `pyproject.toml`.
 
 Both connectors support thinking and non-thinking models. Set `thinking=True`
 to request reasoning, `thinking=False` to disable it, or omit the option to use
@@ -352,7 +391,7 @@ modifications. Use
 migrate existing code deliberately after reviewing the report.
 
 These imports are supplied by the compiler/runtime and do not make Harnest an
-agent-owned dependency: do not add `harnest` to `requirements.txt`. Authored
+agent-owned dependency: do not add `harnest` to `pyproject.toml`. Authored
 resources import only the symbol they define, such as
 `from harnest.tool import tool` or `from harnest.mcp import MCPClient`; they
 still never import or register sibling tools, subagents, MCP definitions,
@@ -365,6 +404,8 @@ export an `@tool` callable named `lookup_order`;
 `subagents/order_specialist.py` must export an `AgentDefinition` named
 `order_specialist`; and `mcp/catalog.py` must export a zero-argument `client()`
 factory returning `MCPClient`. The filename supplies the identity `catalog`.
+An `@client_tool` export follows the same tool filename/signature contract, but
+its Python body is only a declaration: the connected client executes it.
 
 ### Reusable Python library
 
@@ -390,7 +431,7 @@ explicitly uses them. No `__init__.py` is needed; add one only for intentional
 library initialization. Do not create a nested agent `lib/` or import it as bare
 `lib.*`. The `harnest.lib.*` namespace works consistently in
 compilation, unit and smoke tests, evals, and the standalone server. Keep
-third-party library dependencies in `requirements.txt`.
+third-party library dependencies in `pyproject.toml`.
 
 ### Folder-scoped agent ownership
 
@@ -443,8 +484,8 @@ resources that demonstrate each convention.
 
 Authored files are compiler input. Their `harnest.*` imports resolve while the
 compiler or compiled runtime is active; the agent's provider-specific
-requirements remain separate. Use `harnest compile` or `harnest serve`; both
-load the generated package through the managed runtime. Import-free authored
+dependencies remain in its `pyproject.toml`. Use `harnest compile` or `harnest
+serve`; both synchronize and use the isolated agent environment. Import-free authored
 modules are rejected: every Harnest authoring symbol must be imported explicitly.
 
 Compile source into a disposable runtime artifact:
@@ -593,6 +634,9 @@ Every deployable directory must contain:
 - `server.yaml`: standalone compiled-server binding, request limits, and
   playground policy. It does not contain deployment scaling, authentication,
   session storage, TLS, or secrets.
+- required `extensions/sessions.py`: exactly one root
+  `@lifecycle.session_store` factory returning an application-owned
+  `SessionStore`.
 - `agent-card.yaml`: the public A2A 1.0-facing description, interfaces,
   modalities, capabilities, and skills supported by the current runtime.
 - the Python source module named by `spec.entrypoint` using `module:symbol`
@@ -610,14 +654,14 @@ Every deployable directory must contain:
   mode), plus optional `skills/`, ADK-only `evals/`, and
   test-only `tests/unit/` and `tests/smoke/` directories following the
   conventions above.
-- the declared requirements file, if any.
+- the required `pyproject.toml` and resolved `uv.lock` when present.
 
 Unknown YAML fields fail validation. Compilation is deterministic and ignores
 virtual environments and caches when hashing or copying source.
 
 Agent-owned Python files use explicit `harnest.*` authoring imports alongside
 standard-library and third-party imports. The compiler/runtime supplies the
-Harnest namespace, so it is not listed in the agent's `requirements.txt`.
+Harnest namespace, so it is not listed in the agent's `pyproject.toml`.
 
 See the [self-serve walkthrough](examples/self-serve/README.md), the fully
 composed [agent example](examples/self-serve/agents/helpdesk/agent.py),
@@ -767,6 +811,18 @@ authenticated principal. This development view complements the durable OTLP
 export below; disabling the playground also disables its trace buffer and
 private `/_harnest/traces` routes.
 
+Client-hosted tools use the same resumable boundary without pretending Harnest
+contains a browser or desktop kernel. Declare a typed stub with
+`from harnest.tool import client_tool`. JSON and SSE return a
+`requiredAction` of type `client_tool` containing its request ID, name, and
+arguments; submit `{"output": ...}` to `POST /client-tools/{requestId}` to
+resume the exact task. On `/live`, answer `client_tool.requested` on the same
+socket with
+`{"type":"client_tool.result","requestId":"client_tool_...","output":...}`.
+Results are principal-bound and one-time. The caller owns execution policy,
+sandboxing, and result validation appropriate to its browser, desktop, or
+mobile environment.
+
 Tool calls and results appear in `output` as ordered `tool_call` and
 `tool_result` items. Reuse the session ID for conversational continuity. Session
 CRUD is `GET /sessions`, `GET /sessions/{id}`, `PATCH /sessions/{id}` with the
@@ -794,7 +850,8 @@ after streaming begins is a terminal named `error` event.
 one. After `session.connected`, send
 `{"type":"response.create","input":"...","requestId":"optional","metadata":{}}`.
 The server emits the same `response.*` event types, echoing `requestId`, and
-accepts `{"type":"session.close"}`. There is no mode flag or HTTP-to-WebSocket
+may emit `client_tool.requested` as described above. It also accepts
+`{"type":"session.close"}`. There is no mode flag or HTTP-to-WebSocket
 rerouting.
 
 The ADK and LangGraph runtime adapters map provider events into the same neutral
@@ -812,33 +869,37 @@ native routes, but their native user fields still require deployment
 authorization. Health, Agent Card, and `/agent` discovery remain public. A
 missing authenticator preserves the local anonymous behavior.
 
-Session persistence is a separate injection. ADK hosts pass
-`ADKSessionStorage(uri=..., database_kwargs=...)`; LangGraph hosts pass a
-`SessionStore` implementation with durable CRUD and an exclusive execution
-lease. Harnest's `InMemorySessionStore` remains a development default, not a
-production database. Injected stores are deployment-owned and are not closed by
-the LangGraph driver:
+Session persistence is a required root lifecycle resource. Running
+`harnest init` creates `extensions/sessions.py` returning
+`InMemorySessionStore`; replace it
+with a durable Harnest store or a custom `SessionStore` implementation before
+production. The zero-argument synchronous factory runs once, and Harnest owns
+the returned store through startup and shutdown. The same store scopes ADK and
+LangGraph sessions across JSON, SSE, and WebSocket transports:
 
 ```python
-from harnest.runtime import create_fastapi_app
+from harnest.lifecycle import lifecycle
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError
-from harnest.session import ADKSessionStorage
+from harnest.session import InMemorySessionStore
 
 
-class BearerAuthenticator:
-    async def authenticate(self, connection):
-        token = connection.headers.get("authorization")
-        if token != "Bearer deployment-validated-token":
-            raise AuthenticationError()
-        return AuthPrincipal("tenant-user-id")
+@lifecycle.session_store
+def session_store():
+    return InMemorySessionStore()
 
 
-app = create_fastapi_app(
-    ".harnest/support-agent",
-    adk_session_storage=ADKSessionStorage("postgresql+asyncpg://..."),
-    authenticator=BearerAuthenticator(),
-)
+@lifecycle.authenticate
+async def authenticate(connection, _principal):
+    token = connection.headers.get("authorization")
+    if token != "Bearer deployment-validated-token":
+        raise AuthenticationError()
+    return AuthPrincipal("tenant-user-id")
 ```
+
+The store declaration belongs in `extensions/sessions.py`; the authenticator
+may be another lifecycle extension or a host injection. Duplicate session-store
+factories fail compilation, and a lifecycle store cannot be
+combined with host-injected session storage.
 
 Production authenticators should validate real bearer/OIDC credentials and
 derive stable, non-secret user IDs; the example only shows the injection shape.
@@ -878,8 +939,8 @@ This standalone path needs the artifact's Python dependencies and any model or
 MCP services used by the agent. A compiled folder is not a bundled Python
 environment, and `server.yaml` does not apply `config.yaml` deployment
 resources, resolve secrets, enforce permissions, scale replicas, inject
-authentication/session storage, or terminate TLS. Set runtime environment
-variables explicitly. `python .harnest/helpdesk` reads the same adjacent
+authentication, provision an external session database, or terminate TLS. Set
+runtime environment variables explicitly. `python .harnest/helpdesk` reads the same adjacent
 configuration. A non-loopback `http.host` requires `http.allowRemote: true`.
 That permission does not add authentication; inject an authenticator or place a
 trusted TLS reverse proxy in front before exposing the process.

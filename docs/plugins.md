@@ -39,7 +39,7 @@ def client():
 Both current Streamable HTTP and legacy SSE clients are supported. The factory
 is ordinary Python and may use `os.environ`, `os.getenv`, a credential provider,
 or third-party code. Credentials and provider dependencies belong in deployment
-configuration and `requirements.txt`; they are not embedded in the plugin.
+configuration and `pyproject.toml`; they are not embedded in the plugin.
 Factory diagnostics redact exception messages because those values may contain
 credentials. A selective `@require_human_approval(tools=[...])` policy names
 the server's original tools before any prefix; ADK and LangGraph validate every

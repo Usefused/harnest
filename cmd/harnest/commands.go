@@ -32,7 +32,7 @@ func (a *application) newCompileCommand() *cobra.Command {
 			if selectedEntrypoint == "" {
 				selectedEntrypoint = bundle.Config.Spec.Entrypoint
 			}
-			python, err := a.resolvePython()
+			python, err := a.agentPython(command, bundle)
 			if err != nil {
 				return err
 			}
@@ -79,7 +79,7 @@ func (a *application) newTestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			python, err := a.resolvePython()
+			python, err := a.agentPython(command, bundle)
 			if err != nil {
 				return err
 			}
@@ -195,7 +195,7 @@ func (o serveOptions) validate() error {
 }
 
 func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, options serveOptions) error {
-	python, err := a.resolvePython()
+	python, err := a.agentPython(command, bundle)
 	if err != nil {
 		return err
 	}

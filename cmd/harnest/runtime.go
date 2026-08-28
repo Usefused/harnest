@@ -127,7 +127,7 @@ func (a *application) installRuntimeWithPython(
 	if err := a.runRuntimeCommand(
 		command,
 		python,
-		"-m", "pip", "--disable-pip-version-check", "install", "--upgrade", wheelPath+"[all]",
+		"-m", "pip", "--disable-pip-version-check", "install", "--upgrade", wheelPath,
 	); err != nil {
 		return fmt.Errorf("install embedded Harnest runtime: %w", err)
 	}
@@ -176,7 +176,7 @@ func (a *application) installRuntimeWithManagedPython(
 		command,
 		environment,
 		uvPath,
-		"pip", "install", "--python", runtimePythonPath(directory), "--upgrade", wheelPath+"[all]",
+		"pip", "install", "--python", runtimePythonPath(directory), "--upgrade", wheelPath,
 	); err != nil {
 		return fmt.Errorf("install embedded Harnest runtime: %w", err)
 	}

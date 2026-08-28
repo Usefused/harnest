@@ -1,11 +1,11 @@
-"""Small, typed conveniences around Google ADK agent definitions."""
+"""Framework-neutral managed agent definitions."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .mcp import MCPClient
 from .model import ModelInput, resolve_model
@@ -38,7 +38,7 @@ def instruction_file(anchor: str | Path, relative_path: str = "instructions.md")
 
 @dataclass(frozen=True, slots=True)
 class AgentDefinition:
-    """Framework-neutral definition that builds a Google ADK ``LlmAgent``."""
+    """Managed agent definition lowered by the selected Harnest backend."""
 
     name: str
     model: ModelInput
@@ -50,6 +50,7 @@ class AgentDefinition:
     sandbox: Sandbox | Any | None = None
     output_key: str | None = None
     generate_content_config: Mapping[str, Any] | Any | None = None
+    history: Literal["session", "turn"] = "session"
 
     @classmethod
     def advanced(
@@ -76,6 +77,7 @@ class AgentDefinition:
 
     def __post_init__(self) -> None:
         self._validate_identity()
+        self._validate_history()
         self._validate_resources()
 
     def _validate_identity(self) -> None:
@@ -92,6 +94,12 @@ class AgentDefinition:
             not isinstance(self.instruction, str) or not self.instruction.strip()
         ):
             raise ValueError("agent instruction is required")
+    def _validate_history(self) -> None:
+        if not isinstance(self.history, str) or self.history not in {
+            "session",
+            "turn",
+        }:
+            raise ValueError("agent history must be 'session' or 'turn'")
 
     def _validate_resources(self) -> None:
         for field_name, value in (
@@ -142,6 +150,12 @@ class AgentDefinition:
             "description": self.description,
             "tools": runtime_tools,
             "sub_agents": children,
+            # Explicit modes keep graph-node behavior consistent with the
+            # portable history contract instead of accepting ADK's node default.
+            "mode": "chat" if self.history == "session" else "single_turn",
+            "include_contents": "default"
+            if self.history == "session"
+            else "none",
         }
         if self.output_key is not None:
             kwargs["output_key"] = self.output_key

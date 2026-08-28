@@ -13,6 +13,7 @@ from harnest.bundle import (
     compile_application,
 )
 from harnest.graph import Graph
+from _session_store_fixture import write_session_store
 
 
 class PluginIntegrationTests(unittest.TestCase):
@@ -28,6 +29,7 @@ class PluginIntegrationTests(unittest.TestCase):
         )
 
     def _root_agent(self, root: Path) -> None:
+        write_session_store(root)
         self._write(
             root / "agent.py",
             "from harnest.agent import Agent\n"
@@ -88,8 +90,10 @@ class PluginIntegrationTests(unittest.TestCase):
                 "edges=(Edge(START, 'worker'),))\n",
             )
             self._write(root / "instructions.md", "Use the plugin carefully.\n")
+            write_session_store(root)
             self._plugin_mcp(root)
             self._plugin_skill(root)
+            write_session_store(root)
 
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 compiled = compile_application(
@@ -117,6 +121,7 @@ class PluginIntegrationTests(unittest.TestCase):
             )
             self._plugin_mcp(root)
             self._plugin_skill(root)
+            write_session_store(root)
 
             with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 with self.assertRaisesRegex(

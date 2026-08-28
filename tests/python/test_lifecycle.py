@@ -13,6 +13,7 @@ from harnest.bundle import (
 from harnest.lifecycle import LifecycleListener
 from harnest.runtime import _runtime_driver
 from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.session import InMemorySessionStore
 
 
 class ExtensionCompilerTests(unittest.TestCase):
@@ -32,12 +33,23 @@ class ExtensionCompilerTests(unittest.TestCase):
             wrap_managed=Mock(return_value=None),
         )
 
+    @staticmethod
+    def _session_store(path: Path) -> None:
+        (path / "sessions.py").write_text(
+            "from harnest.lifecycle import lifecycle\n"
+            "from harnest.session import InMemorySessionStore\n"
+            "@lifecycle.session_store\n"
+            "def session_store(): return InMemorySessionStore()\n",
+            encoding="utf-8",
+        )
+
     def test_compiler_keeps_all_portable_listeners_on_application(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._agent(root)
             path = root / "extensions"
             path.mkdir()
+            self._session_store(path)
             (path / "history.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.before_invoke\n"
@@ -56,6 +68,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             [item.phase for item in application.extensions],
             ["before_invoke", "after_invoke"],
         )
+        self.assertIsInstance(application.session_store, InMemorySessionStore)
         backend.wrap_managed.assert_called_once_with(
             application.target, native_extensions=()
         )
@@ -70,6 +83,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             self._agent(root)
             path = root / "extensions"
             path.mkdir()
+            self._session_store(path)
             (path / "guardrail.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.langgraph_middleware\n"
@@ -104,6 +118,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             )
             path = root / "extensions"
             path.mkdir()
+            self._session_store(path)
             (path / "audit.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.adk_plugin\n"
@@ -174,6 +189,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             )
             path = root / "extensions"
             path.mkdir()
+            self._session_store(path)
             (path / "history.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.on_error\n"
@@ -204,6 +220,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             )
             path = root / "extensions"
             path.mkdir()
+            self._session_store(path)
             (path / "native.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.langgraph_middleware\n"
@@ -225,6 +242,19 @@ class ExtensionCompilerTests(unittest.TestCase):
                         entrypoint="agent:root_agent",
                         framework="langgraph",
                         mode="advanced",
+                    )
+
+    def test_compiler_requires_a_session_store_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._agent(root)
+            backend = self._backend()
+            with patch("harnest.bundle.get_backend", return_value=backend):
+                with self.assertRaisesRegex(
+                    BundleConventionError, "exactly one.*found 0"
+                ):
+                    compile_application(
+                        root, entrypoint="agent:root_agent", framework="adk"
                     )
 
 

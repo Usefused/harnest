@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from typing import Annotated, Any, TypedDict
 
 from ..agent import AgentDefinition
-from ..graph import START, Edge, Event, Graph, Join
+from ..graph import START, Edge, Event, Graph, GraphContext, Join, call_graph_node
 from ..approval import (
     ApprovalPolicy,
     authorize_mcp,
@@ -100,6 +100,8 @@ def _build_ready_agent(
     definition: AgentDefinition,
     tools: Sequence[Any] = (),
     middleware: Sequence[Any] = (),
+    *,
+    graph_node: bool = False,
 ) -> Any:
     """Build a simple LangChain tool-loop graph for an agent definition.
 
@@ -139,7 +141,49 @@ def _build_ready_agent(
         name=definition.name,
         middleware=list(middleware),
     )
+    target = _apply_history_projection(definition, target, graph_node=graph_node)
     return propagate_litellm_lifecycles(model, target)
+
+
+def _apply_history_projection(
+    definition: AgentDefinition, target: Any, *, graph_node: bool
+) -> Any:
+    if definition.history == "session" and not graph_node:
+        return target
+    try:
+        from langchain_core.runnables import RunnableLambda, RunnableSequence
+    except ImportError as exc:  # pragma: no cover - optional backend dependency
+        raise RuntimeError(
+            "building a LangGraph agent requires langchain-core"
+        ) from exc
+    projection = _session_input if definition.history == "session" else _turn_input
+    return RunnableSequence(
+        RunnableLambda(projection),
+        target,
+        name=definition.name,
+    )
+
+
+def _session_input(state: Any) -> Any:
+    if not isinstance(state, Mapping):
+        return state
+    projected = dict(state)
+    projected.pop("_harnest_turn_start", None)
+    return projected
+
+
+def _turn_input(state: Any) -> Any:
+    if not isinstance(state, Mapping):
+        return state
+    projected = _session_input(state)
+    messages = state.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return projected
+    start = state.get("_harnest_turn_start")
+    if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+        start = max(len(messages) - 1, 0)
+    projected["messages"] = list(messages[start:])
+    return projected
 
 
 def mcp_approval_middleware(
@@ -294,6 +338,9 @@ def _is_async_callable(value: Callable[..., Any]) -> bool:
     )
 
 
+_SESSION_STATE_KEY = "_harnest_state"
+
+
 def _normalize_result(result: Any) -> dict[str, Any]:
     if not isinstance(result, Event):
         return {"value": result, "route": None}
@@ -309,6 +356,8 @@ def _normalize_result(result: Any) -> dict[str, Any]:
                 "emitting LangGraph messages requires langchain-core"
             ) from exc
         update["messages"] = [AIMessage(content=result.message)]
+    if result.state_delta:
+        update[_SESSION_STATE_KEY] = dict(result.state_delta)
     return update
 
 
@@ -316,13 +365,22 @@ def _callable_node(action: Callable[..., Any]) -> Callable[..., Any]:
     if _is_async_callable(action):
 
         async def invoke(state: Mapping[str, Any]) -> dict[str, Any]:
-            result = await action(state.get("value"))
+            result = call_graph_node(
+                action,
+                state.get("value"),
+                GraphContext(state.get(_SESSION_STATE_KEY, {})),
+            )
+            result = await result
             return _normalize_result(result)
 
     else:
 
         def invoke(state: Mapping[str, Any]) -> dict[str, Any]:
-            result = action(state.get("value"))
+            result = call_graph_node(
+                action,
+                state.get("value"),
+                GraphContext(state.get(_SESSION_STATE_KEY, {})),
+            )
             if inspect.isawaitable(result):
                 raise TypeError(
                     "graph node returned an awaitable; declare the callable with "
@@ -350,6 +408,15 @@ def _last_write(_current: Any, update: Any) -> Any:
     return update
 
 
+def _merge_state(current: Any, update: Any) -> dict[str, Any]:
+    """Merge explicit state deltas so parallel branches retain both writes."""
+
+    merged = dict(current) if isinstance(current, Mapping) else {}
+    if isinstance(update, Mapping):
+        merged.update(update)
+    return merged
+
+
 def _route_selector(edges: Sequence[Edge], end: str):
     def select(state: Mapping[str, Any]) -> str | list[str]:
         route = state.get("route")
@@ -371,7 +438,7 @@ def _lower_node(
     if isinstance(value, AgentDefinition):
         if value.mcp:
             raise RuntimeError("managed MCP graph was lowered before materialization")
-        return build_agent(value, middleware=middleware)
+        return _build_ready_agent(value, middleware=middleware, graph_node=True)
     if isinstance(value, Graph):
         return _build_ready_graph(value, middleware=middleware)
     if isinstance(value, Pregel):
@@ -454,6 +521,8 @@ def _graph_state(add_messages: Any) -> type[Any]:
             "messages": Annotated[list[Any], add_messages],
             "value": Annotated[Any, _last_write],
             "route": Annotated[Any, _last_write],
+            "_harnest_turn_start": Annotated[int, _last_write],
+            _SESSION_STATE_KEY: Annotated[dict[str, Any], _merge_state],
         },
         total=False,
     )

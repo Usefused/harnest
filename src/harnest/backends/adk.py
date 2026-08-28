@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 from harnest.agent import AgentDefinition
-from harnest.graph import START, Event, Graph, Join
+from harnest.graph import START, Event, Graph, GraphContext, Join, call_graph_node
 from harnest.model_lifecycle import propagate_litellm_lifecycles
 
 
@@ -17,6 +17,7 @@ def _adk_route(route: Any) -> Any:
 
 def _adk_event(value: Event) -> Any:
     from google.adk.events import Event as AdkEvent
+    from google.adk.events import EventActions
     from google.genai import types
 
     kwargs: dict[str, Any] = {}
@@ -30,6 +31,8 @@ def _adk_event(value: Event) -> Any:
         kwargs["content"] = types.Content(
             role="model", parts=[types.Part(text=value.message)]
         )
+    if value.state_delta:
+        kwargs["actions"] = EventActions(state_delta=dict(value.state_delta))
     return AdkEvent(**kwargs)
 
 
@@ -54,8 +57,14 @@ def _neutral_callable_input(value: Any) -> Any:
 def _callable_adapter(value: Any, *, name: str) -> Any:
     """Adapt a neutral single-input callable to an ADK FunctionNode."""
 
-    async def invoke(node_input: Any) -> AsyncGenerator[Any, None]:
-        result = value(_neutral_callable_input(node_input))
+    async def invoke(ctx: Any, node_input: Any) -> AsyncGenerator[Any, None]:
+        result = call_graph_node(
+            value,
+            _neutral_callable_input(node_input),
+            # ADK exposes a mapping-like State proxy that intentionally does
+            # not inherit Mapping; copy it into the neutral immutable view.
+            GraphContext(ctx.state.to_dict()),
+        )
         if inspect.isawaitable(result):
             result = await result
         if inspect.isasyncgen(result):

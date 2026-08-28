@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -39,9 +40,11 @@ from harnest.testing import (
     AgentTestError,
     _adk_eval_output_filter,
     _eval_config,
+    _isolated_eval_logging,
     _run_adk_evals,
     run_agent_tests,
 )
+from _session_store_fixture import write_session_store
 
 
 def _recording_class(name):
@@ -166,9 +169,37 @@ def _fake_adk_modules(*, public_mcp_exports=True):
 
 
 class AuthoringTests(unittest.TestCase):
+    def test_eval_logging_scope_removes_third_party_handlers(self):
+        logger = logging.getLogger("harnest.test.eval.lifecycle")
+        handler = logging.NullHandler()
+        original_level = logger.level
+
+        with _isolated_eval_logging():
+            logger.addHandler(handler)
+            logger.setLevel(logging.CRITICAL)
+            self.assertIn(handler, logger.handlers)
+
+        self.assertNotIn(handler, logger.handlers)
+        self.assertEqual(logger.level, original_level)
+
+    def test_eval_logging_scope_drops_closed_pytest_capture_stream(self):
+        logger = logging.getLogger("harnest.agent.eval.closed_capture")
+        stream = StringIO()
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        stream.close()
+
+        with _isolated_eval_logging():
+            self.assertNotIn(handler, logger.handlers)
+            logger.warning("native.plugin.teardown")
+
+        self.assertNotIn(handler, logger.handlers)
+
     def _write(self, path, source):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
+        if path.name == "agent.py" and "subagents" not in path.parts:
+            write_session_store(path.parent)
 
     def test_tool_preserves_function_and_requires_description(self):
         @tool
@@ -193,6 +224,7 @@ class AuthoringTests(unittest.TestCase):
     def test_agent_definition_validates_without_importing_adk(self):
         definition = Agent(name="helper", model="gemini-test", instruction="Help.")
         self.assertEqual(definition.name, "helper")
+        self.assertEqual(definition.history, "session")
         with self.assertRaisesRegex(ValueError, "agent name"):
             Agent(name="bad-name", model="gemini-test", instruction="Help.")
         with self.assertRaisesRegex(ValueError, "agent name"):
@@ -205,6 +237,33 @@ class AuthoringTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(TypeError, "tools must be a sequence"):
             Agent(name="helper", model="gemini-test", instruction="Help.", tools="search")
+        with self.assertRaisesRegex(ValueError, "history"):
+            Agent(
+                name="helper",
+                model="gemini-test",
+                instruction="Help.",
+                history="messages",
+            )
+
+    def test_agent_history_maps_to_explicit_adk_conversation_modes(self):
+        modules = _fake_adk_modules()
+        with patch.dict(sys.modules, modules):
+            session_agent = Agent(
+                name="session_agent",
+                model="gemini-test",
+                instruction="Remember.",
+            ).build()
+            turn_agent = Agent(
+                name="turn_agent",
+                model="gemini-test",
+                instruction="Focus.",
+                history="turn",
+            ).build()
+
+        self.assertEqual(session_agent.kwargs["mode"], "chat")
+        self.assertEqual(session_agent.kwargs["include_contents"], "default")
+        self.assertEqual(turn_agent.kwargs["mode"], "single_turn")
+        self.assertEqual(turn_agent.kwargs["include_contents"], "none")
 
     def test_agent_advanced_is_the_only_public_advanced_boundary(self):
         target = object()
@@ -669,7 +728,7 @@ class AuthoringTests(unittest.TestCase):
                 "skills",
                 "evals",
             ):
-                (root / relative).mkdir()
+                (root / relative).mkdir(exist_ok=True)
 
             with patch.dict(sys.modules, _fake_adk_modules()):
                 built = compile_agent(root)
@@ -724,6 +783,9 @@ class AuthoringTests(unittest.TestCase):
             self._write(root / "__pycache__" / "ignored.pyc", "ignored")
             self._write(root / ".adk" / "eval_history" / "run.json", "{}")
             self._write(root / ".env", "TOKEN=local-secret\n")
+            environment_bin = root / ".harnest" / "environments" / "test" / "bin"
+            environment_bin.mkdir(parents=True)
+            os.symlink(root / "agent.py", environment_bin / "python")
             # Deployment references remain authored bytes in both copies; the
             # launcher resolves them only after the artifact reaches its host.
             authored_server = DEFAULT_SERVER_YAML.replace("1MiB", "${MAX_BYTES}")
@@ -761,6 +823,9 @@ class AuthoringTests(unittest.TestCase):
         )
         self.assertFalse(
             any("/.adk/" in f"/{record['path']}/" for record in first["files"])
+        )
+        self.assertFalse(
+            any("/.harnest/" in f"/{record['path']}/" for record in first["files"])
         )
         self.assertFalse(
             any(record["path"].endswith("/.env") for record in first["files"])
@@ -964,10 +1029,8 @@ class AuthoringTests(unittest.TestCase):
                 native_session = client.get(
                     "/apps/root/users/_harnest_neutral/sessions/neutral-session"
                 )
-                # Neutral and native ADK APIs deliberately own independent
-                # session namespaces; sharing them required private closure
-                # introspection into ADK's generated FastAPI app.
-                self.assertEqual(native_session.status_code, 404)
+                self.assertEqual(native_session.status_code, 200)
+                self.assertEqual(native_session.json()["state"], {"ready": True})
 
                 neutral_run = client.post(
                     "/responses",

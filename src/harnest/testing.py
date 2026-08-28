@@ -6,6 +6,7 @@ import asyncio
 from contextlib import contextmanager
 import importlib
 import json
+import logging
 import sys
 import tempfile
 from pathlib import Path
@@ -24,6 +25,7 @@ from .bundle import (
 from .runtime import create_fastapi_app, load_compiled_agent
 from .runtime_adk import _customer_facing_parts
 from ._library import release_authored_library
+from .logging import get_logger
 
 
 class AgentTestError(RuntimeError):
@@ -31,6 +33,65 @@ class AgentTestError(RuntimeError):
 
 
 _EVAL_TRAJECTORIES = frozenset({"business", "strict"})
+_EVAL_AUDIT = get_logger("eval.audit")
+
+
+def _stdlib_loggers() -> list[logging.Logger]:
+    values = [logging.getLogger()]
+    values.extend(
+        value
+        for value in logging.Logger.manager.loggerDict.values()
+        if isinstance(value, logging.Logger)
+    )
+    return values
+
+
+def _restore_eval_logger(
+    logger: logging.Logger,
+    settings: tuple[tuple[logging.Handler, ...], int, bool, bool] | None,
+) -> None:
+    retained = () if settings is None else settings[0]
+    for handler in tuple(logger.handlers):
+        if handler in retained:
+            continue
+        logger.removeHandler(handler)
+        handler.close()
+    if settings is not None:
+        _, logger.level, logger.propagate, logger.disabled = settings
+
+
+def _remove_closed_stream_handlers(logger: logging.Logger) -> None:
+    for handler in tuple(logger.handlers):
+        stream = getattr(handler, "stream", None)
+        if not bool(getattr(stream, "closed", False)):
+            continue
+        # In-process pytest can leave its capture handler attached after closing
+        # the stream. Keeping it makes later ADK/plugin logs raise during eval.
+        logger.removeHandler(handler)
+        handler.close()
+
+
+@contextmanager
+def _isolated_eval_logging() -> Iterator[None]:
+    """Remove handlers added by ADK eval dependencies when their run ends."""
+
+    loggers = _stdlib_loggers()
+    for logger in loggers:
+        _remove_closed_stream_handlers(logger)
+    original = {
+        logger: (
+            tuple(logger.handlers),
+            logger.level,
+            logger.propagate,
+            logger.disabled,
+        )
+        for logger in loggers
+    }
+    try:
+        yield
+    finally:
+        for logger in _stdlib_loggers():
+            _restore_eval_logger(logger, original.get(logger))
 
 
 def _eval_output_filter_plugin() -> Any:
@@ -281,18 +342,36 @@ def _run_adk_evals(
         for path in suite.eval_sets:
             eval_set = EvalSet.model_validate_json(path.read_text(encoding="utf-8"))
             print(f"harnest eval [{trajectory}]: {path.name}")
-            await AgentEvaluator.evaluate_eval_set(
-                agent_module=module_name,
-                eval_set=eval_set,
-                eval_config=config,
-                num_runs=1,
-                print_detailed_results=True,
+            _EVAL_AUDIT.info(
+                "eval.started", trigger="user", outcome="started", suite=path.name
+            )
+            try:
+                await AgentEvaluator.evaluate_eval_set(
+                    agent_module=module_name,
+                    eval_set=eval_set,
+                    eval_config=config,
+                    num_runs=1,
+                    print_detailed_results=True,
+                )
+            except BaseException:
+                _EVAL_AUDIT.info(
+                    "eval.finished",
+                    trigger="user",
+                    outcome="failed",
+                    suite=path.name,
+                )
+                raise
+            _EVAL_AUDIT.info(
+                "eval.finished",
+                trigger="user",
+                outcome="completed",
+                suite=path.name,
             )
 
     import_root = str(artifact.parent)
     sys.path.insert(0, import_root)
     try:
-        with _adk_eval_output_filter(module_name):
+        with _isolated_eval_logging(), _adk_eval_output_filter(module_name):
             try:
                 asyncio.run(evaluate_all())
             except AssertionError as exc:

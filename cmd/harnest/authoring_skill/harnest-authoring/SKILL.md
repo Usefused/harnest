@@ -1,24 +1,22 @@
 ---
 name: harnest-authoring
-description: Build, modify, debug, test, or review a filesystem-first Harnest agent project or contribute to Harnest itself. Use for Harnest agent folders, compiler-owned harnest.* Python imports, reusable lib code, managed ADK or LangGraph graphs, plugins, extensions, MCP clients, skills, evals, tests, compilation, standalone serving, and Harnest Python or Go source changes.
+description: Build, modify, test, or review a filesystem-first Harnest agent project or Harnest itself. Use for agent folders, compiler-owned harnest.* imports, libraries, managed ADK or LangGraph graphs, client tools, plugins, extensions, MCP clients, skills, evals, tests, compilation, standalone serving, and Harnest Python or Go changes.
 ---
 
 # Harnest authoring
 
-Produce a valid, tested Harnest agent without bypassing filesystem ownership.
-Edit authored source, then let `harnest` discover, compose, and lower it. Never
-edit generated `.harnest/` artifacts.
+Produce tested agents through filesystem ownership; let `harnest` compose
+authored source. Never edit generated `.harnest/` artifacts.
 
-Keep this coding-agent skill separate from authored runtime `skills/`, which
-teach the deployed agent how to perform tasks.
+Keep this coding skill separate from runtime `skills/` used by deployed agents.
 
 ## Modify safely
 
-1. Preserve unrelated changes. Read `config.yaml`, `server.yaml`, `agent.py`,
-   `instructions.md`, and the affected folders before editing. Never run
-   `harnest init` over an existing project.
-   New `init` projects use ignored guides; request `--example` for full samples.
-2. Preserve `spec.framework.name` and mode unless the user requests an
+1. Preserve unrelated changes. For a legacy project, run read-only `harnest
+   upgrade AGENT_DIR` before editing; apply only after reviewing its plan. Read
+   contracts and affected folders. Never run `init` over existing work.
+   Init uses ignored guides; request `--example` for full samples.
+2. Preserve framework, mode, and `Agent.history` unless the user requests
    architectural migration.
 3. Put each capability beside its owning `agent.py`. Managed resources are
    discovered; do not import or manually register sibling tools, MCP clients,
@@ -27,13 +25,15 @@ teach the deployed agent how to perform tasks.
    Do not use `lib/` for a discovered capability; `__init__.py` is unnecessary.
 5. Import authoring symbols explicitly from `harnest.*`; no magic globals or
    compatibility aliases exist.
-6. Match path/export contracts. MCP `client()` factories declare no parameters.
+6. Match path/export contracts. MCP `client()` factories take no parameters;
+   `@client_tool` stubs run in callers, never the agent server.
    Decorate executable extension listeners with `@lifecycle.*`; helpers stay
    ignored. Invalid resources fail compile.
-7. Put dependencies in `requirements.txt`, deployment settings in `config.yaml`,
+7. Put agent dependencies in `pyproject.toml`; never add Harnest or framework
+   packages. Put deployment settings in `config.yaml`,
    and standalone HTTP policy in `server.yaml`; use exact `${NAME}` references
    for startup environment values. Put public identity in `agent-card.yaml`.
-   Keep framework versions within this Harnest release's supported range.
+   Run `harnest env sync`; commit `uv.lock`. Upgrade Harnest for newer frameworks.
 
 ## Load only relevant guidance
 

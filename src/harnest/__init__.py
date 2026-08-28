@@ -20,7 +20,8 @@ from .bundle import (
 )
 from .mcp import MCPClient
 from .approval import require_human_approval
-from .graph import START, Edge, Event, Graph, Join
+from .client_tool import client_tool
+from .graph import START, Edge, Event, Graph, GraphContext, Join
 from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
 from .model_lifecycle import LiteLLMContext
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
@@ -46,6 +47,7 @@ __all__ = [
     "Edge",
     "Event",
     "Graph",
+    "GraphContext",
     "Join",
     "MCPClient",
     "require_human_approval",
@@ -63,6 +65,7 @@ __all__ = [
     "START",
     "Tracer",
     "bundle_agent",
+    "client_tool",
     "compile_agent",
     "compile_application",
     "compile_app",

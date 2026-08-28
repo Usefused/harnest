@@ -38,6 +38,15 @@ class ExtensionContractTests(unittest.TestCase):
             registration_for(langgraph).phase, "langgraph_middleware"
         )
 
+    def test_session_store_decorator_registers_a_root_factory(self):
+        @lifecycle.session_store
+        def sessions():
+            return object()
+
+        registration = registration_for(sessions)
+        self.assertEqual(registration.phase, "session_store")
+        self.assertIsNone(registration.framework)
+
     def test_decorator_validation_rejects_ambiguous_registration(self):
         with self.assertRaisesRegex(TypeError, "integer"):
             lifecycle.on_event(order=True)

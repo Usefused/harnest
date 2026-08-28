@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar, overload
 
+from .client_tool import client_tool
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -40,3 +42,6 @@ def tool(function: F | None = None, *, description: str | None = None):
         return wrap_approved_tool(fn)
 
     return decorate(function) if function is not None else decorate
+
+
+__all__ = ["client_tool", "tool"]

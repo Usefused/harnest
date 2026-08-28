@@ -11,6 +11,7 @@ from harnest.agent import AgentDefinition
 from harnest.backends import get_backend
 from harnest.bundle import BundleConventionError, compile_application
 from harnest.graph import Graph
+from _session_store_fixture import write_session_store
 
 
 class BundleResourceConsumptionTests(unittest.TestCase):
@@ -26,6 +27,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         )
 
     def _write_scoped_graph(self, root: Path, *, sandbox: bool) -> None:
+        write_session_store(root)
         self._write(
             root / "agent.py",
             "from harnest.agent import Agent\n"
@@ -291,6 +293,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                     "Research.\n",
                 )
                 self._write(root / relative, source)
+                write_session_store(root)
                 with patch(
                     "harnest.bundle.get_backend", return_value=self._backend()
                 ):
@@ -345,6 +348,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             ):
                 self._write(root / name / "_README.md", "Optional.\n")
                 (root / name / "empty").mkdir()
+            write_session_store(root)
             # Reaching advanced lowering proves placeholders were skipped.
             target = object()
             backend = SimpleNamespace(
@@ -375,6 +379,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 )
                 self._write(root / "instructions.md", "Help clearly.\n")
                 self._write(root / relative, source)
+                write_session_store(root)
                 with self.assertRaisesRegex(
                     BundleConventionError,
                     "LangGraph Agent definitions cannot consume discovered subagents",
@@ -426,6 +431,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 )
                 self._write(root / "instructions.md", "Unused by callable graph.\n")
                 self._write(root / relative, source)
+                write_session_store(root)
                 with self.assertRaisesRegex(BundleConventionError, expected):
                     compile_application(
                         root, entrypoint="agent:root_agent", framework="adk"
@@ -441,6 +447,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             )
             self._write(root / "instructions.md", "Help clearly.\n")
             self._write(root / "evals" / "smoke.evalset.json", "{}\n")
+            write_session_store(root)
             with self.assertRaisesRegex(
                 BundleConventionError, "evals/.*cannot be compiled.*LangGraph"
             ):

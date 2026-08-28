@@ -241,6 +241,7 @@ def _compile_advanced_application(
         kind="advanced",
         bridge=value,
         extensions=discovered_extensions.listeners,
+        session_store=discovered_extensions.session_store,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -306,6 +307,7 @@ def _compile_managed_application(
         native_app=native_app,
         kind="agent" if isinstance(value, AgentDefinition) else "graph",
         extensions=portable_extensions,
+        session_store=discovered_extensions.session_store,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -430,12 +432,14 @@ def _copy_agent_source(source: Path, destination: Path) -> None:
     )
     for path in paths:
         relative = path.relative_to(source)
+        # Managed environments are neither authored source nor capabilities;
+        # skip their entire subtree before inspecting ordinary venv symlinks.
+        if any(part in _ARTIFACT_IGNORED_DIRECTORIES for part in relative.parts):
+            continue
         if path.is_symlink():
             raise BundleConventionError(
                 f"agent source copied into an artifact cannot contain symlinks: {path}"
             )
-        if any(part in _ARTIFACT_IGNORED_DIRECTORIES for part in relative.parts):
-            continue
         if relative.name == ".env" or relative.name.startswith(".env."):
             continue
         if path.is_dir():
@@ -989,7 +993,8 @@ def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
         module, value = _load_export(path, name)
         if not callable(value) or not getattr(value, "__harnest_tool__", False):
             raise BundleExportError(
-                f"tool module {path} must export @tool callable {name!r}"
+                f"tool module {path} must export @tool or @client_tool callable "
+                f"{name!r}"
             )
         if getattr(value, "__name__", None) != name:
             raise BundleExportError(

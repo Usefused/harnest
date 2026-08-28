@@ -33,7 +33,7 @@ script:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.17 HARNEST_REPO=creativeJoe007/harnest sh
+  HARNEST_VERSION=v0.1.18 HARNEST_REPO=creativeJoe007/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
@@ -82,17 +82,47 @@ An explicit `HARNEST_INSTALL_DIR` is always respected. For other collisions or
 non-writable locations, the installer prints one PATH setup command before the
 normal, portable `harnest ...` workflow.
 
+That private CLI runtime is not shared with authored agents. Released
+`compile`, `test`, and `serve` commands use the embedded `uv` and wheel to
+synchronize each agent's `pyproject.toml` into a fingerprinted environment
+below its `.harnest/` directory. Commit the resulting `uv.lock`. CI should run
+`harnest env sync AGENT_DIR --frozen` to reject a missing or stale lock.
+
 Rerunning the installer upgrades the managed runtime from the new executable
 before atomically replacing the installed executable. For a review-first
 installation, download `install.sh`, inspect it, then execute the local file
 with the same environment variables.
 
+Upgrading the Harnest installation and upgrading an authored agent repository
+are separate operations. After installing a newer CLI, inspect an older agent's
+filesystem migration without changing it:
+
+```bash
+harnest upgrade existing-agent
+```
+
+Resolve any reported manual blockers, commit or otherwise preserve current
+work, and then opt into the planned rewrites and moves:
+
+```bash
+harnest upgrade existing-agent --apply
+```
+
+The apply command prints its fresh effective plan, verifies its source hashes,
+and writes recovery copies under `.harnest/upgrade-backups/<id>/` before
+touching authored files. The
+committed `harnest.lock` records the project schema, not the installed CLI or
+framework package version. Review the resulting diff, run `harnest test`, and
+compile before deployment.
+
 Harnest releases also define the supported ADK and LangGraph version ranges.
-Those bounds are published in `pyproject.toml`, installed with the matching
-wheel, and copied into newly scaffolded agent requirements. Compilation checks
+Those bounds are published in Harnest's `pyproject.toml`, installed with the
+matching wheel, and deliberately omitted from scaffolded agent projects.
+Environment synchronization rejects an agent declaration of a compiler-owned
+framework package. Compilation checks
 the installed selected framework against the release's bounds in both managed
-and advanced mode. To use a newer framework outside them, install a newer
-Harnest release that declares support before changing the agent dependency.
+and advanced mode. To use a newer framework, install a newer Harnest release
+that declares support; do not change the agent dependency project.
 Direct ADK or LangGraph imports in advanced mode do not bypass this check.
 
 ## Publish a release

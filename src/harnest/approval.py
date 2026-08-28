@@ -463,7 +463,7 @@ def wrap_approved_tool(function: F) -> F:
         return function
     @functools.wraps(function)
     async def async_call(*args: Any, **kwargs: Any) -> Any:
-        arguments = _tool_arguments(function, args, kwargs)
+        arguments = bind_tool_arguments(function, args, kwargs)
         grant = await _authorize("tool", function.__name__, arguments, policy)
         try:
             if inspect.iscoroutinefunction(function):
@@ -530,7 +530,7 @@ async def _authorize(
     return await execution.authorize(challenge)
 
 
-def _tool_arguments(
+def bind_tool_arguments(
     function: Callable[..., Any], args: tuple[Any, ...], kwargs: Mapping[str, Any]
 ) -> dict[str, Any]:
     try:
@@ -682,6 +682,7 @@ __all__ = [
     "approval_execution",
     "approval_policy",
     "authorize_mcp",
+    "bind_tool_arguments",
     "record_approved_execution",
     "record_approved_failure",
     "require_human_approval",

@@ -7,7 +7,7 @@ Every symbol must be imported explicitly.
 
 ```python
 from harnest.agent import Agent
-from harnest.graph import START, Edge, Graph
+from harnest.graph import START, Edge, Graph, GraphContext
 from harnest.model import LiteLLMModel
 
 
@@ -17,6 +17,7 @@ root_agent = Graph(
         "respond": Agent(
             name="responder",
             model=LiteLLMModel("ollama_chat/qwen3.5:cloud"),
+            history="session",
         ),
     },
     edges=(Edge(START, "respond"),),
@@ -25,7 +26,11 @@ root_agent = Graph(
 
 `Agent` is an alias of `AgentDefinition`. Common fields are `name`, `model`,
 `instruction`, `description`, `tools`, `subagents`, `mcp`, `sandbox`,
-`output_key`, and `generate_content_config`. Prefer filesystem composition over
+`output_key`, `generate_content_config`, and `history`. `history="session"`
+(default) includes earlier user/assistant turns from the same Harnest session;
+use `history="turn"` for deliberate per-invocation isolation. The behavior is
+the same for ADK and LangGraph, including `Agent` nodes in portable graphs.
+Prefer filesystem composition over
 manually populating discovered resources. These explicit object fields are not
 name-based access selectors for resource folders: filesystem location defines
 which discovered resources an agent owns. Harnest does not define a separate
@@ -36,7 +41,10 @@ objects, `Join()` nodes, accepted backend-native nodes, or strings naming
 filesystem-discovered tools and subagents. String references are how a graph
 uses a sibling resource without importing it. `Edge` sources use `START` for
 entry. A callable can return a plain value or `Event(output=..., route=...,
-message=...)`; routed edges set `route=`. Every node must be reachable.
+message=..., state_delta=...)`; routed edges set `route=`. A callable may
+declare `context: GraphContext`, read `context.state`, and persist explicit
+session changes with `state_delta`. This works identically in managed ADK and
+LangGraph without a native plugin or checkpointer. Every node must be reachable.
 
 An inline `Agent` node defined in the root `agent.py` is composed in the root
 resource scope. For an agent with private tools or skills, define the same
@@ -59,6 +67,26 @@ def lookup_ticket(ticket_id: str) -> str:
 Place this in `tools/lookup_ticket.py`; the callable and file stem must match.
 A tool needs a docstring or `@tool(description="...")`. The decorator keeps the
 function directly callable for unit tests.
+
+For work implemented by the connected browser, desktop, or mobile client,
+declare a typed stub instead:
+
+```python
+from harnest.tool import client_tool
+
+
+@client_tool
+def browser_open(url: str) -> dict[str, str]:
+    """Open a URL in the connected browser and return visible page data."""
+    ...
+```
+
+Harnest never executes the stub body. The managed runtime suspends the exact
+invocation and sends its name/arguments through JSON, SSE, or `/live`. HTTP
+clients submit `{"output": ...}` to `/client-tools/{requestId}`; WebSocket
+clients answer `client_tool.requested` with `client_tool.result`. Unit-test the
+client implementation separately from this declaration. Client tools fail
+closed outside managed runtime execution.
 
 ## Reusable library modules
 
@@ -88,7 +116,7 @@ root-only and shared across managed and advanced bundles; do not add
 `__init__.py` merely for package discovery or create a nested agent `lib/`.
 Imports resolve during compile, tests, evals, and standalone serving.
 Third-party dependencies used by library code still belong in
-`requirements.txt`.
+`pyproject.toml`.
 
 ## Models
 
@@ -288,22 +316,23 @@ generator functions. `get_tracer` exposes a dynamic tracer and
 
 `harnest.sandbox.Sandbox.container(...)` and `Sandbox.provider(...)` define lazy
 ADK code executors. A sandbox is an execution boundary, not merely a policy
-flag; provider packages and Docker requirements belong in `requirements.txt`.
+flag; provider packages and Docker requirements belong in `pyproject.toml`.
 
-## Production runtime injection
+## Production runtime resources
 
-Keep identity and persistence as separate host concerns. Pass an
+Keep identity and persistence as separate concerns. Pass an
 `Authenticator` to `harnest.runtime.create_fastapi_app`; it must validate the
 HTTP or WebSocket connection and return `AuthPrincipal(user_id=...)`. The
 principal scopes neutral session and execution routes. Do not derive identity
 from session payloads or use a session store as an authenticator.
 
-For ADK, pass `ADKSessionStorage(uri=..., database_kwargs=...)`. For LangGraph,
-pass a deployment-owned `SessionStore` with tenant-scoped CRUD and an exclusive
-execution lease. Production stores must persist durably, list with set-based
-queries, coordinate leases across replicas, and emit privacy-safe OTEL audit
-signals after committed mutations. `InMemorySessionStore` is development-only.
-Injected stores remain owned by the deployment host.
+Exactly one synchronous, zero-argument `@lifecycle.session_store` factory must
+return a `SessionStore` with tenant-scoped CRUD and an exclusive execution
+lease. Harnest owns that instance and adapts it to ADK or LangGraph; host
+storage injection is mutually exclusive. Production
+stores must persist durably, list with set-based queries, coordinate leases
+across replicas, and emit privacy-safe OTEL audit signals after committed
+mutations. The example `InMemorySessionStore` declaration is development-only.
 
 ## Advanced applications
 

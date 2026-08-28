@@ -61,8 +61,8 @@ func (f AgentFramework) EffectiveMode() string {
 func (s AgentConfigSpec) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
 type PythonRuntime struct {
-	Version          string `yaml:"version" json:"version"`
-	RequirementsFile string `yaml:"requirementsFile,omitempty" json:"requirementsFile,omitempty"`
+	Version        string `yaml:"version" json:"version"`
+	DependencyFile string `yaml:"dependencyFile,omitempty" json:"dependencyFile,omitempty"`
 }
 
 type AgentResources struct {

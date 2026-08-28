@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -58,6 +59,18 @@ class Join:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphContext:
+    """Portable, read-only session state supplied to managed graph callables."""
+
+    state: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, Mapping):
+            raise TypeError("graph context state must be a mapping")
+        object.__setattr__(self, "state", MappingProxyType(dict(self.state)))
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """Provider-neutral output emitted by a callable graph node.
 
@@ -69,6 +82,7 @@ class Event:
     output: Any | None = None
     route: Route = None
     message: str | None = None
+    state_delta: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -76,8 +90,34 @@ class Event:
         )
         if self.message is not None and not isinstance(self.message, str):
             raise TypeError("event message must be a string or None")
-        if self.output is None and self.route is None and self.message is None:
-            raise ValueError("event must provide output, route, or message")
+        if not isinstance(self.state_delta, Mapping):
+            raise TypeError("event state_delta must be a mapping")
+        object.__setattr__(
+            self, "state_delta", MappingProxyType(dict(self.state_delta))
+        )
+        if (
+            self.output is None
+            and self.route is None
+            and self.message is None
+            and not self.state_delta
+        ):
+            raise ValueError("event must provide output, route, message, or state_delta")
+
+
+def call_graph_node(
+    function: Any, value: Any, context: GraphContext
+) -> Any:
+    """Invoke one portable node, injecting context only when it declares it."""
+
+    try:
+        parameter = inspect.signature(function).parameters.get("context")
+    except (TypeError, ValueError):
+        parameter = None
+    if parameter is None:
+        return function(value)
+    if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+        return function(value, context)
+    return function(value, context=context)
 
 
 @dataclass(frozen=True, slots=True)

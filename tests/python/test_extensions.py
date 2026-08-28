@@ -3,13 +3,26 @@ import unittest
 from pathlib import Path
 
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
+from harnest.session import InMemorySessionStore
 
 
 class ExtensionDiscoveryTests(unittest.TestCase):
+    @staticmethod
+    def _session_store(root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "sessions.py").write_text(
+            "from harnest.lifecycle import lifecycle\n"
+            "from harnest.session import InMemorySessionStore\n"
+            "@lifecycle.session_store\n"
+            "def session_store(): return InMemorySessionStore()\n",
+            encoding="utf-8",
+        )
+
     def test_discovers_arbitrary_nested_files_and_orders_shared_phases(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             (root / "nested").mkdir(parents=True)
+            self._session_store(root)
             (root / "zeta.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "def helper(): return 'ignored'\n"
@@ -33,11 +46,21 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             ["earliest", "first", "late"],
         )
         self.assertEqual(result.native, ())
+        self.assertIsInstance(result.session_store, InMemorySessionStore)
+
+    def test_discovers_the_required_session_store_factory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            self._session_store(root)
+            result = discover_extensions(root, framework="adk")
+        self.assertIsInstance(result.session_store, InMemorySessionStore)
+        self.assertEqual(result.listeners, ())
 
     def test_undecorated_public_helpers_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "helpers.py").write_text("def parse(value): return value\n")
             result = discover_extensions(root, framework="langgraph")
         self.assertEqual(result.listeners, ())
@@ -50,6 +73,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "audit.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.adk_plugin(order=4)\n"
@@ -72,6 +96,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "extensions"
                 root.mkdir(parents=True)
+                self._session_store(root)
                 (root / "bad.py").write_text(
                     "from harnest.lifecycle import lifecycle\n" + source,
                     encoding="utf-8",
@@ -83,6 +108,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "notes.txt").write_text("not executable")
             with self.assertRaisesRegex(ExtensionDiscoveryError, "Python files"):
                 discover_extensions(root, framework="adk")
@@ -93,6 +119,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "native.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.langgraph_middleware\n"
@@ -106,6 +133,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "invalid.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.on_event\n"
@@ -119,6 +147,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
             root.mkdir(parents=True)
+            self._session_store(root)
             (root / "duplicate.py").write_text(
                 "from harnest.lifecycle import lifecycle\n"
                 "@lifecycle.on_error\n"
@@ -128,6 +157,51 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ExtensionDiscoveryError, "multiple names"):
                 discover_extensions(root, framework="adk")
+
+    def test_requires_exactly_one_session_store_factory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "exactly one.*found 0"
+            ):
+                discover_extensions(root, framework="adk")
+
+            self._session_store(root)
+            (root / "other.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.session import InMemorySessionStore\n"
+                "@lifecycle.session_store\n"
+                "def other(): return InMemorySessionStore()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "exactly one.*found 2"):
+                discover_extensions(root, framework="adk")
+
+    def test_session_store_factory_is_synchronous_zero_argument_and_typed(self):
+        cases = (
+            (
+                "@lifecycle.session_store\ndef session_store(value): return value\n",
+                "no arguments",
+            ),
+            (
+                "@lifecycle.session_store\nasync def session_store(): return None\n",
+                "synchronous",
+            ),
+            (
+                "@lifecycle.session_store\ndef session_store(): return object()\n",
+                "must return SessionStore",
+            ),
+        )
+        for source, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "extensions"
+                root.mkdir(parents=True)
+                (root / "sessions.py").write_text(
+                    "from harnest.lifecycle import lifecycle\n" + source,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extensions(root, framework="langgraph")
 
 
 if __name__ == "__main__":

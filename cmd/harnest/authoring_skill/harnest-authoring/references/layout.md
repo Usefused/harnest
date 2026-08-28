@@ -13,7 +13,8 @@ file is the path and ownership contract it relies on.
 | `agent-card.yaml` | Public agent identity, interfaces, capabilities, and advertised A2A skills. |
 | `agent.py` | Exports a managed `Agent`/portable `Graph`, or an `Agent` created with `Agent.advanced(...)`. |
 | `instructions.md` | Non-empty root instructions. Managed `Agent` definitions may omit `instruction`; the compiler supplies this file. |
-| `requirements.txt` | Provider and agent-specific Python dependencies. Do not add Harnest itself. |
+| `pyproject.toml` | Agent and provider dependencies synchronized by Harnest. Never add Harnest, ADK, LangGraph, or Harnest-owned framework adapters. |
+| `uv.lock` | Resolved dependency lock created by `harnest env sync`; commit it after review. |
 
 The usual entrypoint is `agent:root_agent`. Authored source is not a Python
 package and does not need `__init__.py`.
@@ -42,7 +43,8 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `mcp/<name>.py` | Exports one literally zero-parameter `client()` factory returning `MCPClient`; `<name>` is its local identity. |
 | `plugins/<plugin>/mcp/<name>.py` | Plugin-owned `client()` factory using the same rule. |
 | `plugins/<plugin>/skills/<skill>/SKILL.md` | One progressive skill teaching the host agent when and how to use the plugin's MCP tools. |
-| `extensions/**/*.py` | Arbitrary public root modules; only `@lifecycle.*` functions are discovered. Multiple listeners may share a phase. |
+| `extensions/sessions.py` | Required root `@lifecycle.session_store` zero-argument factory returning an application-owned `SessionStore`. Exactly one factory must exist. |
+| `extensions/**/*.py` | Other arbitrary public root modules; only `@lifecycle.*` functions are discovered. Multiple listeners may share an invocation phase. |
 | `sandbox/sandbox.py` | Exports one `Sandbox` as `sandbox`; managed ADK only. |
 | `skills/<skill>/SKILL.md` | Progressive internal instructions. Frontmatter `name` matches `<skill>`; references, assets, and scripts may live below it. |
 | root `evals/<id>.evalset.json` | ADK `EvalSet` whose ID matches the filename. Optional root `evals/test_config.json` configures evaluation. |
@@ -76,7 +78,8 @@ behavior. Use `subagents/` for agents and `extensions/` for lifecycle behavior.
 
 - Missing, empty, ignored-only folders are skipped.
 - Default `harnest init` fills optional folders with ignored `_README.md`
-  guides; `--example` is the explicit working-sample scaffold.
+  guides; `--example`
+  is the explicit working-sample scaffold.
 - Once a public resource exists, the full convention is strict.
 - Resource discovery is deterministic by path name.
 - Duplicate tool, MCP configuration, subagent, or skill identities fail. MCP

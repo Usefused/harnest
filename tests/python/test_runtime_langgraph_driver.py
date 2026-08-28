@@ -144,13 +144,13 @@ def _request(session_id="session-1", *, state_delta=None):
     )
 
 
-def _application(target, *, bridge=None):
+def _application(target, *, bridge=None, kind=None):
     return CompiledApplication(
         name="portable",
         framework="langgraph",
         mode="advanced" if bridge is not None else "managed",
         target=target,
-        kind="advanced" if bridge is not None else "agent",
+        kind=kind or ("advanced" if bridge is not None else "agent"),
         bridge=bridge,
     )
 
@@ -260,6 +260,37 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item.startswith("session-1:") for item in thread_ids))
         self.assertNotIn("session-1", thread_ids)
         self.assertEqual(len(self.target.inputs[1]["messages"]), 4)
+
+    async def test_managed_graph_keeps_session_state_public_and_namespaced(self):
+        class StatefulGraphTarget(_Target):
+            def _result(self, graph_input):
+                state = dict(graph_input["_harnest_state"])
+                state["count"] = state.get("count", 0) + 1
+                return {
+                    **graph_input,
+                    "_harnest_state": state,
+                    "value": f"count:{state['count']}",
+                }
+
+        target = StatefulGraphTarget()
+        driver = LangGraphRuntimeDriver(_application(target, kind="graph"))
+        await driver.create_session(
+            session_id="graph-session",
+            user_id="user-1",
+            state={"count": 2, "tenant": "one"},
+        )
+
+        result = await driver.invoke(_request("graph-session"))
+        session = await driver.get_session(
+            session_id="graph-session", user_id="user-1"
+        )
+
+        self.assertEqual(result.result["value"], "count:3")
+        self.assertEqual(session.state, {"count": 3, "tenant": "one"})
+        self.assertEqual(
+            target.inputs[0]["_harnest_state"], {"count": 2, "tenant": "one"}
+        )
+        await driver.close()
 
     async def test_stream_emits_only_canonical_events_and_updates_state(self):
         await self.driver.create_session(

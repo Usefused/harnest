@@ -35,6 +35,13 @@ from .approval import (
     PendingApproval,
     approval_execution,
 )
+from .client_tool import (
+    ClientToolError,
+    ClientToolExecution,
+    InMemoryClientToolStore,
+    PendingClientTool,
+    client_tool_execution,
+)
 from .server_config import format_byte_size, validate_max_request_bytes
 
 
@@ -313,8 +320,49 @@ def _requires_action_payload(
     return payload
 
 
+def _client_tool_payload(
+    pending: PendingClientTool,
+    *,
+    response_id: str,
+    session_id: str,
+    sequence: int,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "client_tool.requested",
+        "sequence": sequence,
+        "responseId": response_id,
+        "sessionId": session_id,
+        "clientTool": pending.public(),
+    }
+    if request_id is not None:
+        payload["requestId"] = request_id
+    return payload
+
+
+def _client_requires_action_payload(
+    pending: PendingClientTool,
+    *,
+    response_id: str,
+    session_id: str,
+    sequence: int,
+) -> dict[str, Any]:
+    return {
+        "type": "response.completed",
+        "sequence": sequence,
+        "responseId": response_id,
+        "sessionId": session_id,
+        "status": "requires_action",
+        "requiredAction": {"type": "client_tool", **pending.public()},
+        "outputText": "",
+        "output": [],
+        "metadata": {},
+    }
+
+
 def _start_approval_run(
     store: InMemoryApprovalStore,
+    client_tools: InMemoryClientToolStore,
     driver: RuntimeDriver,
     request: InvocationRequest,
     *,
@@ -329,20 +377,21 @@ def _start_approval_run(
     async def execute() -> None:
         await run.activation.wait()
         try:
-            with approval_execution(
-                ApprovalExecution(
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    call_id=request.invocation_id,
-                    store=store,
-                    run=run,
-                )
-            ):
-                result = (
-                    await _collect_stream(driver, request, run)
-                    if stream
-                    else await driver.invoke(request)
-                )
+            with client_tool_execution(ClientToolExecution(client_tools, run)):
+                with approval_execution(
+                    ApprovalExecution(
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        call_id=request.invocation_id,
+                        store=store,
+                        run=run,
+                    )
+                ):
+                    result = (
+                        await _collect_stream(driver, request, run)
+                        if stream
+                        else await driver.invoke(request)
+                    )
         except BaseException as exc:
             run.notifications.put_nowait(("error", exc))
         else:
@@ -405,9 +454,64 @@ def _json_requires_action(
     return required
 
 
+def _json_client_requires_action(
+    pending: PendingClientTool, *, response_id: str, session_id: str
+) -> dict[str, Any]:
+    required = _client_requires_action_payload(
+        pending,
+        response_id=response_id,
+        session_id=session_id,
+        sequence=0,
+    )
+    required.pop("type")
+    required.pop("sequence")
+    required["id"] = required.pop("responseId")
+    return required
+
+
+def _resumed_action_payload(
+    kind: str,
+    value: Any,
+    *,
+    response_id: str,
+    session_id: str,
+    client_tool_id: str,
+) -> dict[str, Any]:
+    if kind == "approval":
+        payload = _json_requires_action(
+            value, response_id=response_id, session_id=session_id
+        )
+        payload["approvalId"] = value.id
+        return payload
+    if kind == "client_tool":
+        return _json_client_requires_action(
+            value, response_id=response_id, session_id=session_id
+        )
+    if kind == "error":
+        raise value
+    if kind != "result":
+        raise RuntimeError("unexpected runtime action notification")
+    require_customer_facing_output(value.text, value.result)
+    payload = _completed_payload(
+        response_id=response_id,
+        session_id=value.session_id,
+        sequence=0,
+        events=value.events,
+        text=value.text,
+        metadata=value.metadata,
+        result=value.result,
+    )
+    payload.pop("type")
+    payload.pop("sequence")
+    payload["id"] = payload.pop("responseId")
+    payload["clientToolId"] = client_tool_id
+    return payload
+
+
 async def _sse_approval_run(
     *,
     store: InMemoryApprovalStore,
+    client_tools: InMemoryClientToolStore,
     driver: RuntimeDriver,
     request: InvocationRequest,
     semaphore: asyncio.Semaphore,
@@ -428,7 +532,7 @@ async def _sse_approval_run(
         },
     )
     sequence += 1
-    run = _start_approval_run(store, driver, request, stream=True)
+    run = _start_approval_run(store, client_tools, driver, request, stream=True)
     deadline = asyncio.get_running_loop().time() + request_timeout
     try:
         async with semaphore:
@@ -503,6 +607,26 @@ async def _sse_run_frames(
             yield _sse(
                 "response.completed",
                 _requires_action_payload(
+                    value,
+                    response_id=response_id,
+                    session_id=session_id,
+                    sequence=sequence + 1,
+                ),
+            )
+            return
+        if kind == "client_tool":
+            yield _sse(
+                "client_tool.requested",
+                _client_tool_payload(
+                    value,
+                    response_id=response_id,
+                    session_id=session_id,
+                    sequence=sequence,
+                ),
+            )
+            yield _sse(
+                "response.completed",
+                _client_requires_action_payload(
                     value,
                     response_id=response_id,
                     session_id=session_id,
@@ -603,6 +727,7 @@ async def _consume_live_run(
     run: ApprovalRun,
     state: _LiveStreamState,
     *,
+    client_tools: InMemoryClientToolStore,
     deadline: float,
     response_id: str,
     session_id: str,
@@ -646,11 +771,44 @@ async def _consume_live_run(
                 )
             )
             return None
+        if kind == "client_tool":
+            await websocket.send_json(
+                _client_tool_payload(
+                    value,
+                    response_id=response_id,
+                    session_id=session_id,
+                    sequence=state.sequence,
+                    request_id=request_id,
+                )
+            )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            frame = await asyncio.wait_for(
+                websocket.receive_json(), timeout=remaining
+            )
+            output = _live_client_tool_result(frame, value.id)
+            client_tools.submit(value.id, user_id=value.user_id, output=output)
+            state.sequence += 1
+            continue
         if kind == "error":
             raise value
         if kind == "result":
             return value
         raise RuntimeError("unexpected approval run notification")
+
+
+def _live_client_tool_result(frame: Any, request_id: str) -> Any:
+    if (
+        not isinstance(frame, dict)
+        or set(frame) != {"type", "requestId", "output"}
+        or frame.get("type") != "client_tool.result"
+        or frame.get("requestId") != request_id
+    ):
+        raise ClientToolError(
+            "Expected client_tool.result for the pending client tool request"
+        )
+    return frame["output"]
 
 
 async def _live_session(websocket: Any, response_session: Any) -> SessionRecord | None:
@@ -703,6 +861,7 @@ async def _serve_live_frame(
     semaphore: asyncio.Semaphore,
     driver: RuntimeDriver,
     approval_store: InMemoryApprovalStore,
+    client_tool_store: InMemoryClientToolStore,
     request_timeout: float,
 ) -> None:
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -727,7 +886,9 @@ async def _serve_live_frame(
         transport="live",
     )
     state = _LiveStreamState()
-    approval_run = _start_approval_run(approval_store, driver, run, stream=True)
+    approval_run = _start_approval_run(
+        approval_store, client_tool_store, driver, run, stream=True
+    )
     deadline = asyncio.get_running_loop().time() + request_timeout
     try:
         async with semaphore:
@@ -736,6 +897,7 @@ async def _serve_live_frame(
                 websocket,
                 approval_run,
                 state,
+                client_tools=client_tool_store,
                 deadline=deadline,
                 response_id=response_id,
                 session_id=session.id,
@@ -804,6 +966,7 @@ def create_neutral_router(
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     approval_store: InMemoryApprovalStore | None = None,
+    client_tool_store: InMemoryClientToolStore | None = None,
 ) -> Any:
     """Create the one Harnest router shared by every runtime backend."""
 
@@ -821,6 +984,7 @@ def create_neutral_router(
     router = APIRouter()
     semaphore = asyncio.Semaphore(max_concurrency)
     approvals = approval_store or InMemoryApprovalStore()
+    client_tools = client_tool_store or InMemoryClientToolStore()
 
     async def read_json(request: Request) -> dict[str, Any]:
         content_type = request.headers.get("content-type", "").partition(";")[0]
@@ -914,6 +1078,7 @@ def create_neutral_router(
                 "sessions": "/sessions",
                 "live": "/live",
                 "approvals": "/approvals/{approvalId}",
+                "clientTools": "/client-tools/{requestId}",
                 **dict(info.extra_endpoints),
             },
         }
@@ -1008,7 +1173,9 @@ def create_neutral_router(
             transport="stream" if stream else "response",
         )
         if not stream:
-            approval_run = _start_approval_run(approvals, driver, run, stream=False)
+            approval_run = _start_approval_run(
+                approvals, client_tools, driver, run, stream=False
+            )
             try:
                 async with semaphore:
                     approval_run.activation.set()
@@ -1017,6 +1184,17 @@ def create_neutral_router(
                     )
                     if kind == "approval":
                         required = _requires_action_payload(
+                            value,
+                            response_id=response_id,
+                            session_id=session.id,
+                            sequence=0,
+                        )
+                        required.pop("type")
+                        required.pop("sequence")
+                        required["id"] = required.pop("responseId")
+                        return required
+                    if kind == "client_tool":
+                        required = _client_requires_action_payload(
                             value,
                             response_id=response_id,
                             session_id=session.id,
@@ -1054,6 +1232,7 @@ def create_neutral_router(
         return StreamingResponse(
             _sse_approval_run(
                 store=approvals,
+                client_tools=client_tools,
                 driver=driver,
                 request=run,
                 semaphore=semaphore,
@@ -1064,6 +1243,36 @@ def create_neutral_router(
             ),
             media_type="text/event-stream",
         )
+
+    @router.post("/client-tools/{tool_request_id}")
+    async def submit_client_tool(tool_request_id: str, request: Request) -> Any:
+        payload = await read_json(request)
+        if set(payload) != {"output"}:
+            raise HTTPException(status_code=400, detail="Expected client tool output")
+        try:
+            pending = client_tools.submit(
+                tool_request_id,
+                user_id=principal_for(request).user_id,
+                output=payload["output"],
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Client tool request not found") from exc
+        except ClientToolError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            deadline = asyncio.get_running_loop().time() + request_timeout
+            async with semaphore:
+                kind, value = await _next_non_event(pending.run, deadline=deadline)
+            return _resumed_action_payload(
+                kind,
+                value,
+                response_id=pending.call_id,
+                session_id=pending.session_id,
+                client_tool_id=pending.id,
+            )
+        except asyncio.TimeoutError as exc:
+            approvals.cancel_run(pending.run)
+            raise HTTPException(status_code=504, detail="Response timed out") from exc
 
     @router.post("/approvals/{approval_id}")
     async def decide_approval(approval_id: str, request: Request) -> Any:
@@ -1096,6 +1305,12 @@ def create_neutral_router(
                 )
                 required["approvalId"] = value.id
                 return required
+            if kind == "client_tool":
+                return _json_client_requires_action(
+                    value,
+                    response_id=pending.call_id,
+                    session_id=pending.session_id,
+                )
             if kind == "error":
                 raise value
             if kind != "result":
@@ -1158,6 +1373,7 @@ def create_neutral_router(
                     semaphore=semaphore,
                     driver=driver,
                     approval_store=approvals,
+                    client_tool_store=client_tools,
                     request_timeout=request_timeout,
                 )
         except WebSocketDisconnect:
@@ -1175,6 +1391,7 @@ def create_neutral_app(
     playground_enabled: bool = True,
     authenticator: Authenticator | None = None,
     approval_store: InMemoryApprovalStore | None = None,
+    client_tool_store: InMemoryClientToolStore | None = None,
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
 
@@ -1215,6 +1432,7 @@ def create_neutral_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             approval_store=approval_store,
+            client_tool_store=client_tool_store,
         )
     )
     install_authentication(app, authenticator)

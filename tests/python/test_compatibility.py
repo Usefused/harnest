@@ -11,6 +11,7 @@ from harnest.compatibility import (
     ResolvedFrameworkCompatibility,
     validate_framework_compatibility,
 )
+from _session_store_fixture import write_session_store
 
 
 class FrameworkCompatibilityTests(unittest.TestCase):
@@ -106,6 +107,7 @@ class FrameworkCompatibilityTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "instructions.md").write_text("Answer.\n", encoding="utf-8")
+            write_session_store(root)
             with patch(
                 "harnest.bundle.validate_framework_compatibility",
                 return_value=resolved,

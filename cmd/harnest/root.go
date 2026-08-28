@@ -23,6 +23,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     agent-card.yaml      discovery metadata and capabilities
     agent.py             root Agent with compiler-owned imports
     instructions.md      root instructions
+    pyproject.toml       locked agent and framework dependencies
     lib/                 reusable Python helpers imported as harnest.lib.*
     tools/               discovered Python tools
     plugins/             reusable MCP-client-and-skill capability bundles
@@ -40,15 +41,20 @@ Typical workflow:
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
+  harnest env sync my-agent
   harnest mode advanced my-agent --check
+  harnest upgrade my-agent
+  harnest upgrade my-agent --apply
   harnest test my-agent
   harnest test my-agent --smoke --evals
   harnest test my-agent --evals --eval-trajectory strict
   harnest compile my-agent --output .harnest/my-agent
   harnest serve my-agent
 
-Python is selected from --python, HARNEST_PYTHON, the managed Harnest runtime
-at ${HARNEST_RUNTIME_DIR:-~/.harnest/runtime}, or python3 on PATH, in that order.
+Released compile, test, and serve commands use an isolated environment derived
+from config.yaml, pyproject.toml, uv.lock, and the embedded Harnest wheel.
+CLI Python is selected from --python, HARNEST_PYTHON, the private Harnest
+runtime, or python3 on PATH.
 
 The bundled authoring skill is project-local guidance for coding agents. It is
 never compiled as one of the generated agent's runtime skills.`
@@ -105,8 +111,10 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newServeCommand(),
 		app.newDoctorCommand(),
 		app.newRuntimeCommand(),
+		app.newEnvironmentCommand(),
 		app.newSkillsCommand(),
 		app.newModeCommand(),
+		app.newUpgradeCommand(),
 	)
 	return command
 }

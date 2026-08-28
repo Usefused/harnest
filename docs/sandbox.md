@@ -16,8 +16,9 @@ sandbox = Sandbox.container(
 ```
 
 The container backend uses ADK's `ContainerCodeExecutor`, disables networking
-by default, and requires Docker plus `google-adk[extensions]` in the agent's
-`requirements.txt`. An image or `docker_path` is required; Harnest does not
+by default, and requires Docker. Harnest's ADK runtime already supplies the
+compatible `google-adk` extensions extra; do not add ADK to the agent's
+`pyproject.toml`. An image or `docker_path` is required; Harnest does not
 silently run model-generated code in the agent server process.
 
 Third-party providers integrate without changing Harnest:

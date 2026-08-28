@@ -14,6 +14,7 @@ from harnest.backends import (
 )
 from harnest.bundle import compile_application
 from harnest.graph import START, Edge, Graph
+from _session_store_fixture import write_session_store
 
 
 class BackendRegistryTests(unittest.TestCase):
@@ -103,6 +104,7 @@ class BackendRegistryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "instructions.md").write_text("Answer.\n", encoding="utf-8")
+            write_session_store(root)
             with patch("harnest.bundle.get_backend", return_value=backend) as select:
                 application = compile_application(
                     root, entrypoint="agent:root_agent", framework="adk"

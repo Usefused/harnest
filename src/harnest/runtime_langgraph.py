@@ -29,6 +29,13 @@ from .neutral_runtime import (
 from .session import InMemorySessionStore, SessionLease, SessionStore
 
 
+_TURN_START_KEY = "_harnest_turn_start"
+_SESSION_STATE_KEY = "_harnest_state"
+_GRAPH_RUNTIME_KEYS = frozenset(
+    {"messages", "value", "route", _TURN_START_KEY, _SESSION_STATE_KEY}
+)
+
+
 @dataclass(slots=True)
 class _StreamState:
     final_state: Any = None
@@ -79,24 +86,27 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         state: Mapping[str, Any],
     ) -> SessionRecord:
         self._ensure_open()
-        return await self._session_store.create(
+        record = await self._session_store.create(
             session_id=session_id,
             user_id=user_id,
             state=state,
         )
+        return self._public_session(record)
 
     async def get_session(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:
         self._ensure_open()
-        return await self._session_store.get(
+        record = await self._session_store.get(
             session_id=session_id,
             user_id=user_id,
         )
+        return None if record is None else self._public_session(record)
 
     async def list_sessions(self, *, user_id: str) -> Sequence[SessionRecord]:
         self._ensure_open()
-        return await self._session_store.list(user_id=user_id)
+        records = await self._session_store.list(user_id=user_id)
+        return tuple(self._public_session(record) for record in records)
 
     async def update_session(
         self,
@@ -106,11 +116,20 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         state_delta: Mapping[str, Any],
     ) -> SessionRecord | None:
         self._ensure_open()
-        return await self._session_store.update(
-            session_id=session_id,
-            user_id=user_id,
-            state_delta=state_delta,
-        )
+        if self._application.kind != "graph":
+            return await self._session_store.update(
+                session_id=session_id,
+                user_id=user_id,
+                state_delta=state_delta,
+            )
+        async with self._session_store.acquire(
+            session_id=session_id, user_id=user_id
+        ) as session:
+            state = _managed_graph_user_state(session.record.state)
+            state.update(state_delta)
+            internal = _managed_graph_internal_state(session.record.state, state)
+            record = await session.replace_state(internal)
+        return self._public_session(record)
 
     async def delete_session(self, *, session_id: str, user_id: str) -> bool:
         self._ensure_open()
@@ -316,14 +335,23 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self, session: SessionLease, request: InvocationRequest
     ) -> None:
         delta = request.state_delta
-        if delta:
+        if not delta:
+            return
+        if self._application.kind != "graph":
             await session.patch_state(delta)
+            return
+        state = _managed_graph_user_state(session.record.state)
+        state.update(delta)
+        await session.replace_state(
+            _managed_graph_internal_state(session.record.state, state)
+        )
 
     async def _store_result(self, session: SessionLease, result: Any) -> None:
         if isinstance(result, Mapping):
             # ``ainvoke`` returns the complete graph state.  Replacing instead of
             # merging also removes transient keys intentionally cleared by a graph.
             state = dict(result)
+            state.pop(_TURN_START_KEY, None)
         else:
             state = {"value": result}
         await session.replace_state(state)
@@ -341,6 +369,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("LangGraph runtime driver is closed")
+
+    def _public_session(self, record: SessionRecord) -> SessionRecord:
+        if self._application.kind != "graph":
+            return record
+        return replace(record, state=_managed_graph_user_state(record.state))
 
 
 def _runtime_plan(application: Any, recursion_limit: int) -> Any | None:
@@ -525,10 +558,16 @@ def _graph_input(
     messages = [*previous_messages, HumanMessage(content=text_value)]
     if application.kind == "graph":
         return {
-            **dict(state),
+            **{
+                key: value
+                for key, value in state.items()
+                if key in _GRAPH_RUNTIME_KEYS
+            },
+            _SESSION_STATE_KEY: _managed_graph_user_state(state),
             "value": text_value,
             "messages": messages,
             "route": None,
+            _TURN_START_KEY: len(previous_messages),
         }
     return {**dict(state), "messages": messages}
 
@@ -555,7 +594,9 @@ def _adapted_output(adapted: Any) -> tuple[str, Any]:
 
 def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
     structured = {
-        str(key): _json_value(value) for key, value in result.items() if key != "messages"
+        str(key): _json_value(value)
+        for key, value in result.items()
+        if key not in {"messages", _TURN_START_KEY, _SESSION_STATE_KEY}
     }
     public_result = structured or None
     messages = result.get("messages")
@@ -573,6 +614,27 @@ def _mapping_output(result: Mapping[str, Any]) -> tuple[str, Any]:
     if value is None:
         return _visible_value(result), _json_value(result)
     return (value if isinstance(value, str) else _visible_value(value)), public_result
+
+
+def _managed_graph_user_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    nested = state.get(_SESSION_STATE_KEY)
+    if isinstance(nested, Mapping):
+        return dict(nested)
+    return {
+        str(key): value
+        for key, value in state.items()
+        if key not in _GRAPH_RUNTIME_KEYS
+    }
+
+
+def _managed_graph_internal_state(
+    state: Mapping[str, Any], user_state: Mapping[str, Any]
+) -> dict[str, Any]:
+    internal = {
+        key: value for key, value in state.items() if key in _GRAPH_RUNTIME_KEYS
+    }
+    internal[_SESSION_STATE_KEY] = dict(user_state)
+    return internal
 
 
 def _visible_value(value: Any) -> str:

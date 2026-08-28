@@ -11,6 +11,7 @@ from typing import Any
 import uuid
 
 from .lifecycle import LifecycleListener, registration_for
+from .session import SessionStore
 
 
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
@@ -27,6 +28,7 @@ class DiscoveredExtensions:
 
     listeners: tuple[LifecycleListener, ...] = ()
     native: tuple[Any, ...] = ()
+    session_store: SessionStore | None = None
 
 
 def discover_extensions(
@@ -38,13 +40,32 @@ def discover_extensions(
         raise ExtensionDiscoveryError(f"unsupported extension framework: {framework}")
     root = Path(directory)
     _validate_root(root)
-    if not root.exists():
-        return DiscoveredExtensions()
     ordered = _ordered_listeners(root)
-    portable, native_listeners = _partition_listeners(ordered, framework)
+    session_store, remaining = _create_session_store(ordered)
+    portable, native_listeners = _partition_listeners(remaining, framework)
     native = tuple(_create_native(item, framework) for item in native_listeners)
     _validate_native_duplicates(native, framework)
-    return DiscoveredExtensions(portable, native)
+    return DiscoveredExtensions(portable, native, session_store)
+
+
+def _create_session_store(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[SessionStore, tuple[LifecycleListener, ...]]:
+    factories = tuple(item for item in listeners if item.phase == "session_store")
+    if len(factories) != 1:
+        raise ExtensionDiscoveryError(
+            "root extensions must declare exactly one @lifecycle.session_store factory; "
+            f"found {len(factories)}"
+        )
+    factory = factories[0]
+    value = _call_factory(factory, label="session store")
+    if not isinstance(value, SessionStore):
+        raise ExtensionDiscoveryError(
+            f"session store lifecycle factory {factory.identity} must return "
+            f"SessionStore; got {type(value).__name__}"
+        )
+    remaining = tuple(item for item in listeners if item.phase != "session_store")
+    return value, remaining
 
 
 def _ordered_listeners(root: Path) -> tuple[LifecycleListener, ...]:
@@ -132,7 +153,11 @@ def _load_listeners(path: Path, root: Path) -> tuple[LifecycleListener, ...]:
 def _validate_listener_signature(
     relative: str, name: str, function: Any, phase: str
 ) -> None:
-    if phase in {"adk_plugin", "langgraph_middleware"}:
+    if phase in {"adk_plugin", "langgraph_middleware", "session_store"}:
+        if inspect.signature(function).parameters:
+            raise ExtensionDiscoveryError(
+                f"lifecycle factory {relative}:{name} must accept no arguments"
+            )
         return
     parameters = tuple(inspect.signature(function).parameters.values())
     positional = {
@@ -164,29 +189,30 @@ def _load_module(path: Path) -> Any:
 
 
 def _create_native(listener: LifecycleListener, framework: str) -> Any:
-    if inspect.signature(listener.callback).parameters:
-        raise ExtensionDiscoveryError(
-            f"native lifecycle factory {listener.identity} must accept no arguments"
-        )
-    try:
-        value = listener.callback()
-    except Exception as exc:
-        raise ExtensionDiscoveryError(
-            f"native lifecycle factory {listener.identity} failed with "
-            f"{type(exc).__name__}"
-        ) from exc
+    value = _call_factory(listener, label="native lifecycle")
     _validate_native_value(value, framework, listener.identity)
     return value
 
 
-def _validate_native_value(value: Any, framework: str, identity: str) -> None:
+def _call_factory(listener: LifecycleListener, *, label: str) -> Any:
+    try:
+        value = listener.callback()
+    except Exception as exc:
+        raise ExtensionDiscoveryError(
+            f"{label} factory {listener.identity} failed with "
+            f"{type(exc).__name__}"
+        ) from exc
     if inspect.isawaitable(value):
         closer = getattr(value, "close", None)
         if callable(closer):
             closer()
         raise ExtensionDiscoveryError(
-            f"native lifecycle factory {identity} must be synchronous"
+            f"{label} factory {listener.identity} must be synchronous"
         )
+    return value
+
+
+def _validate_native_value(value: Any, framework: str, identity: str) -> None:
     expected = _native_type(framework)
     if not isinstance(value, expected):
         raise ExtensionDiscoveryError(

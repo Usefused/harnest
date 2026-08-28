@@ -201,6 +201,7 @@ printf '  harnest doctor\n'
 printf '  harnest skills install\n'
 printf '  harnest init my-agent --framework adk\n'
 printf '  cd my-agent\n'
+printf '  harnest env sync .\n'
 printf '  harnest test .\n'
 printf '  harnest serve .\n'
 printf '\nThe runtime at %s is managed internally by Harnest; do not activate or invoke it directly.\n' \

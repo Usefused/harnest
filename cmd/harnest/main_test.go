@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest mode advanced", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "lib/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "pyproject.toml", "lib/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -53,6 +53,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	}
 	assertContainsAll(t, "generated agent.py", string(agentSource), []string{
 		`name="support_agent"`,
+		`history="session"`,
 		"from harnest.agent import Agent",
 		"root_agent = Agent(",
 	})
@@ -64,6 +65,8 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
+		"harnest.lock":           "projectSchema: 2",
+		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"tools/_README.md":       "Add one @tool callable",
 		"plugins/_README.md":     "capability bundles",
@@ -94,6 +97,7 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 		"tools/echo.py":                                    "from harnest.tool import tool",
 		"skills/getting-started/SKILL.md":                  "name: getting-started",
 		"extensions/starter.py":                            "@lifecycle.after_invoke",
+		"extensions/sessions.py":                           "return InMemorySessionStore()",
 		"plugins/starter/mcp/starter.py":                   "from harnest.mcp import MCPClient",
 		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"evals/starter.evalset.json":                       "answers_greeting",
@@ -103,6 +107,7 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 	assertContainsAll(t, "example agent.py", string(agentSource), []string{
 		"from harnest.graph import START, Edge, Graph",
 		"root_agent = Graph(",
+		`history="session"`,
 	})
 }
 
@@ -353,6 +358,36 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 		if !strings.Contains(string(arguments), expected) {
 			t.Fatalf("delegated arguments are missing %q:\n%s", expected, arguments)
 		}
+	}
+}
+
+func TestUpgradeDelegatesReadOnlyPlanAndExplicitApply(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "upgrade-agent")
+	record := filepath.Join(t.TempDir(), "arguments.txt")
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	python := writeExecutable(t, `#!/bin/sh
+printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
+`)
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "--python", python, "upgrade", target,
+	); err != nil {
+		t.Fatal(err)
+	}
+	arguments := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "upgrade plan arguments", arguments, []string{
+		"-m\nharnest.cli\nupgrade\n", target,
+	})
+	if strings.Contains(arguments, "--apply") {
+		t.Fatalf("read-only upgrade unexpectedly delegated --apply:\n%s", arguments)
+	}
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "--python", python, "upgrade", target, "--apply",
+	); err != nil {
+		t.Fatal(err)
+	}
+	arguments = string(mustReadTestFile(t, record))
+	if !strings.Contains(arguments, "--apply") {
+		t.Fatalf("destructive upgrade did not delegate --apply:\n%s", arguments)
 	}
 }
 

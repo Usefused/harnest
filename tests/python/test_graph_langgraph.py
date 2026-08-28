@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from harnest.agent import AgentDefinition
-from harnest.graph import START, Edge, Event, Graph, Join
+from harnest.graph import START, Edge, Event, Graph, GraphContext, Join
 from harnest.mcp import MCPClient
 
 
@@ -25,6 +25,57 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
             build_agent(definition, middleware=(middleware,))
 
         self.assertEqual(create.call_args.kwargs["middleware"], [middleware])
+
+    async def test_agent_history_projects_session_or_current_turn(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.runnables import RunnableLambda
+        from harnest.backends.langgraph import build_graph
+
+        messages = [
+            HumanMessage(content="first"),
+            AIMessage(content="reply"),
+            HumanMessage(content="second"),
+        ]
+        for history, expected in (
+            ("session", ["first", "reply", "second"]),
+            ("turn", ["second"]),
+        ):
+            seen = []
+
+            async def record(state):
+                seen.append(state)
+                return state
+
+            graph = Graph(
+                name=f"{history}_context",
+                nodes={
+                    "assistant": AgentDefinition(
+                        name="assistant",
+                        model="openai:test",
+                        instruction="Remember.",
+                        history=history,
+                    )
+                },
+                edges=(Edge(START, "assistant"),),
+            )
+            with patch(
+                "langchain.agents.create_agent",
+                return_value=RunnableLambda(record),
+            ):
+                target = build_graph(graph)
+
+            await target.ainvoke(
+                {
+                    "messages": messages,
+                    "value": "second",
+                    "_harnest_turn_start": 2,
+                }
+            )
+
+            self.assertEqual(
+                [message.content for message in seen[0]["messages"]], expected
+            )
+            self.assertNotIn("_harnest_turn_start", seen[0])
     async def test_mcp_agent_lowers_to_inert_runtime_plan(self):
         from harnest.backends.langgraph import ManagedAgentPlan, build_agent
 
@@ -105,6 +156,30 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(compiled.checkpointer)
         self.assertEqual(result["value"], 7)
         self.assertEqual(result["messages"][-1].content, "sequence complete")
+
+    async def test_callable_context_reads_and_merges_session_state(self):
+        from harnest.backends.langgraph import build_graph
+
+        def remember(value: str, context: GraphContext) -> Event:
+            count = int(context.state.get("count", 0)) + 1
+            return Event(output=f"{value}:{count}", state_delta={"count": count})
+
+        graph = Graph(
+            name="stateful",
+            nodes={"remember": remember},
+            edges=(Edge(START, "remember"),),
+        )
+
+        result = await build_graph(graph).ainvoke(
+            {
+                "value": "remember",
+                "messages": [],
+                "_harnest_state": {"count": 2, "tenant": "one"},
+            }
+        )
+
+        self.assertEqual(result["value"], "remember:3")
+        self.assertEqual(result["_harnest_state"], {"count": 3, "tenant": "one"})
 
     async def test_build_graph_selects_only_matching_routed_branch(self):
         from harnest.backends.langgraph import build_graph

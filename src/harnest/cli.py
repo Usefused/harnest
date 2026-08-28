@@ -11,6 +11,7 @@ from pathlib import Path
 from .bundle import BundleError, compile_artifact
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
 from .testing import AgentTestError, run_agent_tests
+from .upgrade import UpgradeError, apply_upgrade, plan_upgrade, render_upgrade_plan
 
 
 def load_orchestrator(path: Path) -> Orchestrator:
@@ -82,6 +83,16 @@ def main(argv: list[str] | None = None) -> int:
         default="business",
         help="tool trajectory policy for evals (default: business)",
     )
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="plan or apply an existing agent repository migration",
+    )
+    upgrade_parser.add_argument("agent", type=Path)
+    upgrade_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply the displayed destructive changes after creating backups",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -104,12 +115,27 @@ def main(argv: list[str] | None = None) -> int:
                 framework=args.framework,
                 mode=args.mode,
             )
+        if args.command == "upgrade":
+            plan = plan_upgrade(args.agent)
+            if not args.apply:
+                print(render_upgrade_plan(plan), end="")
+                return 2 if plan.blockers else 0
+            # --apply is the consent boundary, but the fresh effective plan is
+            # still flushed first so destructive work is never invisible.
+            print(render_upgrade_plan(plan, applying=True), end="", flush=True)
+            backup = apply_upgrade(plan)
+            if backup is not None:
+                print(f"Upgrade applied. Backup: {backup}")
+            else:
+                print("No changes applied.")
+            return 0
         orchestrator = load_orchestrator(args.orchestrator)
         print(orchestrator.to_json(project_root=args.orchestrator.resolve().parent))
         return 0
     except (
         AgentTestError,
         BundleError,
+        UpgradeError,
         OSError,
         RuntimeError,
         TypeError,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -213,19 +213,24 @@ class ADKRuntimeDriver(RuntimeDriver):
         )
         metadata = dict(request.metadata)
         run_config = RunConfig(custom_metadata=metadata) if metadata else None
-        native_events = self._runner.run_async(
+        async with _session_execution_lease(
+            self._runner.session_service,
             user_id=request.user_id,
             session_id=request.session_id,
-            invocation_id=request.invocation_id,
-            new_message=message,
-            state_delta=dict(request.state_delta),
-            run_config=run_config,
-        )
-        normalizer = _ADKEventNormalizer()
-        async with aclosing(native_events):
-            async for event in native_events:
-                for item in normalizer.feed(event):
-                    yield item
+        ):
+            native_events = self._runner.run_async(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                invocation_id=request.invocation_id,
+                new_message=message,
+                state_delta=dict(request.state_delta),
+                run_config=run_config,
+            )
+            normalizer = _ADKEventNormalizer()
+            async with aclosing(native_events):
+                async for event in native_events:
+                    for item in normalizer.feed(event):
+                        yield item
 
     async def close(self) -> None:
         """Close ADK resources exactly once."""
@@ -408,6 +413,18 @@ def _validate_session_service(session_service: Any) -> None:
         raise TypeError(
             "ADK session_service must implement BaseSessionService operations"
         )
+
+
+@asynccontextmanager
+async def _session_execution_lease(
+    session_service: Any, *, user_id: str, session_id: str
+) -> AsyncIterator[None]:
+    acquire = getattr(session_service, "execution_lease", None)
+    if not callable(acquire):
+        yield
+        return
+    async with acquire(user_id=user_id, session_id=session_id):
+        yield
 
 
 def _json_value(value: Any) -> Any:

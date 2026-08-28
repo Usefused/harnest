@@ -97,7 +97,7 @@ fi
 		managedPythonDirectory(runtimeDirectory),
 		"venv --python 3.12 --managed-python --clear " + runtimeDirectory,
 		"pip install --python " + runtimePythonPath(runtimeDirectory) + " --upgrade ",
-		"harnest-test-version-py3-none-any.whl[all]",
+		"harnest-test-version-py3-none-any.whl",
 	})
 	assertStagedUVRemoved(t, string(calls))
 }
@@ -139,7 +139,7 @@ fi
 		"BOOTSTRAP\t-c import platform, sys;",
 		"BOOTSTRAP\t-m venv " + runtimeDirectory,
 		"RUNTIME\t-m pip --disable-pip-version-check install --upgrade ",
-		"harnest-test-version-py3-none-any.whl[all]",
+		"harnest-test-version-py3-none-any.whl",
 	})
 	assertStagedWheelRemoved(t, string(calls))
 }
@@ -160,8 +160,8 @@ func testEmbeddedWheel(t *testing.T) func(string) (runtimewheel.Artifact, error)
 func assertStagedWheelRemoved(t *testing.T, calls string) {
 	t.Helper()
 	for _, field := range strings.Fields(calls) {
-		if strings.HasSuffix(field, ".whl[all]") {
-			wheel := strings.TrimSuffix(field, "[all]")
+		if strings.HasSuffix(field, ".whl") {
+			wheel := field
 			if _, err := os.Stat(wheel); !os.IsNotExist(err) {
 				t.Fatalf("staged wheel was not removed: %v", err)
 			}

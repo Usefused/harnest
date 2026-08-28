@@ -98,21 +98,21 @@ func TestDiscoverRejectsSourceSymlinkOutsideProject(t *testing.T) {
 	}
 }
 
-func TestLoadBundleRejectsRequirementsSymlink(t *testing.T) {
+func TestLoadBundleRejectsDependencyProjectSymlink(t *testing.T) {
 	project := t.TempDir()
 	directory := writeAgent(t, project, "unsafe", true)
-	requirements := filepath.Join(directory, "requirements.txt")
-	if err := os.Remove(requirements); err != nil {
+	dependencyProject := filepath.Join(directory, "pyproject.toml")
+	if err := os.Remove(dependencyProject); err != nil {
 		t.Fatal(err)
 	}
-	external := filepath.Join(t.TempDir(), "requirements.txt")
+	external := filepath.Join(t.TempDir(), "pyproject.toml")
 	mustWrite(t, external, "external-package\n")
-	if err := os.Symlink(external, requirements); err != nil {
+	if err := os.Symlink(external, dependencyProject); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := LoadBundle(directory); err == nil {
-		t.Fatal("expected requirements symlink error")
+		t.Fatal("expected dependency project symlink error")
 	}
 }
 
@@ -539,7 +539,11 @@ func writeAgent(t *testing.T, project, name string, enabled bool) string {
 	}
 	mustWrite(t, filepath.Join(directory, "agent.py"), "root_agent = object()\n")
 	mustWrite(t, filepath.Join(directory, "instructions.md"), "Be useful.\n")
-	mustWrite(t, filepath.Join(directory, "requirements.txt"), "harnest==0.1.0\n")
+	mustWrite(t, filepath.Join(directory, "pyproject.toml"), `[project]
+name = "test-agent"
+version = "0.1.0"
+dependencies = []
+`)
 	mustWrite(t, filepath.Join(directory, "config.yaml"), fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent
 metadata:
@@ -552,7 +556,7 @@ spec:
     mode: managed
   runtime:
     version: "3.12"
-    requirementsFile: requirements.txt
+    dependencyFile: pyproject.toml
   resources:
     cpu: "1"
     memory: 1Gi

@@ -27,6 +27,7 @@ from harnest.runtime_auth import (
     AuthenticationError,
 )
 from harnest.approval import require_human_approval
+from harnest.client_tool import client_tool
 from harnest.tool import tool
 
 
@@ -36,6 +37,13 @@ def _protected_send(value: str) -> str:
     """Send a protected value."""
 
     return f"sent:{value}"
+
+
+@client_tool
+def _browser_open(url: str) -> dict[str, str]:
+    """Open a URL in the caller's browser and return the page title."""
+
+    raise AssertionError("client tool declaration bodies must not run")
 
 
 class HeaderAuthenticator:
@@ -194,6 +202,24 @@ class MultipleApprovalDriver(ApprovalDriver):
             session_id=request.session_id,
             metadata=request.metadata,
         )
+
+
+class ClientToolDriver(FakeDriver):
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        result = await _browser_open(request.input)
+        text = f"opened:{result['title']}"
+        return InvocationResult(
+            text=text,
+            events=({"type": "message", "role": "assistant", "text": text},),
+            result=result,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+    async def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]:
+        result = await self.invoke(request)
+        for event in result.events:
+            yield dict(event)
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -745,6 +771,80 @@ class ApprovalTransportTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
+class ClientToolTransportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.context = TestClient(create_neutral_app(ClientToolDriver()))
+        self.client = self.context.__enter__()
+        self.client.post("/sessions", json={"id": "client-session"})
+
+    def tearDown(self) -> None:
+        self.context.__exit__(None, None, None)
+
+    def test_json_suspends_and_resumes_with_client_output(self):
+        with self.assertLogs("harnest.agent.client_tool.audit", level="INFO") as audit:
+            required = self.client.post(
+                "/responses",
+                json={
+                    "input": "https://example.test",
+                    "sessionId": "client-session",
+                },
+            ).json()
+
+            self.assertEqual(required["status"], "requires_action")
+            action = required["requiredAction"]
+            self.assertEqual(action["type"], "client_tool")
+            self.assertEqual(action["name"], "_browser_open")
+            self.assertEqual(action["arguments"], {"url": "https://example.test"})
+            completed = self.client.post(
+                f"/client-tools/{action['id']}",
+                json={"output": {"title": "Example"}},
+            )
+
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["outputText"], "opened:Example")
+        self.assertTrue(any("client_tool.requested" in item for item in audit.output))
+        self.assertTrue(
+            any("client_tool.result_submitted" in item for item in audit.output)
+        )
+
+    def test_sse_exposes_the_same_client_tool_contract(self):
+        response = self.client.post(
+            "/responses",
+            json={
+                "input": "https://example.test",
+                "sessionId": "client-session",
+                "stream": True,
+            },
+        )
+
+        self.assertIn("event: client_tool.requested", response.text)
+        self.assertIn('"type": "client_tool"', response.text)
+
+    def test_live_round_trip_resumes_on_the_same_socket(self):
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json({"type": "connect", "sessionId": "client-session"})
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "response.create", "input": "https://example.test"}
+            )
+            self.assertEqual(websocket.receive_json()["type"], "response.created")
+            requested = websocket.receive_json()
+            self.assertEqual(requested["type"], "client_tool.requested")
+            websocket.send_json(
+                {
+                    "type": "client_tool.result",
+                    "requestId": requested["clientTool"]["id"],
+                    "output": {"title": "Live Example"},
+                }
+            )
+            completed = websocket.receive_json()
+            self.assertEqual(completed["type"], "response.text.delta")
+            completed = websocket.receive_json()
+            self.assertEqual(completed["type"], "response.completed")
+            self.assertEqual(completed["outputText"], "opened:Live Example")
 
 
 if __name__ == "__main__":

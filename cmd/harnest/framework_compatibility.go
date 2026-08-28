@@ -15,7 +15,7 @@ type frameworkCompatibility struct {
 var frameworkCompatibilityByName = map[string]frameworkCompatibility{
 	"adk": {
 		FrameworkRequirements: []string{
-			"google-adk[eval,mcp]>=2.8,<3",
+			"google-adk[eval,extensions,mcp]>=2.8,<3",
 		},
 	},
 	"langgraph": {

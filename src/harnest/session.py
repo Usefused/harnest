@@ -1,4 +1,4 @@
-"""Framework-neutral session storage contracts for LangGraph runtimes."""
+"""Framework-neutral lifecycle session storage contracts."""
 
 from __future__ import annotations
 
@@ -55,6 +55,8 @@ class SessionStore(Protocol):
     and a distributed lease. Durable mutations are also responsible for the
     repository's privacy-safe OTEL audit contract after commit.
     """
+
+    async def start(self) -> None: ...
 
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
@@ -114,6 +116,9 @@ class InMemorySessionStore:
     def __init__(self) -> None:
         self._sessions: dict[tuple[str, str], _StoredSession] = {}
         self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Satisfy the application-owned store lifecycle without external I/O."""
 
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]

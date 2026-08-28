@@ -26,22 +26,66 @@ harnest init support-agent --framework adk
 harnest init support-graph --framework langgraph
 harnest init direct-graph --framework langgraph --mode advanced
 harnest init example-agent --framework adk --example
+harnest env sync support-agent
 harnest doctor
 ```
 
 `init` refuses a non-empty destination. Treat generated source as editable
 starter material; treat `.harnest/` as disposable build output. By default,
-optional folders contain only ignored `_README.md` routing guides and the root
-is one simple agent. Add `--example` only when the user wants working graph,
-tool, plugin, skill, extension, eval, and test samples. Select
+optional folders contain ignored `_README.md` routing guides, except for the
+ignored resource guides, and the root is one simple agent. Add
+`--example` only when the user wants working graph, tool, plugin, skill,
+extension, eval, and test samples. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
+
+`env sync` uses the embedded `uv` and Harnest wheel to create an isolated,
+fingerprinted environment below `.harnest/environments/`. It resolves
+`pyproject.toml` and updates `uv.lock`; commit the lock after reviewing it. Do
+not activate the environment or add Harnest, ADK, LangGraph, or framework
+adapters as agent dependencies. Upgrade Harnest to change framework versions.
+Compile, test, and serve run the same synchronization automatically. In CI, use
+`harnest env sync AGENT_DIR --frozen` before testing to reject a missing or
+stale lock instead of changing it.
 
 Before editing an existing project, inspect `config.yaml`, `server.yaml`,
 `agent.py`, `instructions.md`, `agent-card.yaml`, and only the resource folders
 relevant to the request. Preserve unrelated user changes. If multiple resources need the
 same ordinary Python implementation, add it once under root `lib/` and import
 it below `harnest.lib`; do not turn a helper into a discovered resource.
+
+## Upgrade an existing repository contract
+
+Do not run `init` over an authored agent. After updating the Harnest CLI, first
+plan its repository migration:
+
+```bash
+harnest upgrade support-agent
+```
+
+Planning is read-only. Review every create, rewrite, move, and manual blocker;
+also inspect the working tree because the command does not interpret business
+logic. Resolve blockers by hand. When the reported mutations preserve the
+agent's intent, apply them explicitly:
+
+```bash
+harnest upgrade support-agent --apply
+```
+
+Apply prints its fresh effective plan, verifies source hashes before mutation,
+and backs up all affected paths plus `plan.json` under
+`.harnest/upgrade-backups/<id>/`. It
+recognizes removed Harnest conventions such as `mcp_servers/`, legacy
+`requirements.txt` manifests, filename-named MCP exports,
+`Extension(...)` lifecycle aggregation, and old
+framework-native extension exports. It adds missing current root contracts and
+records the committed repository schema in `harnest.lock`. Ambiguous authored
+code becomes a blocker instead of being guessed.
+
+Review the resulting source diff; do not treat the backup as a substitute for
+version control. Then run `harnest test AGENT_DIR` and compile it. Reinstall the
+bundled coding-agent skill with `harnest skills install --force` only after
+reviewing any customized project-local skill.
 
 ## Audit an advanced-mode migration
 

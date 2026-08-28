@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .agent import _AdvancedAgentDefinition
+from .session import SessionStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class CompiledApplication:
     kind: str = "agent"
     bridge: _AdvancedAgentDefinition | None = None
     extensions: Sequence[Any] = ()
+    session_store: SessionStore | None = None
     harnest_version: str | None = None
     framework_distribution: str | None = None
     framework_version: str | None = None

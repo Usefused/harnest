@@ -151,6 +151,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("install_directory=$existing_directory", installer)
         self.assertIn("replaced the legacy Python launcher", installer)
         self.assertIn("harnest init my-agent --framework adk", installer)
+        self.assertIn("harnest env sync .", installer)
         self.assertNotIn("%s init my-agent", installer)
         self.assertIn("managed internally by Harnest", installer)
         self.assertIn("does not require a preinstalled Python", readme)

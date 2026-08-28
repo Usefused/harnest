@@ -14,7 +14,7 @@ spec:
     mode: managed
   runtime:
     version: "3.12"
-    requirementsFile: requirements.txt
+    dependencyFile: pyproject.toml
   resources:
     cpu: "1"
     memory: 1Gi
