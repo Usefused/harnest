@@ -2,11 +2,15 @@ import re
 import subprocess
 import tempfile
 import textwrap
-import tomllib
 import unittest
 from pathlib import Path
 
 import yaml
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 uses the maintained compatibility package.
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
