@@ -6,9 +6,9 @@ project structure, dependencies, capability discovery, compilation, tests,
 serving, sessions, approvals, authentication, storage, telemetry, and a
 development playground.
 
-Harnest is capability-driven. Add the tools, SubAgents, MCP connections, Agent
-Skills, plugins, and lifecycle behavior you need. If a capability is absent,
-Harnest does not wire it into the compiled agent.
+Every Harnest agent is compiled from the capabilities you add. Tools, subagents,
+MCP connections, agent skills, plugins, sandboxes, and lifecycle extensions are
+left out unless you use them.
 
 | Mode | Harnest manages | You control |
 | --- | --- | --- |
