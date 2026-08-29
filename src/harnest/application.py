@@ -14,8 +14,10 @@ from .context import ContextValue
 from .credentials import CredentialProvider
 from .http_routes import HTTPRouteExtension
 from .lifecycle import LifecycleListener
+from .lifecycle_coverage import LifecycleCoverage, lifecycle_coverage
 from .output import OutputPolicy
 from .session import SessionStore
+from .storage_registry import CustomStorage, StorageRegistry
 from .structured import PydanticModel, validate_output_schema
 
 
@@ -35,6 +37,8 @@ class RuntimeCapabilities:
     output_policy: OutputPolicy = OutputPolicy()
     telemetry_exporters: Sequence[LifecycleListener] = field(default=(), repr=False)
     context_values: Sequence[ContextValue] = ()
+    custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
+    storage_registry: StorageRegistry = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate capability contracts and freeze repeatable collections."""
@@ -44,8 +48,16 @@ class RuntimeCapabilities:
             self.checkpointer, CheckpointAuthority, field_name="checkpointer"
         )
         stores = _asset_storage_capabilities(self.asset_store, self.asset_stores)
-        object.__setattr__(self, "asset_stores", stores)
-        object.__setattr__(self, "asset_store", stores.get("default"))
+        registry = StorageRegistry(
+            sessions=self.session_store,
+            checkpoints=self.checkpointer,
+            assets=stores,
+            custom=self.custom_stores,
+        )
+        object.__setattr__(self, "storage_registry", registry)
+        object.__setattr__(self, "asset_stores", registry.assets)
+        object.__setattr__(self, "asset_store", registry.default_assets)
+        object.__setattr__(self, "custom_stores", registry.custom)
         _validate_optional_type(
             self.credential_provider,
             CredentialProvider,
@@ -90,10 +102,17 @@ class CompiledApplication:
     output_schema: PydanticModel | None = None
     checkpoint_metadata: dict[str, str] | None = None
     context_values: Sequence[ContextValue] = ()
+    tasks: Sequence[Any] = field(default=(), repr=False)
+    plugins: Sequence[Any] = field(default=(), repr=False)
     harnest_version: str | None = None
     framework_distribution: str | None = None
     framework_version: str | None = None
+    custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     runtime_capabilities: RuntimeCapabilities = field(
+        init=False, repr=False, compare=False
+    )
+    storage_registry: StorageRegistry = field(init=False, repr=False, compare=False)
+    lifecycle_coverage: LifecycleCoverage = field(
         init=False, repr=False, compare=False
     )
 
@@ -111,6 +130,7 @@ class CompiledApplication:
             checkpointer=self.checkpointer,
             asset_store=self.asset_store,
             asset_stores=self.asset_stores,
+            custom_stores=self.custom_stores,
             credential_provider=self.credential_provider,
             http_routes=self.http_routes,
             output_policy=self.output_policy,
@@ -119,7 +139,14 @@ class CompiledApplication:
         )
         object.__setattr__(self, "runtime_capabilities", capabilities)
         _publish_compatibility_attributes(self, capabilities)
+        object.__setattr__(
+            self,
+            "lifecycle_coverage",
+            lifecycle_coverage(self.framework, self.mode),
+        )
         object.__setattr__(self, "extensions", tuple(self.extensions))
+        object.__setattr__(self, "tasks", _compiled_tasks(self.tasks))
+        object.__setattr__(self, "plugins", _runtime_plugins(self.plugins))
         object.__setattr__(
             self, "checkpoint_metadata", dict(self.checkpoint_metadata or {})
         )
@@ -143,6 +170,8 @@ def _publish_compatibility_attributes(
         "checkpointer",
         "asset_store",
         "asset_stores",
+        "custom_stores",
+        "storage_registry",
         "credential_provider",
         "http_routes",
         "output_policy",
@@ -220,6 +249,34 @@ def _context_capabilities(values: Sequence[Any]) -> tuple[ContextValue, ...]:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ValueError("duplicate context resource names: " + ", ".join(duplicates))
+    return normalized
+
+
+def _runtime_plugins(values: Sequence[Any]) -> tuple[Any, ...]:
+    """Freeze only compiler-activated plugin singletons on the application."""
+
+    from .plugins import ActivatedPlugin
+
+    normalized = tuple(values)
+    if any(not isinstance(item, ActivatedPlugin) for item in normalized):
+        raise TypeError("plugins must contain ActivatedPlugin values")
+    names = tuple(item.descriptor.name for item in normalized)
+    if len(names) != len(set(names)):
+        raise ValueError("compiled application plugin names must be unique")
+    return normalized
+
+
+def _compiled_tasks(values: Sequence[Any]) -> tuple[Any, ...]:
+    """Freeze compiler-created tasks without importing their queue backend."""
+
+    from .task import CompiledTask
+
+    normalized = tuple(values)
+    if any(not isinstance(item, CompiledTask) for item in normalized):
+        raise TypeError("tasks must contain CompiledTask values")
+    names = tuple(item.name for item in normalized)
+    if len(names) != len(set(names)):
+        raise ValueError("compiled task names must be unique")
     return normalized
 
 

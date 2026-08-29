@@ -9,6 +9,12 @@ Managed mode is the default. Author an `Agent` or portable `Graph`; Harnest
 discovers filesystem resources, composes them, and lowers the result to the
 framework selected in `config.yaml`.
 
+Managed composition includes runtime plugins. Harnest starts them after their
+declared dependencies, exposes their public modules below
+`harnest.plugins.<name>`, and flattens declared extension roots into the same
+universal lifecycle as root extensions. Global authority, route, context, and
+named-resource collisions fail rather than being resolved by load order.
+
 - ADK supports portable graphs plus ADK-specific agent fields, native plugins,
   progressive ADK skills, and sandbox executors.
 - LangGraph supports the same portable graph topology and portable skills.
@@ -59,6 +65,19 @@ native capabilities inherit the neutral invocation context; opaque or direct
 native execution needs framework wiring. Portable model hooks are guaranteed only at Harnest-managed/wrapped
 model boundaries. The check never updates files; migrate semantically and
 preserve unrelated changes.
+
+Compiled applications expose structured lifecycle coverage. Treat `full` as a
+Harnest-owned boundary, `wrapped-only` as coverage only through Harnest adapters,
+`best-effort` as framework-dependent observation, and `framework-owned` as an
+explicit native responsibility. Advanced mode cannot make direct native model,
+tool, MCP, checkpoint, or subagent work participate in portable hooks unless the
+author wires the corresponding framework integration.
+
+The same rule applies to runtime plugins in advanced mode. A plugin can use
+neutral startup/shutdown, HTTP, context, storage, credentials, session, assets,
+and portable invocation boundaries Harnest still owns. Listing `native.adk`,
+`native.langgraph`, or another capability records intent; it cannot make opaque
+native execution participate in Harnest lifecycle automatically.
 
 ## Framework changes
 

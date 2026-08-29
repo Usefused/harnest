@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .application import CompiledApplication
@@ -36,7 +36,11 @@ from .backends import (
     get_backend,
 )
 from .graph import Graph
-from .extension_loader import ExtensionDiscoveryError, discover_extensions
+from .extension_loader import (
+    ExtensionDiscoveryError,
+    ExtensionSource,
+    discover_extension_sources,
+)
 from ._library import (
     LibraryConventionError,
     LibraryImportError as AuthoredLibraryImportError,
@@ -46,28 +50,83 @@ from .mcp import MCPClient, _mcp_connection_configuration
 from .model_hooks import portable_model_extension
 from .approval import approval_policy
 from .plugin import PluginConventionError, PluginResources, discover_plugins
+from .plugins import (
+    ActivatedPlugin,
+    PluginImportError,
+    PluginNamespaceError,
+    activate_runtime_plugins,
+    release_runtime_plugins,
+)
+from .runtime_plugins import (
+    RuntimePluginConventionError,
+    RuntimePluginDescriptor,
+    discover_runtime_plugins,
+    validate_runtime_plugin_dependencies,
+)
 from .sandbox import Sandbox
 from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
+from .source_tree import ignored_source_path
+from .task import CompiledTask, registration_for as task_registration_for
 
 _T = TypeVar("_T")
 _IGNORED_FILE_NAMES = {"__init__.py"}
 _MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
-_ARTIFACT_IGNORED_DIRECTORIES = {
-    ".adk",
-    ".git",
-    ".harnest",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "__pycache__",
-    "venv",
-}
+_PROCRASTINATE_REQUIREMENT = "procrastinate==3.9.0"
 _SKILL_TOOL_NAMES = {
     "list_skills",
     "load_skill",
     "load_skill_resource",
     "run_skill_script",
+}
+_RUNTIME_PLUGIN_ENTRIES = frozenset(
+    {
+        "plugin.yaml",
+        "plugin.py",
+        "pyproject.toml",
+        "extensions",
+        "lib",
+        "mcp",
+        "skills",
+        "subagents",
+        "tools",
+    }
+)
+_RUNTIME_PLUGIN_CONTENT_CAPABILITIES = {
+    "tools": "content.tools",
+    "mcp": "content.mcp",
+    "skills": "content.skills",
+    "subagents": "content.subagents",
+}
+_RUNTIME_PLUGIN_PHASE_CAPABILITIES = {
+    "authenticate": "lifecycle.http",
+    "before_invoke": "lifecycle.agent",
+    "after_invoke": "lifecycle.agent",
+    "on_event": "lifecycle.agent",
+    "on_error": "lifecycle.agent",
+    "before_model": "lifecycle.model",
+    "after_model": "lifecycle.model",
+    "on_model_error": "lifecycle.model",
+    "before_tool": "lifecycle.tool",
+    "after_tool": "lifecycle.tool",
+    "on_tool_error": "lifecycle.tool",
+    "before_http": "lifecycle.http",
+    "after_http": "lifecycle.http",
+    "on_http_error": "lifecycle.http",
+    "before_mcp": "lifecycle.mcp",
+    "after_mcp": "lifecycle.mcp",
+    "on_mcp_error": "lifecycle.mcp",
+    "resource": "context.resources",
+    "context": "context.resources",
+    "session_store": "storage.sessions",
+    "checkpointer": "storage.checkpoints",
+    "asset_store": "storage.assets",
+    "custom_store": "storage.custom",
+    "credential_provider": "context.credentials",
+    "http_routes": "http.routes",
+    "output_policy": "policy.output",
+    "telemetry_exporter": "telemetry.exporter",
+    "adk_plugin": "native.adk",
+    "langgraph_middleware": "native.langgraph",
 }
 
 
@@ -173,23 +232,49 @@ def compile_application(
     except FrameworkCompatibilityError as exc:
         raise BundleImportError(str(exc)) from exc
     anchor = _resolve_compile_anchor(source, entrypoint)
+    if mode == "advanced":
+        _reject_advanced_plugin_files(anchor.parent, framework)
+    runtime_plugins = _discover_runtime_plugins(anchor.parent / "plugins")
+    _validate_runtime_plugin_project_set(anchor.parent, runtime_plugins)
+    _validate_runtime_plugin_layouts(runtime_plugins)
     export_name = entrypoint.partition(":")[2]
-    with _bundle_library(anchor.parent):
-        module, value = _load_export(anchor, export_name)
-        if mode == "advanced":
-            return _compile_advanced_application(
-                anchor, module, value, export_name, framework, backend, compatibility
+    activated_plugins: tuple[ActivatedPlugin, ...] = ()
+    try:
+        with _bundle_library(anchor.parent):
+            # Plugins share the agent interpreter and may import application
+            # helpers, so the authored namespace must exist before plugin.py.
+            activated_plugins = _activate_bundle_runtime_plugins(runtime_plugins)
+            module, value = _load_export(anchor, export_name)
+            if mode == "advanced":
+                return _compile_advanced_application(
+                    anchor,
+                    module,
+                    value,
+                    export_name,
+                    framework,
+                    backend,
+                    compatibility,
+                    runtime_plugins,
+                    activated_plugins,
+                )
+            return _compile_managed_application(
+                anchor,
+                module,
+                value,
+                export_name,
+                framework,
+                mode,
+                backend,
+                compatibility,
+                runtime_plugins,
+                activated_plugins,
             )
-        return _compile_managed_application(
-            anchor,
-            module,
-            value,
-            export_name,
-            framework,
-            mode,
-            backend,
-            compatibility,
-        )
+    except Exception:
+        # A successful compilation transfers this acquisition to the runtime
+        # manager; failed compilation has no later owner that could release it.
+        if activated_plugins:
+            release_runtime_plugins(runtime_plugins)
+        raise
 
 
 @contextmanager
@@ -205,6 +290,19 @@ def _bundle_library(bundle_root: Path) -> Iterator[None]:
         raise BundleImportError(str(exc)) from exc
 
 
+def _activate_bundle_runtime_plugins(
+    descriptors: Sequence[RuntimePluginDescriptor],
+) -> tuple[ActivatedPlugin, ...]:
+    """Acquire namespaces whose lifetime transfers to the compiled runtime."""
+
+    try:
+        return activate_runtime_plugins(descriptors)
+    except PluginImportError as exc:
+        raise BundleImportError(str(exc)) from exc
+    except PluginNamespaceError as exc:
+        raise BundleConventionError(str(exc)) from exc
+
+
 def _compile_advanced_application(
     anchor: Path,
     module: ModuleType,
@@ -213,6 +311,8 @@ def _compile_advanced_application(
     framework: str,
     backend: Any,
     compatibility: Any,
+    runtime_plugins: Sequence[RuntimePluginDescriptor],
+    activated_plugins: Sequence[ActivatedPlugin],
 ) -> CompiledApplication:
     """Validate native ownership while retaining Harnest's runtime boundaries."""
 
@@ -229,7 +329,13 @@ def _compile_advanced_application(
         predicate=lambda item: isinstance(item, _AdvancedAgentDefinition),
     )
     _reject_advanced_filesystem_resources(anchor.parent, framework=framework)
-    discovered_extensions = _load_extensions(anchor.parent, framework)
+    _reject_advanced_plugin_resources(anchor.parent, runtime_plugins, framework)
+    discovered_extensions = _load_extensions(
+        anchor.parent, framework, runtime_plugins
+    )
+    _validate_plugin_extension_capabilities(
+        runtime_plugins, discovered_extensions.declared_listeners
+    )
     try:
         advanced = backend.validate_advanced(
             value, fallback_name=anchor.parent.name
@@ -266,12 +372,15 @@ def _compile_advanced_application(
         checkpointer=discovered_extensions.checkpointer,
         asset_store=discovered_extensions.asset_store,
         asset_stores=discovered_extensions.asset_stores,
+        custom_stores=discovered_extensions.storage_registry.custom,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
         telemetry_exporters=discovered_extensions.telemetry_exporters,
         checkpoint_metadata=checkpoint_metadata(discovered_extensions.checkpointer),
         context_values=discovered_extensions.context_values,
+        tasks=_discover_tasks(anchor.parent / "tasks", advanced.name),
+        plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -287,6 +396,8 @@ def _compile_managed_application(
     mode: str,
     backend: Any,
     compatibility: Any,
+    runtime_plugins: Sequence[RuntimePluginDescriptor],
+    activated_plugins: Sequence[ActivatedPlugin],
 ) -> CompiledApplication:
     """Compose portable resources before lowering once to the selected framework."""
 
@@ -302,7 +413,12 @@ def _compile_managed_application(
         kind="managed application",
         predicate=lambda item: isinstance(item, (AgentDefinition, Graph)),
     )
-    discovered_extensions = _load_extensions(anchor.parent, framework)
+    discovered_extensions = _load_extensions(
+        anchor.parent, framework, runtime_plugins
+    )
+    _validate_plugin_extension_capabilities(
+        runtime_plugins, discovered_extensions.declared_listeners
+    )
     portable_extensions = discovered_extensions.listeners
     model_extension = portable_model_extension(
         portable_extensions, framework=framework
@@ -328,14 +444,24 @@ def _compile_managed_application(
         )
     native_checkpointer = _managed_checkpointer(provider, framework)
     if isinstance(value, AgentDefinition):
-        definition = _compose_definition(anchor, value, framework=framework)
+        definition = _compose_definition(
+            anchor,
+            value,
+            framework=framework,
+            runtime_plugins=runtime_plugins,
+        )
         target = backend.lower_managed(
             definition,
             native_extensions=native_extensions,
             checkpointer=native_checkpointer,
         )
     else:
-        graph = _resolve_graph_resources(anchor, value, framework=framework)
+        graph = _resolve_graph_resources(
+            anchor,
+            value,
+            framework=framework,
+            runtime_plugins=runtime_plugins,
+        )
         target = backend.lower_managed(
             graph,
             native_extensions=native_extensions,
@@ -352,8 +478,9 @@ def _compile_managed_application(
         raise BundleImportError(str(exc)) from exc
     except AdvancedBackendValidationError as exc:
         raise BundleConventionError(str(exc)) from exc
+    application_name = getattr(target, "name", value.name)
     return CompiledApplication(
-        name=getattr(target, "name", value.name),
+        name=application_name,
         framework=framework,
         mode=mode,
         target=target,
@@ -364,6 +491,7 @@ def _compile_managed_application(
         checkpointer=provider,
         asset_store=discovered_extensions.asset_store,
         asset_stores=discovered_extensions.asset_stores,
+        custom_stores=discovered_extensions.storage_registry.custom,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
@@ -378,6 +506,8 @@ def _compile_managed_application(
         ),
         checkpoint_metadata=checkpoint_metadata(provider),
         context_values=discovered_extensions.context_values,
+        tasks=_discover_tasks(anchor.parent / "tasks", application_name),
+        plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
@@ -462,9 +592,25 @@ def _validate_advanced_langgraph_checkpointer(
         )
 
 
-def _load_extensions(bundle_root: Path, framework: str) -> Any:
+def _load_extensions(
+    bundle_root: Path,
+    framework: str,
+    runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
+) -> Any:
+    """Compile root and plugin listeners through one application registry."""
+
+    sources = (
+        ExtensionSource(bundle_root / "extensions", "root/extensions"),
+        *(
+            ExtensionSource(
+                plugin.directory / "extensions",
+                f"plugins/{plugin.name}/extensions",
+            )
+            for plugin in runtime_plugins
+        ),
+    )
     try:
-        return discover_extensions(bundle_root / "extensions", framework=framework)
+        return discover_extension_sources(sources, framework=framework)
     except ExtensionDiscoveryError as exc:
         raise BundleConventionError(str(exc)) from exc
 
@@ -564,48 +710,102 @@ def compile_artifact(
     built = compile_application(
         anchor, entrypoint=entrypoint, framework=framework, mode=mode
     )
-    output_directory.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".{output_directory.name}.tmp-",
-            dir=output_directory.parent,
-        )
-    )
     try:
-        _copy_agent_source(source_directory, staging / "source")
-        materialize_server_config(
-            source_directory / SERVER_CONFIG_FILENAME,
-            staging / SERVER_CONFIG_FILENAME,
+        output_directory.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output_directory.name}.tmp-",
+                dir=output_directory.parent,
+            )
         )
-        _write_artifact_loader(staging, entrypoint, framework, mode)
-        file_records = _artifact_file_records(staging)
-        manifest = {
-            "apiVersion": "harnest.dev/v1alpha1",
-            "kind": "CompiledAgent",
-            "name": built.name,
-            "entrypoint": "agent:root_agent",
-            "sourceEntrypoint": entrypoint,
-            "sourceDirectory": "source",
-            "harnestVersion": built.harnest_version,
-            "framework": {
-                "name": framework,
-                "mode": mode,
-                "distribution": built.framework_distribution,
-                "version": built.framework_version,
-            },
-            "checkpoint": dict(built.checkpoint_metadata or {}),
-            "digest": _artifact_digest(file_records),
-            "files": file_records,
-        }
-        (staging / "harnest-manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        _replace_artifact(staging, output_directory)
-        return manifest
+        try:
+            _copy_agent_source(source_directory, staging / "source")
+            materialize_server_config(
+                source_directory / SERVER_CONFIG_FILENAME,
+                staging / SERVER_CONFIG_FILENAME,
+            )
+            _write_artifact_loader(staging, entrypoint, framework, mode)
+            file_records = _artifact_file_records(staging)
+            plugin_records = _compiled_plugin_records(built.plugins)
+            task_records = _compiled_task_records(built.tasks)
+            runtime_dependencies = (
+                [_PROCRASTINATE_REQUIREMENT] if task_records else []
+            )
+            manifest = {
+                "apiVersion": "harnest.dev/v1alpha1",
+                "kind": "CompiledAgent",
+                "name": built.name,
+                "entrypoint": "agent:root_agent",
+                "sourceEntrypoint": entrypoint,
+                "sourceDirectory": "source",
+                "harnestVersion": built.harnest_version,
+                "framework": {
+                    "name": framework,
+                    "mode": mode,
+                    "distribution": built.framework_distribution,
+                    "version": built.framework_version,
+                },
+                "checkpoint": dict(built.checkpoint_metadata or {}),
+                "plugins": plugin_records,
+                "tasks": task_records,
+                "runtimeDependencies": runtime_dependencies,
+                "digest": _artifact_digest(
+                    file_records,
+                    plugin_records,
+                    task_records,
+                    runtime_dependencies,
+                ),
+                "files": file_records,
+            }
+            (staging / "harnest-manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            _replace_artifact(staging, output_directory)
+            return manifest
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+        _release_compiled_plugins(built.plugins)
+
+
+def _compiled_plugin_records(
+    plugins: Sequence[ActivatedPlugin],
+) -> list[dict[str, Any]]:
+    """Serialize dependency-ordered plugin provenance without executable state."""
+
+    return [
+        {
+            "name": item.descriptor.name,
+            "version": item.descriptor.version,
+            "digest": item.descriptor.digest,
+            "requires": list(item.descriptor.requires),
+            "capabilities": list(item.descriptor.capabilities),
+            "dependencies": list(item.descriptor.dependencies),
+        }
+        for item in plugins
+    ]
+
+
+def _compiled_task_records(tasks: Sequence[CompiledTask]) -> list[dict[str, Any]]:
+    """Serialize queue policy without executable functions or customer data."""
+
+    return [
+        {
+            "name": item.name,
+            "source": item.source,
+            "queue": item.queue,
+            "maxRetries": item.max_retries,
+        }
+        for item in tasks
+    ]
+
+
+def _release_compiled_plugins(plugins: Sequence[ActivatedPlugin]) -> None:
+    """Release the compiler-owned acquisition when no runtime will adopt it."""
+
+    release_runtime_plugins(tuple(item.descriptor for item in plugins))
 
 
 def _copy_agent_source(source: Path, destination: Path) -> None:
@@ -620,14 +820,12 @@ def _copy_agent_source(source: Path, destination: Path) -> None:
         relative = path.relative_to(source)
         # Managed environments are neither authored source nor capabilities;
         # skip their entire subtree before inspecting ordinary venv symlinks.
-        if any(part in _ARTIFACT_IGNORED_DIRECTORIES for part in relative.parts):
+        if ignored_source_path(relative):
             continue
         if path.is_symlink():
             raise BundleConventionError(
                 f"agent source copied into an artifact cannot contain symlinks: {path}"
             )
-        if relative.name == ".env" or relative.name.startswith(".env."):
-            continue
         if path.is_dir():
             continue
         if not path.is_file():
@@ -710,8 +908,13 @@ def _artifact_file_records(directory: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _artifact_digest(records: Sequence[dict[str, Any]]) -> str:
-    """Bind every recorded file into one reproducible artifact digest."""
+def _artifact_digest(
+    records: Sequence[dict[str, Any]],
+    plugins: Sequence[dict[str, Any]] = (),
+    tasks: Sequence[dict[str, Any]] = (),
+    runtime_dependencies: Sequence[str] = (),
+) -> str:
+    """Bind recorded files and plugin provenance into one artifact identity."""
 
     digest = hashlib.sha256()
     for record in records:
@@ -721,7 +924,52 @@ def _artifact_digest(records: Sequence[dict[str, Any]]) -> str:
         digest.update(b"\0")
         digest.update(str(record["size"]).encode("ascii"))
         digest.update(b"\n")
+    for plugin in plugins:
+        # Plugin records live in the manifest rather than the file set, so bind
+        # their canonical compiler output explicitly to prevent provenance drift.
+        _update_artifact_digest_field(digest, "plugin.name", plugin["name"])
+        _update_artifact_digest_field(digest, "plugin.version", plugin["version"])
+        _update_artifact_digest_field(digest, "plugin.digest", plugin["digest"])
+        requires = plugin["requires"]
+        _update_artifact_digest_field(digest, "plugin.requires", str(len(requires)))
+        for dependency in requires:
+            _update_artifact_digest_field(digest, "plugin.require", dependency)
+        capabilities = plugin["capabilities"]
+        _update_artifact_digest_field(
+            digest, "plugin.capabilities", str(len(capabilities))
+        )
+        for capability in capabilities:
+            _update_artifact_digest_field(digest, "plugin.capability", capability)
+        dependencies = plugin["dependencies"]
+        _update_artifact_digest_field(
+            digest, "plugin.dependencies", str(len(dependencies))
+        )
+        for requirement in dependencies:
+            _update_artifact_digest_field(
+                digest, "plugin.dependency", requirement
+            )
+    for task_record in tasks:
+        _update_artifact_digest_field(digest, "task.name", task_record["name"])
+        _update_artifact_digest_field(digest, "task.source", task_record["source"])
+        _update_artifact_digest_field(digest, "task.queue", task_record["queue"])
+        _update_artifact_digest_field(
+            digest, "task.max_retries", str(task_record["maxRetries"])
+        )
+    for requirement in runtime_dependencies:
+        _update_artifact_digest_field(digest, "runtime.dependency", requirement)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _update_artifact_digest_field(digest: Any, label: str, value: str) -> None:
+    """Frame one provenance field identically across Python and Go."""
+
+    encoded = value.encode("utf-8")
+    digest.update(label.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(len(encoded)).encode("ascii"))
+    digest.update(b":")
+    digest.update(encoded)
+    digest.update(b"\n")
 
 
 def _replace_artifact(staging: Path, output: Path) -> None:
@@ -838,7 +1086,6 @@ def _reject_advanced_filesystem_resources(bundle_root: Path, *, framework: str) 
         "tools",
         "subagents",
         "mcp",
-        "plugins",
         "sandbox",
         "skills",
     )
@@ -852,6 +1099,59 @@ def _reject_advanced_filesystem_resources(bundle_root: Path, *, framework: str) 
         raise BundleConventionError(
             f"advanced {framework} mode does not compose filesystem resources from: "
             f"{rendered}; wire them into Agent.advanced(...) in agent.py or remove them"
+        )
+
+
+def _reject_advanced_plugin_resources(
+    bundle_root: Path,
+    runtime_plugins: Sequence[RuntimePluginDescriptor],
+    framework: str,
+) -> None:
+    """Allow only Harnest-owned runtime boundaries in advanced mode."""
+
+    agent_plugins = _discover_capability_plugins(bundle_root / "plugins")
+    if agent_plugins:
+        raise BundleConventionError(
+            f"advanced {framework} mode does not compose agent-plugins"
+        )
+    for plugin in runtime_plugins:
+        populated = tuple(
+            directory
+            for directory in _RUNTIME_PLUGIN_CONTENT_CAPABILITIES
+            if _has_public_entries(
+                plugin.directory / directory,
+                kind=f"runtime plugin {plugin.name} {directory}",
+            )
+        )
+        if populated:
+            raise BundleConventionError(
+                f"advanced {framework} mode cannot auto-compose runtime plugin "
+                f"{plugin.name!r} content: " + ", ".join(populated)
+            )
+
+
+def _reject_advanced_plugin_files(bundle_root: Path, framework: str) -> None:
+    """Preserve the advanced-mode diagnostic for legacy flat plugin files."""
+
+    directory = bundle_root / "plugins"
+    if directory.is_symlink():
+        raise BundleConventionError(
+            f"plugins directory cannot be a symlink: {directory}"
+        )
+    if not directory.exists():
+        return
+    if not directory.is_dir():
+        raise BundleConventionError(f"plugins path must be a directory: {directory}")
+    for path in directory.iterdir():
+        if path.is_symlink():
+            raise BundleConventionError(
+                f"plugin resource cannot be a symlink: {path}"
+            )
+        if _is_ignored(path) or path.is_dir():
+            continue
+        raise BundleConventionError(
+            f"advanced {framework} mode does not compose filesystem resources from: "
+            "plugins/; wire them into Agent.advanced(...) in agent.py or remove them"
         )
 
 
@@ -874,12 +1174,20 @@ def _graph_string_references(graph: Graph) -> set[str]:
 
 
 def _resolve_graph_resources(
-    anchor: Path, graph: Graph, *, framework: str
+    anchor: Path,
+    graph: Graph,
+    *,
+    framework: str,
+    runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
 ) -> Graph:
     """Resolve string graph nodes from filesystem-discovered tools/subagents."""
 
     resources = _discover_folder_resources(
-        anchor.parent, framework, is_root=True, capability_scope=""
+        anchor.parent,
+        framework,
+        is_root=True,
+        capability_scope="",
+        runtime_plugins=runtime_plugins,
     )
     has_root_agent_node = _graph_contains_agent(graph)
     referenced = _graph_string_references(graph)
@@ -890,7 +1198,14 @@ def _resolve_graph_resources(
     return replace(
         graph,
         nodes={
-            name: _resolve_graph_node(value, graph.name, registry, anchor, framework)
+            name: _resolve_graph_node(
+                value,
+                graph.name,
+                registry,
+                anchor,
+                framework,
+                runtime_plugins,
+            )
             for name, value in graph.nodes.items()
         },
     )
@@ -967,6 +1282,7 @@ def _resolve_graph_node(
     registry: dict[str, Any],
     anchor: Path,
     framework: str,
+    runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
 ) -> Any:
     if isinstance(value, str):
         try:
@@ -981,13 +1297,24 @@ def _resolve_graph_node(
         return replace(
             value,
             nodes={
-                name: _resolve_graph_node(node, graph_name, registry, anchor, framework)
+                name: _resolve_graph_node(
+                    node,
+                    graph_name,
+                    registry,
+                    anchor,
+                    framework,
+                    runtime_plugins,
+                )
                 for name, node in value.nodes.items()
             },
         )
     if isinstance(value, AgentDefinition):
         return _compose_definition(
-            anchor, value, framework=framework, graph_resource_context=True
+            anchor,
+            value,
+            framework=framework,
+            graph_resource_context=True,
+            runtime_plugins=runtime_plugins,
         )
     return value
 
@@ -1000,6 +1327,7 @@ def _compose_definition(
     framework: str = "adk",
     graph_resource_context: bool = False,
     capability_scope: str = "",
+    runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
 ) -> AgentDefinition:
     """Attach only resources owned by this agent's filesystem scope."""
 
@@ -1011,6 +1339,7 @@ def _compose_definition(
         framework,
         is_root=is_root,
         capability_scope=capability_scope,
+        runtime_plugins=runtime_plugins if is_root else (),
     )
     tools = _merge_named_sources(
         "tool",
@@ -1073,24 +1402,74 @@ def _discover_folder_resources(
     *,
     is_root: bool,
     capability_scope: str,
+    runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
 ) -> _DiscoveredResources:
-    tools = _discover_tools(bundle_root / "tools")
-    subagents = _discover_subagents(
-        bundle_root / "subagents",
-        framework=framework,
-        capability_scope=capability_scope,
+    tools = _merge_named_sources(
+        "tool",
+        ("root", _discover_tools(bundle_root / "tools")),
+        *(
+            (
+                f"runtime plugin {plugin.name!r}",
+                _discover_tools(plugin.directory / "tools"),
+            )
+            for plugin in runtime_plugins
+        ),
+        identity=_tool_name,
+    )
+    subagents = _merge_named_sources(
+        "subagent",
+        (
+            "root",
+            _discover_subagents(
+                bundle_root / "subagents",
+                framework=framework,
+                capability_scope=capability_scope,
+            ),
+        ),
+        *(
+            (
+                f"runtime plugin {plugin.name!r}",
+                _discover_subagents(
+                    plugin.directory / "subagents",
+                    framework=framework,
+                    capability_scope=f"plugin__{plugin.name}",
+                ),
+            )
+            for plugin in runtime_plugins
+        ),
+        identity=_subagent_name,
     )
     discovered_mcp = _discover_mcp(
         bundle_root / "mcp", capability_scope=_mcp_scope(capability_scope)
     )
     plugins = _discover_capability_plugins(bundle_root / "plugins") if is_root else ()
     plugin_mcp = _discover_plugin_mcp(plugins)
+    runtime_plugin_mcp = tuple(
+        (
+            plugin,
+            _discover_mcp(
+                plugin.directory / "mcp",
+                capability_scope=f"plugin__{plugin.name}__mcp",
+            ),
+        )
+        for plugin in runtime_plugins
+    )
     mcp = _merge_mcp_sources(
         ("discovered", discovered_mcp),
         *((f"plugin {plugin.name!r}", clients) for plugin, clients in plugin_mcp),
+        *(
+            (f"runtime plugin {plugin.name!r}", clients)
+            for plugin, clients in runtime_plugin_mcp
+        ),
     )
     sandbox = _discover_sandbox(bundle_root / "sandbox")
-    skill_directories = _bundle_skill_directories(bundle_root, plugins)
+    skill_directories = _merge_skill_directories(
+        _bundle_skill_directories(bundle_root, plugins),
+        *(
+            _skill_directories(plugin.directory / "skills")
+            for plugin in runtime_plugins
+        ),
+    )
     _validate_framework_evals(bundle_root / "evals", framework)
     return _DiscoveredResources(
         tools=tools,
@@ -1214,6 +1593,42 @@ def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
         )
         tools.append(value)
     return tuple(tools)
+
+
+def _discover_tasks(directory: Path, application_name: str) -> tuple[CompiledTask, ...]:
+    """Load strict task exports and assign artifact-stable native names."""
+
+    tasks = []
+    for path in _resource_files(directory, kind="tasks"):
+        export_name = path.stem
+        module, value = _load_export(path, export_name)
+        definition = task_registration_for(value)
+        if definition is None:
+            raise BundleExportError(
+                f"task module {path} must export @task callable {export_name!r}"
+            )
+        if getattr(value, "__name__", None) != export_name:
+            raise BundleExportError(
+                f"task exported by {path} must be named {export_name!r}; "
+                f"got {getattr(value, '__name__', None)!r}"
+            )
+        _reject_extra_exports(
+            module,
+            path,
+            export_name,
+            kind="task",
+            predicate=lambda item: task_registration_for(item) is not None,
+        )
+        stable_name = f"harnest.{application_name}.tasks.{export_name}"
+        tasks.append(
+            CompiledTask(
+                name=stable_name,
+                source=f"tasks/{path.name}",
+                definition=definition,
+                authored=value,
+            )
+        )
+    return tuple(tasks)
 
 
 def _discover_subagents(
@@ -1369,6 +1784,111 @@ def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]
         return discover_plugins(directory)
     except PluginConventionError as exc:
         raise BundleConventionError(str(exc)) from exc
+
+
+def _discover_runtime_plugins(
+    directory: Path,
+) -> tuple[RuntimePluginDescriptor, ...]:
+    """Resolve the local plugin dependency graph before importing agent code."""
+
+    try:
+        return discover_runtime_plugins(directory)
+    except RuntimePluginConventionError as exc:
+        raise BundleConventionError(str(exc)) from exc
+
+
+def _validate_runtime_plugin_layouts(
+    plugins: Sequence[RuntimePluginDescriptor],
+) -> None:
+    """Validate secondary content roots and their declared capability surfaces."""
+
+    for plugin in plugins:
+        _validate_runtime_plugin_entries(plugin)
+        for directory, capability in _RUNTIME_PLUGIN_CONTENT_CAPABILITIES.items():
+            if _has_public_entries(
+                plugin.directory / directory,
+                kind=f"runtime plugin {plugin.name} {directory}",
+            ):
+                _require_plugin_capability(plugin, capability, directory)
+
+
+def _validate_runtime_plugin_project_set(
+    root: Path, plugins: Sequence[RuntimePluginDescriptor]
+) -> None:
+    """Match direct compiler behavior to the CLI's shared dependency policy."""
+
+    try:
+        validate_runtime_plugin_dependencies(root / "pyproject.toml", plugins)
+    except RuntimePluginConventionError as exc:
+        raise BundleConventionError(str(exc)) from exc
+
+
+def _validate_runtime_plugin_entries(plugin: RuntimePluginDescriptor) -> None:
+    """Reject roots that could masquerade as a second agent application."""
+
+    for path in sorted(plugin.directory.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            raise BundleConventionError(
+                f"runtime plugin resource cannot be a symlink: {path}"
+            )
+        if _is_ignored(path):
+            continue
+        if path.name not in _RUNTIME_PLUGIN_ENTRIES:
+            raise BundleConventionError(
+                f"unexpected runtime plugin resource: {path}"
+            )
+        expected_file = path.name in {"plugin.yaml", "plugin.py", "pyproject.toml"}
+        if expected_file != path.is_file():
+            expected = "file" if expected_file else "directory"
+            raise BundleConventionError(
+                f"runtime plugin resource must be a {expected}: {path}"
+            )
+
+
+def _require_plugin_capability(
+    plugin: RuntimePluginDescriptor, capability: str, source: str
+) -> None:
+    """Require manifest consent before compiling one privileged contribution."""
+
+    if capability not in plugin.capabilities:
+        raise BundleConventionError(
+            f"runtime plugin {plugin.name!r} must declare capability "
+            f"{capability!r} for {source}"
+        )
+
+
+def _validate_plugin_extension_capabilities(
+    plugins: Sequence[RuntimePluginDescriptor], listeners: Sequence[Any]
+) -> None:
+    """Match every plugin listener to its manifest-declared authority."""
+
+    by_name = {plugin.name: plugin for plugin in plugins}
+    for listener in listeners:
+        plugin = _listener_plugin(listener, by_name)
+        if plugin is None:
+            continue
+        capability = _RUNTIME_PLUGIN_PHASE_CAPABILITIES.get(listener.phase)
+        if capability is None:
+            raise BundleConventionError(
+                f"runtime plugin listener {listener.identity} uses unsupported "
+                f"phase {listener.phase!r}"
+            )
+        _require_plugin_capability(plugin, capability, listener.identity)
+        if listener.context_name is not None:
+            _require_plugin_capability(
+                plugin, "context.resources", listener.identity
+            )
+
+
+def _listener_plugin(
+    listener: Any, by_name: Mapping[str, RuntimePluginDescriptor]
+) -> RuntimePluginDescriptor | None:
+    """Resolve compiler-owned listener provenance without trusting callbacks."""
+
+    parts = Path(listener.relative_path).parts
+    if len(parts) < 3 or parts[0] != "plugins":
+        return None
+    return by_name.get(parts[1])
 
 
 def _discover_plugin_mcp(

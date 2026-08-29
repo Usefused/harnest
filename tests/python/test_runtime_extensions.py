@@ -11,6 +11,7 @@ from harnest.context import (
     ContextValue,
     context,
 )
+from harnest.context_session import invocation_session_context
 from harnest.neutral_runtime import (
     AgentInfo,
     InvocationRequest,
@@ -27,6 +28,7 @@ from harnest.runtime_extensions import (
     LifecycleAuthenticator,
 )
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError, ConnectionContext
+from harnest.session import InMemorySessionStore
 
 
 class FakeDriver:
@@ -136,6 +138,92 @@ def listener(phase, callback, *, name="hook", order=0, context_name=None):
 
 
 class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_context_spans_agent_hooks_and_reuses_backend_lease(self):
+        """Keep application data available without nested session acquisition."""
+
+        store = InMemorySessionStore()
+        await store.start()
+        await store.create(session_id="session-1", user_id="user-1", state={})
+        acquisitions = 0
+        original_acquire = store.acquire
+
+        @asynccontextmanager
+        async def counted_acquire(*, session_id, user_id):
+            nonlocal acquisitions
+            acquisitions += 1
+            async with original_acquire(
+                session_id=session_id, user_id=user_id
+            ) as lease:
+                yield lease
+
+        store.acquire = counted_acquire  # type: ignore[method-assign]
+
+        class SessionDriver(FakeDriver):
+            async def invoke(self, invocation):
+                async with invocation_session_context(
+                    store,
+                    framework="adk",
+                    user_id=invocation.user_id,
+                    session_id=invocation.session_id,
+                    invocation_id=invocation.invocation_id,
+                ) as lease:
+                    self.lease = lease
+                    await context.session.set("driver", True)
+                return await super().invoke(invocation)
+
+        async def before(lifecycle_context, value):
+            await context.session.set("before", lifecycle_context.invocation_id)
+            return value
+
+        async def after(lifecycle_context, result):
+            await context.session.set("after", lifecycle_context.invocation_id)
+            return result
+
+        driver = SessionDriver()
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [
+                listener("before_invoke", before, name="before"),
+                listener("after_invoke", after, name="after"),
+            ],
+            session_store=store,
+        )
+
+        await wrapped.invoke(request())
+        record = await store.get(session_id="session-1", user_id="user-1")
+
+        self.assertEqual(acquisitions, 1)
+        self.assertEqual(
+            record.application_data,
+            {"before": "invoke-1", "driver": True, "after": "invoke-1"},
+        )
+        await wrapped.close()
+
+    async def test_session_context_is_available_to_agent_error_hooks(self):
+        """Let failure handlers persist bounded recovery state before lease release."""
+
+        store = InMemorySessionStore()
+        await store.start()
+        await store.create(session_id="session-1", user_id="user-1", state={})
+        driver = FakeDriver()
+        driver.fail = True
+
+        async def on_error(_lifecycle_context, _error):
+            await context.session.set("failed", True)
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [listener("on_error", on_error, name="failed")],
+            session_store=store,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "driver failed"):
+            await wrapped.invoke(request())
+        record = await store.get(session_id="session-1", user_id="user-1")
+
+        self.assertEqual(record.application_data, {"failed": True})
+        await wrapped.close()
+
     async def test_invoke_runs_transformations_in_order_with_one_context(self):
         driver = FakeDriver()
         seen = []
@@ -178,6 +266,30 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(seen, [("before", "raw"), ("after", "invoke-1")])
+
+    async def test_lifecycle_identity_does_not_use_public_display_name(self):
+        """Keep agent routing stable when a card customizes its display name."""
+
+        driver = FakeDriver()
+        driver._info = replace(
+            driver.info,
+            id="boundary_root",
+            name="Friendly Boundary Agent",
+        )
+        seen = []
+
+        def before(lifecycle_context, invocation):
+            seen.append((lifecycle_context.agent_name, context.agent_name))
+            return lifecycle_context.next(invocation)
+
+        wrapped = ExtensionRuntimeDriver(
+            driver,
+            [listener("before_invoke", before, name="identity")],
+        )
+
+        await wrapped.invoke(request())
+
+        self.assertEqual(seen, [("boundary_root", "boundary_root")])
 
     async def test_stream_transforms_events_and_after_is_observational(self):
         driver = FakeDriver()

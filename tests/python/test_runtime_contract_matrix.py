@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from _session_store_fixture import write_session_store
 from harnest.application import CompiledApplication
 from harnest.bundle import compile_artifact
+from harnest.context import context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.lifecycle import LifecycleListener
 from harnest.neutral_runtime import (
@@ -389,13 +390,24 @@ class RuntimeCompositionContractTests(unittest.TestCase):
         listener = LifecycleListener(
             "resource", application_resource, 0, "resources.py", 1, "resource"
         )
+
+        def before(_lifecycle, value):
+            """Prove custom storage is started before lifecycle access begins."""
+
+            events.append(f"before:{context.storage('users') is store}")
+            return value
+
+        before_listener = LifecycleListener(
+            "before_invoke", before, 0, "before.py", 1, "before"
+        )
         application = CompiledApplication(
             name="root",
             framework="langgraph",
             mode="managed",
             target=object(),
-            extensions=(listener,),
+            extensions=(listener, before_listener),
             session_store=store,
+            custom_stores={"users": store},
             credential_provider=provider,
         )
         with patch(
@@ -403,8 +415,8 @@ class RuntimeCompositionContractTests(unittest.TestCase):
         ):
             runtime = _runtime_driver(application)
 
-        self.assertIsInstance(runtime, ExtensionRuntimeDriver)
-        self.assertIsInstance(runtime._driver, StorageRuntimeDriver)
+        self.assertIsInstance(runtime, StorageRuntimeDriver)
+        self.assertIsInstance(runtime._driver, ExtensionRuntimeDriver)
         self.assertIs(runtime._driver._driver, backend)
         request = InvocationRequest(
             input="hello",
@@ -414,21 +426,33 @@ class RuntimeCompositionContractTests(unittest.TestCase):
             metadata={},
             state_delta={},
         )
-        result = asyncio.run(runtime.invoke(request))
-        asyncio.run(runtime.close())
+        async def exercise_runtime():
+            """Create the session that real transports establish before invocation."""
+
+            await store.create(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                state={},
+            )
+            result = await runtime.invoke(request)
+            await runtime.close()
+            return result
+
+        result = asyncio.run(exercise_runtime())
 
         self.assertEqual(result.text, "ok")
         self.assertEqual(
             events,
             [
+                "storage:start",
                 "credentials:start",
                 "resource:start",
-                "storage:start",
+                "before:True",
                 "backend:invoke",
                 "backend:close",
-                "storage:close",
                 "resource:close",
                 "credentials:close",
+                "storage:close",
             ],
         )
 

@@ -5,6 +5,7 @@ import unittest
 import uuid
 
 from harnest.checkpoint import CheckpointRecord, RunScope
+from harnest.continuation import ContinuationProvider
 from harnest.store import PostgresStore, RedisStore
 
 
@@ -40,10 +41,19 @@ class _LiveStoreContract:
                 session_id=session_id, user_id=user_id
             ) as lease:
                 await lease.patch_state({"count": 2})
+                await lease.replace_application_data(
+                    {"private-note": {"status": "ready"}}
+                )
+                # Native framework replacement must operate on its lane only.
+                await lease.replace_state({"count": 3})
             session = await self.store.get(
                 session_id=session_id, user_id=user_id
             )
-            self.assertEqual(session.state["count"], 2)
+            self.assertEqual(session.state["count"], 3)
+            self.assertEqual(
+                session.application_data,
+                {"private-note": {"status": "ready"}},
+            )
             await self.store.begin_run(
                 application_id="integration",
                 user_id=user_id,
@@ -56,6 +66,39 @@ class _LiveStoreContract:
                 _record(run_id), scope=scope, expected_revision=None
             )
             self.assertEqual(stored.payload, b"{}")
+            provider = ContinuationProvider(
+                self.store,
+                application_id="integration",
+                provider="fake-worker",
+            )
+            suspended = await provider.suspend(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                external_id=f"external-{token}",
+                capability="workflow.run",
+                schema_id="integration-result/v1",
+            )
+            self.assertEqual(
+                (await provider.list_pending())[0].record, suspended
+            )
+            completed = await provider.complete(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                external_id=f"external-{token}",
+                schema_id="integration-result/v1",
+                result={"ok": True},
+                validate=lambda value: value,
+            )
+            claimed = await provider.claim(
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                continuation_id=completed.continuation_id,
+                expected_revision=completed.revision,
+            )
+            self.assertEqual(claimed.result, {"ok": True})
             await self.store.transition(
                 scope=scope,
                 expected_status="running",
@@ -64,6 +107,15 @@ class _LiveStoreContract:
             self.assertEqual(
                 (await self.store.get_run(scope=scope)).status,
                 "completed",
+            )
+            await self.store.delete_run(scope=scope)
+            self.assertIsNone(
+                await provider.get(
+                    user_id=user_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    continuation_id=claimed.continuation_id,
+                )
             )
         finally:
             await self.store.delete_run(

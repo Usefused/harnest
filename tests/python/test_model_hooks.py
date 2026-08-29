@@ -2,6 +2,7 @@ import unittest
 import asyncio
 from dataclasses import replace
 
+from harnest.context import activate_context, context, create_agent_context
 from harnest.lifecycle import (
     LifecycleListener,
     ModelCallRequest,
@@ -30,6 +31,40 @@ def listener(phase, callback, *, order=0, name="hook"):
 
 
 class ModelLifecyclePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_transitions_replace_and_finish_model_flow(self):
+        seen = []
+
+        def before(context, request):
+            message = replace(request.messages[0], text="checked")
+            return context.next(replace(request, messages=(message,)))
+
+        def after_first(context, response):
+            return context.finish(replace(response, text="finished"))
+
+        def after_late(context, response):
+            seen.append(response.text)
+            return context.next()
+
+        pipeline = ModelLifecyclePipeline(
+            [
+                listener("before_model", before),
+                listener("after_model", after_first),
+                listener("after_model", after_late, order=10),
+            ],
+            framework="adk",
+        )
+
+        async def handler(request):
+            self.assertEqual(request.messages[0].text, "checked")
+            return ModelCallResponse("provider")
+
+        result = await pipeline.run(
+            ModelCallRequest("model", (ModelMessage("user", "raw"),)), handler
+        )
+
+        self.assertEqual(result.text, "finished")
+        self.assertEqual(seen, [])
+
     async def test_ordered_request_mutation_and_response_transformation(self):
         seen = []
 
@@ -350,6 +385,57 @@ class ModelLifecyclePipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item.agent_name for item in seen], ["researcher", "writer"])
         self.assertEqual([item.user_id for item in seen], ["owner", "owner"])
+
+    def test_langgraph_model_callback_scopes_general_context_to_its_agent(self):
+        """Keep context resources shared while exposing the executing child."""
+
+        seen = []
+
+        def before(lifecycle_context, _request):
+            seen.append(
+                (
+                    lifecycle_context.agent_name,
+                    context.agent_name,
+                    context.parent_agent_name,
+                    context.depth,
+                    context.resource("memory"),
+                )
+            )
+
+        extension = portable_model_extension(
+            (listener("before_model", before),), framework="langgraph"
+        )
+        researcher = bind_model_extension(extension, agent_name="researcher")
+        request = SimpleNamespace(
+            model=SimpleNamespace(model="openai/test"),
+            messages=[],
+            override=lambda **values: SimpleNamespace(**values),
+        )
+        response = SimpleNamespace(result=[])
+        invocation = LifecycleContext(
+            framework="langgraph",
+            agent_name="root",
+            invocation_id="invoke-1",
+            user_id="owner",
+            session_id="session-1",
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="root",
+            invocation_id="invoke-1",
+            user_id="owner",
+            session_id="session-1",
+            metadata={},
+            resources={"memory": "shared"},
+        )
+
+        with activate_context(active), model_invocation_scope(invocation):
+            researcher.wrap_model_call(request, lambda _request: response)
+
+        self.assertEqual(
+            seen,
+            [("researcher", "researcher", "root", 1, "shared")],
+        )
 
 
 async def _response(value):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from typing import Any
 
 from .approval import (
@@ -26,6 +26,8 @@ from .runtime_contract import (
     RuntimeDriver,
     RuntimeEvent,
 )
+from .external_continuation import PendingExternalContinuation
+from .durable import NativeDurableSuspended
 
 
 def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
@@ -150,6 +152,32 @@ def client_requires_action_payload(
     }
 
 
+def external_in_progress_payload(
+    pending: PendingExternalContinuation,
+    *,
+    response_id: str,
+    session_id: str,
+    sequence: int,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the opaque external-wait payload shared by every transport."""
+
+    payload: dict[str, Any] = {
+        "type": "response.in_progress",
+        "sequence": sequence,
+        "responseId": response_id,
+        "sessionId": session_id,
+        "status": "in_progress",
+        "pendingAction": pending.public(),
+        "outputText": "",
+        "output": [],
+        "metadata": {},
+    }
+    if request_id is not None:
+        payload["requestId"] = request_id
+    return payload
+
+
 def final_event_result(events: Sequence[RuntimeEvent]) -> Any:
     """Read the portable result carried by the final output event."""
 
@@ -198,8 +226,9 @@ def start_approval_run(
     request: InvocationRequest,
     *,
     stream: bool,
+    external_continuations: Any | None = None,
 ) -> ApprovalRun:
-    """Start a resumable invocation under shared approval and client-tool state."""
+    """Start a resumable invocation under every process-local wait authority."""
 
     run = store.create_run(
         user_id=request.user_id,
@@ -215,7 +244,12 @@ def start_approval_run(
         try:
             # Client tools wrap approvals because a resumed approved tool may
             # itself suspend on a browser- or application-owned client tool.
-            with client_tool_execution(execution):
+            continuation_scope = (
+                nullcontext()
+                if external_continuations is None
+                else external_continuations.execution(run, request)
+            )
+            with continuation_scope, client_tool_execution(execution):
                 with approval_execution(
                     ApprovalExecution(
                         user_id=request.user_id,
@@ -230,6 +264,23 @@ def start_approval_run(
                         if stream
                         else await driver.invoke(request)
                     )
+        except NativeDurableSuspended:
+            # The framework adapter raises only after its native checkpoint is
+            # committed. Arming here closes the callback-before-checkpoint race
+            # without retaining the suspended Python coroutine.
+            if external_continuations is None:
+                run.notifications.put_nowait(
+                    ("error", RuntimeError("durable suspension is unavailable"))
+                )
+            else:
+                try:
+                    await external_continuations.arm(
+                        response_id=request.invocation_id,
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                    )
+                except BaseException as exc:
+                    run.notifications.put_nowait(("error", exc))
         except BaseException as exc:
             run.notifications.put_nowait(("error", exc))
         else:

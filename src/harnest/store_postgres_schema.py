@@ -1,6 +1,6 @@
 """PostgreSQL schema owned by the built-in Harnest store."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 SCHEMA_LOCK = 489_867_841_435_466_307
 
 SCHEMA_SQL = """
@@ -13,10 +13,13 @@ CREATE TABLE IF NOT EXISTS harnest_sessions (
     user_id text NOT NULL,
     session_id text NOT NULL,
     state jsonb NOT NULL,
+    application_data jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, session_id)
 );
+ALTER TABLE harnest_sessions
+ADD COLUMN IF NOT EXISTS application_data jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE TABLE IF NOT EXISTS harnest_runs (
     run_id text PRIMARY KEY,
     application_id text NOT NULL,
@@ -63,9 +66,41 @@ CREATE TABLE IF NOT EXISTS harnest_checkpoint_writes (
     PRIMARY KEY (run_id, checkpoint_id, task_id, channel),
     FOREIGN KEY (run_id) REFERENCES harnest_runs(run_id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS harnest_continuations (
+    continuation_id text PRIMARY KEY,
+    run_id text NOT NULL REFERENCES harnest_runs(run_id) ON DELETE CASCADE,
+    application_id text NOT NULL,
+    user_id text NOT NULL,
+    session_id text NOT NULL,
+    provider text NOT NULL,
+    capability text NOT NULL,
+    schema_id text NOT NULL,
+    resume jsonb,
+    external_id text NOT NULL,
+    external_key text NOT NULL,
+    status text NOT NULL CHECK (
+        status IN ('pending', 'completed', 'failed', 'claimed')
+    ),
+    revision integer NOT NULL DEFAULT 0,
+    ready boolean NOT NULL DEFAULT false,
+    result jsonb,
+    failure jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (application_id, provider, external_key)
+);
+ALTER TABLE harnest_continuations
+ADD COLUMN IF NOT EXISTS resume jsonb;
+ALTER TABLE harnest_continuations
+ADD COLUMN IF NOT EXISTS ready boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS harnest_pending_continuations
+ON harnest_continuations (application_id, provider, continuation_id)
+WHERE status='pending';
 INSERT INTO harnest_schema_migrations(component, version)
-VALUES ('store', 1)
-ON CONFLICT (component) DO NOTHING;
+VALUES ('store', 4)
+ON CONFLICT (component) DO UPDATE
+SET version=EXCLUDED.version, applied_at=now()
+WHERE harnest_schema_migrations.version < EXCLUDED.version;
 """
 
 __all__ = ["SCHEMA_LOCK", "SCHEMA_SQL", "SCHEMA_VERSION"]

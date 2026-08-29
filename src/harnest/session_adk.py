@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Mapping
 from urllib.parse import urlparse
 import uuid
 
+from .context_session import invocation_session_context
 from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, SessionStore
 
@@ -32,6 +33,12 @@ def create_adk_session_service(store: SessionStore) -> Any:
         raise RuntimeError("Google ADK is required to adapt a SessionStore") from exc
 
     class HarnestADKSessionService(BaseSessionService):
+        @property
+        def session_context_store(self) -> SessionStore:
+            """Expose only the portable store needed by the host invocation scope."""
+
+            return store
+
         async def create_session(
             self,
             *,
@@ -89,6 +96,24 @@ def create_adk_session_service(store: SessionStore) -> Any:
             )
             return [_adk_session(item, app_name) for item in records]
 
+        async def get_session_record(
+            self, *, user_id: str, session_id: str
+        ) -> SessionRecord | None:
+            """Expose the complete neutral record only to Harnest's adapter."""
+
+            return await _record(store, user_id=user_id, session_id=session_id)
+
+        async def list_session_records_page(
+            self,
+            *,
+            user_id: str,
+            after: str | None,
+            limit: int | None,
+        ) -> Any:
+            """Read one set-based page without N+1 application-data lookups."""
+
+            return await store.list(user_id=user_id, after=after, limit=limit)
+
         async def delete_session(
             self, *, app_name: str, user_id: str, session_id: str
         ) -> None:
@@ -115,13 +140,24 @@ def create_adk_session_service(store: SessionStore) -> Any:
 
         @asynccontextmanager
         async def execution_lease(
-            self, *, user_id: str, session_id: str
+            self,
+            *,
+            user_id: str,
+            session_id: str,
+            invocation_id: str | None = None,
         ) -> AsyncIterator[None]:
-            async with store.acquire(
-                session_id=session_id, user_id=user_id
+            async with invocation_session_context(
+                store,
+                framework="adk",
+                user_id=user_id,
+                session_id=session_id,
+                invocation_id=invocation_id or "adk-native",
             ) as lease:
+                assert lease is not None
                 token = _ACTIVE_LEASE.set((user_id, session_id, lease))
                 try:
+                    # ADK event persistence and the portable facade share one
+                    # authority, avoiding a second distributed lock acquisition.
                     yield
                 finally:
                     _ACTIVE_LEASE.reset(token)

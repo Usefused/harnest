@@ -37,10 +37,12 @@ and extended examples into that skill's linked `references/` files.
 | Add one callable capability | Owning `tools/<name>.py` | Export one `@tool` callable named exactly `<name>`. |
 | Add model-facing operational guidance | Owning `skills/<skill>/SKILL.md` | Give it distinct frontmatter name/description and put supporting files below that skill. |
 | Connect one MCP server | Owning `mcp/<name>.py` | Export zero-argument `client()` returning `MCPClient`; the filename supplies identity and ordinary Python reads environment/secrets. |
-| Bundle reusable MCP access plus usage guidance | Root `plugins/<plugin>/mcp/` and `plugins/<plugin>/skills/` | A populated plugin needs at least one MCP client and one skill; it never contains agents or lifecycle code. |
+| Bundle reusable MCP access plus usage guidance | Root manifest-less `plugins/<name>/mcp/` and `plugins/<name>/skills/` | This is an agent-plugin. It needs at least one MCP client and one skill and never contains agents or lifecycle code. |
+| Add same-process SDK behavior, lifecycle, or declared managed content | Root `plugins/<name>/plugin.yaml`, `plugin.py`, and capability folders | This is a runtime plugin. Export `plugin`, declare dependencies/capabilities, and consume its public API below `harnest.plugins.<name>`. |
 | Add a simple subagent | Owning `subagents/<name>.py` | Export managed `Agent` as `<name>` with an explicit instruction, or export `Agent.advanced(...)` around a fully composed native agent of the same name. |
 | Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Managed agents only: add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. Advanced agents compose capabilities natively in the flat-file form. |
 | Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use one `@lifecycle.output_policy` factory only when public subagent narration should differ from the safe default. |
+| Add session, checkpoint, asset, or custom storage | Root `extensions/**/*.py` | Use distributed `@lifecycle.storage.sessions`, `.checkpoints`, `.assets("name")`, or `.custom("name")` factories; shared factories may stack these decorators. |
 | Export traces or logs directly to one or more destinations | Root `extensions/telemetry.py` | Add one repeatable `@lifecycle.telemetry_exporter` runtime factory per destination; return `TelemetryExporter` with `traces`, `logs`, or both. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
 | Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
@@ -78,13 +80,29 @@ and extended examples into that skill's linked `references/` files.
   `@lifecycle.resource` for application startup and shutdown. Consumers in
   nodes, tools, listeners, and subagents call `context.resource("name")`;
   lifecycle ownership alone does not expose the value.
+- Keep framework authorities private: agent code uses `context.session` for
+  non-model-visible application data, `context.assets("name")` for scoped media,
+  and `context.storage("name")` only for explicitly named custom repositories.
+  `context.credentials` and `context.mcp` are separate non-enumerable
+  capabilities; managed MCP access fails closed unless the runtime can reuse a
+  fully governed tool dispatcher.
+- Managed mode also discovers runtime plugins, starts them in dependency order,
+  and composes their declared content and extensions automatically. Do not
+  import a plugin's extension or register its discovered content manually;
+  import only its intended public Python API below `harnest.plugins.<name>`.
 
 ## Treat advanced mode differently
 
 Advanced mode owns all framework wiring in `agent.py`. Harnest deliberately
-rejects populated managed-discovery folders (`tools/`, `subagents/`, `mcp/`,
-`plugins/`, `extensions/`, `sandbox/`, `skills/`, and `evals/`) rather than
-silently ignoring them.
+rejects populated managed-discovery folders rather than silently attaching
+their content to an opaque native target. Manifest-less agent-plugins are
+managed content, not a shortcut around that boundary.
+
+Runtime plugins may still participate where Harnest owns the application
+boundary, such as startup/shutdown and neutral HTTP, context, storage,
+credentials, session, asset, or portable invocation lifecycle. Their manifest
+does not make direct native model, tool, MCP, graph, checkpoint, or subagent
+execution managed; wire those framework-owned paths explicitly.
 
 When editing an advanced project:
 

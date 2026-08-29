@@ -121,8 +121,13 @@ _ACTIVE_PROVIDER: ContextVar[_ProviderBinding | None] = ContextVar(
 )
 
 
-class _CredentialAccess:
-    """Resolve credentials from the provider bound to the current invocation."""
+class CredentialContext:
+    """Private invocation capability for resolving outbound credentials.
+
+    The context deliberately exposes no provider, principal, or resource-map
+    access.  Keeping this as a dedicated type lets stage contexts share the
+    invocation lifetime without making credential authority enumerable.
+    """
 
     async def resolve(
         self, audience: str, scopes: Iterable[str] = ()
@@ -158,7 +163,9 @@ class _CredentialAccess:
         return result
 
 
-credentials = _CredentialAccess()
+# This stateless facade is safe to share because provider identity and
+# revocation remain in the private invocation binding, never on the object.
+credentials = CredentialContext()
 
 
 def _credential_principal(invocation_user_id: str) -> AuthPrincipal:
@@ -251,6 +258,7 @@ def _require_text(value: Any, name: str) -> None:
 
 __all__ = [
     "Credential",
+    "CredentialContext",
     "CredentialError",
     "CredentialProvider",
     "CredentialProviderError",

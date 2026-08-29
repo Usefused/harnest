@@ -32,6 +32,7 @@ schemas:
 	$(PYTHON) -m json.tool schemas/agent-card.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/deployment-plan.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/plugin.schema.json >/dev/null
 
 plan:
 	PYTHONPATH=src $(PYTHON) -m harnest.cli plan examples/self-serve/orchestrator.py

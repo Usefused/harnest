@@ -18,6 +18,7 @@ from .client_tool import InMemoryClientToolStore, PendingClientTool
 from .runtime_continuation import (
     client_requires_action_payload,
     completed_payload,
+    external_in_progress_payload,
     json_client_requires_action,
     json_requires_action,
     next_non_event,
@@ -176,6 +177,7 @@ async def sse_approval_run(
     response_id: str,
     session_id: str,
     metadata: Mapping[str, Any],
+    external_continuations: Any | None = None,
 ) -> AsyncIterator[str]:
     """Stream one invocation through shared approval and client-tool state."""
 
@@ -191,7 +193,14 @@ async def sse_approval_run(
         },
     )
     sequence += 1
-    run = start_approval_run(store, client_tools, driver, request, stream=True)
+    run = start_approval_run(
+        store,
+        client_tools,
+        driver,
+        request,
+        stream=True,
+        external_continuations=external_continuations,
+    )
     deadline = asyncio.get_running_loop().time() + request_timeout
     try:
         async with semaphore:
@@ -294,6 +303,17 @@ async def _sse_run_frames(
                     response_id=response_id,
                     session_id=session_id,
                     sequence=sequence + 1,
+                ),
+            )
+            return
+        if kind == "external_continuation":
+            yield sse(
+                "response.in_progress",
+                external_in_progress_payload(
+                    value,
+                    response_id=response_id,
+                    session_id=session_id,
+                    sequence=sequence,
                 ),
             )
             return

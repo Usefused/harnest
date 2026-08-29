@@ -64,8 +64,12 @@ class AgentContext:
     user_id: str
     session_id: str
     metadata: Mapping[str, Any]
+    parent_agent_name: str | None
+    depth: int
     _resources: Mapping[str, Any] = field(repr=False)
     _asset_stores: Mapping[str, Any] = field(repr=False)
+    _custom_stores: Mapping[str, Any] = field(repr=False)
+    _plugin_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
@@ -84,6 +88,12 @@ class AgentContext:
                 f"got {type(value).__name__}"
             )
         return value
+
+    @property
+    def is_root(self) -> bool:
+        """Report whether this scope represents the compiled root agent."""
+
+        return self.depth == 0
 
     def _require_active(self) -> None:
         if not self._lifetime.active:
@@ -160,6 +170,42 @@ class _ContextAccess:
         )
 
     @property
+    def session(self) -> Any:
+        """Return application data for the current framework-owned session."""
+
+        self.current()
+        from .context_session import session
+
+        return session
+
+    @property
+    def storage(self) -> Any:
+        """Return only explicitly named custom storage capabilities."""
+
+        self.current()
+        from .context_storage import storage
+
+        return storage
+
+    @property
+    def mcp(self) -> Any:
+        """Return governed MCP access when the runtime installed a dispatcher."""
+
+        self.current()
+        from .mcp_context import mcp
+
+        return mcp
+
+    @property
+    def plugins(self) -> Any:
+        """Return non-enumerable same-process plugin capabilities."""
+
+        self.current()
+        from .plugin_runtime_context import plugins
+
+        return plugins
+
+    @property
     def framework(self) -> str:
         return self.current().framework
 
@@ -183,6 +229,18 @@ class _ContextAccess:
     def metadata(self) -> Mapping[str, Any]:
         return self.current().metadata
 
+    @property
+    def parent_agent_name(self) -> str | None:
+        return self.current().parent_agent_name
+
+    @property
+    def depth(self) -> int:
+        return self.current().depth
+
+    @property
+    def is_root(self) -> bool:
+        return self.current().is_root
+
 
 def registration_for(function: Any) -> ContextRegistration | None:
     """Return context metadata without treating imported aliases as providers."""
@@ -201,12 +259,19 @@ def create_agent_context(
     metadata: Mapping[str, Any],
     resources: Mapping[str, Any],
     asset_stores: Mapping[str, Any] | None = None,
+    custom_stores: Mapping[str, Any] | None = None,
+    plugin_bindings: Mapping[str, Any] | None = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
 
     for name in resources:
         _validate_name(name)
     registry = dict(resources)
+    from .plugin_runtime_context import validate_plugin_bindings
+
+    plugins = validate_plugin_bindings(
+        {} if plugin_bindings is None else plugin_bindings
+    )
     return AgentContext(
         framework=framework,
         agent_name=agent_name,
@@ -214,10 +279,55 @@ def create_agent_context(
         user_id=user_id,
         session_id=session_id,
         metadata=MappingProxyType(dict(metadata)),
+        parent_agent_name=None,
+        depth=0,
         _resources=MappingProxyType(registry),
         _asset_stores=MappingProxyType(dict(asset_stores or {})),
+        _custom_stores=MappingProxyType(dict(custom_stores or {})),
+        _plugin_bindings=plugins,
         _lifetime=_ContextLifetime(),
     )
+
+
+def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentContext:
+    """Create a child view that shares only its parent's revocable capabilities."""
+
+    active._require_active()
+    if not isinstance(agent_name, str) or not agent_name.strip():
+        raise ValueError("derived agent_name must be a non-empty string")
+    return AgentContext(
+        framework=active.framework,
+        agent_name=agent_name,
+        invocation_id=active.invocation_id,
+        user_id=active.user_id,
+        session_id=active.session_id,
+        metadata=active.metadata,
+        parent_agent_name=active.agent_name,
+        depth=active.depth + 1,
+        _resources=active._resources,
+        _asset_stores=active._asset_stores,
+        _custom_stores=active._custom_stores,
+        _plugin_bindings=active._plugin_bindings,
+        _lifetime=active._lifetime,
+    )
+
+
+@contextmanager
+def activate_agent_scope(agent_name: str | None) -> Iterator[AgentContext | None]:
+    """Narrow managed identity to the framework component currently executing."""
+
+    active = _ACTIVE_CONTEXT.get()
+    if active is None or agent_name is None or active.agent_name == agent_name:
+        yield active
+        return
+    derived = derive_agent_context(active, agent_name=agent_name)
+    token = _ACTIVE_CONTEXT.set(derived)
+    try:
+        yield derived
+    finally:
+        # Derived contexts share the root lifetime; only the invocation owner
+        # may revoke that authority after all nested callbacks have completed.
+        _ACTIVE_CONTEXT.reset(token)
 
 
 def bind_resource(active: AgentContext, name: str, value: Any) -> None:
@@ -239,6 +349,9 @@ def revoke_context(active: AgentContext) -> None:
     """Invalidate copied task contexts when their owning invocation finishes."""
 
     active._lifetime.active = False
+    from .plugin_runtime_context import revoke_plugin_bindings
+
+    revoke_plugin_bindings(active._plugin_bindings)
 
 
 @contextmanager
@@ -248,7 +361,10 @@ def activate_context(active: AgentContext) -> Iterator[None]:
     active._require_active()
     token = _ACTIVE_CONTEXT.set(active)
     try:
-        yield
+        from .plugin_runtime_context import activate_plugin_bindings
+
+        with activate_plugin_bindings(active._plugin_bindings):
+            yield
     finally:
         _ACTIVE_CONTEXT.reset(token)
 
@@ -268,5 +384,7 @@ __all__ = [
     "ContextRegistration",
     "ContextResourceError",
     "ContextUnavailableError",
+    "activate_agent_scope",
     "context",
+    "derive_agent_context",
 ]

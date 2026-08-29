@@ -15,6 +15,7 @@ from .approval import ApprovalRun, InMemoryApprovalStore
 from .client_tool import ClientToolError, InMemoryClientToolStore
 from .runtime_continuation import (
     completed_payload,
+    external_in_progress_payload,
     next_run_boundary,
     requires_action_payload,
     start_approval_run,
@@ -69,24 +70,15 @@ async def _consume_live_run(
                 await websocket.send_json(normalized[1])
                 state.sequence += 1
             continue
-        if kind == "approval":
-            await websocket.send_json(
-                approval_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence,
-                    request_id=request_id,
-                )
-            )
-            await websocket.send_json(
-                requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence + 1,
-                    request_id=request_id,
-                )
+        if kind in {"approval", "external_continuation"}:
+            await _send_live_suspension(
+                websocket,
+                kind,
+                value,
+                response_id=response_id,
+                session_id=session_id,
+                sequence=state.sequence,
+                request_id=request_id,
             )
             return None
         if kind == "client_tool":
@@ -116,6 +108,49 @@ async def _consume_live_run(
         if kind == "result":
             return value
         raise RuntimeError("unexpected approval run notification")
+
+
+async def _send_live_suspension(
+    websocket: Any,
+    kind: str,
+    value: Any,
+    *,
+    response_id: str,
+    session_id: str,
+    sequence: int,
+    request_id: str | None,
+) -> None:
+    """Render terminal live boundaries while keeping the consume loop bounded."""
+
+    if kind == "external_continuation":
+        await websocket.send_json(
+            external_in_progress_payload(
+                value,
+                response_id=response_id,
+                session_id=session_id,
+                sequence=sequence,
+                request_id=request_id,
+            )
+        )
+        return
+    await websocket.send_json(
+        approval_payload(
+            value,
+            response_id=response_id,
+            session_id=session_id,
+            sequence=sequence,
+            request_id=request_id,
+        )
+    )
+    await websocket.send_json(
+        requires_action_payload(
+            value,
+            response_id=response_id,
+            session_id=session_id,
+            sequence=sequence + 1,
+            request_id=request_id,
+        )
+    )
 
 
 def _live_client_tool_result(frame: Any, request_id: str) -> Any:
@@ -207,6 +242,7 @@ async def serve_live_frame(
     driver: RuntimeDriver,
     approval_store: InMemoryApprovalStore,
     client_tool_store: InMemoryClientToolStore,
+    external_continuations: Any | None = None,
     request_timeout: float,
 ) -> None:
     """Execute one validated live request and preserve continuation semantics."""
@@ -234,7 +270,12 @@ async def serve_live_frame(
     )
     state = LiveStreamState()
     approval_run = start_approval_run(
-        approval_store, client_tool_store, driver, run, stream=True
+        approval_store,
+        client_tool_store,
+        driver,
+        run,
+        stream=True,
+        external_continuations=external_continuations,
     )
     deadline = asyncio.get_running_loop().time() + request_timeout
     try:

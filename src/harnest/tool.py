@@ -26,7 +26,10 @@ def tool(function: F) -> F: ...
 
 @overload
 def tool(
-    *, description: str | None = None, output_schema: PydanticModel | None = None
+    *,
+    description: str | None = None,
+    output_schema: PydanticModel | None = None,
+    durable: bool = False,
 ) -> Callable[[F], F]: ...
 
 
@@ -35,14 +38,19 @@ def tool(
     *,
     description: str | None = None,
     output_schema: PydanticModel | None = None,
+    durable: bool = False,
 ):
     """Mark a typed Python function as a managed Harnest tool.
 
     Both managed backends wrap callables natively. This decorator preserves the
     function's typed signature, checks that the model receives a description,
     validates an optional Pydantic result, and installs declared execution
-    policy before backend lowering.
+    policy before backend lowering. Durable tools cross a framework-native
+    suspension boundary and therefore must be asynchronous.
     """
+
+    if type(durable) is not bool:
+        raise TypeError("tool durable must be a boolean")
 
     configured_schema = validate_output_schema(
         output_schema, field_name="tool output_schema"
@@ -50,17 +58,24 @@ def tool(
 
     def decorate(fn: F) -> F:
         _validate_tool_authoring(fn, description)
+        if durable and not inspect.iscoroutinefunction(fn):
+            raise TypeError("durable tools must be async functions")
         schema = configured_schema or callable_output_schema(fn)
         _validate_stored_tool(fn, schema)
         wrapped = _validated_tool(fn, schema) if schema is not None else fn
         setattr(wrapped, "__harnest_tool__", True)
+        setattr(wrapped, "__harnest_durable_tool__", durable)
         if schema is not None:
             setattr(wrapped, "__harnest_output_schema__", schema)
         # Approval may be written above or below @tool. Delaying the wrapper
         # choice until both markers are present keeps both natural orders safe.
         from .approval import wrap_approved_tool
+        from .tool_lifecycle import wrap_lifecycle_tool
 
-        return wrap_approved_tool(wrapped)
+        # The lifecycle wrapper stays outside approval and validation so policy
+        # can short-circuit harmlessly, while every executed side effect still
+        # crosses the existing approval and schema boundaries.
+        return wrap_lifecycle_tool(wrap_approved_tool(wrapped))
 
     return decorate(function) if function is not None else decorate
 

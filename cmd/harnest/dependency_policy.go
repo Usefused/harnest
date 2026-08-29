@@ -31,16 +31,49 @@ func validateAgentDependencyPolicy(bundle engine.Bundle) error {
 	if err != nil {
 		return err
 	}
-	for _, requirement := range authoredDependencyRequirements(document) {
-		name := normalizedRequirementName(requirement)
-		if _, exists := owned[name]; exists {
-			return fmt.Errorf(
-				"pyproject.toml must not declare compiler-owned framework package %q; upgrade Harnest to change framework versions",
-				name,
-			)
+	if err := rejectCompilerOwnedRequirements(
+		authoredDependencyRequirements(document), "pyproject.toml", owned,
+	); err != nil {
+		return err
+	}
+	plan, err := inspectRuntimeDependencyPlan(bundle)
+	if err != nil {
+		return err
+	}
+	for _, project := range plan.ProjectFiles[1:] {
+		requirements, projectErr := projectRuntimeRequirements(project, "runtime plugin")
+		if projectErr != nil {
+			return projectErr
+		}
+		if err := rejectCompilerOwnedRequirements(requirements, project, owned); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// rejectCompilerOwnedRequirements applies one package-ownership policy per project.
+func rejectCompilerOwnedRequirements(
+	requirements []string, source string, owned map[string]struct{},
+) error {
+	for _, requirement := range requirements {
+		if err := rejectCompilerOwnedRequirement(requirement, source, owned); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectCompilerOwnedRequirement keeps one diagnostic shared by all projects.
+func rejectCompilerOwnedRequirement(requirement, source string, owned map[string]struct{}) error {
+	name := normalizedRequirementName(requirement)
+	if _, exists := owned[name]; !exists {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s must not declare compiler-owned framework package %q; upgrade Harnest to change framework versions",
+		source, name,
+	)
 }
 
 func compilerOwnedDistributions(selectedFramework string) (map[string]struct{}, error) {

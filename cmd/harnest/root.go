@@ -23,11 +23,11 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     agent-card.yaml      discovery metadata and capabilities
     agent.py             root Agent with compiler-owned imports
     instructions.md      root instructions
-    pyproject.toml       locked agent and framework dependencies
+    pyproject.toml       one dependency set for the agent and runtime plugins
     lib/                 reusable Python helpers imported as harnest.lib.*
     models/              Pydantic contracts imported as harnest.models.*
     tools/               discovered Python tools
-    plugins/             reusable MCP-client-and-skill capability bundles
+    plugins/             runtime plugins or manifest-less MCP+skill agent-plugins
     extensions/          portable lifecycle plus framework-specific integration
     subagents/           discovered Agent definitions
     mcp/                 MCPClient connections to external MCP servers
@@ -54,6 +54,8 @@ Typical workflow:
 
 Released compile, test, and serve commands use an isolated environment derived
 from config.yaml, pyproject.toml, uv.lock, and the embedded Harnest wheel.
+Runtime plugins declare plugin.yaml kind RuntimePlugin, export plugin from
+plugin.py, and share that interpreter; their module is harnest.plugins.<name>.
 CLI Python is selected from --python, HARNEST_PYTHON, the private Harnest
 runtime, or python3 on PATH.
 

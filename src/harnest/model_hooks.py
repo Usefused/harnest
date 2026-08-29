@@ -15,6 +15,8 @@ from .lifecycle import (
     ModelLifecycleContext,
     ModelMessage,
 )
+from .lifecycle_transition import Finish, Next, UNCHANGED
+from .context import activate_agent_scope
 
 
 class ModelLifecycleError(TypeError):
@@ -135,7 +137,9 @@ class ModelLifecyclePipeline:
         current = response
         for listener in self._phase("after_model"):
             value = await _resolve(listener.callback(context, current))
-            current = _after_value(listener, current, value)
+            current, finished = _after_value(listener, current, value)
+            if finished:
+                break
         return current
 
     def _after_sync(
@@ -144,7 +148,9 @@ class ModelLifecyclePipeline:
         current = response
         for listener in self._phase("after_model"):
             value = _sync(listener.callback(context, current), listener)
-            current = _after_value(listener, current, value)
+            current, finished = _after_value(listener, current, value)
+            if finished:
+                break
         return current
 
     async def _notify(
@@ -195,6 +201,22 @@ def bind_model_extension(extension: Any, *, agent_name: str) -> Any:
 def _before_value(
     listener: LifecycleListener, current: ModelCallRequest, value: Any
 ) -> tuple[ModelCallRequest, ModelCallResponse | None]:
+    if isinstance(value, Finish):
+        if isinstance(value.result, ModelCallResponse):
+            return current, value.result
+        raise ModelLifecycleError(
+            f"model listener {listener.identity} must finish with ModelCallResponse"
+        )
+    if isinstance(value, Next):
+        if value.value is UNCHANGED:
+            return current, None
+        if isinstance(value.value, ModelCallRequest):
+            return value.value, None
+        raise ModelLifecycleError(
+            f"model listener {listener.identity} must continue with ModelCallRequest"
+        )
+    # Existing decorators keep their documented return contract while new
+    # lifecycle namespaces can require explicit transitions after migration.
     if value is None:
         return current, None
     if isinstance(value, ModelCallRequest):
@@ -209,11 +231,25 @@ def _before_value(
 
 def _after_value(
     listener: LifecycleListener, current: ModelCallResponse, value: Any
-) -> ModelCallResponse:
+) -> tuple[ModelCallResponse, bool]:
+    if isinstance(value, Finish):
+        if isinstance(value.result, ModelCallResponse):
+            return value.result, True
+        raise ModelLifecycleError(
+            f"model listener {listener.identity} must finish with ModelCallResponse"
+        )
+    if isinstance(value, Next):
+        if value.value is UNCHANGED:
+            return current, False
+        if isinstance(value.value, ModelCallResponse):
+            return value.value, False
+        raise ModelLifecycleError(
+            f"model listener {listener.identity} must continue with ModelCallResponse"
+        )
     if value is None:
-        return current
+        return current, False
     if isinstance(value, ModelCallResponse):
-        return value
+        return value, False
     raise ModelLifecycleError(
         f"model listener {listener.identity} must return ModelCallResponse or None"
     )
@@ -242,29 +278,40 @@ def _adk_plugin(pipeline: ModelLifecyclePipeline) -> Any:
             super().__init__(name="_harnest_portable_model_lifecycle")
 
         async def before_model_callback(self, *, callback_context: Any, llm_request: Any) -> Any:
-            request = _adk_request(llm_request)
+            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
+                request = _adk_request(llm_request)
 
-            async def handler(updated: ModelCallRequest) -> ModelCallResponse:
+                async def handler(updated: ModelCallRequest) -> ModelCallResponse:
+                    _apply_adk_request(llm_request, request, updated)
+                    return ModelCallResponse("")
+
+                updated, short = await pipeline._before(
+                    _adk_context(callback_context), request
+                )
+                if short is not None:
+                    return _adk_response(short)
                 _apply_adk_request(llm_request, request, updated)
-                return ModelCallResponse("")
-
-            updated, short = await pipeline._before(_adk_context(callback_context), request)
-            if short is not None:
-                return _adk_response(short)
-            _apply_adk_request(llm_request, request, updated)
-            return None
+                return None
 
         async def after_model_callback(self, *, callback_context: Any, llm_response: Any) -> Any:
-            original = _adk_response_view(llm_response)
-            updated = await pipeline._after(_adk_context(callback_context), original)
-            return None if updated == original else _apply_adk_response(llm_response, updated)
+            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
+                original = _adk_response_view(llm_response)
+                updated = await pipeline._after(
+                    _adk_context(callback_context), original
+                )
+                return (
+                    None
+                    if updated == original
+                    else _apply_adk_response(llm_response, updated)
+                )
 
         async def on_model_error_callback(
             self, *, callback_context: Any, llm_request: Any, error: Exception
         ) -> Any:
             del llm_request
-            await pipeline._notify(_adk_context(callback_context), error)
-            return None
+            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
+                await pipeline._notify(_adk_context(callback_context), error)
+                return None
 
     return PortableModelPlugin()
 
@@ -364,38 +411,48 @@ def _langgraph_middleware(
             )
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-            original = _langgraph_request(request)
-            context = self._context()
-            try:
-                updated_request, short = await pipeline._before(context, original)
-                if short is not None:
-                    return _langgraph_short_response(short)
-                native = await handler(
-                    _apply_langgraph_request(request, original, updated_request)
-                )
-                response = _langgraph_response_view(native)
-                updated = await pipeline._after(context, response)
-                return native if updated == response else _apply_langgraph_response(native, updated)
-            except BaseException as error:
-                await pipeline._notify(context, error)
-                raise
+            with activate_agent_scope(agent_name):
+                original = _langgraph_request(request)
+                context = self._context()
+                try:
+                    updated_request, short = await pipeline._before(context, original)
+                    if short is not None:
+                        return _langgraph_short_response(short)
+                    native = await handler(
+                        _apply_langgraph_request(request, original, updated_request)
+                    )
+                    response = _langgraph_response_view(native)
+                    updated = await pipeline._after(context, response)
+                    return (
+                        native
+                        if updated == response
+                        else _apply_langgraph_response(native, updated)
+                    )
+                except BaseException as error:
+                    await pipeline._notify(context, error)
+                    raise
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
-            original = _langgraph_request(request)
-            context = self._context()
-            try:
-                updated_request, short = pipeline._before_sync(context, original)
-                if short is not None:
-                    return _langgraph_short_response(short)
-                native = handler(
-                    _apply_langgraph_request(request, original, updated_request)
-                )
-                response = _langgraph_response_view(native)
-                updated = pipeline._after_sync(context, response)
-                return native if updated == response else _apply_langgraph_response(native, updated)
-            except BaseException as error:
-                pipeline._notify_sync(context, error)
-                raise
+            with activate_agent_scope(agent_name):
+                original = _langgraph_request(request)
+                context = self._context()
+                try:
+                    updated_request, short = pipeline._before_sync(context, original)
+                    if short is not None:
+                        return _langgraph_short_response(short)
+                    native = handler(
+                        _apply_langgraph_request(request, original, updated_request)
+                    )
+                    response = _langgraph_response_view(native)
+                    updated = pipeline._after_sync(context, response)
+                    return (
+                        native
+                        if updated == response
+                        else _apply_langgraph_response(native, updated)
+                    )
+                except BaseException as error:
+                    pipeline._notify_sync(context, error)
+                    raise
 
     return PortableModelMiddleware()
 

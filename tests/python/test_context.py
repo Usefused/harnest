@@ -1,13 +1,21 @@
 import unittest
 
-from harnest.assets import AssetNotFoundError, AssetScope, MemoryAssetStore
+from harnest.assets import (
+    AssetNotFoundError,
+    AssetScope,
+    AssetStoreError,
+    MemoryAssetStore,
+)
+from harnest.content import AssetRef
 from harnest.context import (
     ContextResourceError,
     ContextUnavailableError,
     activate_context,
+    activate_agent_scope,
     bind_resource,
     context,
     create_agent_context,
+    derive_agent_context,
     registration_for,
 )
 from harnest.client_tool import client_tool
@@ -104,8 +112,143 @@ class ContextAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already bound"):
             bind_resource(active, "memory", object())
 
+    def test_subagent_context_derives_identity_without_copying_authority(self):
+        """Represent child execution as a scoped view rather than a new context type."""
+
+        active = create_agent_context(
+            framework="adk",
+            agent_name="root",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={"memory": object()},
+        )
+        child = derive_agent_context(active, agent_name="researcher")
+
+        with activate_context(child):
+            self.assertEqual(context.agent_name, "researcher")
+            self.assertEqual(context.parent_agent_name, "root")
+            self.assertEqual(context.depth, 1)
+            self.assertFalse(context.is_root)
+            self.assertIs(context.resource("memory"), active.resource("memory"))
+
+    def test_agent_scope_narrows_and_restores_the_active_identity(self):
+        """Let framework callbacks identify a child without owning its authority."""
+
+        active = create_agent_context(
+            framework="adk",
+            agent_name="root",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={"memory": object()},
+        )
+
+        with activate_context(active):
+            with activate_agent_scope("researcher") as child:
+                self.assertIsNotNone(child)
+                self.assertEqual(context.agent_name, "researcher")
+                self.assertEqual(context.parent_agent_name, "root")
+                self.assertEqual(context.depth, 1)
+                self.assertIs(context.resource("memory"), active.resource("memory"))
+            self.assertEqual(context.agent_name, "root")
+            self.assertTrue(context.is_root)
+
 
 class ContextAssetsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_named_assets_save_and_route_opaque_references(self):
+        default = MemoryAssetStore()
+        generated = MemoryAssetStore()
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="artist",
+            invocation_id="run-assets",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+            asset_stores={"default": default, "generated": generated},
+        )
+
+        with activate_context(active), self.assertLogs(
+            "harnest.agent.asset.audit", level="INFO"
+        ) as captured:
+            reference = await context.assets("generated").save(
+                media_type="image/png",
+                chunks=_chunks(b"pixels"),
+                label=" profile-preview ",
+            )
+            default_audio = await context.assets.save(
+                media_type="audio/mpeg",
+                chunks=_chunks(b"sound"),
+            )
+            self.assertEqual(
+                await context.assets("generated").get(reference), b"pixels"
+            )
+            self.assertEqual(await context.assets.get(default_audio), b"sound")
+
+        self.assertIsInstance(reference, AssetRef)
+        self.assertEqual(reference.store, "generated")
+        self.assertEqual(reference.label, "profile-preview")
+        self.assertNotIn("profile-preview", repr(reference))
+        self.assertEqual(default_audio.store, "default")
+        self.assertEqual(captured.records[0].operation, "save")
+        self.assertEqual(captured.records[0].outcome, "committed")
+        self.assertFalse(hasattr(reference, "storage"))
+
+    async def test_named_asset_context_rejects_store_confusion_and_missing_default(self):
+        generated = MemoryAssetStore()
+        active = create_agent_context(
+            framework="adk",
+            agent_name="support",
+            invocation_id="run-assets",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+            asset_stores={"generated": generated},
+        )
+
+        with activate_context(active):
+            reference = await context.assets("generated").save(
+                media_type="application/pdf",
+                chunks=_chunks(b"document"),
+            )
+            with self.assertRaisesRegex(AssetNotFoundError, "unavailable"):
+                await context.assets.save(
+                    media_type="application/pdf",
+                    chunks=_chunks(b"other"),
+                )
+            with self.assertRaisesRegex(AssetStoreError, "wrong storage"):
+                await context.assets("generated").get(
+                    AssetRef(assetId=reference.asset_id, store="default")
+                )
+
+    async def test_retained_named_asset_context_is_revoked(self):
+        storage = MemoryAssetStore()
+        active = create_agent_context(
+            framework="adk",
+            agent_name="support",
+            invocation_id="run-assets",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+            asset_stores={"default": storage},
+        )
+
+        with activate_context(active):
+            retained = context.assets
+            reference = await retained.save(
+                media_type="text/plain",
+                chunks=_chunks(b"notes"),
+            )
+
+        with self.assertRaises(ContextUnavailableError):
+            await retained.get(reference)
+
     async def test_assets_route_by_reference_and_apply_invocation_scope(self):
         default = MemoryAssetStore()
         media = MemoryAssetStore()

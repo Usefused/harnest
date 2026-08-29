@@ -113,6 +113,7 @@ def load_compiled_app(artifact: str | Path) -> Any:
     application = load_compiled_application(artifact)
     _apply_observability_defaults(application.framework)
     if application.framework != "adk" or application.native_app is None:
+        _release_application_plugins(application)
         release_authored_library(Path(artifact).resolve() / "source")
         raise AgentRuntimeError("compiled application does not contain an ADK App")
     return application.native_app
@@ -165,12 +166,17 @@ def _runtime_driver(
 ) -> Any:
     """Select a backend once, at the process boundary."""
 
+    continuations = _external_continuation_runtime(application)
+    plugin_manager = _plugin_runtime_manager(
+        application, continuation_runtime=continuations
+    )
     if application.framework == "adk":
         driver = _adk_runtime_driver(
             application,
             card=card,
             extra_endpoints=extra_endpoints,
             session_service=adk_session_service,
+            plugin_manager=plugin_manager,
         )
     elif application.framework == "langgraph":
         driver = _langgraph_runtime_driver(
@@ -180,11 +186,77 @@ def _runtime_driver(
         )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
-    return _wrap_runtime_driver(
+    pipeline = _wrap_runtime_driver(
         application,
         driver,
         manage_credential_provider=manage_credential_provider,
+        plugin_manager=plugin_manager,
     )
+    if continuations is not None:
+        from .external_continuation_driver import ExternalContinuationRuntimeDriver
+
+        pipeline = ExternalContinuationRuntimeDriver(pipeline, continuations)
+    if application.tasks:
+        from .runtime_task import TaskRuntimeDriver, TaskRuntimeManager
+
+        pipeline = TaskRuntimeDriver(
+            pipeline,
+            TaskRuntimeManager(
+                application,
+                plugin_manager=plugin_manager,
+                continuation_runtime=continuations,
+            ),
+        )
+    if continuations is not None:
+        # Bind the final wrapper so callback-driven resumes receive the same
+        # context, plugin, storage, and task capabilities as user invocations.
+        continuations.bind_driver(pipeline)
+    return pipeline
+
+
+def _plugin_runtime_manager(
+    application: Any, *, continuation_runtime: Any | None = None
+) -> Any | None:
+    """Adopt the compiler's plugin activation for one runtime pipeline."""
+
+    if not application.plugins:
+        return None
+    from .plugin_runtime_manager import PluginRuntimeManager
+
+    return PluginRuntimeManager(
+        application.plugins,
+        framework=application.framework,
+        root_agent_name=application.name,
+        custom_stores=application.runtime_capabilities.custom_stores,
+        continuation_runtime=continuation_runtime,
+        # The compiled application transfers one namespace acquisition to the
+        # process runtime; closing this manager consumes exactly that ownership.
+        release_namespaces_on_close=True,
+    )
+
+
+def _external_continuation_runtime(application: Any) -> Any | None:
+    """Require portable Harnest checkpoint ownership for declared plugin waits."""
+
+    plugin_declared = any(
+        "context.continuations" in item.descriptor.capabilities
+        for item in application.plugins
+    )
+    from .checkpoint import HarnestStore
+
+    store = application.runtime_capabilities.checkpointer
+    if not plugin_declared and (not application.tasks or not isinstance(store, HarnestStore)):
+        return None
+    if not isinstance(store, HarnestStore):
+        # Native framework persistence cannot atomically own Harnest's portable
+        # waiting state, so advanced mode fails closed for this capability.
+        raise AgentRuntimeError(
+            "runtime plugins declaring context.continuations require a "
+            "HarnestStore checkpoint provider"
+        )
+    from .external_continuation import ExternalContinuationRuntime
+
+    return ExternalContinuationRuntime(store, application_id=application.name)
 
 
 def _adk_runtime_driver(
@@ -193,6 +265,7 @@ def _adk_runtime_driver(
     card: Mapping[str, Any] | None,
     extra_endpoints: Mapping[str, str] | None,
     session_service: Any | None,
+    plugin_manager: Any | None = None,
 ) -> Any:
     """Give one ADK service sole ownership of native session persistence."""
 
@@ -216,6 +289,7 @@ def _adk_runtime_driver(
         card=card,
         extra_endpoints=extra_endpoints,
         session_service=session_service,
+        plugin_manager=plugin_manager,
     )
 
 
@@ -249,6 +323,7 @@ def _wrap_runtime_driver(
     driver: Any,
     *,
     manage_credential_provider: bool = True,
+    plugin_manager: Any | None = None,
 ) -> Any:
     """Delegate all capability wrapper ordering to the runtime pipeline."""
 
@@ -259,6 +334,7 @@ def _wrap_runtime_driver(
         application.runtime_capabilities,
         application.extensions,
         manage_credential_provider=manage_credential_provider,
+        plugin_manager=plugin_manager,
     )
 
 
@@ -327,35 +403,37 @@ async def _run_agent_message(
     from .runtime_contract import InvocationRequest, require_customer_facing_output
     from .telemetry import configure_observability
 
-    telemetry = configure_observability(
-        application.name,
-        framework=application.framework,
-        exporter_factories=application.telemetry_exporters,
-    )
+    driver = None
+    telemetry = None
     try:
-        card = load_agent_card(artifact)
-    except AgentRuntimeError:
-        # Direct execution does not expose discovery metadata over HTTP.
-        card = {}
-    driver = _runtime_driver(application, card=card)
-    session_id = uuid.uuid4().hex
-    await driver.create_session(
-        session_id=session_id, user_id=_DIRECT_USER_ID, state={}
-    )
-    request = InvocationRequest(
-        input=message,
-        user_id=_DIRECT_USER_ID,
-        session_id=session_id,
-        invocation_id=f"direct_{uuid.uuid4().hex}",
-        metadata={},
-        state_delta={},
-        transport="direct",
-    )
-    from .logging import get_logger
-    from .tracing import span
+        telemetry = configure_observability(
+            application.name,
+            framework=application.framework,
+            exporter_factories=application.telemetry_exporters,
+        )
+        try:
+            card = load_agent_card(artifact)
+        except AgentRuntimeError:
+            # Direct execution does not expose discovery metadata over HTTP.
+            card = {}
+        driver = _runtime_driver(application, card=card)
+        session_id = uuid.uuid4().hex
+        await driver.create_session(
+            session_id=session_id, user_id=_DIRECT_USER_ID, state={}
+        )
+        request = InvocationRequest(
+            input=message,
+            user_id=_DIRECT_USER_ID,
+            session_id=session_id,
+            invocation_id=f"direct_{uuid.uuid4().hex}",
+            metadata={},
+            state_delta={},
+            transport="direct",
+        )
+        from .logging import get_logger
+        from .tracing import span
 
-    logger = get_logger(f"runtime.{application.framework}")
-    try:
+        logger = get_logger(f"runtime.{application.framework}")
         with span(
             "harnest.agent.invoke",
             **{
@@ -383,8 +461,13 @@ async def _run_agent_message(
             logger.info("agent.invocation.completed", agent_name=application.name)
         return _direct_result(result)
     finally:
-        await driver.close()
-        telemetry.force_flush()
+        if driver is None:
+            # No runtime manager exists to adopt the compiler acquisition.
+            _release_application_plugins(application)
+        else:
+            await driver.close()
+        if telemetry is not None:
+            telemetry.force_flush()
 
 
 def _create_adk_fastapi_app(
@@ -393,6 +476,7 @@ def _create_adk_fastapi_app(
     application: Any,
     bind_host: str,
     session_service: Any,
+    manage_credential_provider: bool = True,
 ) -> Any:
     """Create ADK's official app without inspecting private route closures."""
 
@@ -435,6 +519,8 @@ def _create_adk_fastapi_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any):
+        """Keep ADK host state inside the final runtime pipeline lifetime."""
+
         from .runtime_extensions import (
             _close_credential_provider,
             _start_credential_provider,
@@ -443,7 +529,10 @@ def _create_adk_fastapi_app(
         provider = application.credential_provider
         provider_started = False
         try:
-            if provider is not None:
+            # Direct construction has no outer Harnest pipeline. Production
+            # serving disables this owner so the composed pipeline starts the
+            # same provider between plugins and extension resources.
+            if manage_credential_provider and provider is not None:
                 await _start_credential_provider(provider)
                 provider_started = True
             yield
@@ -635,6 +724,7 @@ def create_fastapi_app(
             authenticator=authenticator,
         )
     except Exception:
+        _release_application_plugins(application)
         release_authored_library(Path(artifact).resolve() / "source")
         raise
 
@@ -708,6 +798,7 @@ def _build_fastapi_app(
             max_request_bytes=max_request_bytes,
             asset_store=application.asset_store,
             http_routes=application.http_routes,
+            lifecycle_extensions=application.extensions,
             playground_enabled=playground_enabled,
             authenticator=authenticator,
         )
@@ -776,6 +867,7 @@ def _build_native_adk_app(
     telemetry_exporter_factories: Any,
 ) -> tuple[Any, Any]:
     from .neutral_runtime import create_neutral_router
+    from .http_lifecycle import install_http_lifecycle
     from .playground import create_playground_router
     from .server_limits import install_request_size_limit
     from .telemetry import configure_observability
@@ -786,16 +878,15 @@ def _build_native_adk_app(
         application=application,
         bind_host=bind_host,
         session_service=adk_session_service,
+        manage_credential_provider=False,
     )
     driver = _runtime_driver(
         application,
         card=card,
         extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
         adk_session_service=adk_session_service,
-        # ADK's outer lifespan owns the provider shared by native and neutral
-        # routes; the neutral wrapper still binds it per invocation.
-        manage_credential_provider=False,
     )
+    pipeline_driver = driver
     trace_store = None
     if playground_enabled:
         from .playground_trace import (
@@ -817,7 +908,8 @@ def _build_native_adk_app(
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.
     app.router.routes.extend(neutral.routes)
-    _attach_driver_lifecycle(app, driver)
+    _attach_driver_lifecycle(app, driver, startup_driver=pipeline_driver)
+    install_http_lifecycle(app, application.extensions)
     install_authentication(app, authenticator)
     install_request_size_limit(app, max_request_bytes)
     telemetry = configure_observability(
@@ -829,20 +921,32 @@ def _build_native_adk_app(
     return app, telemetry
 
 
-def _attach_driver_lifecycle(app: Any, driver: Any) -> None:
-    """Close the neutral driver inside ADK's active custom lifespan."""
+def _attach_driver_lifecycle(
+    app: Any, driver: Any, *, startup_driver: Any | None = None
+) -> None:
+    """Run the final pipeline inside ADK's active custom lifespan."""
 
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
     async def lifespan(application: Any):
-        async with original_lifespan(application):
-            try:
-                yield
-            finally:
-                # FastAPI skips shutdown handlers when a custom lifespan owns
-                # the app, so driver cleanup must participate in that lifespan.
-                await driver.close()
+        from .runtime_pipeline import start_runtime_pipeline
+
+        try:
+            selected = driver if startup_driver is None else startup_driver
+            await start_runtime_pipeline(selected)
+            async with original_lifespan(application):
+                try:
+                    yield
+                finally:
+                    # FastAPI skips shutdown handlers when a custom lifespan
+                    # owns the app, so cleanup must occur before it exits.
+                    await driver.close()
+        except BaseException:
+            # Startup failures before ``yield`` still transfer no live runtime
+            # to FastAPI; idempotent close must reclaim partial acquisitions.
+            await driver.close()
+            raise
 
     app.router.lifespan_context = lifespan
 
@@ -907,6 +1011,15 @@ def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
     # Wrapping the active lifespan works for neutral and native ADK apps;
     # shutdown event handlers are skipped by frameworks with custom lifespans.
     app.router.lifespan_context = lifespan
+
+
+def _release_application_plugins(application: Any) -> None:
+    """Release an unadopted compiler acquisition without exposing namespaces."""
+
+    from .plugins import release_runtime_plugins
+
+    plugins = tuple(getattr(application, "plugins", ()))
+    release_runtime_plugins(tuple(item.descriptor for item in plugins))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,4 +1,4 @@
-"""PostgreSQL-backed Harnest session and checkpoint storage."""
+"""PostgreSQL-backed Harnest session, checkpoint, and continuation storage."""
 
 from __future__ import annotations
 
@@ -26,6 +26,17 @@ from .checkpoint import (
     _validate_same_run,
     _validate_transition,
 )
+from .continuation import (
+    ContinuationConflictError,
+    ContinuationFailure,
+    ContinuationRecord,
+    ProviderPendingContinuation,
+    _require_page,
+    _validated_resolution,
+    audit_continuation,
+    external_id_key,
+)
+from .durable import ResumeArtifact
 from .logging import get_logger
 from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, _require_list_options
@@ -68,6 +79,13 @@ class PostgresStore(HarnestStore):
             await self._bootstrap_schema()
         else:
             await self._validate_schema()
+
+    def _task_database_dsn(self) -> str:
+        """Share connection configuration without exposing it as agent context."""
+
+        # Queue ownership opens an independent pool so Harnest and Procrastinate
+        # cannot unexpectedly consume or close each other's connection leases.
+        return self._dsn
 
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
@@ -481,6 +499,257 @@ class PostgresStore(HarnestStore):
             key: tuple(grouped.get(key, ())) for key in checkpoint_ids
         }
 
+    async def suspend_continuation(
+        self, *, record: ContinuationRecord, external_id: str
+    ) -> ContinuationRecord:
+        """Atomically persist a provider wait and mark its owned run waiting."""
+
+        query = """
+        WITH inserted AS (
+            INSERT INTO harnest_continuations(
+                continuation_id, run_id, application_id, user_id, session_id,
+                provider, capability, schema_id, resume, external_id, external_key,
+                status, revision, ready, created_at, updated_at
+            )
+            SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,'pending',0,false,
+                   $12::timestamptz,$13::timestamptz
+            FROM harnest_runs
+            WHERE run_id=$2 AND application_id=$3 AND user_id=$4
+              AND session_id=$5 AND status='running'
+            ON CONFLICT DO NOTHING
+            RETURNING *
+        ), waiting AS (
+            UPDATE harnest_runs AS run SET
+                status='waiting', pending_action=$14::jsonb,
+                revision=run.revision + 1, updated_at=now()
+            FROM inserted
+            WHERE run.run_id=inserted.run_id AND run.status='running'
+            RETURNING run.run_id
+        )
+        SELECT inserted.* FROM inserted JOIN waiting USING (run_id)
+        """
+        arguments = _continuation_insert_values(record, external_id)
+        try:
+            async with self._connection() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(query, *arguments)
+        except Exception:
+            audit_continuation("suspended", "failed", "postgres")
+            raise
+        if row is None:
+            audit_continuation("suspended", "failed", "postgres")
+            raise ContinuationConflictError(
+                "continuation already exists or run is not running"
+            )
+        audit_continuation("suspended", "committed", "postgres")
+        return _continuation_from_row(row)
+
+    async def get_continuation(
+        self, *, scope: RunScope, continuation_id: str
+    ) -> ContinuationRecord | None:
+        """Load one continuation with its complete ownership predicate in SQL."""
+
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT * FROM harnest_continuations
+                WHERE continuation_id=$1 AND run_id=$2 AND application_id=$3
+                  AND user_id=$4 AND session_id=$5
+                """,
+                continuation_id,
+                *_scope_values(scope),
+            )
+        return None if row is None else _continuation_from_row(row)
+
+    async def get_continuation_by_external_id(
+        self, *, application_id: str, provider: str, external_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Use the unique provider key so replica callbacks never scan waits."""
+
+        _require_fields(application_id, provider, external_id)
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT * FROM harnest_continuations
+                WHERE application_id=$1 AND provider=$2 AND external_key=$3
+                """,
+                application_id,
+                provider,
+                external_id_key(provider, external_id),
+            )
+        if row is None:
+            return None
+        return ProviderPendingContinuation(_continuation_from_row(row), row["external_id"])
+
+    async def list_pending_continuations(
+        self,
+        *,
+        application_id: str,
+        provider: str,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> Sequence[ProviderPendingContinuation]:
+        """Push provider reconciliation filtering and pagination into PostgreSQL."""
+
+        _require_fields(application_id, provider)
+        _require_page(after, limit)
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT * FROM harnest_continuations
+                WHERE application_id=$1 AND provider=$2 AND status='pending'
+                  AND ($3::text IS NULL OR continuation_id > $3)
+                ORDER BY continuation_id
+                LIMIT $4
+                """,
+                application_id,
+                provider,
+                after,
+                limit,
+            )
+        return tuple(
+            ProviderPendingContinuation(
+                _continuation_from_row(row), row["external_id"]
+            )
+            for row in rows
+        )
+
+    async def resolve_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        external_id: str,
+        schema_id: str,
+        result: Any = None,
+        failure: ContinuationFailure | None = None,
+    ) -> ContinuationRecord:
+        """Commit one validated provider outcome with an indexed SQL CAS."""
+
+        result, failure = _validated_resolution(result, failure)
+        status = "failed" if failure is not None else "completed"
+        query = """
+        UPDATE harnest_continuations SET
+            status=$8, result=$9::jsonb, failure=$10::jsonb,
+            revision=revision + 1, updated_at=now()
+        WHERE run_id=$1 AND application_id=$2 AND user_id=$3 AND session_id=$4
+          AND provider=$5 AND external_key=$6 AND schema_id=$7
+          AND status='pending'
+        RETURNING *
+        """
+        arguments = (
+            *_scope_values(scope),
+            provider,
+            external_id_key(provider, external_id),
+            schema_id,
+            status,
+            _json_dump(result),
+            _failure_dump(failure),
+        )
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(query, *arguments)
+        except Exception:
+            audit_continuation("resolved", "failed", "postgres")
+            raise
+        if row is None:
+            audit_continuation("resolved", "failed", "postgres")
+            raise ContinuationConflictError("continuation state changed")
+        audit_continuation("resolved", "committed", "postgres")
+        return _continuation_from_row(row)
+
+    async def claim_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> ContinuationRecord:
+        """Claim an outcome and resume its run in one PostgreSQL statement."""
+
+        query = """
+        WITH target AS (
+            SELECT continuation.* FROM harnest_continuations AS continuation
+            JOIN harnest_runs AS run USING (run_id)
+            WHERE continuation.continuation_id=$1
+              AND continuation.run_id=$2 AND continuation.application_id=$3
+              AND continuation.user_id=$4 AND continuation.session_id=$5
+              AND continuation.provider=$6 AND continuation.revision=$7
+              AND continuation.status IN ('completed', 'failed')
+              AND continuation.ready=true
+              AND run.status='waiting'
+              AND run.pending_action->>'action_id'=$1
+            FOR UPDATE OF continuation, run
+        ), resumed AS (
+            UPDATE harnest_runs AS run SET
+                status='running', pending_action=NULL,
+                revision=run.revision + 1, updated_at=now()
+            FROM target WHERE run.run_id=target.run_id
+            RETURNING run.run_id
+        )
+        UPDATE harnest_continuations AS continuation SET
+            status='claimed', revision=continuation.revision + 1,
+            updated_at=now()
+        FROM target JOIN resumed USING (run_id)
+        WHERE continuation.continuation_id=target.continuation_id
+        RETURNING continuation.*
+        """
+        arguments = (
+            continuation_id,
+            *_scope_values(scope),
+            provider,
+            expected_revision,
+        )
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(query, *arguments)
+        except Exception:
+            audit_continuation("claimed", "failed", "postgres")
+            raise
+        if row is None:
+            audit_continuation("claimed", "failed", "postgres")
+            raise ContinuationConflictError("continuation claim changed")
+        audit_continuation("claimed", "committed", "postgres")
+        return _continuation_from_row(row)
+
+    async def arm_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> ContinuationRecord:
+        """Arm one wait with a SQL CAS after native checkpoint persistence."""
+
+        query = """
+        UPDATE harnest_continuations SET
+            ready=true, revision=revision + 1, updated_at=now()
+        WHERE continuation_id=$1 AND run_id=$2 AND application_id=$3
+          AND user_id=$4 AND session_id=$5 AND provider=$6
+          AND revision=$7 AND ready=false
+          AND status IN ('pending', 'completed', 'failed')
+        RETURNING *
+        """
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(
+                    query,
+                    continuation_id,
+                    *_scope_values(scope),
+                    provider,
+                    expected_revision,
+                )
+        except Exception:
+            audit_continuation("armed", "failed", "postgres")
+            raise
+        if row is None:
+            audit_continuation("armed", "failed", "postgres")
+            raise ContinuationConflictError("continuation arm changed")
+        audit_continuation("armed", "committed", "postgres")
+        return _continuation_from_row(row)
+
     async def transition(
         self,
         *,
@@ -619,22 +888,41 @@ class _PostgresLease:
     def record(self) -> SessionRecord:
         return self._record
 
-    async def patch_state(self, delta: Mapping[str, Any]) -> None:
+    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord:
         state = {**dict(self._record.state), **json_value(delta)}
-        await self.replace_state(state)
+        return await self.replace_state(state)
 
-    async def replace_state(self, state: Mapping[str, Any]) -> None:
+    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord:
         """Replace leased state on the already locked connection."""
 
+        return await self._replace_lane("state", state)
+
+    async def replace_application_data(
+        self, data: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Commit app data independently from framework-owned session state."""
+
+        return await self._replace_lane("application_data", data)
+
+    async def _replace_lane(
+        self, column: str, value: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Share locked replacement behavior across protected session lanes."""
+
+        # Column selection is internal and closed over known literals; values
+        # remain query parameters so application data cannot affect SQL shape.
+        if column not in {"state", "application_data"}:
+            raise ValueError("unknown session data lane")
+        query = f"""
+        UPDATE harnest_sessions SET {column}=$3::jsonb, updated_at=now()
+        WHERE user_id=$1 AND session_id=$2 RETURNING *
+        """
         try:
             row = await self._connection.fetchrow(
-                """
-                UPDATE harnest_sessions SET state=$3::jsonb, updated_at=now()
-                WHERE user_id=$1 AND session_id=$2 RETURNING *
-                """,
+                query,
                 self._record.user_id,
                 self._record.id,
-                _json_dump(state),
+                _json_dump(value),
             )
         except Exception:
             _audit("session.lease_update", "agent", "failed", "postgres")
@@ -644,6 +932,7 @@ class _PostgresLease:
             raise KeyError("session not found")
         self._record = _session_from_row(row)
         _audit("session.lease_update", "agent", "committed", "postgres")
+        return self._record
 
 
 async def _create_pool(dsn: str, options: Mapping[str, Any]) -> Any:
@@ -677,6 +966,7 @@ def _session_from_row(row: Mapping[str, Any]) -> SessionRecord:
         id=row["session_id"],
         user_id=row["user_id"],
         state=_json_load(row["state"]),
+        application_data=_json_load(row.get("application_data", {})),
         created_at=_iso(row["created_at"]),
         updated_at=_iso(row["updated_at"]),
     )
@@ -695,6 +985,31 @@ def _run_from_row(row: Mapping[str, Any]) -> RunRecord:
         status=row["status"],
         revision=row["revision"],
         pending_action=None if pending is None else PendingAction(**pending),
+        created_at=_iso(row["created_at"]),
+        updated_at=_iso(row["updated_at"]),
+    )
+
+
+def _continuation_from_row(row: Mapping[str, Any]) -> ContinuationRecord:
+    """Restore private outcome lanes without returning the external-id mapping."""
+
+    failure = _json_load(row.get("failure"))
+    resume = _json_load(row.get("resume"))
+    return ContinuationRecord(
+        continuation_id=row["continuation_id"],
+        application_id=row["application_id"],
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        run_id=row["run_id"],
+        provider=row["provider"],
+        capability=row["capability"],
+        schema_id=row["schema_id"],
+        resume=None if resume is None else ResumeArtifact.from_mapping(resume),
+        status=row["status"],
+        ready=bool(row.get("ready", False)),
+        revision=row["revision"],
+        result=_json_load(row.get("result")),
+        failure=None if failure is None else ContinuationFailure(**failure),
         created_at=_iso(row["created_at"]),
         updated_at=_iso(row["updated_at"]),
     )
@@ -757,6 +1072,39 @@ def _write_values(value: CheckpointWrite) -> tuple[Any, ...]:
         value.payload,
         value.task_path,
     )
+
+
+def _continuation_insert_values(
+    value: ContinuationRecord, external_id: str
+) -> tuple[Any, ...]:
+    """Preserve the positional contract for the atomic suspend statement."""
+
+    return (
+        value.continuation_id,
+        value.run_id,
+        value.application_id,
+        value.user_id,
+        value.session_id,
+        value.provider,
+        value.capability,
+        value.schema_id,
+        _json_dump(
+            None if value.resume is None else value.resume.public_dict()
+        ),
+        external_id,
+        external_id_key(value.provider, external_id),
+        _parse_timestamp(value.created_at),
+        _parse_timestamp(value.updated_at),
+        _pending_dump(value.pending_action),
+    )
+
+
+def _failure_dump(value: ContinuationFailure | None) -> str | None:
+    """Serialize only the bounded failure category allowed by the domain model."""
+
+    if value is None:
+        return None
+    return _json_dump({"code": value.code, "retryable": value.retryable})
 
 
 async def _lock_active_run(connection: Any, scope: RunScope) -> None:

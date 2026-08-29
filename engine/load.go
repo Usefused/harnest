@@ -24,6 +24,7 @@ var (
 	entrypointPattern            = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):([A-Za-z_][A-Za-z0-9_]*)$`)
 	environmentNamePattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	secretEnvironmentNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	compiledPluginVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 )
 
 func DecodePlan(reader io.Reader) (DeploymentPlan, error) {
@@ -195,7 +196,7 @@ func validateBundleResourceDirectories(directory string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect legacy MCP directory %s: %w", legacy, err)
 	}
-	for _, name := range []string{"lib", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+	for _, name := range []string{"lib", "tools", "tasks", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
 		if err := validateOptionalBundleDirectory(directory, name); err != nil {
 			return err
 		}

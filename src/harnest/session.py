@@ -43,9 +43,13 @@ class SessionLease(Protocol):
     @property
     def record(self) -> SessionRecord: ...
 
-    async def patch_state(self, delta: Mapping[str, Any]) -> None: ...
+    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord: ...
 
-    async def replace_state(self, state: Mapping[str, Any]) -> None: ...
+    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord: ...
+
+    async def replace_application_data(
+        self, data: Mapping[str, Any]
+    ) -> SessionRecord: ...
 
 
 @runtime_checkable
@@ -94,6 +98,7 @@ class SessionStore(Protocol):
 class _StoredSession:
     user_id: str
     state: dict[str, Any]
+    application_data: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: _timestamp())
     updated_at: str = field(default_factory=lambda: _timestamp())
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -108,13 +113,24 @@ class _InMemoryLease:
     def record(self) -> SessionRecord:
         return _record(self._session_id, self._stored, serialize=False)
 
-    async def patch_state(self, delta: Mapping[str, Any]) -> None:
+    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord:
         self._stored.state.update(dict(delta))
         self._stored.updated_at = _timestamp()
+        return self.record
 
-    async def replace_state(self, state: Mapping[str, Any]) -> None:
+    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord:
         self._stored.state = dict(state)
         self._stored.updated_at = _timestamp()
+        return self.record
+
+    async def replace_application_data(
+        self, data: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Replace only application data so framework commits cannot clobber it."""
+
+        self._stored.application_data = json_value(data)
+        self._stored.updated_at = _timestamp()
+        return self.record
 
 
 class InMemorySessionStore:
@@ -220,10 +236,16 @@ def _record(
     session_id: str, stored: _StoredSession, *, serialize: bool = True
 ) -> SessionRecord:
     state = json_value(stored.state) if serialize else dict(stored.state)
+    application_data = (
+        json_value(stored.application_data)
+        if serialize
+        else dict(stored.application_data)
+    )
     return SessionRecord(
         id=session_id,
         user_id=stored.user_id,
         state=state,
+        application_data=application_data,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
     )

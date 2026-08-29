@@ -511,7 +511,11 @@ def wrap_approved_tool(function: F) -> F:
             if inspect.isawaitable(result):
                 result = await result
         except BaseException:
-            record_approved_failure(grant)
+            from .durable import is_native_suspension
+
+            error = __import__("sys").exception()
+            if error is None or not is_native_suspension(error):
+                record_approved_failure(grant)
             raise
         _record_executed(grant)
         return result

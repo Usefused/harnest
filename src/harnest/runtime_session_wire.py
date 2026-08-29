@@ -45,6 +45,7 @@ def session_payload(session: SessionRecord) -> dict[str, Any]:
         "id": session.id,
         "userId": session.user_id,
         "state": dict(session.state),
+        "applicationData": dict(session.application_data),
         "createdAt": session.created_at,
         "updatedAt": session.updated_at,
         "metadata": dict(session.metadata),

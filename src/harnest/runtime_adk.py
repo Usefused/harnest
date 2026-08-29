@@ -8,10 +8,12 @@ wire formats belong to :mod:`harnest.neutral_runtime`.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +23,7 @@ from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
 from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore, RunScope
 from .client_tool import current_transient_media
+from .durable import NativeDurableSuspended, NativeResumeInput
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp_lifecycle import (
     close_mcp_lifecycles,
@@ -63,6 +66,17 @@ _CONTENT_KINDS = frozenset(
     {"text", "image", "audio", "video", "file", "data", "asset"}
 )
 _CONTENT_MARKER = "harnestContent"
+
+
+@dataclass(frozen=True, slots=True)
+class _ADKNativeRequest:
+    """Native invocation values for a fresh turn or persisted tool resume."""
+
+    message: Any
+    run_config: Any
+    invocation_id: str | None
+    state_delta: Mapping[str, Any] | None
+    is_resume: bool
 
 
 def _model_input_text(value: Any) -> str:
@@ -271,6 +285,7 @@ def _adk_agent_info(
         card=card_data,
         framework=application.framework,
         mode=application.mode,
+        lifecycle_coverage=application.lifecycle_coverage.report(),
         extra_endpoints=dict(extra_endpoints or {}),
         input_schema=application.input_schema,
         output_schema=application.output_schema,
@@ -306,7 +321,10 @@ class ADKRuntimeDriver(RuntimeDriver):
         session_service: Any | None = None,
         asset_store: AssetStore | None = None,
         asset_stores: Mapping[str, AssetStore] | None = None,
+        plugin_manager: Any | None = None,
     ) -> None:
+        """Create one runner without starting application-owned resources."""
+
         if application.framework != "adk":
             raise ValueError("ADKRuntimeDriver requires an ADK application")
         if application.native_app is None:
@@ -323,6 +341,7 @@ class ADKRuntimeDriver(RuntimeDriver):
             session_service,
             asset_store=self._asset_store,
             asset_stores=self._asset_stores,
+            plugin_manager=plugin_manager,
         )
         self._closed = False
         self._close_lock = asyncio.Lock()
@@ -334,6 +353,12 @@ class ADKRuntimeDriver(RuntimeDriver):
     @property
     def info(self) -> AgentInfo:
         return self._info
+
+    @property
+    def session_context_store(self) -> Any | None:
+        """Expose only an explicitly portable store from the ADK service."""
+
+        return getattr(self._runner.session_service, "session_context_store", None)
 
     async def create_session(
         self,
@@ -363,7 +388,9 @@ class ADKRuntimeDriver(RuntimeDriver):
             raise SessionConflictError(
                 f"session already exists: {session_id}"
             ) from exc
-        return _session_record(session)
+        return await _complete_session_record(
+            self._runner.session_service, session
+        )
 
     async def get_session(
         self, *, user_id: str, session_id: str
@@ -374,7 +401,11 @@ class ADKRuntimeDriver(RuntimeDriver):
             user_id=user_id,
             session_id=session_id,
         )
-        return None if session is None else _session_record(session)
+        if session is None:
+            return None
+        return await _complete_session_record(
+            self._runner.session_service, session
+        )
 
     async def list_sessions(
         self,
@@ -386,6 +417,19 @@ class ADKRuntimeDriver(RuntimeDriver):
         """Use Harnest store pagination or bound ADK's complete session list."""
 
         self._ensure_open()
+        record_page = getattr(
+            self._runner.session_service, "list_session_records_page", None
+        )
+        if callable(record_page):
+            records = await record_page(
+                user_id=user_id,
+                after=after,
+                limit=limit,
+            )
+            return [
+                _stored_adk_session_record(item, self.app_name)
+                for item in records
+            ]
         paged = getattr(self._runner.session_service, "list_sessions_page", None)
         if callable(paged):
             sessions = await paged(
@@ -450,7 +494,11 @@ class ADKRuntimeDriver(RuntimeDriver):
             user_id=user_id,
             session_id=session_id,
         )
-        return None if updated is None else _session_record(updated)
+        if updated is None:
+            return None
+        return await _complete_session_record(
+            self._runner.session_service, updated
+        )
 
     async def delete_session(self, *, user_id: str, session_id: str) -> bool:
         self._ensure_open()
@@ -500,33 +548,38 @@ class ADKRuntimeDriver(RuntimeDriver):
         """Yield privacy-safe neutral deltas from ADK's native event stream."""
 
         self._ensure_open()
-        message, run_config = await self._prepare_stream_request(request)
+        native_request = await self._prepare_stream_request(request)
         async with _session_execution_lease(
             self._runner.session_service,
             user_id=request.user_id,
             session_id=request.session_id,
+            invocation_id=request.invocation_id,
         ):
-            await self._begin_checkpoint(request)
+            if not native_request.is_resume:
+                # The continuation claimant already moved this exact run back to
+                # running. Re-beginning would confuse idempotency with a new turn.
+                await self._begin_checkpoint(request)
             native_events = self._runner.run_async(
                 user_id=request.user_id,
                 session_id=request.session_id,
-                # ADK interprets an explicit id as a request to resume an
-                # existing invocation. New Harnest runs let ADK allocate its
-                # native id, which is persisted in the checkpointed events.
-                invocation_id=None,
-                new_message=message,
-                state_delta=dict(request.state_delta),
-                run_config=run_config,
+                invocation_id=native_request.invocation_id,
+                new_message=native_request.message,
+                state_delta=native_request.state_delta,
+                run_config=native_request.run_config,
             )
             normalizer = _ADKEventNormalizer(
                 self.application.output_policy,
                 root_agent_name=getattr(self.application.target, "name", None),
             )
             output = _ADKTurnOutput(self.application.output_schema)
+            unresolved_tools: set[str] = set()
             try:
                 async with aclosing(native_events):
                     async for event in native_events:
+                        # Persist before advancing the generator: its next step
+                        # may enter a long-running tool and suspend this request.
                         await self._save_checkpoint_event(request, event)
+                        _update_long_running_tools(unresolved_tools, event)
                         output.capture_native(event)
                         for item in normalizer.feed(event):
                             public = output.accept(item)
@@ -541,12 +594,17 @@ class ADKRuntimeDriver(RuntimeDriver):
             except BaseException:
                 await self._finish_checkpoint(request, "failed")
                 raise
+            if unresolved_tools:
+                # The matching function call is now in ADK's session service.
+                # Keep the portable run waiting until a replica injects its
+                # FunctionResponse instead of misreporting an empty completion.
+                raise NativeDurableSuspended
             await self._finish_checkpoint(request, "completed")
 
     async def _prepare_stream_request(
         self, request: InvocationRequest
-    ) -> tuple[Any, Any]:
-        """Build native request values after application resources are ready."""
+    ) -> _ADKNativeRequest:
+        """Build a fresh ADK turn or an exact persisted FunctionResponse resume."""
 
         try:
             from google.adk.agents.run_config import RunConfig
@@ -558,7 +616,41 @@ class ADKRuntimeDriver(RuntimeDriver):
             mcp_lifecycle_bindings(self.application.target)
         )
 
+        metadata = dict(request.metadata)
+        run_config = RunConfig(custom_metadata=metadata) if metadata else None
         value = request.input
+        if isinstance(value, NativeResumeInput):
+            artifact = value.artifact
+            if artifact.framework != "adk":
+                raise ValueError("ADK runtime requires an ADK resume artifact")
+            response = json_value(value.value)
+            if not isinstance(response, Mapping):
+                response = {"result": response}
+            else:
+                response = dict(response)
+            # ADK correlates all three persisted identities. Submitting this as
+            # a user FunctionResponse resumes its model loop without replaying
+            # the Python tool coroutine on the claiming replica.
+            message = types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            id=artifact.tool_call_id,
+                            name=artifact.tool_name,
+                            response=response,
+                        )
+                    )
+                ],
+            )
+            return _ADKNativeRequest(
+                message=message,
+                run_config=run_config,
+                invocation_id=artifact.native_invocation_id,
+                state_delta=None,
+                is_resume=True,
+            )
+
         access = current_transient_media()
         schema = self.application.input_schema
         if schema is not None:
@@ -571,9 +663,15 @@ class ADKRuntimeDriver(RuntimeDriver):
             value = authored if access is None else access.stage(authored)
         parts = await _adk_input_parts(value, self._asset_stores, types)
         message = types.Content(role="user", parts=parts)
-        metadata = dict(request.metadata)
-        run_config = RunConfig(custom_metadata=metadata) if metadata else None
-        return message, run_config
+        # Let ADK allocate the provider invocation id for new turns; durable
+        # tools capture that id from ToolContext for a later exact resume.
+        return _ADKNativeRequest(
+            message=message,
+            run_config=run_config,
+            invocation_id=None,
+            state_delta=dict(request.state_delta),
+            is_resume=False,
+        )
 
     async def close(self) -> None:
         """Close ADK resources exactly once."""
@@ -922,6 +1020,42 @@ def _is_terminal_output(event: Any) -> bool:
     return any(isinstance(path, str) and "/" not in path for path in output_for)
 
 
+def _update_long_running_tools(pending: set[str], event: Any) -> None:
+    """Track ADK long-running call IDs until their FunctionResponse is persisted."""
+
+    long_running = getattr(event, "long_running_tool_ids", None)
+    if isinstance(long_running, (list, tuple, set)):
+        pending.update(value for value in long_running if isinstance(value, str))
+    content = getattr(event, "content", None)
+    for part in getattr(content, "parts", ()) or ():
+        response = getattr(part, "function_response", None)
+        response_id = getattr(response, "id", None)
+        if isinstance(response_id, str):
+            pending.discard(response_id)
+
+
+async def _complete_session_record(service: Any, session: Any) -> SessionRecord:
+    """Attach the private lane without placing it on ADK's native Session."""
+
+    public = _session_record(session)
+    reader = getattr(service, "get_session_record", None)
+    if not callable(reader):
+        return public
+    stored = await reader(user_id=session.user_id, session_id=session.id)
+    if stored is None:
+        return public
+    return replace(public, application_data=json_value(stored.application_data))
+
+
+def _stored_adk_session_record(record: SessionRecord, app_name: str) -> SessionRecord:
+    """Project one store page without issuing a query for every ADK session."""
+
+    from .session_adk import _adk_session
+
+    public = _session_record(_adk_session(record, app_name))
+    return replace(public, application_data=json_value(record.application_data))
+
+
 def _session_record(session: Any) -> SessionRecord:
     """Preserve native ADK event metadata beside portable session state."""
 
@@ -1133,6 +1267,7 @@ def _create_runner(
     *,
     asset_store: AssetStore | None = None,
     asset_stores: Mapping[str, AssetStore] | None = None,
+    plugin_manager: Any | None = None,
 ) -> Any:
     """Create ADK's runner while preserving actionable advanced-mode logs."""
 
@@ -1167,11 +1302,95 @@ def _create_runner(
             InMemoryRunner,
             Runner,
         )
+    if application.mode == "managed":
+        _register_agent_context_plugins(
+            result.plugin_manager,
+            root_name=getattr(application.target, "name", None),
+            plugin_manager=plugin_manager,
+        )
+        _register_mcp_context_plugins(
+            result.plugin_manager,
+            application.target,
+            application.extensions,
+        )
+        _register_tool_lifecycle_plugin(
+            result.plugin_manager, application.extensions
+        )
     stores = dict(asset_stores or {})
     if asset_store is not None:
         stores.setdefault("default", asset_store)
     _register_asset_plugin(result.plugin_manager, stores)
     return result
+
+
+def _register_agent_context_plugins(
+    manager: Any,
+    *,
+    root_name: str | None = None,
+    plugin_manager: Any | None = None,
+) -> None:
+    """Bracket authored callbacks with invocation-safe subagent identity."""
+
+    from .context_adk import adk_agent_context_plugins
+
+    enter, exit_plugin = adk_agent_context_plugins(root_name, plugin_manager)
+    reserved = {enter.name, exit_plugin.name}
+    if any(item.name in reserved for item in manager.plugins):
+        raise ValueError("ADK application uses a reserved Harnest context plugin")
+    # One adapter must precede authored callbacks and its pair must follow them;
+    # a single plugin position cannot preserve child identity at both boundaries.
+    manager.plugins.insert(0, enter)
+    manager.plugins.append(exit_plugin)
+
+
+def _register_mcp_context_plugins(
+    manager: Any, target: Any, listeners: Any
+) -> None:
+    """Bracket the whole ADK run with its discovered MCP registry."""
+
+    from .mcp_adk import adk_mcp_context_plugins
+
+    enter, exit_plugin = adk_mcp_context_plugins(target, listeners)
+    reserved = {enter.name, exit_plugin.name}
+    if any(item.name in reserved for item in manager.plugins):
+        raise ValueError("ADK application uses a reserved Harnest MCP plugin")
+    enter_index = next(
+        (
+            index + 1
+            for index, item in enumerate(manager.plugins)
+            if item.name == "_harnest_agent_context_enter"
+        ),
+        0,
+    )
+    manager.plugins.insert(enter_index, enter)
+    exit_index = next(
+        (
+            index
+            for index, item in enumerate(manager.plugins)
+            if item.name == "_harnest_agent_context_exit"
+        ),
+        len(manager.plugins),
+    )
+    manager.plugins.insert(exit_index, exit_plugin)
+
+
+def _register_tool_lifecycle_plugin(manager: Any, listeners: Any) -> None:
+    """Install full native tool interception before authored ADK plugins."""
+
+    from .tool_adk import adk_tool_lifecycle_plugin
+
+    plugin = adk_tool_lifecycle_plugin(listeners)
+    if any(item.name == plugin.name for item in manager.plugins):
+        raise ValueError("ADK application uses a reserved Harnest tool plugin")
+    enter_index = next(
+        (
+            index + 1
+            for index, item in enumerate(manager.plugins)
+            if item.name == "_harnest_mcp_context_enter"
+        ),
+        0,
+    )
+    manager.plugins.insert(enter_index, plugin)
 
 
 def _register_asset_plugin(
@@ -1697,14 +1916,32 @@ def _validate_session_service(session_service: Any) -> None:
 
 @asynccontextmanager
 async def _session_execution_lease(
-    session_service: Any, *, user_id: str, session_id: str
+    session_service: Any,
+    *,
+    user_id: str,
+    session_id: str,
+    invocation_id: str,
 ) -> AsyncIterator[None]:
     acquire = getattr(session_service, "execution_lease", None)
     if not callable(acquire):
         yield
         return
-    async with acquire(user_id=user_id, session_id=session_id):
+    arguments = {"user_id": user_id, "session_id": session_id}
+    # Advanced-mode services predate Harnest's invocation-aware lease hook, so
+    # pass correlation only where the authored signature explicitly accepts it.
+    if _accepts_invocation_id(acquire):
+        arguments["invocation_id"] = invocation_id
+    async with acquire(**arguments):
         yield
+
+
+def _accepts_invocation_id(acquire: Any) -> bool:
+    """Keep opaque advanced-mode callables on their legacy lease contract."""
+
+    try:
+        return "invocation_id" in inspect.signature(acquire).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 __all__ = ["ADKRuntimeDriver"]

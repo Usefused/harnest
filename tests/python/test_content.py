@@ -112,6 +112,23 @@ class PortableContentTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 AssetRef.model_validate(value)
 
+    def test_asset_reference_keeps_optional_domain_label_out_of_repr(self):
+        reference = AssetRef(
+            assetId="asset-profile-1",
+            store="uploads",
+            label=" profile-photo ",
+        )
+
+        self.assertEqual(reference.store, "uploads")
+        self.assertEqual(reference.label, "profile-photo")
+        self.assertNotIn("profile-photo", repr(reference))
+        self.assertEqual(
+            reference.model_dump(by_alias=True, exclude_none=True)["label"],
+            "profile-photo",
+        )
+        with self.assertRaises(ValidationError):
+            AssetRef(assetId="asset-profile-1", label=" ")
+
     def test_typed_data_accepts_json_and_rejects_non_json_payloads(self):
         class Location(BaseModel):
             model_config = ConfigDict(frozen=True)

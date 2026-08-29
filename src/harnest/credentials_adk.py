@@ -25,6 +25,7 @@ with warnings.catch_warnings():
 from .context import (
     AgentContext,
     activate_context,
+    context,
     create_agent_context,
     revoke_context,
 )
@@ -56,6 +57,7 @@ class _InvocationScope:
     invocation_id: str
     agent_context: AgentContext = field(repr=False)
     stack: ExitStack = field(repr=False)
+    owns_agent_context: bool = field(default=True, repr=False)
 
 
 class AdkCredentialPlugin(BasePlugin):
@@ -260,15 +262,25 @@ def _open_scope_safely(
 
     stack = ExitStack()
     active: AgentContext | None = None
+    owns_agent_context = True
     failure_type: str | None = None
     try:
-        active = _agent_context(invocation_context)
+        active, owns_agent_context = _agent_context(invocation_context)
+        native_invocation_id = _required_text(
+            getattr(invocation_context, "invocation_id", None),
+            "invocation id",
+        )
         stack.enter_context(activate_context(active))
         stack.enter_context(_activate_credential_provider(provider))
-        return _InvocationScope(active.invocation_id, active, stack), None
+        return _InvocationScope(
+            native_invocation_id,
+            active,
+            stack,
+            owns_agent_context=owns_agent_context,
+        ), None
     except Exception as error:
         failure_type = type(error).__name__
-    if active is not None:
+    if active is not None and owns_agent_context:
         revoke_context(active)
     try:
         stack.close()
@@ -286,7 +298,11 @@ def _close_scope_safely(
 
     # Revocation happens before token reset so copied root/subagent tasks fail
     # closed even if ADK ever invokes cleanup from a different Context.
-    revoke_context(scope.agent_context)
+    # Managed runtime context owns resources, storage, and the shared lifetime.
+    # Revoking it here would invalidate capabilities before outer lifecycle and
+    # event handling finish, so only standalone native scopes are owned here.
+    if scope.owns_agent_context:
+        revoke_context(scope.agent_context)
     failure_type: str | None = None
     try:
         scope.stack.close()
@@ -299,8 +315,10 @@ def _close_scope_safely(
     )
 
 
-def _agent_context(invocation_context: InvocationContext) -> AgentContext:
-    """Translate only stable ADK identity into a private Harnest context."""
+def _agent_context(
+    invocation_context: InvocationContext,
+) -> tuple[AgentContext, bool]:
+    """Reuse managed authority or create the standalone native fallback."""
 
     session = getattr(invocation_context, "session", None)
     principal = _active_authenticated_principal()
@@ -312,19 +330,47 @@ def _agent_context(invocation_context: InvocationContext) -> AgentContext:
         if principal is not None
         else _required_text(getattr(session, "user_id", None), "user id")
     )
-    return create_agent_context(
-        framework="adk",
-        agent_name=_root_agent_name(invocation_context),
-        invocation_id=_required_text(
+    identity = {
+        "framework": "adk",
+        "agent_name": _root_agent_name(invocation_context),
+        "invocation_id": _required_text(
             getattr(invocation_context, "invocation_id", None), "invocation id"
         ),
-        user_id=user_id,
-        session_id=_required_text(getattr(session, "id", None), "session id"),
+        "user_id": user_id,
+        "session_id": _required_text(getattr(session, "id", None), "session id"),
+    }
+    try:
+        managed = context.current()
+    except RuntimeError:
+        managed = None
+    if managed is not None:
+        _require_managed_identity(managed, identity)
+        return managed, False
+    return create_agent_context(
+        framework="adk",
+        agent_name=identity["agent_name"],
+        invocation_id=identity["invocation_id"],
+        user_id=identity["user_id"],
+        session_id=identity["session_id"],
         # ADK custom metadata can propagate into events and telemetry. It is
         # intentionally excluded from the credential authorization boundary.
         metadata={},
         resources={},
-    )
+    ), True
+
+
+def _require_managed_identity(
+    managed: AgentContext, identity: dict[str, str]
+) -> None:
+    """Reject a native callback that does not belong to the active invocation."""
+
+    # ADK allocates its own invocation ID for a new run while Harnest retains
+    # the public response ID for audit correlation. User/session tenancy is the
+    # shared authority; the native ID separately keys this plugin's cleanup.
+    for name in ("framework", "user_id", "session_id"):
+        expected = identity[name]
+        if getattr(managed, name) != expected:
+            raise ValueError("ADK credential invocation does not match active context")
 
 
 def _root_agent_name(invocation_context: InvocationContext) -> str:
@@ -334,7 +380,13 @@ def _root_agent_name(invocation_context: InvocationContext) -> str:
     root_agent = getattr(agent, "root_agent", None)
     if root_agent is None:
         root_agent = agent
-    return _required_text(getattr(root_agent, "name", None), "root agent name")
+    name = getattr(root_agent, "name", None)
+    if not isinstance(name, str) or not name.strip():
+        try:
+            name = context.current().agent_name
+        except RuntimeError:
+            name = None
+    return _required_text(name, "root agent name")
 
 
 def _invocation_id_safely(

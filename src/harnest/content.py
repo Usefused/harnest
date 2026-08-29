@@ -74,6 +74,19 @@ class AssetRef(_AssetContent):
     """A backend-neutral reference to bytes held by an asset store."""
 
     type: Literal["asset"] = "asset"
+    label: str | None = Field(default=None, min_length=1, max_length=128, repr=False)
+
+    @field_validator("label")
+    @classmethod
+    def _normalize_label(cls, value: str | None) -> str | None:
+        """Keep optional domain meaning bounded and separate from routing."""
+
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("asset label must not be empty")
+        return normalized
 
 
 class _MediaContent(_PortableModel):

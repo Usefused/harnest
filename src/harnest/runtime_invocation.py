@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 import uuid
 
@@ -14,19 +15,26 @@ from starlette.exceptions import HTTPException
 from .approval import InMemoryApprovalStore
 from .assets import AssetScope, AssetStore
 from .client_tool import InMemoryClientToolStore
+from .checkpoint import RunRecord
 from .content_validation import ContentValidationError, resolve_model_content
 from .runtime_continuation import (
     completed_payload,
+    external_in_progress_payload,
     json_client_requires_action,
     json_requires_action,
     next_run_boundary,
     start_approval_run,
+)
+from .external_continuation import (
+    ExternalContinuationFailed,
+    PendingExternalContinuation,
 )
 from .runtime_contract import (
     InvocationRequest,
     InvocationResult,
     NoCustomerFacingOutputError,
     RuntimeDriver,
+    SessionMessage,
     require_customer_facing_output,
 )
 from .server_config import format_byte_size
@@ -69,6 +77,7 @@ class InvocationCoordinator:
     semaphore: asyncio.Semaphore
     request_timeout: float
     max_request_bytes: int
+    external_continuations: Any | None = None
 
     async def resolve_session(self, *, user_id: str, session_id: str | None) -> Any:
         """Create an implicit session or authorize one explicit session."""
@@ -217,6 +226,7 @@ class InvocationCoordinator:
             self.driver,
             request,
             stream=False,
+            external_continuations=self.external_continuations,
         )
         try:
             async with self.semaphore:
@@ -239,6 +249,129 @@ class InvocationCoordinator:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return self._completed_json(result, request=request)
 
+    async def poll_json(
+        self, *, response_id: str, user_id: str, session_id: str
+    ) -> dict[str, Any]:
+        """Read one principal/session-scoped external continuation response."""
+
+        if self.external_continuations is None:
+            raise HTTPException(status_code=404, detail="Response not found")
+        try:
+            kind, value = await self.external_continuations.response_boundary(
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Response not found") from exc
+        if kind == "final":
+            return value
+        if kind == "durable_terminal":
+            return await self._durable_terminal_json(
+                value,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        if kind == "external_continuation":
+            return self._external_in_progress(
+                value, response_id=response_id, session_id=session_id
+            )
+        if kind == "error":
+            payload = self._failed_json(value, response_id, session_id)
+            self._retain_final(payload, response_id, user_id, session_id)
+            return payload
+        boundary = self._boundary_response(
+            kind,
+            value,
+            request=InvocationRequest(
+                input="",
+                user_id=user_id,
+                session_id=session_id,
+                invocation_id=response_id,
+                metadata={},
+                state_delta={},
+            ),
+        )
+        if boundary is not None:
+            return boundary
+        require_customer_facing_output(value.text, value.result)
+        payload = self._completed_json(
+            value,
+            request=InvocationRequest(
+                input="",
+                user_id=user_id,
+                session_id=session_id,
+                invocation_id=response_id,
+                metadata={},
+                state_delta={},
+            ),
+        )
+        self._retain_final(payload, response_id, user_id, session_id)
+        return payload
+
+    async def _durable_terminal_json(
+        self,
+        run: RunRecord,
+        *,
+        response_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Rebuild a terminal response when another replica owned execution."""
+
+        result = (
+            await self._reconstruct_result(run, user_id=user_id)
+            if run.status == "completed"
+            else None
+        )
+        if result is None:
+            payload = self._failed_json(
+                RuntimeError("durable response unavailable"),
+                response_id,
+                session_id,
+            )
+        else:
+            try:
+                require_customer_facing_output(result.text, result.result)
+            except NoCustomerFacingOutputError as error:
+                payload = self._failed_json(error, response_id, session_id)
+            else:
+                payload = self._completed_json(
+                    result,
+                    request=self.create_request(
+                        "",
+                        user_id=user_id,
+                        session_id=session_id,
+                        metadata={},
+                        transport="continuation_poll",
+                        invocation_id=response_id,
+                    ),
+                )
+        self._retain_final_if_present(payload, response_id, user_id, session_id)
+        return payload
+
+    async def _reconstruct_result(
+        self, run: RunRecord, *, user_id: str
+    ) -> InvocationResult | None:
+        """Read one stable final assistant message from the committed session."""
+
+        messages = await self.driver.get_session_messages(
+            session_id=run.session_id,
+            user_id=user_id,
+        )
+        session = await self.driver.get_session(
+            session_id=run.session_id,
+            user_id=user_id,
+        )
+        if messages is None or session is None:
+            return None
+        # A later turn makes "last assistant" ambiguous. Failing closed avoids
+        # returning another invocation's output under this response identifier.
+        if _timestamp_after(session.updated_at, run.updated_at):
+            return None
+        return _result_from_final_message(messages, run.session_id)
+
     @staticmethod
     def _boundary_response(
         kind: str,
@@ -260,11 +393,90 @@ class InvocationCoordinator:
                 response_id=request.invocation_id,
                 session_id=request.session_id,
             )
+        if kind == "external_continuation":
+            return InvocationCoordinator._external_in_progress(
+                value,
+                response_id=request.invocation_id,
+                session_id=request.session_id,
+            )
         if kind == "error":
             raise value
         if kind != "result":
             raise RuntimeError("unexpected approval run notification")
         return None
+
+    @staticmethod
+    def _external_in_progress(
+        pending: PendingExternalContinuation,
+        *,
+        response_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Render an opaque wait without exposing provider or external job ids."""
+
+        payload = external_in_progress_payload(
+            pending,
+            response_id=response_id,
+            session_id=session_id,
+            sequence=0,
+        )
+        payload.pop("type")
+        payload.pop("sequence")
+        payload["id"] = payload.pop("responseId")
+        return payload
+
+    @staticmethod
+    def _failed_json(
+        error: BaseException, response_id: str, session_id: str
+    ) -> dict[str, Any]:
+        """Detach provider and framework error details from status polling."""
+
+        code = (
+            "external_continuation_failed"
+            if isinstance(error, ExternalContinuationFailed)
+            else "invocation_failed"
+        )
+        return {
+            "id": response_id,
+            "sessionId": session_id,
+            "status": "failed",
+            "error": {"code": code},
+            "outputText": "",
+            "output": [],
+            "metadata": {},
+        }
+
+    def _retain_final(
+        self,
+        payload: dict[str, Any],
+        response_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> None:
+        """Delegate bounded response ownership to the continuation runtime."""
+
+        self.external_continuations.retain_final(
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+            payload=payload,
+        )
+
+    def _retain_final_if_present(
+        self,
+        payload: dict[str, Any],
+        response_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> None:
+        """Cache when this replica owns local state; durable reads need none."""
+
+        try:
+            self._retain_final(payload, response_id, user_id, session_id)
+        except KeyError:
+            # Callback-only replicas reconstruct from tenant-scoped durable
+            # state and intentionally have no process-local response tombstone.
+            return
 
     @staticmethod
     def _completed_json(
@@ -287,3 +499,62 @@ class InvocationCoordinator:
         completed.pop("sequence")
         completed["id"] = completed.pop("responseId")
         return completed
+
+
+def _timestamp_after(left: str | None, right: str | None) -> bool:
+    """Treat missing or malformed ordering evidence as unsafe reconstruction."""
+
+    if left is None or right is None:
+        return True
+    try:
+        return datetime.fromisoformat(left) > datetime.fromisoformat(right)
+    except (TypeError, ValueError):
+        return True
+
+
+def _result_from_final_message(
+    messages: Sequence[SessionMessage], session_id: str
+) -> InvocationResult | None:
+    """Project only the final assistant item so an older turn cannot leak."""
+
+    if not messages or not isinstance(messages[-1], SessionMessage):
+        return None
+    message = messages[-1]
+    if message.role != "assistant":
+        return None
+    text, result = _portable_message_output(message.content)
+    if not text and result is None:
+        return None
+    events = (
+        ({"type": "message", "role": "assistant", "text": text},)
+        if text
+        else ({"type": "graph_output", "output": result},)
+    )
+    return InvocationResult(
+        text=text,
+        events=events,
+        result=result,
+        session_id=session_id,
+        metadata={},
+    )
+
+
+def _portable_message_output(content: Any) -> tuple[str, Any]:
+    """Preserve structured portable content while extracting visible text."""
+
+    if isinstance(content, str):
+        return content, None
+    if isinstance(content, list):
+        text = "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, Mapping)
+            and block.get("type") in {"text", "output_text"}
+        )
+        structured = any(
+            not isinstance(block, Mapping)
+            or block.get("type") not in {"text", "output_text"}
+            for block in content
+        )
+        return text, content if structured else None
+    return "", content

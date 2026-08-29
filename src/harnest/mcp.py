@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Literal, Mapping, Sequence, cast
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence, cast
 
 from .approval import (
     ApprovalPolicy,
@@ -25,6 +25,9 @@ from .mcp_lifecycle import (
 )
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+_ADK_PUBLIC_NAME = "__harnest_mcp_public_name__"
+_ADK_CLIENT_NAME = "__harnest_mcp_client_name__"
+_ADK_APPROVAL_WRAPPED = "__harnest_mcp_approval_wrapped__"
 
 __all__ = [
     "MCPClient",
@@ -191,6 +194,12 @@ class MCPClient:
             tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
             tool_name_prefix=self.tool_name_prefix,
         )
+        _attach_adk_mcp_toolset_metadata(
+            toolset,
+            public_name=self.identity or self.tool_name_prefix or self._client_name(),
+            client_name=self._client_name(),
+            approval_wrapped=self.approval is not None,
+        )
         if binding is not None:
             attach_mcp_lifecycle(toolset, binding)
         return toolset
@@ -199,13 +208,18 @@ class MCPClient:
         policy = self.approval
         if policy is None:
             return base
-        client_name = (
-            self.capability_id or self.identity or self.tool_name_prefix or "mcp"
-        )
+        client_name = self._client_name()
+        public_name = self.identity or self.tool_name_prefix or client_name
         exposed_prefix = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
 
         class ApprovalMcpToolset(base):
-            """Attach Harnest gates after ADK discovers remote tool names."""
+            """Expose adapter identity and gate tools after ADK discovery."""
+
+            # Invocation adapters need the canonical capability key without
+            # retaining the MCPClient, whose fields include raw connection data.
+            __harnest_mcp_public_name__ = public_name
+            __harnest_mcp_client_name__ = client_name
+            __harnest_mcp_approval_wrapped__ = True
 
             async def get_tools(self, readonly_context: Any = None) -> list[Any]:
                 tools = await super().get_tools(readonly_context)
@@ -232,6 +246,11 @@ class MCPClient:
                 return tools
 
         return ApprovalMcpToolset
+
+    def _client_name(self) -> str:
+        """Return the canonical capability identity used by approval and audit."""
+
+        return self.capability_id or self.identity or self.tool_name_prefix or "mcp"
 
     def _adk_connection(
         self,
@@ -307,7 +326,7 @@ class MCPClient:
         controller = self._lifecycle_controller
         if controller is None:
             return None
-        name = self.capability_id or self.identity or self.tool_name_prefix or "mcp"
+        name = self._client_name()
         context = MCPClientContext(
             name=name,
             transport=cast(Literal["sse", "streamable-http"], self.transport),
@@ -325,16 +344,86 @@ def _guard_adk_mcp_tool(
     policy: ApprovalPolicy,
 ) -> Any:
     async def guarded(*, args: dict[str, Any], tool_context: Any) -> Any:
-        grant = await authorize_mcp(client_name, tool_name, args, policy)
-        try:
-            result = await operation(args=args, tool_context=tool_context)
-        except BaseException:
-            record_approved_failure(grant)
-            raise
-        record_approved_execution(grant)
-        return result
+        return await _invoke_governed_mcp_call(
+            lambda: operation(args=args, tool_context=tool_context),
+            client_name=client_name,
+            tool_name=tool_name,
+            arguments=args,
+            policy=policy,
+        )
 
     return guarded
+
+
+def _adk_mcp_toolset_metadata(toolset: Any) -> tuple[str, str, bool]:
+    """Return only the adapter facts needed to bind invocation-scoped tools."""
+
+    public_name = getattr(toolset, _ADK_PUBLIC_NAME, None)
+    client_name = getattr(toolset, _ADK_CLIENT_NAME, None)
+    approval_wrapped = getattr(toolset, _ADK_APPROVAL_WRAPPED, None)
+    if not isinstance(public_name, str) or not public_name:
+        raise TypeError("ADK MCP toolset is missing Harnest public-name metadata")
+    if not isinstance(client_name, str) or not client_name:
+        raise TypeError("ADK MCP toolset is missing Harnest capability metadata")
+    if not isinstance(approval_wrapped, bool):
+        raise TypeError("ADK MCP toolset is missing Harnest governance metadata")
+    return public_name, client_name, approval_wrapped
+
+
+def _attach_adk_mcp_toolset_metadata(
+    toolset: Any,
+    *,
+    public_name: str,
+    client_name: str,
+    approval_wrapped: bool,
+) -> None:
+    """Attach stable adapter facts without retaining the connection declaration."""
+
+    # Some ADK releases use Pydantic models that reject undeclared setattr even
+    # though the runtime object can safely carry private integration metadata.
+    object.__setattr__(toolset, _ADK_PUBLIC_NAME, public_name)
+    object.__setattr__(toolset, _ADK_CLIENT_NAME, client_name)
+    object.__setattr__(toolset, _ADK_APPROVAL_WRAPPED, approval_wrapped)
+
+
+async def _invoke_governed_mcp_call(
+    operation: Callable[[], Awaitable[Any]],
+    *,
+    client_name: str,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    policy: ApprovalPolicy | None,
+) -> Any:
+    """Run a discovered MCP tool through the shared approval boundary.
+
+    Runtime adapters and the invocation-scoped facade use one implementation so
+    a context-originated call cannot accidentally receive weaker approval and
+    execution accounting than the same framework tool called by the model.
+    """
+
+    grant = None
+    if policy is not None:
+        grant = await authorize_mcp(client_name, tool_name, arguments, policy)
+    try:
+        result = await operation()
+    except BaseException:
+        record_approved_failure(grant)
+        raise
+    if _mcp_result_failed(result):
+        record_approved_failure(grant)
+    else:
+        record_approved_execution(grant)
+    return result
+
+
+def _mcp_result_failed(result: Any) -> bool:
+    """Recognize portable MCP error results without inspecting their payload."""
+
+    if isinstance(result, Mapping):
+        return result.get("isError") is True or result.get("status") == "error"
+    return getattr(result, "isError", False) is True or getattr(
+        result, "status", None
+    ) == "error"
 
 
 def _mcp_connection_configuration(client: MCPClient) -> tuple[Any, ...]:

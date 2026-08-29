@@ -14,7 +14,13 @@ from google.adk.auth.credential_service.base_credential_service import (
 )
 from google.adk.plugins.base_plugin import BasePlugin
 
-from harnest.context import ContextUnavailableError, context
+from harnest.context import (
+    ContextUnavailableError,
+    activate_context,
+    context,
+    create_agent_context,
+    revoke_context,
+)
 from harnest.credentials import (
     Credential,
     CredentialProvider,
@@ -90,6 +96,61 @@ def _invocation(invocation_id="run-1", *, agent=None):
 
 
 class AdkCredentialPluginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_managed_context_authority_is_reused_without_early_revocation(self):
+        provider = _RecordingProvider()
+        plugin = adk_credential_plugin(provider)
+        invocation = _invocation()
+        managed = create_agent_context(
+            framework="adk",
+            agent_name="support",
+            invocation_id="run-1",
+            user_id="user:run-1",
+            session_id="session:run-1",
+            metadata={"request": "managed"},
+            resources={"memory": object()},
+            asset_stores={"default": object()},
+            custom_stores={"users": object()},
+        )
+
+        with activate_context(managed):
+            await plugin.before_run_callback(invocation_context=invocation)
+            self.assertIs(context.current(), managed)
+            self.assertIs(context.resource("memory"), managed._resources["memory"])
+            await plugin.after_run_callback(invocation_context=invocation)
+            # The outer runtime still owns this lifetime after ADK cleanup.
+            self.assertIs(context.current(), managed)
+            self.assertEqual(context.metadata, {"request": "managed"})
+
+        revoke_context(managed)
+
+    async def test_managed_context_allows_adk_native_invocation_identifier(self):
+        """Keep portable correlation while using ADK's ID only for plugin cleanup."""
+
+        provider = _RecordingProvider()
+        plugin = adk_credential_plugin(provider)
+        invocation = _invocation("native-run")
+        invocation.session.user_id = "user:portable-run"
+        invocation.session.id = "session:portable-run"
+        managed = create_agent_context(
+            framework="adk",
+            agent_name="support",
+            invocation_id="portable-run",
+            user_id="user:portable-run",
+            session_id="session:portable-run",
+            metadata={},
+            resources={},
+        )
+
+        with activate_context(managed):
+            await plugin.before_run_callback(invocation_context=invocation)
+            resolved = await credentials.resolve("billing")
+            await plugin.after_run_callback(invocation_context=invocation)
+            self.assertIs(context.current(), managed)
+
+        revoke_context(managed)
+        self.assertEqual(resolved.reveal(), "token:portable-run")
+        self.assertEqual(provider.requests[0].invocation_id, "portable-run")
+
     async def test_resolves_only_between_callbacks_without_visible_resources(self):
         provider = _RecordingProvider()
         plugin = adk_credential_plugin(provider)

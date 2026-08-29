@@ -15,19 +15,14 @@ import inspect
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pydantic import BaseModel
 
 from ._json import json_value
-from .approval import (
-    ApprovalPolicy,
-    authorize_mcp,
-    record_approved_execution,
-    record_approved_failure,
-)
+from .approval import ApprovalPolicy
 from .application import CompiledApplication
 from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
@@ -35,9 +30,21 @@ from .checkpoint import CheckpointStore, HarnestStore, RunScope
 from .checkpoint_langgraph import managed_run_config
 from .client_tool import current_transient_media
 from .content import AssetRef, Audio, Data, File, Image, Text, Video
+from .context_session import current_session_lease, invocation_session_context
+from .durable import NativeDurableSuspended, NativeResumeInput
 from .graph import _model_input_text
 from .model_lifecycle import close_litellm_lifecycles
-from .mcp import _validate_approval_tools
+from .mcp import (
+    _invoke_governed_mcp_call,
+    _mcp_result_failed,
+    _validate_approval_tools,
+)
+from .mcp_context import (
+    MCPToolCallError,
+    _activate_mcp_context,
+    _managed_mcp_tool,
+    _mark_governed_mcp_operation,
+)
 from .mcp_lifecycle import (
     _MCPClientLifecycleBinding,
     close_mcp_lifecycles,
@@ -79,6 +86,9 @@ _GRAPH_RUNTIME_KEYS = frozenset(
 _MODEL_ASSET_SCOPE: contextvars.ContextVar[AssetScope | None] = (
     contextvars.ContextVar("harnest_langgraph_asset_scope", default=None)
 )
+_MCP_NATIVE_CALL_SCOPE: contextvars.ContextVar[
+    tuple[object, Any, Any, Mapping[str, Any]] | None
+] = contextvars.ContextVar("harnest_langgraph_mcp_native_call", default=None)
 _CONTENT_PART_TYPES = (Text, Image, Audio, Video, File, Data, AssetRef)
 _NO_ORDINARY_CONTENT = object()
 
@@ -115,6 +125,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._target = None if plan is not None else application.target
         self._mcp_clients: list[Any] = []
         self._mcp_lifecycles: list[_MCPClientLifecycleBinding] = []
+        self._mcp_context_clients: dict[str, dict[str, Any]] = {}
         self._materialize_lock = asyncio.Lock()
         self._recursion_limit = recursion_limit
         self._info = _agent_info(application, card_value)
@@ -146,6 +157,12 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     @property
     def info(self) -> AgentInfo:
         return self._info
+
+    @property
+    def session_context_store(self) -> SessionStore:
+        """Expose the portable authority so outer lifecycle hooks reuse its lease."""
+
+        return self._session_store
 
     async def create_session(
         self,
@@ -236,33 +253,40 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         """Run one graph invocation and return canonical neutral events."""
 
         session_id = await self._session_id_for_request(request)
-        async with self._session_store.acquire(
-            session_id=session_id, user_id=request.user_id
+        native_resume = _native_resume(request.input)
+        async with _invocation_session(
+            self._session_store, request, session_id
         ) as session:
-            await self._apply_request_delta(session, request)
             scope = AssetScope(user_id=request.user_id, session_id=session_id)
-            graph_input = await _graph_input(
-                self._application,
-                request.input,
-                session.record.state,
-                stores=self._asset_stores,
-                scope=AssetScope(request.user_id, session_id),
-            )
-            await self._begin_checkpoint(request, session_id)
             config = self._execution_config(request, session_id)
-            target = await self._target_for_run()
-            scope_token = _MODEL_ASSET_SCOPE.set(
-                AssetScope(user_id=request.user_id, session_id=session_id)
-            )
-            try:
-                result = await target.ainvoke(graph_input, config=config)
-                await self._store_result(
-                    session,
-                    result,
-                    scope=AssetScope(
-                        user_id=request.user_id, session_id=session_id
-                    ),
+            if native_resume is None:
+                await self._apply_request_delta(session, request)
+                graph_input = await _graph_input(
+                    self._application,
+                    request.input,
+                    session.record.state,
+                    stores=self._asset_stores,
+                    scope=scope,
                 )
+                turn_start = _message_count(graph_input)
+                await self._begin_checkpoint(request, session_id)
+            else:
+                # The checkpoint is the suspended invocation's input. Applying
+                # the original request again would duplicate the user turn.
+                turn_start = _message_count(session.record.state)
+                graph_input = _resume_command(native_resume, config)
+            target = await self._target_for_run()
+            scope_token = _MODEL_ASSET_SCOPE.set(scope)
+            try:
+                with self._mcp_invocation_scope():
+                    result = await _target_invoke(target, graph_input, config)
+                await self._store_result(session, result, scope=scope)
+                if _has_native_interrupt(result):
+                    # Pregel returns interrupts only after its sync checkpoint
+                    # write, so another replica can safely consume the signal.
+                    raise NativeDurableSuspended
+            except NativeDurableSuspended:
+                raise
             except BaseException:
                 await self._finish_checkpoint(request, session_id, "failed")
                 raise
@@ -270,7 +294,6 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 _MODEL_ASSET_SCOPE.reset(scope_token)
             await self._finish_checkpoint(request, session_id, "completed")
 
-        turn_start = _message_count(graph_input)
         text_value, public_result = _graph_output(
             self._application, result, turn_start=turn_start
         )
@@ -303,35 +326,48 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             return
 
         session_id = await self._session_id_for_request(request)
-        async with self._session_store.acquire(
-            session_id=session_id, user_id=request.user_id
+        native_resume = _native_resume(request.input)
+        async with _invocation_session(
+            self._session_store, request, session_id
         ) as session:
-            await self._apply_request_delta(session, request)
             scope = AssetScope(user_id=request.user_id, session_id=session_id)
-            graph_input = await _graph_input(
-                self._application,
-                request.input,
-                session.record.state,
-                stores=self._asset_stores,
-                scope=scope,
-            )
-            await self._begin_checkpoint(request, session_id)
             config = self._execution_config(request, session_id)
+            if native_resume is None:
+                await self._apply_request_delta(session, request)
+                graph_input = await _graph_input(
+                    self._application,
+                    request.input,
+                    session.record.state,
+                    stores=self._asset_stores,
+                    scope=scope,
+                )
+                turn_start = _message_count(graph_input)
+                await self._begin_checkpoint(request, session_id)
+            else:
+                # A resume consumes the persisted Pregel checkpoint directly;
+                # portable session state remains the committed public history.
+                turn_start = _message_count(session.record.state)
+                graph_input = _resume_command(native_resume, config)
             state = _StreamState()
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
-                async for event in _target_stream(
-                    target,
-                    graph_input,
-                    config,
-                    state,
-                    self._application.output_policy,
-                ):
-                    yield event
+                with self._mcp_invocation_scope():
+                    async for event in _target_stream(
+                        target,
+                        graph_input,
+                        config,
+                        state,
+                        self._application.output_policy,
+                    ):
+                        yield event
                 state.final_state = (
                     state.final_state if state.final_state is not None else {}
                 )
                 await self._store_result(session, state.final_state, scope=scope)
+                if _has_native_interrupt(state.final_state):
+                    raise NativeDurableSuspended
+            except NativeDurableSuspended:
+                raise
             except BaseException:
                 await self._finish_checkpoint(request, session_id, "failed")
                 raise
@@ -339,7 +375,6 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 _MODEL_ASSET_SCOPE.reset(scope_token)
             await self._finish_checkpoint(request, session_id, "completed")
 
-        turn_start = _message_count(graph_input)
         for event in _final_stream_events(
             self._application, state, turn_start=turn_start
         ):
@@ -468,8 +503,49 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 discovered, server_name=server_name, allowed=configured.tool_filter
             )
             _validate_mcp_approval(selected, server_name, configured)
+            public_name = configured.identity or server_name
+            self._register_mcp_context_tools(public_name, server_name, selected)
             tools.extend(selected)
         return tools
+
+    def _register_mcp_context_tools(
+        self,
+        public_name: str,
+        capability_id: str,
+        tools: Sequence[Any],
+    ) -> None:
+        """Give native and context dispatch the same governed MCP marker."""
+
+        if public_name in self._mcp_context_clients:
+            raise ValueError(
+                f"duplicate LangGraph MCP public name {public_name!r}"
+            )
+        governed: dict[str, Any] = {}
+        for tool in tools:
+            native_name = str(getattr(tool, "name", ""))
+            public_tool_name = _remote_mcp_tool_name(native_name, capability_id)
+            if public_tool_name in governed:
+                raise ValueError(
+                    "duplicate LangGraph MCP public tool name "
+                    f"{public_tool_name!r}"
+                )
+            marker = _langgraph_mcp_marker(capability_id, public_tool_name, tool)
+            governed[public_tool_name] = marker
+        self._mcp_context_clients[public_name] = governed
+
+    @contextmanager
+    def _mcp_invocation_scope(self):
+        """Bind MCP authority only while an outer managed context is active."""
+
+        if not self._mcp_context_clients or not _has_agent_context():
+            # Direct backend tests and unsupported advanced execution have no
+            # capability context; marker invocation still fails closed there.
+            yield
+            return
+        with _activate_mcp_context(
+            self._mcp_context_clients, self._application.extensions
+        ):
+            yield
 
     async def _start_mcp_lifecycles(
         self, configured_group: Sequence[Any]
@@ -504,6 +580,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 if failure is None:
                     failure = error
         self._mcp_clients.clear()
+        self._mcp_context_clients.clear()
         try:
             await close_mcp_lifecycles(
                 self._mcp_lifecycles, reset=reset_lifecycles
@@ -516,14 +593,26 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             raise failure
 
     async def _session_id_for_request(self, request: InvocationRequest) -> str:
+        """Resolve an existing session without reacquiring its outer lease."""
+
         self._ensure_open()
         user_id = request.user_id
         _require_identifier(user_id, "request.user_id")
         requested_id = request.session_id
         if requested_id is not None:
             _require_identifier(requested_id, "request.session_id")
-            stored = await self._session_store.get(
-                user_id=user_id, session_id=requested_id
+            active = current_session_lease(
+                store=self._session_store,
+                user_id=user_id,
+                session_id=requested_id,
+                invocation_id=request.invocation_id,
+            )
+            stored = (
+                active.record
+                if active is not None
+                else await self._session_store.get(
+                    user_id=user_id, session_id=requested_id
+                )
             )
             if stored is None:
                 raise KeyError("session not found")
@@ -1138,9 +1227,77 @@ def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> Agent
         card=card,
         framework="langgraph",
         mode=application.mode,
+        lifecycle_coverage=application.lifecycle_coverage.report(),
         input_schema=application.input_schema,
         output_schema=application.output_schema,
     )
+
+
+def _native_resume(value: Any) -> NativeResumeInput | None:
+    """Separate compiler-owned resume input from ordinary authored input."""
+
+    return value if isinstance(value, NativeResumeInput) else None
+
+
+def _resume_command(
+    resume: NativeResumeInput, config: Mapping[str, Any]
+) -> Any:
+    """Build a Command only after its persisted thread matches request ownership."""
+
+    artifact = resume.artifact
+    if artifact.framework != "langgraph":
+        raise ValueError("LangGraph runtime cannot resume another framework")
+    configurable = config.get("configurable")
+    thread_id = (
+        configurable.get("thread_id")
+        if isinstance(configurable, Mapping)
+        else None
+    )
+    if artifact.native_invocation_id != thread_id:
+        # The persisted artifact is private, but checking it again prevents a
+        # corrupt record from crossing application, principal, or run scope.
+        raise ValueError("LangGraph durable resume thread does not match request")
+    from langgraph.types import Command
+
+    return Command(resume=resume.value)
+
+
+def _durability_options(method: Any) -> dict[str, str]:
+    """Request synchronous checkpoints when the target supports that contract."""
+
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return {}
+    supported = any(
+        parameter.name == "durability"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    # Older compatible targets do not expose durability. Pregel 1.2 does, and
+    # sync ordering is what makes a returned interrupt safe for another replica.
+    return {"durability": "sync"} if supported else {}
+
+
+async def _target_invoke(
+    target: Any, graph_input: Any, config: Mapping[str, Any]
+) -> Any:
+    """Invoke one target with the strongest checkpoint durability it supports."""
+
+    return await target.ainvoke(
+        graph_input,
+        config=config,
+        **_durability_options(target.ainvoke),
+    )
+
+
+def _has_native_interrupt(result: Any) -> bool:
+    """Recognize Pregel's persisted top-level interruption result."""
+
+    if not isinstance(result, Mapping):
+        return False
+    interrupts = result.get("__interrupt__")
+    return isinstance(interrupts, (list, tuple)) and bool(interrupts)
 
 
 async def _target_stream(
@@ -1152,7 +1309,12 @@ async def _target_stream(
 ) -> AsyncIterator[dict[str, Any]]:
     """Normalize target events while keeping tool traces independently visible."""
 
-    stream = target.astream(graph_input, config=config, stream_mode=["messages", "values"])
+    stream = target.astream(
+        graph_input,
+        config=config,
+        stream_mode=["messages", "values"],
+        **_durability_options(target.astream),
+    )
     async with aclosing(stream):
         async for item in stream:
             mode, value = _stream_item(item)
@@ -1224,6 +1386,159 @@ def _mcp_client_type() -> Any:
     return MultiServerMCPClient
 
 
+def _langgraph_mcp_marker(
+    client_name: str, tool_name: str, tool: Any
+) -> Any:
+    """Route native BaseTool and context calls through one governed marker."""
+
+    original = getattr(tool, "ainvoke", None)
+    if not callable(original):
+        raise TypeError(
+            f"LangGraph MCP tool {tool_name!r} must expose async invocation"
+        )
+    owner = object()
+
+    async def operation(arguments: Mapping[str, Any]) -> Any:
+        native = _MCP_NATIVE_CALL_SCOPE.get()
+        if native is not None and native[0] is owner:
+            _, tool_input, config, kwargs = native
+            result = await original(tool_input, config=config, **dict(kwargs))
+            return _checked_mcp_tool_result(result)
+        result = await original(
+            _context_mcp_tool_call(tool_name, arguments)
+        )
+        return _context_mcp_tool_result(result)
+
+    marker = _managed_mcp_tool(client_name, tool_name, operation)
+
+    async def routed(
+        tool_input: Any,
+        config: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if not _has_agent_context():
+            # Direct/advanced framework ownership has no managed context to
+            # revoke. Preserve its native execution and adapter approval path.
+            return await original(tool_input, config=config, **kwargs)
+        arguments = _mcp_tool_arguments(tool_input)
+        token = _MCP_NATIVE_CALL_SCOPE.set(
+            (owner, tool_input, config, dict(kwargs))
+        )
+        try:
+            try:
+                result = await marker.invoke(arguments)
+            except MCPToolCallError:
+                if not _is_native_tool_call(tool_input):
+                    raise
+                return _native_mcp_tool_output(
+                    tool,
+                    tool_input,
+                    "managed MCP tool returned an error",
+                    status="error",
+                )
+            return _native_mcp_tool_output(tool, tool_input, result)
+        finally:
+            _MCP_NATIVE_CALL_SCOPE.reset(token)
+
+    routed.__name__ = tool_name
+    _mark_governed_mcp_operation(routed)
+    # The adapter creates each discovered tool for this driver, so replacing
+    # its entry point cannot affect another application or connection owner.
+    object.__setattr__(tool, "ainvoke", routed)
+    return marker
+
+
+def _context_mcp_tool_call(
+    tool_name: str, arguments: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Preserve LangChain's error status for context-originated MCP calls."""
+
+    # A plain BaseTool input discards ToolMessage status and turns MCP isError
+    # into ordinary content. The public ToolCall envelope retains that status.
+    return {
+        "type": "tool_call",
+        "name": tool_name,
+        "args": dict(arguments),
+        "id": f"harnest-mcp-{uuid.uuid4().hex}",
+    }
+
+
+def _context_mcp_tool_result(result: Any) -> Any:
+    """Return successful content and turn provider errors into safe lifecycle flow."""
+
+    _checked_mcp_tool_result(result)
+    if getattr(result, "type", None) == "tool" and hasattr(result, "content"):
+        return result.content
+    return result
+
+
+def _checked_mcp_tool_result(result: Any) -> Any:
+    """Detach provider error results before authored lifecycle observers see them."""
+
+    if _mcp_result_failed(result):
+        # ToolMessage content may contain an arbitrary provider response. The
+        # replacement error deliberately retains no reference to that object.
+        raise MCPToolCallError("managed MCP tool returned an error")
+    return result
+
+
+def _native_mcp_tool_output(
+    tool: Any, tool_input: Any, result: Any, *, status: str = "success"
+) -> Any:
+    """Preserve native ToolCall correlation for finish, recovery, and failure."""
+
+    from .backends.langgraph import _native_tool_call_output
+
+    return _native_tool_call_output(
+        tool, tool_input, result, status=status
+    )
+
+
+def _remote_mcp_tool_name(native_name: str, capability_id: str) -> str:
+    """Recover the adapter's discovered name for the public client facade."""
+
+    prefix = f"{capability_id}_"
+    if not native_name.startswith(prefix):
+        raise ValueError(
+            f"LangGraph MCP tool {native_name!r} is missing its client prefix"
+        )
+    return native_name.removeprefix(prefix)
+
+
+def _mcp_tool_arguments(tool_input: Any) -> Mapping[str, Any]:
+    """Extract user arguments while retaining the native envelope for dispatch."""
+
+    if not isinstance(tool_input, Mapping):
+        raise TypeError("LangGraph MCP tool input must be a mapping")
+    if tool_input.get("type") != "tool_call":
+        return tool_input
+    arguments = tool_input.get("args")
+    if not isinstance(arguments, Mapping):
+        raise TypeError("LangGraph MCP tool-call args must be a mapping")
+    return arguments
+
+
+def _is_native_tool_call(tool_input: Any) -> bool:
+    """Identify calls for which LangGraph requires a ToolMessage response."""
+
+    return (
+        isinstance(tool_input, Mapping)
+        and tool_input.get("type") == "tool_call"
+    )
+
+
+def _has_agent_context() -> bool:
+    """Detect the outer runtime authority without broadening direct-driver use."""
+
+    from .context import context
+
+    try:
+        context.current()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _mcp_connections(
     configured_group: Sequence[Any],
 ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
@@ -1287,27 +1602,15 @@ def mcp_approval_interceptor(
         tool_name = str(request.name)
         if not policy.applies_to(tool_name):
             return await handler(request)
-        grant = await authorize_mcp(client_name, tool_name, request.args, policy)
-        try:
-            result = await handler(request)
-        except BaseException:
-            record_approved_failure(grant)
-            raise
-        if _mcp_result_failed(result):
-            record_approved_failure(grant)
-        else:
-            record_approved_execution(grant)
-        return result
+        return await _invoke_governed_mcp_call(
+            lambda: handler(request),
+            client_name=client_name,
+            tool_name=tool_name,
+            arguments=request.args,
+            policy=policy,
+        )
 
     return require_approval
-
-
-def _mcp_result_failed(result: Any) -> bool:
-    """Recognize adapter-level error results before they become ToolMessages."""
-
-    return getattr(result, "isError", False) is True or getattr(
-        result, "status", None
-    ) == "error"
 
 
 def _require_identifier(value: Any, field_name: str) -> None:
@@ -1638,6 +1941,28 @@ def _managed_graph_internal_state(
     }
     internal[_SESSION_STATE_KEY] = dict(user_state)
     return internal
+
+
+@asynccontextmanager
+async def _invocation_session(
+    store: SessionStore,
+    request: InvocationRequest,
+    session_id: str,
+) -> AsyncIterator[SessionLease]:
+    """Acquire or reuse the one invocation lease shared with outer hooks."""
+
+    async with invocation_session_context(
+        store,
+        framework="langgraph",
+        user_id=request.user_id,
+        session_id=session_id,
+        invocation_id=request.invocation_id,
+    ) as lease:
+        # This adapter always supplies a portable store, so the helper cannot
+        # yield its no-store sentinel at this managed boundary.
+        if lease is None:  # pragma: no cover - protected by the store argument
+            raise RuntimeError("LangGraph session lease is unavailable")
+        yield lease
 
 
 def _visible_value(value: Any) -> str:

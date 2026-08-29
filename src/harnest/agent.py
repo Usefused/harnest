@@ -15,6 +15,7 @@ from .mcp import MCPClient
 from .mcp_lifecycle import propagate_mcp_lifecycles
 from .model import ModelInput, resolve_model
 from .model_lifecycle import propagate_litellm_lifecycles
+from .durable import adk_durable_tool, is_durable_tool
 from .sandbox import Sandbox
 from .structured import (
     PydanticModel,
@@ -234,7 +235,16 @@ class AgentDefinition:
 def _adk_runtime_tool(tool: Tool) -> Tool:
     """Serialize validated Pydantic tool values before ADK wraps responses."""
 
-    if not callable(tool) or getattr(tool, "__harnest_output_schema__", None) is None:
+    if not callable(tool):
+        return tool
+    runtime_tool = _adk_serializing_tool(tool)
+    return adk_durable_tool(runtime_tool) if is_durable_tool(tool) else runtime_tool
+
+
+def _adk_serializing_tool(tool: Tool) -> Tool:
+    """Build the value adapter that executes inside any durable ADK boundary."""
+
+    if getattr(tool, "__harnest_output_schema__", None) is None:
         return tool
     if inspect.iscoroutinefunction(tool):
 

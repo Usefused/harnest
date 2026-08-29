@@ -72,6 +72,7 @@ class AgentInfo:
     extra_endpoints: Mapping[str, str] = field(default_factory=dict)
     input_schema: Any = None
     output_schema: Any = None
+    lifecycle_coverage: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,7 @@ class SessionRecord:
     created_at: str | None = None
     updated_at: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    application_data: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

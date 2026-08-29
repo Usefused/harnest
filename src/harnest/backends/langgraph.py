@@ -5,10 +5,12 @@ from __future__ import annotations
 import inspect
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, TypedDict
 
 from ..agent import AgentDefinition, _AdvancedAgentDefinition
+from ..durable import is_durable_tool, langgraph_durable_callable
 from ..graph import (
     START,
     Edge,
@@ -21,7 +23,9 @@ from ..graph import (
 )
 from ..model_lifecycle import propagate_litellm_lifecycles
 from ..model_hooks import bind_model_extension
+from ..mcp_context import _is_governed_mcp_operation
 from ..structured import provider_output_schema
+from ..tool_lifecycle import wrap_lifecycle_tool
 
 
 def _langgraph_types():
@@ -93,16 +97,134 @@ def _langchain_tools(values: Sequence[Any]) -> list[Any]:
     result = []
     for value in values:
         if isinstance(value, BaseTool):
-            result.append(value)
+            result.append(_govern_langchain_base_tool(value))
         elif isinstance(value, Mapping):
             result.append(dict(value))
         elif callable(value):
-            result.append(langchain_tool(value))
+            runtime_value = (
+                langgraph_durable_callable(value)
+                if is_durable_tool(value)
+                else value
+            )
+            result.append(langchain_tool(runtime_value))
         else:
             raise TypeError(
                 "LangGraph tools must be callables, BaseTool instances, or mappings"
             )
     return result
+
+
+def _govern_langchain_base_tool(tool: Any) -> Any:
+    """Apply universal lifecycle once to a native LangChain BaseTool."""
+
+    async_operation = getattr(tool, "ainvoke", None)
+    if not callable(async_operation) or _is_governed_mcp_operation(async_operation):
+        return tool
+    if getattr(async_operation, "__harnest_tool_lifecycle_wrapped__", False):
+        return tool
+
+    object.__setattr__(
+        tool,
+        "ainvoke",
+        _wrapped_async_base_tool(tool, async_operation),
+    )
+
+    sync_operation = getattr(tool, "invoke", None)
+    if callable(sync_operation):
+        object.__setattr__(
+            tool,
+            "invoke",
+            _wrapped_sync_base_tool(tool, sync_operation),
+        )
+    return tool
+
+
+def _wrapped_async_base_tool(tool: Any, operation: Any) -> Any:
+    """Build an async lifecycle wrapper that retains ToolCall output semantics."""
+
+    async def invoke(tool_input: Any, config: Any = None, **kwargs: Any) -> Any:
+        return await operation(tool_input, config=config, **kwargs)
+
+    invoke.__name__ = str(getattr(tool, "name", type(tool).__name__))
+    governed = wrap_lifecycle_tool(invoke)
+
+    async def compatible(
+        tool_input: Any, config: Any = None, **kwargs: Any
+    ) -> Any:
+        result = await governed(tool_input, config=config, **kwargs)
+        return _native_tool_call_output(tool, tool_input, result)
+
+    # Materialization checks this marker because a shared BaseTool may be
+    # compiled more than once without acquiring another lifecycle wrapper.
+    setattr(compatible, "__harnest_tool_lifecycle_wrapped__", True)
+    return compatible
+
+
+def _wrapped_sync_base_tool(tool: Any, operation: Any) -> Any:
+    """Build a sync lifecycle wrapper that retains ToolCall output semantics."""
+
+    def invoke(tool_input: Any, config: Any = None, **kwargs: Any) -> Any:
+        return operation(tool_input, config=config, **kwargs)
+
+    invoke.__name__ = str(getattr(tool, "name", type(tool).__name__))
+    governed = wrap_lifecycle_tool(invoke)
+
+    def compatible(tool_input: Any, config: Any = None, **kwargs: Any) -> Any:
+        result = governed(tool_input, config=config, **kwargs)
+        return _native_tool_call_output(tool, tool_input, result)
+
+    setattr(compatible, "__harnest_tool_lifecycle_wrapped__", True)
+    return compatible
+
+
+def _native_tool_call_output(
+    tool: Any,
+    tool_input: Any,
+    result: Any,
+    *,
+    status: str = "success",
+) -> Any:
+    """Restore LangChain's ToolMessage envelope after a lifecycle short-circuit."""
+
+    if not isinstance(tool_input, Mapping) or tool_input.get("type") != "tool_call":
+        return result
+    call_id = tool_input.get("id")
+    if not isinstance(call_id, str) or not call_id:
+        return result
+    from langchain_core.tools.base import _format_output
+
+    # BaseTool normally formats this envelope after its coroutine returns.
+    # Finish and post-hook replacement bypass that point, so the pinned
+    # framework formatter remains authoritative for content normalization.
+    formatted = _format_output(
+        result,
+        None,
+        call_id,
+        str(getattr(tool, "name", type(tool).__name__)),
+        status,
+    )
+    return _restore_tool_message_identity(tool, formatted, call_id)
+
+
+def _restore_tool_message_identity(tool: Any, result: Any, call_id: str) -> Any:
+    """Keep lifecycle replacements attached to the model's original tool call."""
+
+    if isinstance(result, list):
+        return [
+            _restore_tool_message_identity(tool, item, call_id)
+            for item in result
+        ]
+    copier = getattr(result, "model_copy", None)
+    if getattr(result, "type", None) != "tool" or not callable(copier):
+        return result
+    # Hooks may replace content and status, but moving a response to another
+    # call would corrupt ToolNode correlation and downstream message history.
+    return copier(
+        update={
+            "tool_call_id": call_id,
+            "name": str(getattr(tool, "name", type(tool).__name__)),
+        }
+    )
 
 
 def _build_ready_agent(
@@ -151,8 +273,11 @@ def _build_ready_agent(
         "system_prompt": definition.instruction,
         "name": definition.name,
         "middleware": [
-            bind_model_extension(item, agent_name=definition.name)
-            for item in middleware
+            _langgraph_agent_scope_middleware(definition.name),
+            *(
+                bind_model_extension(item, agent_name=definition.name)
+                for item in middleware
+            ),
         ],
     }
     if definition.output_schema is not None:
@@ -173,6 +298,50 @@ def _build_ready_agent(
         consume_value=consume_value,
     )
     return propagate_litellm_lifecycles(model, target)
+
+
+def _langgraph_agent_scope_middleware(agent_name: str) -> Any:
+    """Bind the AgentDefinition identity around native model and tool calls."""
+
+    from langchain.agents.middleware import AgentMiddleware
+
+    class HarnestAgentScopeMiddleware(AgentMiddleware):
+        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            with _managed_agent_scope(agent_name):
+                return await handler(request)
+
+        def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            with _managed_agent_scope(agent_name):
+                return handler(request)
+
+        async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+            with _managed_agent_scope(agent_name):
+                return await handler(request)
+
+        def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+            with _managed_agent_scope(agent_name):
+                return handler(request)
+
+    return HarnestAgentScopeMiddleware()
+
+
+@contextmanager
+def _managed_agent_scope(agent_name: str):
+    """Derive nested identity while sharing the root's revocable capabilities."""
+
+    from ..context import activate_context, context, derive_agent_context
+
+    try:
+        active = context.current()
+    except RuntimeError:
+        # Direct framework use has no Harnest capability authority to derive.
+        yield
+        return
+    if active.agent_name == agent_name:
+        yield
+        return
+    with activate_context(derive_agent_context(active, agent_name=agent_name)):
+        yield
 
 
 def _apply_history_projection(

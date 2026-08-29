@@ -71,41 +71,67 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
     for plugin_directory in sorted(
         plugins_directory.iterdir(), key=lambda item: item.name
     ):
-        if plugin_directory.is_symlink():
-            raise PluginConventionError(
-                f"plugin directory cannot be a symlink: {plugin_directory}"
-            )
-        if _is_ignored(plugin_directory):
-            continue
-        if not plugin_directory.is_dir():
-            raise PluginConventionError(
-                f"unexpected resource in plugins directory: {plugin_directory}; "
-                "each public entry must be a plugin directory"
-            )
-        if not _PLUGIN_NAME.fullmatch(plugin_directory.name):
-            raise PluginConventionError(
-                "plugin directory name may contain only letters, numbers, "
-                f"underscores, and hyphens: {plugin_directory}"
-            )
-
-        _validate_plugin_entries(plugin_directory)
-        plugin = PluginResources(
-            name=plugin_directory.name,
-            directory=plugin_directory,
-            mcp_sources=_discover_mcp_sources(plugin_directory / "mcp"),
-            skill_directories=_discover_skill_directories(
-                plugin_directory / "skills"
-            ),
-        )
-        if plugin.is_empty:
-            continue
-        if not plugin.mcp_sources or not plugin.skill_directories:
-            raise PluginConventionError(
-                f"plugin {plugin.name!r} must combine at least one MCP client "
-                "module with at least one skill directory"
-            )
-        discovered.append(plugin)
+        plugin = _discover_agent_plugin(plugin_directory)
+        if plugin is not None:
+            discovered.append(plugin)
     return tuple(discovered)
+
+
+def _discover_agent_plugin(directory: Path) -> PluginResources | None:
+    """Validate and classify one manifest-less MCP-plus-skills plugin."""
+
+    if directory.is_symlink():
+        raise PluginConventionError(
+            f"plugin directory cannot be a symlink: {directory}"
+        )
+    if _is_ignored(directory):
+        return None
+    if not directory.is_dir():
+        raise PluginConventionError(
+            f"unexpected resource in plugins directory: {directory}; "
+            "each public entry must be a plugin directory"
+        )
+    if not _PLUGIN_NAME.fullmatch(directory.name):
+        raise PluginConventionError(
+            "plugin directory name may contain only letters, numbers, "
+            f"underscores, and hyphens: {directory}"
+        )
+    if _is_runtime_plugin(directory):
+        return None
+    _validate_plugin_entries(directory)
+    plugin = PluginResources(
+        name=directory.name,
+        directory=directory,
+        mcp_sources=_discover_mcp_sources(directory / "mcp"),
+        skill_directories=_discover_skill_directories(directory / "skills"),
+    )
+    if plugin.is_empty:
+        return None
+    if not plugin.mcp_sources or not plugin.skill_directories:
+        raise PluginConventionError(
+            f"plugin {plugin.name!r} must combine at least one MCP client "
+            "module with at least one skill directory"
+        )
+    return plugin
+
+
+def _is_runtime_plugin(directory: Path) -> bool:
+    """Leave executable descriptors to the dedicated runtime-plugin loader."""
+
+    manifest = directory / "plugin.yaml"
+    if manifest.is_symlink():
+        raise PluginConventionError(
+            f"runtime plugin manifest cannot be a symlink: {manifest}"
+        )
+    if not manifest.exists():
+        return False
+    # Runtime plugins have a wider folder contract, but malformed descriptor
+    # paths must not become a way to bypass either discovery implementation.
+    if not manifest.is_file():
+        raise PluginConventionError(
+            f"runtime plugin manifest must be a regular file: {manifest}"
+        )
+    return True
 
 
 def _validate_plugin_entries(directory: Path) -> None:
@@ -134,11 +160,7 @@ def _discover_mcp_sources(directory: Path) -> tuple[Path, ...]:
             )
         if _is_ignored(path):
             continue
-        if (
-            not path.is_file()
-            or path.suffix != ".py"
-            or not path.stem.isidentifier()
-        ):
+        if not path.is_file() or path.suffix != ".py" or not path.stem.isidentifier():
             raise PluginConventionError(
                 f"plugin MCP client must be a public Python module: {path}"
             )

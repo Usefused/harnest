@@ -57,6 +57,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             "session_store",
             "checkpointer",
             "asset_store",
+            "storage_registry",
             "credential_provider",
             "http_routes",
             "output_policy",
@@ -67,6 +68,10 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertEqual(application.http_routes, (route,))
         self.assertEqual(application.telemetry_exporters, (telemetry,))
         self.assertEqual(application.context_values, (context_value,))
+        self.assertIs(capabilities.storage_registry.sessions, store)
+        self.assertIs(capabilities.storage_registry.checkpoints, store)
+        self.assertEqual(application.lifecycle_coverage.mode, "managed")
+        self.assertEqual(application.lifecycle_coverage.report()["tool"], "full")
         with self.assertRaises(FrozenInstanceError):
             capabilities.output_policy = OutputPolicy()  # type: ignore[misc]
 
@@ -84,6 +89,17 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertIs(replaced.runtime_capabilities.output_policy, policy)
         self.assertIsNot(replaced.runtime_capabilities, original.runtime_capabilities)
 
+    def test_advanced_application_reports_only_harnest_owned_coverage(self):
+        """Make native-framework escape hatches visible to deployment tooling."""
+
+        application = CompiledApplication(
+            name="root", framework="adk", mode="advanced", target=object()
+        )
+
+        report = application.lifecycle_coverage.report()
+        self.assertEqual(report["tool"], "wrapped-only")
+        self.assertEqual(report["checkpoint"], "framework-owned")
+
     def test_capability_boundary_rejects_wrong_resource_types(self):
         """Fail invalid resources once before any transport consumes them."""
 
@@ -91,6 +107,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             ("session_store", object(), "SessionStore"),
             ("checkpointer", object(), "CheckpointAuthority"),
             ("asset_store", object(), "AssetStore"),
+            ("custom_stores", {"users": object()}, "CustomStorage"),
             ("credential_provider", object(), "CredentialProvider"),
             ("http_routes", (object(),), "HTTPRouteExtension"),
             ("output_policy", object(), "OutputPolicy"),

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/plugin.schema.json",
+  "title": "Harnest runtime plugin",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "runtime"],
+  "properties": {
+    "apiVersion": {
+      "const": "harnest.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "RuntimePlugin"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoint"],
+      "properties": {
+        "entrypoint": {
+          "const": "plugin:plugin"
+        }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "lifecycle.agent",
+          "lifecycle.model",
+          "lifecycle.tool",
+          "lifecycle.mcp",
+          "lifecycle.http",
+          "context.resources",
+          "context.credentials",
+          "context.continuations",
+          "context.storage",
+          "context.assets",
+          "context.session",
+          "context.mcp",
+          "content.tools",
+          "content.mcp",
+          "content.skills",
+          "content.subagents",
+          "http.routes",
+          "storage.sessions",
+          "storage.checkpoints",
+          "storage.assets",
+          "storage.custom",
+          "native.adk",
+          "native.langgraph",
+          "policy.output",
+          "telemetry.exporter"
+        ]
+      }
+    }
+  }
+}

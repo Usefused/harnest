@@ -37,7 +37,7 @@ class CheckpointConflictError(CheckpointError):
 class PendingAction:
     """Portable description of a durable wait without customer payloads."""
 
-    type: Literal["human_approval", "client_tool"]
+    type: Literal["human_approval", "client_tool", "external_continuation"]
     action_id: str
     capability: str
 
@@ -221,10 +221,15 @@ class _MemoryState:
     writes: dict[tuple[str, str], list[CheckpointWrite]] = field(
         default_factory=dict
     )
+    continuations: dict[str, Any] = field(default_factory=dict)
+    continuation_external_ids: dict[str, str] = field(default_factory=dict)
+    continuation_external_keys: dict[tuple[str, str, str], str] = field(
+        default_factory=dict
+    )
 
 
 class MemoryStore(HarnestStore, InMemorySessionStore):
-    """Process-local combined session/checkpoint store with atomic CAS."""
+    """Process-local session, checkpoint, and continuation store with atomic CAS."""
 
     def __init__(self) -> None:
         """Keep session and checkpoint state behind one process-local lock."""
@@ -445,6 +450,241 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         _audit(updated, f"run_{status}", "committed")
         return updated
 
+    async def suspend_continuation(
+        self, *, record: Any, external_id: str
+    ) -> Any:
+        """Atomically register provider work and move its owned run to waiting."""
+
+        from .continuation import (
+            ContinuationConflictError,
+            audit_continuation,
+            external_id_key,
+        )
+
+        key = (
+            record.application_id,
+            record.provider,
+            external_id_key(record.provider, external_id),
+        )
+        try:
+            async with self._lock:
+                run = _owned_run(
+                    self._state.runs.get(record.run_id), record.scope
+                )
+                if run is None or run.status != "running":
+                    raise ContinuationConflictError("continuation run is not running")
+                if record.continuation_id in self._state.continuations or key in self._state.continuation_external_keys:
+                    raise ContinuationConflictError("continuation already exists")
+                self._state.continuations[record.continuation_id] = record
+                self._state.continuation_external_ids[record.continuation_id] = external_id
+                self._state.continuation_external_keys[key] = record.continuation_id
+                self._state.runs[run.run_id] = replace(
+                    run,
+                    status="waiting",
+                    pending_action=record.pending_action,
+                    revision=run.revision + 1,
+                    updated_at=_timestamp(),
+                )
+        except Exception:
+            audit_continuation("suspended", "failed", "memory")
+            raise
+        audit_continuation("suspended", "committed", "memory")
+        return record
+
+    async def get_continuation(
+        self, *, scope: RunScope, continuation_id: str
+    ) -> Any | None:
+        """Return one record only when every run ownership field matches."""
+
+        async with self._lock:
+            record = self._state.continuations.get(continuation_id)
+            return record if record is not None and record.scope == scope else None
+
+    async def get_continuation_by_external_id(
+        self, *, application_id: str, provider: str, external_id: str
+    ) -> Any | None:
+        """Resolve one provider identity through the same indexed ownership key."""
+
+        from .continuation import ProviderPendingContinuation, external_id_key
+
+        _require_fields(application_id, provider, external_id)
+        key = (application_id, provider, external_id_key(provider, external_id))
+        async with self._lock:
+            continuation_id = self._state.continuation_external_keys.get(key)
+            record = self._state.continuations.get(continuation_id or "")
+            if record is None:
+                return None
+            stored_external_id = self._state.continuation_external_ids.get(
+                record.continuation_id
+            )
+            if stored_external_id is None:
+                return None
+            return ProviderPendingContinuation(record, stored_external_id)
+
+    async def list_pending_continuations(
+        self,
+        *,
+        application_id: str,
+        provider: str,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> Sequence[Any]:
+        """Return a bounded provider page for local reconciliation."""
+
+        from .continuation import ProviderPendingContinuation, _require_page
+
+        _require_fields(application_id, provider)
+        _require_page(after, limit)
+        async with self._lock:
+            records = sorted(
+                (
+                    value
+                    for value in self._state.continuations.values()
+                    if value.application_id == application_id
+                    and value.provider == provider
+                    and value.status == "pending"
+                    and (after is None or value.continuation_id > after)
+                ),
+                key=lambda value: value.continuation_id,
+            )[:limit]
+            return tuple(
+                ProviderPendingContinuation(
+                    value,
+                    self._state.continuation_external_ids[value.continuation_id],
+                )
+                for value in records
+            )
+
+    async def resolve_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        external_id: str,
+        schema_id: str,
+        result: Any = None,
+        failure: Any = None,
+    ) -> Any:
+        """Commit a provider result or failure with one status compare-and-swap."""
+
+        from .continuation import (
+            ContinuationConflictError,
+            _validated_resolution,
+            audit_continuation,
+            external_id_key,
+        )
+
+        result, failure = _validated_resolution(result, failure)
+        key = (scope.application_id, provider, external_id_key(provider, external_id))
+        try:
+            async with self._lock:
+                continuation_id = self._state.continuation_external_keys.get(key)
+                record = self._state.continuations.get(continuation_id or "")
+                if record is None or record.scope != scope:
+                    raise ContinuationConflictError("continuation state changed")
+                if record.status != "pending" or record.schema_id != schema_id:
+                    raise ContinuationConflictError("continuation state changed")
+                status = "failed" if failure is not None else "completed"
+                updated = replace(
+                    record,
+                    status=status,
+                    result=result,
+                    failure=failure,
+                    revision=record.revision + 1,
+                    updated_at=_timestamp(),
+                )
+                self._state.continuations[record.continuation_id] = updated
+        except Exception:
+            audit_continuation("resolved", "failed", "memory")
+            raise
+        audit_continuation("resolved", "committed", "memory")
+        return updated
+
+    async def claim_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> Any:
+        """Claim an outcome and return the waiting run to running atomically."""
+
+        from .continuation import ContinuationConflictError, audit_continuation
+
+        try:
+            async with self._lock:
+                record = self._state.continuations.get(continuation_id)
+                run = _owned_run(self._state.runs.get(scope.run_id), scope)
+                if (
+                    record is None
+                    or record.scope != scope
+                    or record.provider != provider
+                    or run is None
+                ):
+                    raise ContinuationConflictError("continuation claim changed")
+                if not _valid_continuation_claim(
+                    record, run, continuation_id, expected_revision
+                ):
+                    raise ContinuationConflictError("continuation claim changed")
+                updated = replace(
+                    record,
+                    status="claimed",
+                    revision=record.revision + 1,
+                    updated_at=_timestamp(),
+                )
+                self._state.continuations[continuation_id] = updated
+                self._state.runs[run.run_id] = replace(
+                    run,
+                    status="running",
+                    pending_action=None,
+                    revision=run.revision + 1,
+                    updated_at=_timestamp(),
+                )
+        except Exception:
+            audit_continuation("claimed", "failed", "memory")
+            raise
+        audit_continuation("claimed", "committed", "memory")
+        return updated
+
+    async def arm_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> Any:
+        """Arm a provider wait after its native suspension is checkpointed."""
+
+        from .continuation import ContinuationConflictError, audit_continuation
+
+        try:
+            async with self._lock:
+                record = self._state.continuations.get(continuation_id)
+                valid = (
+                    record is not None
+                    and record.scope == scope
+                    and record.provider == provider
+                    and record.revision == expected_revision
+                    and not record.ready
+                    and record.status in {"pending", "completed", "failed"}
+                )
+                if not valid:
+                    raise ContinuationConflictError("continuation arm changed")
+                updated = replace(
+                    record,
+                    ready=True,
+                    revision=record.revision + 1,
+                    updated_at=_timestamp(),
+                )
+                self._state.continuations[continuation_id] = updated
+        except Exception:
+            audit_continuation("armed", "failed", "memory")
+            raise
+        audit_continuation("armed", "committed", "memory")
+        return updated
+
     async def delete_run(self, *, scope: RunScope) -> None:
         """Delete a run and every private checkpoint owned by it."""
 
@@ -460,7 +700,32 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
             for key in tuple(self._state.writes):
                 if key[0] == scope.run_id:
                     self._state.writes.pop(key)
+            continuation_ids = tuple(
+                value.continuation_id
+                for value in self._state.continuations.values()
+                if value.run_id == scope.run_id
+            )
+            for continuation_id in continuation_ids:
+                self._remove_continuation(continuation_id)
         _audit(record, "run_deleted", "committed")
+
+    def _remove_continuation(self, continuation_id: str) -> None:
+        """Remove private mappings together so deleted runs cannot be reconciled."""
+
+        from .continuation import external_id_key
+
+        record = self._state.continuations.pop(continuation_id, None)
+        external_id = self._state.continuation_external_ids.pop(
+            continuation_id, None
+        )
+        if record is None or external_id is None:
+            return
+        key = (
+            record.application_id,
+            record.provider,
+            external_id_key(record.provider, external_id),
+        )
+        self._state.continuation_external_keys.pop(key, None)
 
     async def close(self) -> None:
         """Close both session and checkpoint sides of the shared store."""
@@ -642,6 +907,21 @@ def _owned_run(record: RunRecord | None, scope: RunScope) -> RunRecord | None:
     if record is None or record.scope != scope:
         return None
     return record
+
+
+def _valid_continuation_claim(
+    record: Any, run: RunRecord, continuation_id: str, expected_revision: int
+) -> bool:
+    """Require the outcome and waiting run to name the same resumable boundary."""
+
+    pending_id = getattr(run.pending_action, "action_id", None)
+    return (
+        record.status in {"completed", "failed"}
+        and record.ready
+        and record.revision == expected_revision
+        and run.status == "waiting"
+        and pending_id == continuation_id
+    )
 
 
 def _require_owned_run(record: RunRecord | None, scope: RunScope) -> RunRecord:

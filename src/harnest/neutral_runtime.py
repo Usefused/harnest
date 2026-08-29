@@ -227,6 +227,7 @@ def create_neutral_router(
     client_tools = client_tool_store or InMemoryClientToolStore(
         asset_stores=stores
     )
+    external_continuations = getattr(driver, "external_continuations", None)
     from .runtime_content import ContentRuntimeDriver
 
     driver = ContentRuntimeDriver(driver, assets, stores)
@@ -240,6 +241,7 @@ def create_neutral_router(
         semaphore=semaphore,
         request_timeout=request_timeout,
         max_request_bytes=max_request_bytes,
+        external_continuations=external_continuations,
     )
 
     async def read_json(request: Request) -> dict[str, Any]:
@@ -349,6 +351,7 @@ def create_neutral_router(
             "card": dict(info.card),
             "endpoints": {
                 "responses": "/responses",
+                "responseStatus": "/responses/{responseId}",
                 "sessions": "/sessions",
                 "sessionMessages": "/sessions/{sessionId}/messages",
                 "assets": "/sessions/{sessionId}/assets",
@@ -363,6 +366,8 @@ def create_neutral_router(
             value["framework"] = info.framework
         if info.mode is not None:
             value["mode"] = info.mode
+        if info.lifecycle_coverage:
+            value["lifecycleCoverage"] = dict(info.lifecycle_coverage)
         return value
 
     @router.post("/sessions", status_code=201)
@@ -639,8 +644,25 @@ def create_neutral_router(
                 response_id=run.invocation_id,
                 session_id=run.session_id,
                 metadata=metadata,
+                external_continuations=external_continuations,
             ),
             media_type="text/event-stream",
+        )
+
+    @router.get("/responses/{response_id}")
+    async def response_status(
+        response_id: str,
+        request: Request,
+        session_id: str = Query(alias="sessionId"),
+    ) -> dict[str, Any]:
+        """Poll one external wait without revealing cross-scope existence."""
+
+        if not session_id.strip():
+            raise HTTPException(status_code=400, detail="sessionId must be non-empty")
+        return await coordinator.poll_json(
+            response_id=response_id,
+            user_id=principal_for(request).user_id,
+            session_id=session_id,
         )
 
     @router.post("/client-tools/{tool_request_id}")
@@ -800,6 +822,7 @@ def create_neutral_router(
                     driver=driver,
                     approval_store=approvals,
                     client_tool_store=client_tools,
+                    external_continuations=external_continuations,
                     request_timeout=request_timeout,
                 )
         except WebSocketDisconnect:
@@ -823,6 +846,7 @@ def create_neutral_app(
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
+    lifecycle_extensions: Sequence[Any] = (),
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
 
@@ -833,9 +857,14 @@ def create_neutral_app(
 
     @asynccontextmanager
     async def lifespan(_app: Any) -> AsyncIterator[None]:
-        """Close the fully wrapped runtime when the server lifespan ends."""
+        """Eagerly start and close the fully wrapped application runtime."""
+
+        from .runtime_pipeline import start_runtime_pipeline
 
         try:
+            # Host startup surfaces configuration failures before the process
+            # accepts traffic, while direct invocation retains safe lazy start.
+            await start_runtime_pipeline(driver)
             yield
         finally:
             await runtime_driver.close()
@@ -853,6 +882,7 @@ def create_neutral_app(
 
     app = FastAPI(title=f"Harnest: {runtime_driver.info.name}", lifespan=lifespan)
     from .playground import create_playground_router
+    from .http_lifecycle import install_http_lifecycle
     from .server_limits import install_request_size_limit
 
     install_request_size_limit(app, max_request_bytes)
@@ -870,6 +900,9 @@ def create_neutral_app(
             http_routes=http_routes,
         )
     )
+    # Authentication is added last and therefore runs outside this middleware,
+    # allowing HTTP lifecycle contexts to observe only the verified user ID.
+    install_http_lifecycle(app, lifecycle_extensions)
     install_authentication(app, authenticator)
     return app
 

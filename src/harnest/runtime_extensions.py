@@ -6,9 +6,10 @@ import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
 import inspect
 from dataclasses import replace
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 from .lifecycle import DROP_EVENT, LifecycleContext, LifecycleListener
+from .lifecycle_transition import Finish, Next, UNCHANGED
 from .context import (
     AgentContext,
     ContextValue,
@@ -17,6 +18,7 @@ from .context import (
     create_agent_context,
     revoke_context,
 )
+from .context_session import invocation_session_context
 from .credentials import (
     CredentialProvider,
     CredentialProviderError,
@@ -37,6 +39,8 @@ from .runtime_auth import (
     ConnectionContext,
 )
 from .model_hooks import model_invocation_scope
+from .session import SessionStore
+from .tool_lifecycle import tool_lifecycle_scope
 
 
 class ExtensionTransformError(TypeError):
@@ -71,6 +75,36 @@ def _validate_context_exports(
         raise ValueError("context provider listeners require a context name")
 
 
+def _runtime_extensions(
+    values: Sequence[LifecycleListener],
+) -> tuple[LifecycleListener, ...]:
+    """Freeze only compiler-created lifecycle listener values."""
+
+    if isinstance(values, (str, bytes)):
+        raise TypeError("extensions must be a sequence")
+    normalized = tuple(values)
+    if any(not isinstance(item, LifecycleListener) for item in normalized):
+        raise TypeError("extensions must contain only LifecycleListener values")
+    return normalized
+
+
+def _validate_runtime_owners(
+    credential_provider: CredentialProvider | None,
+    manage_credential_provider: bool,
+    plugin_bindings: Callable[[], Mapping[str, Any]] | None,
+) -> None:
+    """Validate private owner seams without entering authored resources."""
+
+    if credential_provider is not None and not isinstance(
+        credential_provider, CredentialProvider
+    ):
+        raise TypeError("credential_provider must implement CredentialProvider")
+    if not isinstance(manage_credential_provider, bool):
+        raise TypeError("manage_credential_provider must be boolean")
+    if plugin_bindings is not None and not callable(plugin_bindings):
+        raise TypeError("plugin_bindings must be callable")
+
+
 async def _resolve(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -86,7 +120,9 @@ def _context(driver: RuntimeDriver, request: InvocationRequest) -> LifecycleCont
         )
     return LifecycleContext(
         framework=framework,
-        agent_name=driver.info.name,
+        # Public cards may supply a human-facing display name. Lifecycle
+        # routing and child ancestry must use the stable application identity.
+        agent_name=driver.info.id,
         invocation_id=request.invocation_id,
         user_id=request.user_id,
         session_id=request.session_id,
@@ -154,6 +190,64 @@ def _stream_result(
     )
 
 
+def _next_or_legacy(value: Any) -> Any:
+    """Normalize explicit flow while preserving existing ``None`` compatibility."""
+
+    if value is None:
+        return UNCHANGED
+    if isinstance(value, Next):
+        return value.value
+    return value
+
+
+def _replacement_request(
+    listener: LifecycleListener,
+    current: InvocationRequest,
+    replacement: Any,
+) -> InvocationRequest:
+    """Protect authenticated invocation ownership across request replacement."""
+
+    if not isinstance(replacement, InvocationRequest):
+        raise ExtensionTransformError(
+            f"extension {listener.identity} before_invoke must return "
+            "InvocationRequest or None, or use explicit lifecycle control flow"
+        )
+    ownership = ("invocation_id", "user_id", "session_id")
+    if any(getattr(replacement, name) != getattr(current, name) for name in ownership):
+        raise ExtensionTransformError(
+            f"extension {listener.identity} before_invoke cannot replace "
+            "invocation_id, user_id, or session_id"
+        )
+    return replacement
+
+
+def _finished_invocation(
+    listener: LifecycleListener,
+    request: InvocationRequest,
+    transition: Finish[Any],
+) -> InvocationResult:
+    """Validate a short-circuit without permitting cross-session output."""
+
+    result = _replacement_result(listener, transition.result)
+    if result.session_id != request.session_id:
+        raise ExtensionTransformError(
+            f"extension {listener.identity} before_invoke cannot finish another session"
+        )
+    return result
+
+
+def _replacement_result(
+    listener: LifecycleListener, replacement: Any
+) -> InvocationResult:
+    """Require the complete portable result at invocation boundaries."""
+
+    if not isinstance(replacement, InvocationResult):
+        raise ExtensionTransformError(
+            f"extension {listener.identity} must return InvocationResult control flow"
+        )
+    return replacement
+
+
 class ExtensionRuntimeDriver(RuntimeDriver):
     """Decorate one backend driver with framework-neutral lifecycle hooks."""
 
@@ -164,28 +258,29 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         *,
         context_values: Sequence[ContextValue] = (),
         asset_stores: Mapping[str, Any] | None = None,
+        custom_stores: Mapping[str, Any] | None = None,
+        session_store: SessionStore | None = None,
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
+        plugin_bindings: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
-        if isinstance(extensions, (str, bytes)):
-            raise TypeError("extensions must be a sequence")
-        normalized = tuple(extensions)
-        if any(not isinstance(item, LifecycleListener) for item in normalized):
-            raise TypeError("extensions must contain only LifecycleListener values")
+        """Validate application resources without acquiring runtime ownership."""
+
+        normalized = _runtime_extensions(extensions)
         values = tuple(context_values)
         _validate_context_exports(normalized, values)
-        if credential_provider is not None and not isinstance(
-            credential_provider, CredentialProvider
-        ):
-            raise TypeError("credential_provider must implement CredentialProvider")
-        if not isinstance(manage_credential_provider, bool):
-            raise TypeError("manage_credential_provider must be boolean")
+        _validate_runtime_owners(
+            credential_provider, manage_credential_provider, plugin_bindings
+        )
         self._driver = driver
         self._extensions = normalized
         self._context_values = values
         self._asset_stores = dict(asset_stores or {})
+        self._custom_stores = dict(custom_stores or {})
+        self._session_store = session_store
         self._credential_provider = credential_provider
         self._manage_credential_provider = manage_credential_provider
+        self._plugin_bindings = plugin_bindings
         self._credential_provider_started = False
         self._application_resources: dict[str, Any] = {}
         self._resource_lock = asyncio.Lock()
@@ -203,6 +298,11 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     def _listeners(self, phase: str) -> tuple[LifecycleListener, ...]:
         return tuple(item for item in self._extensions if item.phase == phase)
 
+    async def start(self) -> None:
+        """Eagerly enter credentials and resources for an application lifespan."""
+
+        await self._start_resources()
+
     async def _start_resources(self) -> None:
         """Enter resources once without calling their factories at compile time."""
 
@@ -213,6 +313,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 return
             if self._closed:
                 raise RuntimeError("extension runtime is closed")
+            await _start_wrapped_storage(self._driver)
             stack = AsyncExitStack()
             provider_started = await self._start_private_provider()
             try:
@@ -317,29 +418,18 @@ class ExtensionRuntimeDriver(RuntimeDriver):
 
     async def _before(
         self, context: LifecycleContext, request: InvocationRequest
-    ) -> InvocationRequest:
+    ) -> tuple[InvocationRequest, InvocationResult | None]:
         current = request
         for listener in self._listeners("before_invoke"):
             hook = listener.callback
-            replacement = await _resolve(hook(context, current))
-            if replacement is None:
+            value = await _resolve(hook(context, current))
+            if isinstance(value, Finish):
+                return current, _finished_invocation(listener, current, value)
+            replacement = _next_or_legacy(value)
+            if replacement is UNCHANGED:
                 continue
-            if not isinstance(replacement, InvocationRequest):
-                raise ExtensionTransformError(
-                    f"extension {listener.identity} before_invoke must return "
-                    "InvocationRequest or None"
-                )
-            if (
-                replacement.invocation_id,
-                replacement.user_id,
-                replacement.session_id,
-            ) != (current.invocation_id, current.user_id, current.session_id):
-                raise ExtensionTransformError(
-                    f"extension {listener.identity} before_invoke cannot replace "
-                    "invocation_id, user_id, or session_id"
-                )
-            current = replacement
-        return current
+            current = _replacement_request(listener, current, replacement)
+        return current, None
 
     async def _event(
         self, context: LifecycleContext, event: RuntimeEvent
@@ -366,15 +456,13 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         current = result
         for listener in self._listeners("after_invoke"):
             hook = listener.callback
-            replacement = await _resolve(hook(context, current))
-            if replacement is None:
+            value = await _resolve(hook(context, current))
+            if isinstance(value, Finish):
+                return _replacement_result(listener, value.result)
+            replacement = _next_or_legacy(value)
+            if replacement is UNCHANGED:
                 continue
-            if not isinstance(replacement, InvocationResult):
-                raise ExtensionTransformError(
-                    f"extension {listener.identity} after_invoke must return "
-                    "InvocationResult or None"
-                )
-            current = replacement
+            current = _replacement_result(listener, replacement)
         return current
 
     async def _after_stream(
@@ -383,7 +471,11 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         for listener in self._listeners("after_invoke"):
             hook = listener.callback
             replacement = await _resolve(hook(context, result))
-            if replacement is not None:
+            if replacement is None or (
+                isinstance(replacement, Next) and replacement.value is UNCHANGED
+            ):
+                continue
+            else:
                 raise StreamingResultTransformationError(
                     f"extension {listener.identity} after_invoke cannot replace a "
                     "result after streamed events have been emitted"
@@ -406,31 +498,53 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
         try:
-            with activate_context(agent_context), self._credential_scope():
-                try:
-                    await self._bind_invocation_resources(agent_context)
-                    transformed_request = await self._before(lifecycle_context, request)
-                    with model_invocation_scope(lifecycle_context):
-                        result = await self._driver.invoke(transformed_request)
-                    if not isinstance(result, InvocationResult):
-                        raise ExtensionTransformError(
-                            "wrapped runtime driver returned a non-InvocationResult value"
-                        )
-                    events: list[RuntimeEvent] = []
-                    for event in result.events:
-                        transformed_event = await self._event(lifecycle_context, event)
-                        if transformed_event is not DROP_EVENT:
-                            events.append(transformed_event)
-                    return await self._after(
-                        lifecycle_context, _result_with_events(result, events)
+            async with self._session_scope(request):
+                with activate_context(agent_context), self._credential_scope():
+                    return await self._invoke_bound(
+                        request, lifecycle_context, agent_context
                     )
-                except Exception as error:
-                    await self._notify_error(lifecycle_context, error)
-                    raise
         finally:
             # ContextVars are copied into child tasks, so resetting this task's
             # token alone cannot remove capabilities from work that outlives it.
             revoke_context(agent_context)
+
+    async def _invoke_bound(
+        self,
+        request: InvocationRequest,
+        lifecycle_context: LifecycleContext,
+        agent_context: AgentContext,
+    ) -> InvocationResult:
+        """Run every invocation hook while all scoped capabilities are active."""
+
+        try:
+            await self._bind_invocation_resources(agent_context)
+            transformed_request, short = await self._before(
+                lifecycle_context, request
+            )
+            with (
+                model_invocation_scope(lifecycle_context),
+                tool_lifecycle_scope(self._extensions),
+            ):
+                result = (
+                    short
+                    if short is not None
+                    else await self._driver.invoke(transformed_request)
+                )
+            if not isinstance(result, InvocationResult):
+                raise ExtensionTransformError(
+                    "wrapped runtime driver returned a non-InvocationResult value"
+                )
+            events: list[RuntimeEvent] = []
+            for event in result.events:
+                transformed_event = await self._event(lifecycle_context, event)
+                if transformed_event is not DROP_EVENT:
+                    events.append(transformed_event)
+            return await self._after(
+                lifecycle_context, _result_with_events(result, events)
+            )
+        except Exception as error:
+            await self._notify_error(lifecycle_context, error)
+            raise
 
     async def stream(
         self, request: InvocationRequest
@@ -440,51 +554,68 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         agent_context = self._agent_context(request)
         iterator: AsyncIterator[RuntimeEvent] | None = None
         try:
-            with activate_context(agent_context), self._credential_scope():
-                await self._bind_invocation_resources(agent_context)
-                transformed_request = await self._before(lifecycle_context, request)
-            events: list[RuntimeEvent] = []
-            iterator = self._driver.stream(transformed_request).__aiter__()
-            while True:
-                transformed_event = await self._next_stream_event(
-                    iterator, lifecycle_context, agent_context
-                )
-                if transformed_event is _STREAM_END:
-                    break
-                if transformed_event is DROP_EVENT:
-                    continue
-                events.append(transformed_event)
-                # The caller must not inherit agent capabilities while it handles
-                # a frame; context is rebound only while advancing the backend.
-                yield transformed_event
-            with activate_context(agent_context), self._credential_scope():
-                await self._after_stream(
-                    lifecycle_context, _stream_result(transformed_request, events)
-                )
-        except Exception as error:
-            with activate_context(agent_context), self._credential_scope():
-                await self._notify_error(lifecycle_context, error)
-            raise
-        finally:
-            try:
-                if iterator is not None:
+            async with self._session_scope(request):
+                try:
                     with activate_context(agent_context), self._credential_scope():
-                        await _close_iterator(iterator)
-            finally:
-                revoke_context(agent_context)
+                        await self._bind_invocation_resources(agent_context)
+                        transformed_request, short = await self._before(
+                            lifecycle_context, request
+                        )
+                    events: list[RuntimeEvent] = []
+                    if short is not None:
+                        async for event in self._short_stream(
+                            short, lifecycle_context, agent_context, events
+                        ):
+                            yield event
+                        return
+                    iterator = self._driver.stream(transformed_request).__aiter__()
+                    while True:
+                        transformed_event = await self._next_stream_event(
+                            iterator, lifecycle_context, agent_context
+                        )
+                        if transformed_event is _STREAM_END:
+                            break
+                        if transformed_event is DROP_EVENT:
+                            continue
+                        events.append(transformed_event)
+                        # The caller must not inherit agent capabilities while it handles
+                        # a frame; context is rebound only while advancing the backend.
+                        yield transformed_event
+                    with activate_context(agent_context), self._credential_scope():
+                        await self._after_stream(
+                            lifecycle_context,
+                            _stream_result(transformed_request, events),
+                        )
+                except Exception as error:
+                    with activate_context(agent_context), self._credential_scope():
+                        await self._notify_error(lifecycle_context, error)
+                    raise
+                finally:
+                    if iterator is not None:
+                        with activate_context(
+                            agent_context
+                        ), self._credential_scope():
+                            await _close_iterator(iterator)
+        finally:
+            revoke_context(agent_context)
 
     def _agent_context(self, request: InvocationRequest) -> AgentContext:
         """Give each invocation an isolated view over shared application values."""
 
         return create_agent_context(
             framework=self.info.framework or "",
-            agent_name=self.info.name,
+            # The display name is transport metadata, not an execution identity.
+            agent_name=self.info.id,
             invocation_id=request.invocation_id,
             user_id=request.user_id,
             session_id=request.session_id,
             metadata=request.metadata,
             resources=self._application_resources,
             asset_stores=self._asset_stores,
+            custom_stores=self._custom_stores,
+            plugin_bindings=(
+                None if self._plugin_bindings is None else self._plugin_bindings()
+            ),
         )
 
     def _credential_scope(self) -> Any:
@@ -493,6 +624,17 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         if self._credential_provider is None:
             return nullcontext()
         return _activate_credential_provider(self._credential_provider)
+
+    def _session_scope(self, request: InvocationRequest) -> Any:
+        """Bind one portable session lease around all agent lifecycle stages."""
+
+        return invocation_session_context(
+            self._session_store,
+            framework=self.info.framework or "",
+            user_id=request.user_id,
+            session_id=request.session_id,
+            invocation_id=request.invocation_id,
+        )
 
     async def _bind_invocation_resources(self, active: AgentContext) -> None:
         """Resolve ordinary providers once after application resources are visible."""
@@ -524,12 +666,32 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             activate_context(agent_context),
             self._credential_scope(),
             model_invocation_scope(lifecycle_context),
+            tool_lifecycle_scope(self._extensions),
         ):
             try:
                 event = await anext(iterator)
             except StopAsyncIteration:
                 return _STREAM_END
             return await self._event(lifecycle_context, event)
+
+    async def _short_stream(
+        self,
+        result: InvocationResult,
+        lifecycle_context: LifecycleContext,
+        agent_context: AgentContext,
+        events: list[RuntimeEvent],
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Project a lifecycle-finished response through normal stream policy."""
+
+        for event in result.events:
+            with activate_context(agent_context), self._credential_scope():
+                transformed = await self._event(lifecycle_context, event)
+            if transformed is DROP_EVENT:
+                continue
+            events.append(transformed)
+            yield transformed
+        with activate_context(agent_context), self._credential_scope():
+            await self._after_stream(lifecycle_context, result)
 
     async def close(self) -> None:
         """Close framework execution before unwinding runtime resources."""
@@ -573,6 +735,17 @@ async def _unwind_resource_start(
         return
     cleanup = await _cleanup_failure(lambda: _close_credential_provider(provider))
     _merge_cleanup_failure(failure, cleanup, label="credential provider")
+
+
+async def _start_wrapped_storage(driver: RuntimeDriver) -> None:
+    """Start compiler-owned storage before listeners can consume its facades."""
+
+    from .runtime_session import StorageRuntimeDriver
+
+    if isinstance(driver, StorageRuntimeDriver):
+        # The explicit type boundary avoids invoking arbitrary backend methods
+        # that happen to use the same internal lifecycle name.
+        await driver.start_owned_resources()
 
 
 async def _cleanup_failure(callback: Any) -> BaseException | None:

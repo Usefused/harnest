@@ -337,7 +337,7 @@ class LiveAssetStorageTests(unittest.IsolatedAsyncioTestCase):
         storage = PostgresAssetStorage(
             os.environ["HARNEST_TEST_ASSET_POSTGRES_URL"]
         )
-        await _exercise_storage(self, storage, expect_url=False)
+        await _exercise_storage(self, storage, url_mode="unsupported")
 
     @unittest.skipUnless(
         os.getenv("HARNEST_TEST_ASSET_S3_ENDPOINT") and boto3 is not None,
@@ -350,11 +350,15 @@ class LiveAssetStorageTests(unittest.IsolatedAsyncioTestCase):
             secret_key=os.environ["HARNEST_TEST_ASSET_S3_SECRET_KEY"],
             bucket=os.environ["HARNEST_TEST_ASSET_S3_BUCKET"],
         )
-        await _exercise_storage(self, storage, expect_url=True)
+        endpoint = os.environ["HARNEST_TEST_ASSET_S3_ENDPOINT"]
+        # Local MinIO commonly runs without TLS. Harnest must still exercise
+        # storage while refusing to pass an insecure signed URL to a model.
+        mode = "https" if endpoint.startswith("https://") else "insecure"
+        await _exercise_storage(self, storage, url_mode=mode)
 
 
 async def _exercise_storage(
-    case: unittest.TestCase, storage: Any, *, expect_url: bool
+    case: unittest.TestCase, storage: Any, *, url_mode: str
 ) -> None:
     scope = AssetScope(f"user-{uuid.uuid4().hex}", f"session-{uuid.uuid4().hex}")
     other = AssetScope("other-user", scope.session_id)
@@ -380,7 +384,7 @@ async def _exercise_storage(
             case.assertEqual(staged.image.store, "media")
             case.assertEqual(await context.assets.get(staged.image), _PNG)
             await _assert_url_mode(
-                case, context.assets, staged.image, storage, scope, expect_url
+                case, context.assets, staged.image, storage, scope, url_mode
             )
             case.assertTrue(await context.assets.delete(staged.image))
         case.assertIsNone(
@@ -400,14 +404,25 @@ async def _assert_url_mode(
     image: Image,
     storage: Any,
     scope: AssetScope,
-    expect_url: bool,
+    url_mode: str,
 ) -> None:
-    if not expect_url:
+    if url_mode == "unsupported":
         with case.assertRaisesRegex(
             AssetStoreError, "does not support temporary URLs"
         ):
             await assets.url(image, expires_in=31)
         await _assert_model_url_failure(case, image, storage, scope)
+        return
+    if url_mode == "insecure":
+        with case.assertRaisesRegex(AssetStoreError, "invalid temporary URL"):
+            await assets.url(image, expires_in=31)
+        await _assert_model_url_failure(
+            case,
+            image,
+            storage,
+            scope,
+            message="invalid model URL",
+        )
         return
     url = await assets.url(image, expires_in=31)
     case.assertTrue(url.startswith("https://"))
@@ -428,9 +443,14 @@ async def _assert_url_payload(case: unittest.TestCase, url: str) -> None:
 
 
 async def _assert_model_url_failure(
-    case: unittest.TestCase, image: Image, storage: Any, scope: AssetScope
+    case: unittest.TestCase,
+    image: Image,
+    storage: Any,
+    scope: AssetScope,
+    *,
+    message: str = "cannot generate model URLs",
 ) -> None:
-    with case.assertRaisesRegex(RuntimeError, "cannot generate model URLs"):
+    with case.assertRaisesRegex(RuntimeError, message):
         await _model_url(image, storage, scope)
 
 

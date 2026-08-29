@@ -1,0 +1,91 @@
+name: harnest-hatchet-live
+
+services:
+  postgres:
+    image: postgres:15.6
+    command: postgres -c 'max_connections=200'
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hatchet
+      POSTGRES_PASSWORD: hatchet
+      POSTGRES_DB: hatchet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d hatchet -U hatchet"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - hatchet_postgres:/var/lib/postgresql/data
+
+  harnest-postgres:
+    # Harnest owns this database lifecycle; Hatchet never reads or migrates it.
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: harnest
+      # This deterministic credential is for the loopback-only test fixture.
+      POSTGRES_PASSWORD: ${HARNEST_POSTGRES_PASSWORD:-harnest-local-only}
+      POSTGRES_DB: harnest
+    healthcheck:
+      # Readiness includes the isolated schema so a host agent cannot race initdb.
+      test: ["CMD-SHELL", "pg_isready -d harnest -U harnest && psql -d harnest -U harnest -tAc \"SELECT 1 FROM pg_namespace WHERE nspname = 'harnest_runtime'\" | grep -q '^1$'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "127.0.0.1:${HARNEST_POSTGRES_PORT:-55447}:5432"
+    volumes:
+      - harnest_postgres:/var/lib/postgresql/data
+      - ./harnest-postgres/001-harnest-schema.sql:/docker-entrypoint-initdb.d/001-harnest-schema.sql:ro
+
+  hatchet-lite:
+    # Match Hatchet's current stable self-hosted chart instead of a moving tag.
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.98.9
+    # Hatchet publishes this Lite release for amd64; declare emulation explicitly
+    # so the fixture behaves consistently on ARM developer machines.
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://hatchet:hatchet@postgres:5432/hatchet?sslmode=disable
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: 0.0.0.0
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: localhost:7077
+      SERVER_GRPC_PORT: "7077"
+      SERVER_URL: http://localhost:8888
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: hatchet-lite:7077
+    ports:
+      # Live-test control planes stay local even when Docker binds on all interfaces by default.
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:7077:7077"
+    volumes:
+      - hatchet_config:/config
+
+  worker:
+    profiles: ["live"]
+    build:
+      context: ./worker
+    restart: unless-stopped
+    depends_on:
+      hatchet-lite:
+        condition: service_started
+    environment:
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?set HATCHET_CLIENT_TOKEN for the live worker}
+      HATCHET_CLIENT_HOST_PORT: hatchet-lite:7077
+      HATCHET_CLIENT_TLS_STRATEGY: none
+      HATCHET_CLIENT_SERVER_URL: http://hatchet-lite:8888
+      HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED: "false"
+      HARNEST_HATCHET_CONTROL_HOST: 0.0.0.0
+      HARNEST_HATCHET_CONTROL_PORT: "8099"
+    ports:
+      - "127.0.0.1:8099:8099"
+
+volumes:
+  hatchet_postgres:
+  harnest_postgres:
+  hatchet_config:

@@ -1,4 +1,4 @@
-"""Built-in storage backends for sessions and execution checkpoints."""
+"""Built-in backends for sessions, checkpoints, and external continuations."""
 
 from .checkpoint import MemoryStore
 from .store_postgres import PostgresStore

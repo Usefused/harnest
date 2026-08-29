@@ -159,17 +159,39 @@ type CompiledArtifact struct {
 }
 
 type CompiledManifest struct {
-	APIVersion       string             `json:"apiVersion"`
-	Kind             string             `json:"kind"`
-	Name             string             `json:"name"`
-	Entrypoint       string             `json:"entrypoint"`
-	SourceEntrypoint string             `json:"sourceEntrypoint"`
-	SourceDirectory  string             `json:"sourceDirectory"`
-	HarnestVersion   string             `json:"harnestVersion"`
-	Framework        CompiledFramework  `json:"framework"`
-	Checkpoint       CompiledCheckpoint `json:"checkpoint"`
-	Digest           string             `json:"digest"`
-	Files            []CompiledFile     `json:"files"`
+	APIVersion          string             `json:"apiVersion"`
+	Kind                string             `json:"kind"`
+	Name                string             `json:"name"`
+	Entrypoint          string             `json:"entrypoint"`
+	SourceEntrypoint    string             `json:"sourceEntrypoint"`
+	SourceDirectory     string             `json:"sourceDirectory"`
+	HarnestVersion      string             `json:"harnestVersion"`
+	Framework           CompiledFramework  `json:"framework"`
+	Checkpoint          CompiledCheckpoint `json:"checkpoint"`
+	Plugins             []CompiledPlugin   `json:"plugins"`
+	Tasks               []CompiledTask     `json:"tasks"`
+	RuntimeDependencies []string           `json:"runtimeDependencies"`
+	Digest              string             `json:"digest"`
+	Files               []CompiledFile     `json:"files"`
+}
+
+// CompiledTask records stable queue policy without executable or customer data.
+type CompiledTask struct {
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	Queue      string `json:"queue"`
+	MaxRetries int    `json:"maxRetries"`
+}
+
+// CompiledPlugin records one plugin in resolved dependency order. Plugin code
+// remains inside the agent source and therefore shares its runtime and digest.
+type CompiledPlugin struct {
+	Name         string   `json:"name"`
+	Version      string   `json:"version"`
+	Digest       string   `json:"digest"`
+	Requires     []string `json:"requires"`
+	Capabilities []string `json:"capabilities"`
+	Dependencies []string `json:"dependencies"`
 }
 
 // CompiledCheckpoint records the immutable authority selected while Python

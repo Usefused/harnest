@@ -1,0 +1,9 @@
+[project]
+name = "hatchet-consumer-real-fixture"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "asyncpg>=0.30,<1",
+  "hatchet-sdk>=1.38,<2",
+  "litellm>=1.84,<2",
+]

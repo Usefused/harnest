@@ -34,7 +34,7 @@ harnest doctor
 starter material; treat `.harnest/` as disposable build output. By default,
 optional folders contain ignored `_README.md` routing guides, except for the
 ignored resource guides, and the root is one simple agent. Add
-`--example` only when the user wants working graph, tool, plugin, skill,
+`--example` only when the user wants working graph, tool, agent-plugin, skill,
 extension, eval, and test samples. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
@@ -44,6 +44,8 @@ fingerprinted environment below `.harnest/environments/`. It resolves
 `pyproject.toml` and updates `uv.lock`; commit the lock after reviewing it. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. Upgrade Harnest to change framework versions.
+Runtime plugins and agent-plugins use this same interpreter and dependency set;
+do not create plugin-local projects, virtual environments, or lockfiles.
 Compile, test, and serve run the same synchronization automatically. In CI, use
 `harnest env sync AGENT_DIR --frozen` before testing to reject a missing or
 stale lock instead of changing it.
@@ -193,9 +195,10 @@ Before finishing a modification:
 1. Confirm every resource is in the right folder and follows its export-name
    contract.
 2. Confirm nested agents own only their sibling supported resources; parent
-   tools/skills do not leak in. Plugins and extensions are root-only, plugins
-   contain only MCP clients plus skills, and extensions contain lifecycle
-   behavior.
+   tools/skills do not leak in. Runtime plugins, agent-plugins, and root
+   extensions are root-only. A manifest-less agent-plugin contains only MCP
+   clients plus skills; a runtime plugin has `plugin.yaml`, `plugin.py`, and
+   declared capabilities.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
    resources are not manually registered. Confirm reusable helpers live only in
    root `lib/`, need no `__init__.py`, and are imported below `harnest.lib`.

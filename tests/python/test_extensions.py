@@ -3,13 +3,23 @@ import unittest
 from pathlib import Path
 
 from harnest.assets import MemoryAssetStore
-from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
+from harnest.extension_loader import (
+    ExtensionDiscoveryError,
+    ExtensionSource,
+    discover_extension_sources,
+    discover_extensions,
+)
 from harnest.output import OutputPolicy
 from harnest.session import InMemorySessionStore
 from harnest.telemetry import TelemetryExporterError, resolve_telemetry_exporters
 
 
 class ExtensionDiscoveryTests(unittest.TestCase):
+    @staticmethod
+    def _write(path: Path, contents: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+
     @staticmethod
     def _session_store(root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)
@@ -58,6 +68,281 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         self.assertEqual(result.native, ())
         self.assertIsInstance(result.session_store, InMemorySessionStore)
 
+    def test_multi_root_discovery_preserves_source_order_and_public_identity(self):
+        """Use dependency-ranked roots while retaining artifact-relative diagnostics."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "extensions"
+            dependency = workspace / "plugins" / "z-base" / "extensions"
+            dependent = workspace / "plugins" / "a-dependent" / "extensions"
+            self._session_store(root)
+            for target, function_name in (
+                (root / "hooks.py", "root_hook"),
+                (dependency / "hooks.py", "dependency_hook"),
+                (dependent / "hooks.py", "dependent_hook"),
+            ):
+                self._write(
+                    target,
+                    "from harnest.lifecycle import lifecycle\n"
+                    "@lifecycle.before_invoke\n"
+                    f"def {function_name}(context, value): return context.next(value)\n",
+                )
+
+            result = discover_extension_sources(
+                (
+                    ExtensionSource(root, "root/extensions"),
+                    ExtensionSource(
+                        dependency, "plugins/z-base/extensions"
+                    ),
+                    ExtensionSource(
+                        dependent, "plugins/a-dependent/extensions"
+                    ),
+                ),
+                framework="langgraph",
+            )
+
+        self.assertEqual(
+            [listener.function_name for listener in result.listeners],
+            ["root_hook", "dependency_hook", "dependent_hook"],
+        )
+        self.assertEqual(
+            [listener.relative_path for listener in result.listeners],
+            [
+                "root/extensions/hooks.py",
+                "plugins/z-base/extensions/hooks.py",
+                "plugins/a-dependent/extensions/hooks.py",
+            ],
+        )
+        self.assertTrue(
+            result.listeners[1].identity.startswith(
+                "plugins/z-base/extensions/hooks.py:"
+            )
+        )
+
+    def test_multi_root_exclusive_authorities_are_validated_globally(self):
+        """Reject root-plugin ownership conflicts before selecting one authority."""
+
+        provider = (
+            "from harnest.credentials import CredentialProvider\n"
+            "from harnest.lifecycle import lifecycle\n"
+            "class Provider(CredentialProvider):\n"
+            "  async def resolve(self, request): return None\n"
+            "@lifecycle.credential_provider\n"
+            "def provider(): return Provider()\n"
+        )
+        output = (
+            "from harnest.lifecycle import lifecycle\n"
+            "from harnest.output import OutputPolicy\n"
+            "@lifecycle.output_policy\n"
+            "def policy(): return OutputPolicy()\n"
+        )
+        cases = (
+            (
+                None,
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.session import InMemorySessionStore\n"
+                "@lifecycle.session_store\n"
+                "def sessions(): return InMemorySessionStore()\n",
+                "exactly one.*session_store.*found 2",
+            ),
+            (
+                None,
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.checkpointer\n"
+                "def checkpoints(): return MemoryStore()\n",
+                "exactly one.*checkpointer.*found 2",
+            ),
+            (provider, provider, "at most one.*credential_provider"),
+            (output, output, "at most one.*output_policy"),
+        )
+        for root_source, plugin_source, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                root = workspace / "extensions"
+                plugin = workspace / "plugins" / "policy" / "extensions"
+                self._session_store(root)
+                if root_source is not None:
+                    self._write(root / "authority.py", root_source)
+                self._write(plugin / "authority.py", plugin_source)
+
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extension_sources(
+                        (
+                            ExtensionSource(root, "root/extensions"),
+                            ExtensionSource(plugin, "plugins/policy/extensions"),
+                        ),
+                        framework="langgraph",
+                    )
+
+    def test_multi_root_stacked_plugin_factory_is_instantiated_once(self):
+        """Let one plugin-owned connection fulfil globally assembled storage roles."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "extensions"
+            plugin = workspace / "plugins" / "state" / "extensions"
+            self._write(
+                plugin / "state.py",
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.storage.sessions\n"
+                "@lifecycle.storage.checkpoints\n"
+                "@lifecycle.storage.custom('users')\n"
+                "def state(): return MemoryStore()\n",
+            )
+
+            result = discover_extension_sources(
+                (
+                    ExtensionSource(root, "root/extensions"),
+                    ExtensionSource(plugin, "plugins/state/extensions"),
+                ),
+                framework="langgraph",
+            )
+
+        self.assertIs(result.session_store, result.checkpointer)
+        self.assertIs(
+            result.session_store,
+            result.storage_registry.custom["users"],
+        )
+
+    def test_multi_root_named_and_context_collisions_are_global(self):
+        """Apply named registries once across independently owned plugin roots."""
+
+        cases = (
+            (
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.storage.assets('media')\n"
+                "def media(): return MemoryAssetStore()\n",
+                "duplicate asset store names: media",
+            ),
+            (
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.storage.custom('users')\n"
+                "def users(): return MemoryStore()\n",
+                "duplicate custom storage names: users",
+            ),
+            (
+                "from harnest.context import context\n"
+                "@context('shared')\n"
+                "def shared(): return object()\n",
+                "duplicate context resource names: shared",
+            ),
+        )
+        for source, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                root = workspace / "extensions"
+                first = workspace / "plugins" / "first" / "extensions"
+                second = workspace / "plugins" / "second" / "extensions"
+                self._session_store(root)
+                self._write(first / "resource.py", source)
+                self._write(second / "resource.py", source)
+
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extension_sources(
+                        (
+                            ExtensionSource(root, "root/extensions"),
+                            ExtensionSource(first, "plugins/first/extensions"),
+                            ExtensionSource(second, "plugins/second/extensions"),
+                        ),
+                        framework="langgraph",
+                    )
+
+    def test_multi_root_http_routes_are_validated_as_one_route_table(self):
+        """Prevent plugins from publishing a method/path already owned elsewhere."""
+
+        route = (
+            "from fastapi import APIRouter\n"
+            "from harnest.lifecycle import lifecycle\n"
+            "@lifecycle.http_routes\n"
+            "def routes(agent):\n"
+            "  router = APIRouter()\n"
+            "  @router.get('/shared')\n"
+            "  def shared(): return {'ok': True}\n"
+            "  return router\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "extensions"
+            plugin = workspace / "plugins" / "routes" / "extensions"
+            self._session_store(root)
+            self._write(root / "routes.py", route)
+            self._write(plugin / "routes.py", route)
+
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "conflicts with"):
+                discover_extension_sources(
+                    (
+                        ExtensionSource(root, "root/extensions"),
+                        ExtensionSource(plugin, "plugins/routes/extensions"),
+                    ),
+                    framework="langgraph",
+                )
+
+    def test_multi_root_native_names_are_validated_globally(self):
+        """Keep framework-native plugin identity unique across ownership roots."""
+
+        try:
+            from google.adk.plugins.base_plugin import BasePlugin  # noqa: F401
+        except ImportError:
+            self.skipTest("google-adk is not installed")
+        native = (
+            "from google.adk.plugins.base_plugin import BasePlugin\n"
+            "from harnest.lifecycle import lifecycle\n"
+            "@lifecycle.adk_plugin\n"
+            "def native(): return BasePlugin(name='shared-native')\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "extensions"
+            plugin = workspace / "plugins" / "native" / "extensions"
+            self._session_store(root)
+            self._write(root / "native.py", native)
+            self._write(plugin / "native.py", native)
+
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "duplicate ADK native.*shared-native"
+            ):
+                discover_extension_sources(
+                    (
+                        ExtensionSource(root, "root/extensions"),
+                        ExtensionSource(plugin, "plugins/native/extensions"),
+                    ),
+                    framework="adk",
+                )
+
+    def test_multi_root_source_descriptors_reject_ambiguous_registration(self):
+        """Fail before imports when origins or filesystem ownership are duplicated."""
+
+        with self.assertRaisesRegex(ValueError, "extension source origin"):
+            ExtensionSource("extensions", "plugin/extensions")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            self._session_store(root)
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "duplicate extension source origins"
+            ):
+                discover_extension_sources(
+                    (
+                        ExtensionSource(root, "root/extensions"),
+                        ExtensionSource(root / "other", "root/extensions"),
+                    ),
+                    framework="langgraph",
+                )
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "already registered"
+            ):
+                discover_extension_sources(
+                    (
+                        ExtensionSource(root, "root/extensions"),
+                        ExtensionSource(root, "plugins/shared/extensions"),
+                    ),
+                    framework="langgraph",
+                )
+
     def test_discovers_the_required_session_store_factory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "extensions"
@@ -76,6 +361,115 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             result = discover_extensions(root, framework="langgraph")
 
         self.assertIsInstance(result.checkpointer, MemoryStore)
+
+    def test_storage_namespace_assembles_distributed_contributions(self):
+        """Compile independently placed storage factories into one typed registry."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "extensions"
+            (root / "storage").mkdir(parents=True)
+            (root / "storage" / "sessions.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.session import InMemorySessionStore\n"
+                "@lifecycle.storage.sessions\n"
+                "def sessions(): return InMemorySessionStore()\n",
+                encoding="utf-8",
+            )
+            (root / "storage" / "checkpoints.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.storage.checkpoints\n"
+                "def checkpoints(): return MemoryStore()\n",
+                encoding="utf-8",
+            )
+            (root / "storage" / "assets.py").write_text(
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.storage.assets('uploads')\n"
+                "def uploads(): return MemoryAssetStore()\n",
+                encoding="utf-8",
+            )
+            (root / "storage" / "users.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.storage.custom('users')\n"
+                "def users(): return MemoryStore()\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="langgraph")
+
+        self.assertIs(result.storage_registry.sessions, result.session_store)
+        self.assertIs(result.storage_registry.checkpoints, result.checkpointer)
+        self.assertEqual(set(result.storage_registry.assets), {"uploads"})
+        self.assertEqual(set(result.storage_registry.custom), {"users"})
+
+    def test_stacked_storage_roles_instantiate_the_factory_once(self):
+        """Let one pool own multiple roles without hidden duplicate connections."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "state.py").write_text(
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.store import MemoryStore\n"
+                "@lifecycle.storage.sessions\n"
+                "@lifecycle.storage.checkpoints\n"
+                "def state(): return MemoryStore()\n",
+                encoding="utf-8",
+            )
+
+            result = discover_extensions(root, framework="langgraph")
+
+        self.assertIs(result.session_store, result.checkpointer)
+
+    def test_new_and_legacy_storage_names_share_conflict_validation(self):
+        """Prevent aliases from bypassing uniqueness across authoring styles."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "assets.py").write_text(
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.asset_store(name='media')\n"
+                "def old(): return MemoryAssetStore()\n"
+                "@lifecycle.storage.assets('media')\n"
+                "def new(): return MemoryAssetStore()\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ExtensionDiscoveryError, "duplicate asset store names: media"
+            ):
+                discover_extensions(root, framework="adk")
+
+    def test_custom_storage_names_are_unique_and_lifecycle_owned(self):
+        """Require custom storage to support deterministic startup and cleanup."""
+
+        for source, message in (
+            (
+                "@lifecycle.storage.custom('users')\n"
+                "def first(): return MemoryStore()\n"
+                "@lifecycle.storage.custom('users')\n"
+                "def second(): return MemoryStore()\n",
+                "duplicate custom storage names",
+            ),
+            (
+                "@lifecycle.storage.custom('users')\n"
+                "def users(): return object()\n",
+                "async start.*close",
+            ),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._session_store(root)
+                (root / "custom.py").write_text(
+                    "from harnest.lifecycle import lifecycle\n"
+                    "from harnest.store import MemoryStore\n" + source,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extensions(root, framework="langgraph")
 
     def test_asset_store_is_optional_and_must_implement_the_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

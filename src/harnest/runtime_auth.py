@@ -87,9 +87,9 @@ class ConnectionContext:
     transport: str
     method: str | None
     path: str
-    headers: Mapping[str, str]
-    cookies: Mapping[str, str]
-    query: Mapping[str, str]
+    headers: Mapping[str, str] = field(repr=False)
+    cookies: Mapping[str, str] = field(repr=False)
+    query: Mapping[str, str] = field(repr=False)
 
     def __post_init__(self) -> None:
         if self.transport not in {"http", "websocket"}:

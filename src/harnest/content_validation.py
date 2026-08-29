@@ -629,7 +629,9 @@ def _authoritative_part(
         return File.model_validate(
             {**common, "pageCount": getattr(metadata, "page_count", None)}
         )
-    return AssetRef.model_validate(common)
+    # Labels carry optional domain meaning supplied by the application; the
+    # store-owned fields above remain authoritative for routing and policy.
+    return AssetRef.model_validate({**common, "label": part.label})
 
 
 def _authoritative_inline_part(

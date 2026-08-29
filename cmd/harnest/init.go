@@ -423,25 +423,15 @@ def client():
 def observe_result(_context, _result):
     """Observe completed invocations without replacing their result."""
 `,
-		"lib/storage.py": `from harnest.store import MemoryStore
+		"extensions/storage.py": `from harnest.lifecycle import lifecycle
+from harnest.store import MemoryStore
 
 
-store = MemoryStore()
-`,
-		"extensions/storage.py": `from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
-
-
-@lifecycle.session_store
-def session_store():
-    """Return the store for completed conversation and business state."""
-    return store
-
-
-@lifecycle.checkpointer
-def checkpointer():
-    """Return the same store for private in-progress execution state."""
-    return store
+@lifecycle.storage.sessions
+@lifecycle.storage.checkpoints
+def state_store():
+    """Share one lifecycle-owned store without placing it in lib."""
+    return MemoryStore()
 `,
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
@@ -653,6 +643,14 @@ func minimalScaffoldFiles(
 }
 
 func optionalFolderGuide(directory, mode string) string {
+	if directory == "plugins" {
+		// plugin.yaml opts into same-process lifecycle ownership; manifest-less
+		// folders retain the narrower MCP-plus-skills agent-plugin contract.
+		if mode == "advanced" {
+			return "Add RuntimePlugin folders for Harnest-owned lifecycle boundaries; wire native content in agent.py. Manifest-less agent-plugins combine MCP clients and skills.\n"
+		}
+		return "Add RuntimePlugin folders with plugin.yaml, or manifest-less agent-plugins combining MCP clients and skills.\n"
+	}
 	if mode == "advanced" && directory != "extensions" {
 		return "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
 	}
@@ -661,7 +659,6 @@ func optionalFolderGuide(directory, mode string) string {
 		"subagents":  "Add subagent definitions here; use folders when they own resources.\n",
 		"mcp":        "Add direct MCPClient connections here.\n",
 		"extensions": "Add @lifecycle-decorated functions in arbitrary public Python files here.\n",
-		"plugins":    "Add capability bundles combining MCP clients and skills here.\n",
 		"sandbox":    "Add sandbox.py only when managed ADK needs code isolation.\n",
 		"skills":     "Add one Agent Skill directory per progressive instruction pack.\n",
 		"evals":      "Add ADK *.evalset.json files and optional test_config.json here.\n",

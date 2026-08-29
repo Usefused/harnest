@@ -183,6 +183,38 @@ Use the separately installed `$harnest-authentication` skill for authentication,
 verified principals, incoming credentials, downstream resolution, and their
 tests. Do not put tokens in context resources, metadata, sessions, or tasks.
 
+## Lifecycle and scoped state
+
+Root `extensions/**/*.py` are discovered independently, so storage connections
+need not share one file. Declare roles with `@lifecycle.storage.sessions`,
+`.checkpoints`, `.assets("media")`, and `.custom("users")`. Decorators may be
+stacked when one connection safely fulfils multiple roles; otherwise keep each
+factory beside its responsibility. Sessions and checkpoints are framework
+authorities and are never returned by `context.storage`.
+
+Use `context.session.get/set/update/delete` for JSON-safe application data that
+must persist with the current session without entering prompts, framework state,
+or model-visible history. Use `.namespace("plugin")` to avoid key collisions.
+Use `context.storage("users")` or `.resource("users", ExpectedRepository)` for
+an explicitly named custom store. Custom stores should expose domain repository
+methods rather than leaking SQL connections into agent code.
+
+Portable lifecycle namespaces include `lifecycle.agent`, `lifecycle.model`,
+`lifecycle.tool`, `lifecycle.mcp`, and `lifecycle.http`. New tool, MCP, and HTTP
+interceptors must return
+`context.next()`, `context.next(replacement)`, or `context.finish(result)`;
+omitting a transition is an error. Model and legacy flat invocation hooks retain
+their existing `None` compatibility. HTTP request replacements use
+`HTTPCallRequest`; response-head replacements use `HTTPResponseHead`, while
+`finish(...)` requires a complete ASGI response.
+
+`context.assets("media")` selects a named store; references retain their owning
+store and an optional domain label. `context.credentials` remains a private
+typed resolver. `context.mcp("billing")` exposes no raw transport and is
+available only when the runtime can dispatch through the governed tool path.
+Inspect `application.lifecycle_coverage.report()` or `/agent` diagnostics before
+relying on native internals, especially in advanced mode.
+
 ## Reusable library modules
 
 Use root `lib/` for ordinary Python shared by tools, agents, graph callables,
@@ -300,7 +332,8 @@ filename is the local client identity. Optional parameters, `*args`, and
 available. Factory failures identify the exception type without echoing its
 potentially sensitive message. Use a prefix to control exposed names; Harnest
 separately assigns a stable path-scoped capability identity so same-named
-clients in direct, plugin, and subagent scopes cannot collide.
+clients in direct, agent-plugin, runtime-plugin, and subagent scopes cannot
+collide.
 
 For remote servers behind gateways, pass a connection-scoped
 `MCPClientLifecycle` to `streamable_http(..., lifecycle=...)` or
@@ -402,13 +435,98 @@ through `/responses` or `/live`. Opaque native capabilities, direct native
 routes, and detached tasks remain framework-owned and need native approval
 wiring.
 
-## Plugins versus extensions
+## Runtime plugins, agent-plugins, and extensions
 
-A plugin is a filesystem bundle of MCP client modules and progressive skills.
-There is no Python plugin object and no plugin agent.
+A folder with `plugins/<name>/plugin.yaml` kind `RuntimePlugin` is a same-process
+runtime plugin. Its strict `plugin:plugin` entrypoint exports one public local
+`Plugin` subclass and the singleton `plugin` from `plugin.py`; Harnest exposes
+that module as `harnest.plugins.<name>`. `requires.plugins` declares local
+runtime-plugin dependencies, while `capabilities` declares the lifecycle,
+context, content, storage, HTTP, native, policy, and telemetry surfaces it
+contributes. See [layout.md](layout.md) for the complete manifest and export.
+
+Runtime plugins share the agent's interpreter, event loop, `pyproject.toml`, and
+dialect solve. A plugin may add a PEP 621 `pyproject.toml` whose name/version
+match `plugin.yaml`; Harnest resolves its static dependencies with the root
+project before compiler imports. It still receives no private environment or
+independent lock. Plugins may extend `PluginContext`; `plugin.context` is available only
+during its managed invocation. Async `start(context)` runs after declared
+dependencies and `stop()` runs in reverse order. In managed mode, Harnest
+auto-composes declared content and flattens each plugin's `extensions/` with
+root extensions into one globally validated universal lifecycle.
+
+`start(context)` can resolve a named custom store with `context.storage(name)`
+only when the manifest declares `context.storage`; the store must be registered
+separately by a `storage.custom` extension. During an invocation,
+`context.plugins("temporal", TemporalContext)` and the singleton's
+`plugin.context` resolve the same revocable plugin view without exposing a
+plugin registry. Wrap committed durable plugin writes with
+`harnest.plugins.plugin_mutation(plugin_name, operation,
+trigger="agent" | "user")` so Harnest
+emits correlated, privacy-safe audit signals; never put payloads or secrets in
+the operation name.
+
+A plugin that adapts an external durable runtime declares
+`context.continuations`. Its startup context receives a provider-bound
+application port for `complete(external_id, result)`, `fail(external_id,
+error_code)`, deterministic `register_schema(schema_id, validate)`, and bounded
+`list_pending(...)` reconciliation. Register every result schema during plugin
+startup so a different replica can validate the callback. Its
+`PluginContext.continuations` receives the matching invocation-bound
+`suspend(external_id, capability=..., schema_id=..., validate=...)` port. The
+plugin should wrap those ports behind its own typed API; the agent may own an
+ordinary tool that calls `harnest.plugins.<name>` without the plugin
+contributing a tool.
+
+Suspension commits an opaque Harnest continuation and returns
+`status: in_progress`; poll `GET /responses/{responseId}?sessionId=...` using
+the same authenticated principal. Provider completion and the native framework
+checkpoint may arrive in either order; once both are durable, one replica
+atomically claims the wait. ADK injects the persisted `FunctionResponse` and
+does not restore the Python tool frame. LangGraph re-enters its checkpointed
+tool node, so code before the wait and external submission must be idempotent.
+Harnest shutdown never owns or cancels the external job. A `HarnestStore`
+checkpoint provider is required; opaque native advanced checkpointers cannot
+provide this portable ownership boundary.
+
+`@tool(durable=True)` opts an asynchronous managed tool into Harnest's native
+durability boundary. ADK receives a long-running function tool and LangGraph
+receives checkpointed interrupt identity; a runtime-plugin adapter can use the
+active native correlation for replay-safe suspension. The framework may restart
+the logical tool/node, so external submissions must remain idempotent. This
+does not serialize local variables or a Python stack. Awaiting unfinished
+plugin or task work from a non-durable tool fails before a wait is persisted.
+
+## Queued application tasks
+
+Put queue work in root `tasks/<name>.py` and export exactly one same-named
+`@task` callable. Calling it directly stays local; `await task.defer(...)`
+commits JSON-safe keyword arguments and returns a handle with `status()` and
+`cancel()`. `await handle.result()` returns a persisted result immediately or,
+inside `@tool(durable=True)`, suspends through the native framework checkpoint.
+Use `schedule_in=` for delayed work and `idempotency_key=` for deduplicated
+submission. Harnest derives a replay-stable key when a durable tool omits one.
+Tasks are services, not model-visible tools.
+
+Harnest installs Procrastinate only when a public task exists and runs it on an
+explicit task PostgreSQL URL or the application's unambiguous PostgreSQL store.
+`max_retries` is queue retry policy, independent from agent checkpoint replay.
+Task execution reconstructs scoped agent identity and declared resources but
+never serializes credentials or a suspended Python frame. Keep payloads small,
+JSON-safe, and idempotent because workers may retry after failure.
+
+A manifest-less folder below `plugins/` is an **agent-plugin**, not a runtime
+plugin. It contains only MCP client modules plus progressive skills, requires
+at least one of each, and has no Python plugin object or lifecycle behavior.
+
+In advanced mode, runtime plugins participate only at Harnest-owned neutral
+boundaries. A capability declaration cannot intercept opaque native framework
+model, tool, MCP, graph, checkpoint, or subagent execution; the author wires
+those paths.
 
 An extension changes application behavior. Arbitrary public Python files below
-root `extensions/` may contain helpers, but only decorated functions execute:
+root or runtime-plugin `extensions/` may contain helpers, but only decorated
+functions execute:
 
 ```python
 from harnest.lifecycle import lifecycle

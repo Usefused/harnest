@@ -18,6 +18,121 @@ when applications need them.
 * Split response continuations, SSE, WebSocket, session wire handling, and
   driver contracts out of the neutral router to reduce cross-feature coupling.
 
+### Portable lifecycle and contexts
+
+* Added one framework-neutral lifecycle kernel for agent, model, tool, MCP, and
+  HTTP execution. Hooks explicitly return `Next(...)` to continue or
+  `Finish(...)` to stop, and implicit `None` returns fail closed.
+* Every lifecycle phase supports integer `order` values. Lower values execute
+  first, with plugin dependency/source order and source location providing a
+  deterministic tie-break. The structural ordering between lifecycle stages
+  remains runtime-owned.
+* Added managed ADK and LangGraph adapters so native model, tool, MCP, and
+  subagent activity crosses the same portable lifecycle boundaries exactly
+  once.
+* Expanded invocation context into typed, revocable views for agent identity,
+  resources, credentials, sessions, storage, assets, MCP clients, and runtime
+  plugins. Credential authority remains a separate context so secrets do not
+  enter general resources, logs, traces, or public errors.
+* Session context can read and update durable state without sending that state
+  through the model. Asset and custom-storage views retain named routing while
+  default asset selection remains explicit and modality-aware.
+
+### Storage registry
+
+* Added distributed lifecycle declarations for session stores, checkpoint
+  authorities, named asset stores, and named custom stores. Definitions may
+  live in separate extension files and are compiled into one typed
+  `StorageRegistry` without requiring a central connection file.
+* A shared factory may fulfil several storage roles, allowing one connection or
+  pool to be reused without duplicate startup, shutdown, or hidden resources.
+* Added portable session/checkpoint adapters for ADK and LangGraph while keeping
+  framework-native advanced-mode ownership explicit.
+* Storage starts before plugin and extension resources and stops after them.
+  Partial startup unwinds only resources that entered their lifecycle, in
+  reverse order, without masking the original failure.
+
+### Runtime plugins
+
+* Added application-owned `RuntimePlugin` compilation under
+  `plugins/<name>/plugin.yaml`, distinct from manifestless MCP-and-skill
+  agent-plugins. Runtime plugins use the agent's interpreter, dependency lock,
+  process, event loop, and compiled artifact rather than a sidecar runtime.
+* Runtime plugins may declare static PEP 621 dependencies in their own
+  `pyproject.toml`. Environment synchronization resolves those constraints
+  together with the root application before compiler imports, while preserving
+  one shared interpreter instead of installing a plugin-private environment.
+* Plugins are exposed through `harnest.plugins.<name>`, declare a singleton
+  `plugin`, and may provide typed per-invocation contexts, tools, MCP clients,
+  skills, subagents, lifecycle extensions, and application-scoped resources.
+* Plugin dependencies determine namespace import and startup order; shutdown is
+  reversed. Concurrent runtimes cannot independently start or prematurely stop
+  the same process-global plugin singleton.
+* Plugin manifests declare a closed capability set. The compiler validates
+  contributions before import, and the Go engine binds dependency-ordered
+  plugin provenance into the verified artifact digest.
+* Managed ADK and LangGraph compose declared plugin content automatically.
+  Advanced mode retains Harnest-owned lifecycle and context boundaries but
+  rejects content that would silently alter a native application.
+* Added privacy-safe `plugin_mutation(...)` OTEL auditing and live compiled-agent
+  coverage for LangGraph with a local FastMCP subprocess and ADK with its native
+  runner.
+* Added the `context.continuations` plugin capability for external durable
+  runtimes. Provider-bound startup and invocation ports persist opaque waits
+  with framework resume identity and deterministic schema validators. Once the
+  native checkpoint and provider outcome are both durable, any replica sharing
+  the stores may atomically claim and resume the run.
+* Added principal/session-scoped `GET /responses/{responseId}` polling for
+  `in_progress`, completed, and payload-free failed responses. Continuations
+  use Memory, PostgreSQL, or Redis Harnest stores with indexed provider lookup,
+  compare-and-swap transitions, bounded reconciliation, and privacy-safe OTEL
+  mutation auditing.
+* Response polling now reconstructs opaque waiting and terminal boundaries from
+  shared run/session state, so requests handled by a different replica converge
+  without a process-local future. Terminal responses are retained as bounded
+  tombstones and never drift to a later session turn.
+* Added a no-tool Hatchet runtime-plugin example, an independently authored ADK
+  consumer agent, and a Docker Hatchet Lite/PostgreSQL worker fixture. Stopping
+  the Harnest plugin cancels local monitors but never owns or cancels Hatchet
+  jobs; a new replica keyset-pages pending continuations and restores their
+  provider monitors with application recovery authority.
+* Added a gated live journey that calls a real LiteLLM provider, executes the
+  consumer-owned Hatchet tool exactly once, and uses one PostgreSQL-backed
+  Harnest store for sessions, checkpoints, and external continuations. Replica
+  A stops while the job is pending; replica B reconciles it, resumes the exact
+  ADK tool call, and restores the completed transcript from that database.
+
+### Durable tools and queued tasks
+
+* Added the `@tool(durable=True)` compiler/runtime foundation for asynchronous
+  managed tools. Harnest lowers these tools to ADK's long-running tool type or
+  LangGraph's checkpointed interrupt identity and supplies replay-stable native
+  correlation to plugin adapters. ADK resumes its model loop with the exact
+  persisted `FunctionResponse`; LangGraph re-enters the checkpointed tool node,
+  so external submission keys are deterministic and replay-safe.
+* Added strict `tasks/<name>.py` discovery and the framework-neutral `@task`
+  authoring API for queued, scheduled, retryable service work. Direct calls
+  remain ordinary Python calls; `.defer(...)` returns an opaque handle for
+  status, cancellation, and JSON-safe persisted results. Awaiting an unfinished
+  handle from `@tool(durable=True)` uses the same cross-replica continuation
+  protocol as runtime plugins.
+* Procrastinate is compiler-owned and conditionally installed only when a
+  public task export exists. Its PostgreSQL queue lifecycle, worker ownership,
+  retries, and user/agent mutation audits remain separate from framework
+  checkpoint resumability.
+
+### Live verification
+
+* Live-verified the official Hatchet SDK against a Docker Hatchet Lite worker,
+  including compiled ADK suspension, external completion, and transcript
+  persistence.
+* Live-verified cross-replica recovery with a real OpenAI model and PostgreSQL:
+  replica A stopped while Hatchet work was pending, replica B reconciled the
+  continuation, resumed the exact ADK function response, made the second model
+  call, and completed the original session.
+* Live-verified the pinned Procrastinate worker against PostgreSQL, including
+  delayed scheduling, retry, persisted task results, and payload-redacted logs.
+
 ### Sessions and transcripts
 
 * Session records now consistently expose `id`, `userId`, `state`, `createdAt`,

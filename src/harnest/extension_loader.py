@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 import importlib.util
 import inspect
 from pathlib import Path
+import re
 import sys
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 import uuid
 
 from .assets import AssetStore
@@ -25,17 +26,47 @@ from .http_routes import (
     create_http_route_extension,
     validate_http_route_extensions,
 )
-from .lifecycle import LifecycleListener, registration_for
+from .lifecycle import LifecycleListener, registrations_for
 from .output import OutputPolicy
 from .session import SessionStore
+from .storage_registry import CustomStorage, StorageRegistry
 
 
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _IGNORED_NAMES = frozenset({"__init__.py", ".DS_Store", "__pycache__"})
+_STORAGE_PHASES = frozenset(
+    {"session_store", "checkpointer", "asset_store", "custom_store"}
+)
+_ROOT_EXTENSION_ORIGIN = "root/extensions"
+_PLUGIN_EXTENSION_ORIGIN = re.compile(
+    r"^plugins/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/extensions$"
+)
 
 
 class ExtensionDiscoveryError(ValueError):
     """An extension resource does not follow the decorator contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionSource:
+    """One extension tree and its stable application-relative identity prefix."""
+
+    directory: Path
+    origin: str
+
+    def __post_init__(self) -> None:
+        """Normalize the filesystem input and reject ambiguous public origins."""
+
+        try:
+            directory = Path(self.directory)
+        except TypeError as exc:
+            raise TypeError("extension source directory must be path-like") from exc
+        if not isinstance(self.origin, str) or not _valid_extension_origin(self.origin):
+            raise ValueError(
+                "extension source origin must be 'root/extensions' or "
+                "'plugins/<name>/extensions'"
+            )
+        object.__setattr__(self, "directory", directory)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,56 +84,171 @@ class DiscoveredExtensions:
     output_policy: OutputPolicy = OutputPolicy()
     telemetry_exporters: tuple[LifecycleListener, ...] = ()
     context_values: tuple[ContextValue, ...] = ()
+    storage_registry: StorageRegistry = field(default_factory=StorageRegistry)
+    declared_listeners: tuple[LifecycleListener, ...] = field(
+        default=(), repr=False
+    )
 
 
 def discover_extensions(
     directory: str | Path, *, framework: str
 ) -> DiscoveredExtensions:
-    """Discover hooks and establish one session/checkpoint authority."""
+    """Discover one root extension tree through the multi-source compiler."""
+
+    return discover_extension_sources(
+        (ExtensionSource(Path(directory), _ROOT_EXTENSION_ORIGIN),),
+        framework=framework,
+    )
+
+
+def discover_extension_sources(
+    sources: Sequence[ExtensionSource], *, framework: str
+) -> DiscoveredExtensions:
+    """Compile ordered extension trees into one globally validated registry."""
 
     if framework not in _FRAMEWORKS:
         raise ExtensionDiscoveryError(f"unsupported extension framework: {framework}")
-    root = Path(directory)
-    _validate_root(root)
-    ordered = _ordered_listeners(root)
+    ordered = _ordered_source_listeners(_validated_sources(sources))
     _validate_context_names(ordered)
-    session_store, session_listener, remaining = _create_session_store(
+    storage, storage_listeners, remaining = _create_storage_registry(
         ordered, framework
     )
-    checkpointer, checkpoint_listener, remaining = _create_checkpointer(
-        remaining, framework
-    )
-    asset_stores, asset_listeners, remaining = _create_asset_stores(remaining)
-    asset_store = asset_stores.get("default")
     credential_provider, remaining = _create_credential_provider(remaining)
     http_routes, remaining = _create_http_routes(remaining)
     output_policy, remaining = _create_output_policy(remaining)
     telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
-    _validate_storage_ownership(session_store, checkpointer)
     portable, native_listeners = _partition_listeners(remaining, framework)
     native = tuple(_create_native(item, framework) for item in native_listeners)
     _validate_native_duplicates(native, framework)
     context_values = _factory_context_values(
-        (session_listener, session_store),
-        (checkpoint_listener, checkpointer),
-        *(
-            (listener, asset_stores[listener.registration_name or "default"])
-            for listener in asset_listeners
-        ),
+        *((listener, _storage_value_for_listener(storage, listener))
+          for listener in storage_listeners),
     )
     return DiscoveredExtensions(
         listeners=portable,
         native=native,
-        session_store=session_store,
-        checkpointer=checkpointer,
-        asset_store=asset_store,
-        asset_stores=asset_stores,
+        session_store=storage.sessions,
+        checkpointer=storage.checkpoints,
+        asset_store=storage.default_assets,
+        asset_stores=storage.assets,
         credential_provider=credential_provider,
         http_routes=http_routes,
         output_policy=output_policy,
         telemetry_exporters=telemetry_exporters,
         context_values=context_values,
+        storage_registry=storage,
+        declared_listeners=ordered,
     )
+
+
+def _create_storage_registry(
+    listeners: tuple[LifecycleListener, ...], framework: str
+) -> tuple[StorageRegistry, tuple[LifecycleListener, ...], tuple[LifecycleListener, ...]]:
+    """Assemble distributed storage roles while invoking shared factories once."""
+
+    storage = tuple(item for item in listeners if item.phase in _STORAGE_PHASES)
+    remaining = tuple(item for item in listeners if item.phase not in _STORAGE_PHASES)
+    sessions = _single_storage_listener(storage, "session_store")
+    values: dict[int, Any] = {}
+    session_store = _storage_factory_value(sessions, values)
+    _validate_session_authority(session_store, sessions, framework)
+    checkpoints = _single_storage_listener(storage, "checkpointer")
+    checkpoint_store = _storage_factory_value(checkpoints, values)
+    _validate_checkpoint_authority(checkpoint_store, checkpoints, framework)
+    assets = tuple(item for item in storage if item.phase == "asset_store")
+    custom = tuple(item for item in storage if item.phase == "custom_store")
+    _validate_named_storage(assets, kind="asset store")
+    _validate_named_storage(custom, kind="custom storage")
+    for listener in assets + custom:
+        _storage_factory_value(listener, values)
+    _validate_storage_ownership(session_store, checkpoint_store)
+    registry = StorageRegistry(
+        sessions=session_store,
+        checkpoints=checkpoint_store,
+        assets=_named_storage_values(assets, values),
+        custom=_named_storage_values(custom, values),
+    )
+    return registry, storage, remaining
+
+
+def _single_storage_listener(
+    listeners: tuple[LifecycleListener, ...], phase: str
+) -> LifecycleListener:
+    """Resolve one exclusive storage role with a compatibility-oriented error."""
+
+    factories = tuple(item for item in listeners if item.phase == phase)
+    if len(factories) != 1:
+        decorator = "session_store" if phase == "session_store" else "checkpointer"
+        raise ExtensionDiscoveryError(
+            f"application extensions must declare exactly one @lifecycle.{decorator} "
+            f"factory; found {len(factories)}"
+        )
+    return factories[0]
+
+
+def _validate_named_storage(
+    listeners: tuple[LifecycleListener, ...], *, kind: str
+) -> None:
+    """Reject ambiguous named routes before constructing external resources."""
+
+    names = tuple(item.registration_name or "default" for item in listeners)
+    duplicates = _duplicates(names)
+    if duplicates:
+        raise ExtensionDiscoveryError(
+            f"duplicate {kind} names: " + ", ".join(duplicates)
+        )
+
+
+def _storage_factory_value(
+    listener: LifecycleListener, values: dict[int, Any]
+) -> Any:
+    """Materialize one factory once and validate every role attached to it."""
+
+    key = id(listener.callback)
+    if key not in values:
+        values[key] = _call_factory(listener, label="storage")
+    value = values[key]
+    _validate_storage_value(listener, value)
+    return value
+
+
+def _validate_storage_value(listener: LifecycleListener, value: Any) -> None:
+    """Validate repeatable storage roles without duplicating instantiation logic."""
+
+    if listener.phase == "asset_store" and not isinstance(value, AssetStore):
+        raise ExtensionDiscoveryError(
+            f"asset store lifecycle factory {listener.identity} must return "
+            f"AssetStore; got {type(value).__name__}"
+        )
+    if listener.phase == "custom_store" and not isinstance(value, CustomStorage):
+        raise ExtensionDiscoveryError(
+            f"custom storage lifecycle factory {listener.identity} must return "
+            "an object with async start() and close() methods"
+        )
+
+
+def _named_storage_values(
+    listeners: tuple[LifecycleListener, ...], values: Mapping[int, Any]
+) -> dict[str, Any]:
+    """Bind validated names to the one value created for each source factory."""
+
+    return {
+        listener.registration_name or "default": values[id(listener.callback)]
+        for listener in listeners
+    }
+
+
+def _storage_value_for_listener(
+    registry: StorageRegistry, listener: LifecycleListener
+) -> Any:
+    """Resolve explicit legacy context exports from the normalized registry."""
+
+    if listener.phase == "session_store":
+        return registry.sessions
+    if listener.phase == "checkpointer":
+        return registry.checkpoints
+    mapping = registry.assets if listener.phase == "asset_store" else registry.custom
+    return mapping[listener.registration_name or "default"]
 
 
 def _create_http_routes(
@@ -125,42 +271,6 @@ def _create_http_routes(
     # Convert outside the route-validation handler so authored failures do not
     # remain reachable from the compiler's public exception context.
     raise ExtensionDiscoveryError(message)
-
-
-def _create_asset_stores(
-    listeners: tuple[LifecycleListener, ...],
-) -> tuple[
-    dict[str, AssetStore],
-    tuple[LifecycleListener, ...],
-    tuple[LifecycleListener, ...],
-]:
-    """Instantiate named authorities for scoped binary content."""
-
-    factories = tuple(item for item in listeners if item.phase == "asset_store")
-    names = tuple(item.registration_name or "default" for item in factories)
-    duplicates = _duplicates(names)
-    if duplicates:
-        raise ExtensionDiscoveryError(
-            "duplicate asset store names: " + ", ".join(duplicates)
-        )
-    remaining = tuple(item for item in listeners if item.phase != "asset_store")
-    stores = {
-        name: _create_asset_storage(factory)
-        for factory, name in zip(factories, names, strict=True)
-    }
-    return stores, factories, remaining
-
-
-def _create_asset_storage(factory: LifecycleListener) -> AssetStore:
-    """Instantiate and type-check one named asset storage factory."""
-
-    value = _call_factory(factory, label="asset store")
-    if not isinstance(value, AssetStore):
-        raise ExtensionDiscoveryError(
-            f"asset store lifecycle factory {factory.identity} must return "
-            f"AssetStore; got {type(value).__name__}"
-        )
-    return value
 
 
 def _duplicates(values: tuple[str, ...]) -> list[str]:
@@ -193,7 +303,7 @@ def _create_credential_provider(
     )
     if len(factories) > 1:
         raise ExtensionDiscoveryError(
-            "root extensions may declare at most one "
+            "application extensions may declare at most one "
             "@lifecycle.credential_provider factory; "
             f"found {len(factories)}"
         )
@@ -220,7 +330,7 @@ def _create_output_policy(
     factories = tuple(item for item in listeners if item.phase == "output_policy")
     if len(factories) > 1:
         raise ExtensionDiscoveryError(
-            "root extensions may declare at most one @lifecycle.output_policy "
+            "application extensions may declare at most one @lifecycle.output_policy "
             f"factory; found {len(factories)}"
         )
     remaining = tuple(item for item in listeners if item.phase != "output_policy")
@@ -234,28 +344,6 @@ def _create_output_policy(
             f"OutputPolicy; got {type(value).__name__}"
         )
     return value, remaining
-
-
-def _create_checkpointer(
-    listeners: tuple[LifecycleListener, ...], framework: str
-) -> tuple[
-    CheckpointAuthority,
-    LifecycleListener,
-    tuple[LifecycleListener, ...],
-]:
-    """Instantiate the single checkpoint authority required by every root."""
-
-    factories = tuple(item for item in listeners if item.phase == "checkpointer")
-    if len(factories) != 1:
-        raise ExtensionDiscoveryError(
-            "root extensions must declare exactly one @lifecycle.checkpointer "
-            f"factory; found {len(factories)}"
-        )
-    factory = factories[0]
-    value = _call_factory(factory, label="checkpointer")
-    _validate_checkpoint_authority(value, factory, framework)
-    remaining = tuple(item for item in listeners if item.phase != "checkpointer")
-    return value, factory, remaining
 
 
 def _validate_checkpoint_authority(
@@ -280,24 +368,11 @@ def _validate_checkpoint_authority(
         )
 
 
-def _create_session_store(
-    listeners: tuple[LifecycleListener, ...],
-    framework: str,
-) -> tuple[
-    SessionStore | ADKStore,
-    LifecycleListener,
-    tuple[LifecycleListener, ...],
-]:
-    """Instantiate the single store that owns committed conversation state."""
+def _validate_session_authority(
+    value: Any, factory: LifecycleListener, framework: str
+) -> None:
+    """Accept portable sessions and the explicit advanced ADK wrapper."""
 
-    factories = tuple(item for item in listeners if item.phase == "session_store")
-    if len(factories) != 1:
-        raise ExtensionDiscoveryError(
-            "root extensions must declare exactly one @lifecycle.session_store factory; "
-            f"found {len(factories)}"
-        )
-    factory = factories[0]
-    value = _call_factory(factory, label="session store")
     # Native ADK storage implements ADK's service contracts rather than the
     # portable protocol, so it is valid only inside that framework boundary.
     native_adk_store = framework == "adk" and isinstance(value, ADKStore)
@@ -308,8 +383,6 @@ def _create_session_store(
             f"{' or ADKStore' if framework == 'adk' else ''}; "
             f"got {type(value).__name__}"
         )
-    remaining = tuple(item for item in listeners if item.phase != "session_store")
-    return value, factory, remaining
 
 
 def _factory_context_values(
@@ -317,21 +390,33 @@ def _factory_context_values(
 ) -> tuple[ContextValue, ...]:
     """Expose only storage factories explicitly marked for agent context."""
 
-    return tuple(
-        ContextValue(listener.context_name, value, listener.identity)
-        for listener, value in factories
-        if listener is not None and listener.context_name is not None
-    )
+    values: dict[str, ContextValue] = {}
+    for listener, value in factories:
+        if listener is None or listener.context_name is None:
+            continue
+        # Stacked storage roles share one explicit context export rather than
+        # publishing duplicate aliases for the same authored function.
+        values.setdefault(
+            listener.context_name,
+            ContextValue(listener.context_name, value, listener.identity),
+        )
+    return tuple(values.values())
 
 
 def _validate_context_names(listeners: tuple[LifecycleListener, ...]) -> None:
     """Reject ambiguous resource lookup before any factory is invoked."""
 
-    names = [item.context_name for item in listeners if item.context_name is not None]
-    duplicates = sorted({name for name in names if names.count(name) > 1})
+    owners: dict[str, int] = {}
+    duplicates: set[str] = set()
+    for listener in listeners:
+        if listener.context_name is None:
+            continue
+        owner = owners.setdefault(listener.context_name, id(listener.callback))
+        if owner != id(listener.callback):
+            duplicates.add(listener.context_name)
     if duplicates:
         raise ExtensionDiscoveryError(
-            "duplicate context resource names: " + ", ".join(duplicates)
+            "duplicate context resource names: " + ", ".join(sorted(duplicates))
         )
 
 
@@ -348,10 +433,48 @@ def _validate_storage_ownership(
         )
 
 
-def _ordered_listeners(root: Path) -> tuple[LifecycleListener, ...]:
-    groups = tuple(_load_listeners(path, root) for path in _extension_files(root))
-    flattened = tuple(item for group in groups for item in group)
-    return tuple(sorted(flattened, key=_listener_order))
+def _validated_sources(
+    sources: Sequence[ExtensionSource],
+) -> tuple[ExtensionSource, ...]:
+    """Freeze ordered roots and reject loading one origin or tree twice."""
+
+    if isinstance(sources, (str, bytes)) or not isinstance(sources, Sequence):
+        raise TypeError("extension sources must be a sequence of ExtensionSource values")
+    normalized = tuple(sources)
+    if any(not isinstance(source, ExtensionSource) for source in normalized):
+        raise TypeError("extension sources must contain only ExtensionSource values")
+    origins = tuple(source.origin for source in normalized)
+    if duplicates := _duplicates(origins):
+        raise ExtensionDiscoveryError(
+            "duplicate extension source origins: " + ", ".join(duplicates)
+        )
+    roots: dict[Path, str] = {}
+    for source in normalized:
+        _validate_root(source.directory)
+        canonical = source.directory.resolve()
+        if previous := roots.get(canonical):
+            raise ExtensionDiscoveryError(
+                f"extension directory {source.directory} is already registered as {previous}"
+            )
+        roots[canonical] = source.origin
+    return normalized
+
+
+def _ordered_source_listeners(
+    sources: Sequence[ExtensionSource],
+) -> tuple[LifecycleListener, ...]:
+    """Flatten all roots before sorting by lifecycle order and source rank."""
+
+    ranked = tuple(
+        (rank, listener)
+        for rank, source in enumerate(sources)
+        for path in _extension_files(source.directory)
+        for listener in _load_listeners(path, source.directory, source.origin)
+    )
+    # Caller order carries dependency order; source paths remain the stable
+    # diagnostic and within-root tie-break without encoding rank into identity.
+    ordered = sorted(ranked, key=_ranked_listener_order)
+    return tuple(listener for _rank, listener in ordered)
 
 
 def _partition_listeners(
@@ -396,35 +519,37 @@ def _extension_files(root: Path) -> tuple[Path, ...]:
     return tuple(files)
 
 
-def _load_listeners(path: Path, root: Path) -> tuple[LifecycleListener, ...]:
+def _load_listeners(
+    path: Path, root: Path, origin: str
+) -> tuple[LifecycleListener, ...]:
     """Load only decorated functions and reject aliased listener identities."""
 
     module = _load_module(path)
-    relative = path.relative_to(root).as_posix()
+    relative = f"{origin}/{path.relative_to(root).as_posix()}"
     found: list[LifecycleListener] = []
     seen: set[int] = set()
     for name, value in vars(module).items():
-        listener = _listener_from_export(module.__name__, relative, name, value, seen)
-        if listener is not None:
-            found.append(listener)
+        found.extend(
+            _listeners_from_export(module.__name__, relative, name, value, seen)
+        )
     return tuple(found)
 
 
-def _listener_from_export(
+def _listeners_from_export(
     module_name: str,
     relative: str,
     name: str,
     value: Any,
     seen: set[int],
-) -> LifecycleListener | None:
-    """Normalize one locally declared extension without following imports."""
+) -> tuple[LifecycleListener, ...]:
+    """Normalize every role on one local factory without following imports."""
 
-    registration = registration_for(value)
+    registrations = registrations_for(value)
     context_registration = context_registration_for(value)
-    if registration is None and context_registration is None:
-        return None
+    if not registrations and context_registration is None:
+        return ()
     if getattr(value, "__module__", None) != module_name:
-        return None
+        return ()
     if not inspect.isfunction(value):
         raise ExtensionDiscoveryError(
             f"decorated extension {relative}:{name} must be a function"
@@ -435,12 +560,33 @@ def _listener_from_export(
             "cannot be exported under multiple names"
         )
     seen.add(id(value))
+    if not registrations:
+        return (
+            _listener_for_registration(
+                relative, name, value, None, context_registration
+            ),
+        )
+    return tuple(
+        _listener_for_registration(
+            relative, name, value, registration, context_registration
+        )
+        for registration in registrations
+    )
+
+
+def _listener_for_registration(
+    relative: str,
+    name: str,
+    value: Any,
+    registration: Any,
+    context_registration: Any,
+) -> LifecycleListener:
+    """Create one deterministic listener view over a possibly shared factory."""
+
     phase = registration.phase if registration is not None else "context"
     _validate_context_provider(relative, name, value, phase, context_registration)
     _validate_listener_signature(relative, name, value, phase)
-    order = (
-        registration.order if registration is not None else context_registration.order
-    )
+    order = registration.order if registration is not None else context_registration.order
     return LifecycleListener(
         phase=phase,
         callback=value,
@@ -483,6 +629,7 @@ def _validate_context_provider(
         "session_store",
         "checkpointer",
         "asset_store",
+        "custom_store",
     }
     if phase not in allowed:
         raise ExtensionDiscoveryError(
@@ -502,6 +649,7 @@ def _validate_listener_signature(
         "session_store",
         "checkpointer",
         "asset_store",
+        "custom_store",
         "credential_provider",
         "http_routes",
         "output_policy",
@@ -658,9 +806,27 @@ def _validate_native_duplicates(values: tuple[Any, ...], framework: str) -> None
         )
 
 
-def _listener_order(listener: LifecycleListener) -> tuple[int, str, int, str]:
-    # Source order is the stable tie-breaker when teams intentionally share a phase.
-    return (listener.order, listener.relative_path, listener.line, listener.function_name)
+def _ranked_listener_order(
+    ranked: tuple[int, LifecycleListener],
+) -> tuple[int, int, str, int, str]:
+    """Keep explicit hook order primary and dependency-aware source order stable."""
+
+    rank, listener = ranked
+    return (
+        listener.order,
+        rank,
+        listener.relative_path,
+        listener.line,
+        listener.function_name,
+    )
+
+
+def _valid_extension_origin(origin: str) -> bool:
+    """Accept only identities the artifact layout can reproduce exactly."""
+
+    return origin == _ROOT_EXTENSION_ORIGIN or bool(
+        _PLUGIN_EXTENSION_ORIGIN.fullmatch(origin)
+    )
 
 
 def _validate_root(root: Path) -> None:
@@ -677,4 +843,10 @@ def _ignored(relative: Path) -> bool:
     )
 
 
-__all__ = ["DiscoveredExtensions", "ExtensionDiscoveryError", "discover_extensions"]
+__all__ = [
+    "DiscoveredExtensions",
+    "ExtensionDiscoveryError",
+    "ExtensionSource",
+    "discover_extension_sources",
+    "discover_extensions",
+]

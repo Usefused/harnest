@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -185,7 +186,10 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 	if err := requireCompiledFiles(seen); err != nil {
 		return err
 	}
-	if expected := compiledManifestDigest(manifest.Files); manifest.Digest != expected {
+	if err := validateCompiledTaskSources(manifest.Tasks, seen); err != nil {
+		return err
+	}
+	if expected := compiledManifestDigest(manifest.Files, manifest.Plugins, manifest.Tasks, manifest.RuntimeDependencies); manifest.Digest != expected {
 		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expected)
 	}
 	return validateCompiledFileSet(directory, seen)
@@ -249,7 +253,180 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	if strings.TrimSpace(manifest.Framework.Version) == "" {
 		return fmt.Errorf("compiled manifest framework version cannot be empty")
 	}
-	return validateCompiledCheckpoint(manifest)
+	if err := validateCompiledCheckpoint(manifest); err != nil {
+		return err
+	}
+	if err := validateCompiledPlugins(manifest.Plugins); err != nil {
+		return err
+	}
+	return validateCompiledTasks(manifest.Tasks, manifest.RuntimeDependencies)
+}
+
+var compiledTaskNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.tasks\.[A-Za-z_][A-Za-z0-9_]*$`)
+var compiledTaskQueuePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._~-]{0,63}$`)
+
+const procrastinateRuntimeRequirement = "procrastinate==3.9.0"
+
+// validateCompiledTasks keeps optional queue dependencies derived from tasks.
+func validateCompiledTasks(tasks []CompiledTask, dependencies []string) error {
+	if len(tasks) == 0 {
+		if len(dependencies) != 0 {
+			return fmt.Errorf("task-free compiled manifest cannot declare runtime dependencies")
+		}
+		return nil
+	}
+	if len(dependencies) != 1 || dependencies[0] != procrastinateRuntimeRequirement {
+		return fmt.Errorf("compiled tasks require %q", procrastinateRuntimeRequirement)
+	}
+	seen := make(map[string]struct{}, len(tasks))
+	for index, task := range tasks {
+		if err := validateCompiledTask(index, task, seen); err != nil {
+			return err
+		}
+		seen[task.Name] = struct{}{}
+	}
+	return nil
+}
+
+// validateCompiledTask keeps one declaration's identity and policy checks cohesive.
+func validateCompiledTask(index int, task CompiledTask, seen map[string]struct{}) error {
+	if !compiledTaskNamePattern.MatchString(task.Name) {
+		return fmt.Errorf("compiled task %d has invalid stable name %q", index, task.Name)
+	}
+	if _, exists := seen[task.Name]; exists {
+		return fmt.Errorf("compiled manifest contains duplicate task %q", task.Name)
+	}
+	if !compiledTaskQueuePattern.MatchString(task.Queue) {
+		return fmt.Errorf("compiled task %q has invalid queue", task.Name)
+	}
+	if task.MaxRetries < 0 || task.MaxRetries > 100 {
+		return fmt.Errorf("compiled task %q has invalid maxRetries", task.Name)
+	}
+	return nil
+}
+
+// validateCompiledTaskSources binds each declaration to one immutable source.
+func validateCompiledTaskSources(tasks []CompiledTask, files map[string]struct{}) error {
+	for _, task := range tasks {
+		path := "source/" + task.Source
+		if !strings.HasPrefix(task.Source, "tasks/") || !strings.HasSuffix(task.Source, ".py") {
+			return fmt.Errorf("compiled task %q has invalid source %q", task.Name, task.Source)
+		}
+		if _, exists := files[path]; !exists {
+			return fmt.Errorf("compiled task %q source is not manifest-bound", task.Name)
+		}
+	}
+	return nil
+}
+
+// validateCompiledPlugins checks provenance and dependency order before Go
+// trusts the graph emitted by the Python compiler.
+func validateCompiledPlugins(plugins []CompiledPlugin) error {
+	seen := make(map[string]struct{}, len(plugins))
+	for index, plugin := range plugins {
+		if err := validateCompiledPlugin(index, plugin, seen); err != nil {
+			return err
+		}
+		seen[plugin.Name] = struct{}{}
+	}
+	return nil
+}
+
+// validateCompiledPlugin accepts only one dependency-resolved provenance record.
+func validateCompiledPlugin(index int, plugin CompiledPlugin, seen map[string]struct{}) error {
+	if err := validateCompiledPluginIdentity(index, plugin, seen); err != nil {
+		return err
+	}
+	for _, dependency := range plugin.Requires {
+		if _, exists := seen[dependency]; !exists {
+			// Earlier-only dependencies prove the manifest is already in startup
+			// order without maintaining a second graph implementation in Go.
+			return fmt.Errorf("compiled plugin %q requires unresolved plugin %q", plugin.Name, dependency)
+		}
+	}
+	return validateCompiledPluginCapabilities(plugin)
+}
+
+// validateCompiledPluginIdentity rejects ambiguous provenance before graph checks.
+func validateCompiledPluginIdentity(index int, plugin CompiledPlugin, seen map[string]struct{}) error {
+	if strings.Contains(plugin.Name, ".") || !entrypointPattern.MatchString(plugin.Name+":plugin") {
+		return fmt.Errorf("compiled plugin %d has invalid name %q", index, plugin.Name)
+	}
+	if !compiledPluginVersionPattern.MatchString(plugin.Version) {
+		return fmt.Errorf("compiled plugin %q has invalid semantic version %q", plugin.Name, plugin.Version)
+	}
+	if !validCompiledPluginDigest(plugin.Digest) {
+		return fmt.Errorf("compiled plugin %q has invalid digest", plugin.Name)
+	}
+	if _, exists := seen[plugin.Name]; exists {
+		return fmt.Errorf("compiled manifest contains duplicate plugin %q", plugin.Name)
+	}
+	return nil
+}
+
+// validateCompiledPluginCapabilities checks sorted authority and dependency records.
+func validateCompiledPluginCapabilities(plugin CompiledPlugin) error {
+	if !strictlySortedPluginCapabilities(plugin.Capabilities) {
+		return fmt.Errorf("compiled plugin %q capabilities must be sorted and unique", plugin.Name)
+	}
+	if unknown := unknownCompiledPluginCapability(plugin.Capabilities); unknown != "" {
+		return fmt.Errorf("compiled plugin %q has unknown capability %q", plugin.Name, unknown)
+	}
+	if !strictlySortedPluginDependencies(plugin.Dependencies) {
+		return fmt.Errorf("compiled plugin %q dependencies must be sorted and unique", plugin.Name)
+	}
+	return nil
+}
+
+// strictlySortedPluginDependencies rejects empty or ambiguous PEP 508 records.
+func strictlySortedPluginDependencies(values []string) bool {
+	for index, value := range values {
+		if strings.TrimSpace(value) == "" || (index > 0 && values[index-1] >= value) {
+			return false
+		}
+	}
+	return true
+}
+
+// validCompiledPluginDigest keeps plugin identity aligned with source digest framing.
+func validCompiledPluginDigest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+// strictlySortedPluginCapabilities rejects ambiguous or duplicate authority records.
+func strictlySortedPluginCapabilities(values []string) bool {
+	for index, value := range values {
+		if strings.TrimSpace(value) == "" || (index > 0 && values[index-1] >= value) {
+			return false
+		}
+	}
+	return true
+}
+
+// compiledPluginCapabilities mirrors the compiler/schema authority vocabulary so
+// a rewritten manifest cannot invent a capability the source compiler rejects.
+var compiledPluginCapabilities = map[string]struct{}{
+	"context.assets": {}, "context.credentials": {}, "context.continuations": {}, "context.mcp": {},
+	"context.resources": {}, "context.session": {}, "context.storage": {},
+	"content.mcp": {}, "content.skills": {}, "content.subagents": {}, "content.tools": {},
+	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.mcp": {},
+	"lifecycle.model": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
+	"policy.output": {}, "storage.assets": {}, "storage.checkpoints": {},
+	"storage.custom": {}, "storage.sessions": {}, "telemetry.exporter": {},
+}
+
+// unknownCompiledPluginCapability returns the first undeclared authority term.
+func unknownCompiledPluginCapability(values []string) string {
+	for _, value := range values {
+		if _, known := compiledPluginCapabilities[value]; !known {
+			return value
+		}
+	}
+	return ""
 }
 
 // validateCompiledCheckpoint rejects silently substituted storage without
@@ -351,7 +528,8 @@ func requireCompiledFiles(seen map[string]struct{}) error {
 	return nil
 }
 
-func compiledManifestDigest(files []CompiledFile) string {
+// compiledManifestDigest binds files and canonical runtime capability metadata.
+func compiledManifestDigest(files []CompiledFile, plugins []CompiledPlugin, tasks []CompiledTask, dependencies []string) string {
 	aggregate := sha256.New()
 	for _, record := range files {
 		_, _ = io.WriteString(aggregate, record.Path)
@@ -361,7 +539,45 @@ func compiledManifestDigest(files []CompiledFile) string {
 		_, _ = io.WriteString(aggregate, strconv.FormatInt(record.Size, 10))
 		_, _ = io.WriteString(aggregate, "\n")
 	}
+	for _, plugin := range plugins {
+		// The manifest is not one of its own file records, so plugin provenance
+		// needs explicit framing inside the verified aggregate identity.
+		writeCompiledDigestField(aggregate, "plugin.name", plugin.Name)
+		writeCompiledDigestField(aggregate, "plugin.version", plugin.Version)
+		writeCompiledDigestField(aggregate, "plugin.digest", plugin.Digest)
+		writeCompiledDigestField(aggregate, "plugin.requires", strconv.Itoa(len(plugin.Requires)))
+		for _, dependency := range plugin.Requires {
+			writeCompiledDigestField(aggregate, "plugin.require", dependency)
+		}
+		writeCompiledDigestField(aggregate, "plugin.capabilities", strconv.Itoa(len(plugin.Capabilities)))
+		for _, capability := range plugin.Capabilities {
+			writeCompiledDigestField(aggregate, "plugin.capability", capability)
+		}
+		writeCompiledDigestField(aggregate, "plugin.dependencies", strconv.Itoa(len(plugin.Dependencies)))
+		for _, requirement := range plugin.Dependencies {
+			writeCompiledDigestField(aggregate, "plugin.dependency", requirement)
+		}
+	}
+	for _, task := range tasks {
+		writeCompiledDigestField(aggregate, "task.name", task.Name)
+		writeCompiledDigestField(aggregate, "task.source", task.Source)
+		writeCompiledDigestField(aggregate, "task.queue", task.Queue)
+		writeCompiledDigestField(aggregate, "task.max_retries", strconv.Itoa(task.MaxRetries))
+	}
+	for _, dependency := range dependencies {
+		writeCompiledDigestField(aggregate, "runtime.dependency", dependency)
+	}
 	return "sha256:" + hex.EncodeToString(aggregate.Sum(nil))
+}
+
+// writeCompiledDigestField uses length framing shared with the Python compiler.
+func writeCompiledDigestField(writer io.Writer, label, value string) {
+	_, _ = io.WriteString(writer, label)
+	_, _ = io.WriteString(writer, "\x00")
+	_, _ = io.WriteString(writer, strconv.Itoa(len([]byte(value))))
+	_, _ = io.WriteString(writer, ":")
+	_, _ = io.WriteString(writer, value)
+	_, _ = io.WriteString(writer, "\n")
 }
 
 func validCompiledPath(value string) bool {

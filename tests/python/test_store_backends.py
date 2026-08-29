@@ -14,9 +14,13 @@ from harnest.checkpoint import (
     RunRecord,
     RunScope,
 )
+from harnest.continuation import (
+    ContinuationRecord,
+    ContinuationStore,
+)
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
-from harnest.store_redis import _checkpoint_dump, _run_dump
+from harnest.store_redis import _checkpoint_dump, _continuation_dump, _run_dump
 
 
 class _Transaction(AbstractAsyncContextManager):
@@ -55,13 +59,15 @@ class _PostgresConnection:
         self.executed = []
         self.fetched = []
         self.rows = []
-        self.schema_version = 1
+        self.schema_version = 4
 
     def transaction(self):
         return _Transaction()
 
     async def execute(self, query, *arguments):
         self.executed.append((query, arguments))
+        if "VALUES ('store', 4)" in query:
+            self.schema_version = 4
         return "INSERT 0 1"
 
     async def fetchval(self, query, *arguments):
@@ -109,8 +115,10 @@ class _RedisClient:
         self.mget_calls = 0
         self.zrangebylex_calls = []
 
-    async def set(self, key, value, **_options):
-        self.values.setdefault(key, value)
+    async def set(self, key, value, **options):
+        if options.get("nx") and key in self.values:
+            return False
+        self.values[key] = value
         return True
 
     async def get(self, key):
@@ -147,6 +155,7 @@ def _session_row(session_id="s-1"):
         "session_id": session_id,
         "user_id": "u-1",
         "state": json.dumps({"count": 1}),
+        "application_data": json.dumps({}),
         "created_at": now,
         "updated_at": now,
     }
@@ -164,6 +173,43 @@ def _checkpoint():
         metadata=b"metadata",
         versions_type="json",
         versions=b"versions",
+    )
+
+
+def _continuation_row(continuation_id="continuation-1"):
+    now = datetime.now(timezone.utc)
+    return {
+        "continuation_id": continuation_id,
+        "run_id": "run-1",
+        "application_id": "support",
+        "user_id": "u-1",
+        "session_id": "s-1",
+        "provider": "hatchet",
+        "capability": "workflow.run",
+        "schema_id": "result/v1",
+        "resume": None,
+        "external_id": "job-1",
+        "external_key": "digest",
+        "status": "pending",
+        "revision": 0,
+        "ready": False,
+        "result": None,
+        "failure": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _continuation(continuation_id="continuation-1"):
+    return ContinuationRecord(
+        continuation_id=continuation_id,
+        application_id="support",
+        user_id="u-1",
+        session_id="s-1",
+        run_id="run-1",
+        provider="hatchet",
+        capability="workflow.run",
+        schema_id="result/v1",
     )
 
 
@@ -195,6 +241,7 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
         store = MemoryStore()
         self.assertIsInstance(store, SessionStore)
         self.assertIsInstance(store, CheckpointStore)
+        self.assertIsInstance(store, ContinuationStore)
         await store.start()
         session = await store.create(session_id="s-1", user_id="u-1", state={})
         self.assertEqual(session.id, "s-1")
@@ -218,6 +265,7 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
         for store in (postgres, redis):
             self.assertIsInstance(store, SessionStore)
             self.assertIsInstance(store, CheckpointStore)
+            self.assertIsInstance(store, ContinuationStore)
 
 
 class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -245,6 +293,20 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pg_advisory_xact_lock", statements)
         self.assertIn("harnest_schema_migrations", statements)
         self.assertIn("harnest_one_active_run", statements)
+        self.assertIn("application_data", statements)
+        self.assertIn("harnest_continuations", statements)
+        self.assertIn("harnest_pending_continuations", statements)
+
+    async def test_start_migrates_additive_postgres_schema_version_two(self):
+        connection = _PostgresConnection()
+        connection.schema_version = 2
+        store = PostgresStore("postgres://example", _pool=_Pool(connection))
+
+        await store.start()
+
+        self.assertEqual(connection.schema_version, 4)
+        statements = "\n".join(query for query, _ in connection.executed)
+        self.assertIn("CREATE TABLE IF NOT EXISTS harnest_continuations", statements)
 
     async def test_session_list_filters_and_orders_in_postgres(self):
         connection = _PostgresConnection()
@@ -303,6 +365,26 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FOR UPDATE", queries)
         self.assertIn("MAX(revision)", queries)
 
+    async def test_continuation_reconciliation_is_one_indexed_query(self):
+        connection = _PostgresConnection()
+        connection.rows = [_continuation_row()]
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        values = await store.list_pending_continuations(
+            application_id="support", provider="hatchet", after="a", limit=5
+        )
+
+        self.assertEqual(values[0].external_id, "job-1")
+        query, arguments = connection.fetched[-1]
+        self.assertIn("application_id=$1 AND provider=$2", query)
+        self.assertIn("status='pending'", query)
+        self.assertIn("continuation_id > $3", query)
+        self.assertIn("ORDER BY continuation_id", query)
+        self.assertIn("LIMIT $4", query)
+        self.assertEqual(arguments, ("support", "hatchet", "a", 5))
+
     async def test_checkpoint_put_rejects_stale_revision_before_write(self):
         connection = _PostgresCheckpointConnection(current_revision=3)
         store = PostgresStore(
@@ -352,7 +434,16 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
 
         schema_keys = [key for key in client.values if key.endswith(":schema")]
         self.assertEqual(len(schema_keys), 1)
-        self.assertEqual(client.values[schema_keys[0]], "1")
+        self.assertEqual(client.values[schema_keys[0]], "3")
+
+    async def test_start_migrates_additive_schema_version_one(self):
+        client = _RedisClient()
+        store = RedisStore("redis://example", _client=client)
+        client.values[store._key("schema")] = "1"
+
+        await store.start()
+
+        self.assertEqual(client.values[store._key("schema")], "3")
 
     def test_atomic_keys_share_one_redis_cluster_slot(self):
         store = RedisStore("redis://example")
@@ -406,6 +497,21 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
         _, minimum, maximum, options = client.zrangebylex_calls[-1]
         self.assertEqual((minimum, maximum), ("(b", "+"))
         self.assertEqual(options, {"start": 0, "num": 1})
+
+    async def test_continuation_reconciliation_uses_one_batched_read(self):
+        client = _RedisClient()
+        client.session_ids = [b"continuation-1"]
+        client.multi_values = [_continuation_dump(_continuation(), "job-1")]
+        store = RedisStore("redis://example", _client=client)
+
+        values = await store.list_pending_continuations(
+            application_id="support", provider="hatchet", limit=5
+        )
+
+        self.assertEqual(values[0].external_id, "job-1")
+        self.assertEqual(client.mget_calls, 1)
+        self.assertEqual(len(client.zrangebylex_calls), 1)
+        self.assertEqual(client.zrangebylex_calls[0][-1]["num"], 5)
 
     async def test_mutation_audit_excludes_tenant_identifiers_and_state(self):
         store = RedisStore("redis://example", _client=_RedisClient())

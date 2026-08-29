@@ -10,6 +10,7 @@ from harnest.context import (
 )
 from harnest.credentials import (
     Credential,
+    CredentialContext,
     CredentialProvider,
     CredentialProviderError,
     CredentialRequest,
@@ -130,6 +131,7 @@ class CredentialContractTests(unittest.IsolatedAsyncioTestCase):
         active = _invocation()
 
         with activate_context(active), _activate_credential_provider(provider):
+            self.assertIsInstance(context.credentials, CredentialContext)
             resolved = await context.credentials.resolve("billing")
 
         self.assertEqual(resolved.reveal(), "token")

@@ -15,8 +15,11 @@ from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
+from harnest.context import context
 from harnest.checkpoint_langgraph import _decode_thread_id
 from harnest.graph import START, Edge, Graph
+from harnest.lifecycle import LifecycleListener
+from harnest.mcp_context import MCPContextUnavailableError
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
     MCPClientContext,
@@ -31,6 +34,7 @@ from harnest.runtime_langgraph import (
     _langgraph_asset_middleware,
     _message_tool_events,
 )
+from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.session import InMemorySessionStore
 from harnest.transient_media import (
     TransientMediaAccess,
@@ -96,6 +100,39 @@ class _CopyMessage(_HumanMessage):
         return _CopyMessage(update.get("content", self.content))
 
 
+class _ToolMessage:
+    """Model the LangChain envelope needed by native ToolCall recovery tests."""
+
+    type = "tool"
+
+    def __init__(self, content, *, tool_call_id, name, status) -> None:
+        self.content = content
+        self.tool_call_id = tool_call_id
+        self.name = name
+        self.status = status
+
+    def model_copy(self, *, update):
+        """Preserve the test envelope while applying framework identity updates."""
+
+        return _ToolMessage(
+            update.get("content", self.content),
+            tool_call_id=update.get("tool_call_id", self.tool_call_id),
+            name=update.get("name", self.name),
+            status=update.get("status", self.status),
+        )
+
+
+def _format_tool_output(result, _artifact, call_id, name, status):
+    """Mirror the pinned formatter fields without importing optional LangChain."""
+
+    return _ToolMessage(
+        json.dumps(result, sort_keys=True),
+        tool_call_id=call_id,
+        name=name,
+        status=status,
+    )
+
+
 @dataclass
 class _ModelResponse:
     result: list
@@ -106,6 +143,7 @@ class _Target:
     def __init__(self):
         self.inputs = []
         self.configs = []
+        self.durabilities = []
         self.closed = 0
 
     def _result(self, graph_input):
@@ -135,14 +173,18 @@ class _Target:
             "value": f"value-{counter}",
         }
 
-    async def ainvoke(self, graph_input, *, config):
+    async def ainvoke(self, graph_input, *, config, durability=None):
         self.inputs.append(graph_input)
         self.configs.append(config)
+        self.durabilities.append(durability)
         return self._result(graph_input)
 
-    async def astream(self, graph_input, *, config, stream_mode):
+    async def astream(
+        self, graph_input, *, config, stream_mode, durability=None
+    ):
         self.inputs.append(graph_input)
         self.configs.append(config)
+        self.durabilities.append(durability)
         assert stream_mode == ["messages", "values"]
         result = self._result(graph_input)
         yield "messages", (_Message("answer-"), {"node": "reply"})
@@ -173,6 +215,7 @@ class _MCPAdapterClient:
         self.tool_name_prefix = tool_name_prefix
         self.requests = []
         self.http_clients = []
+        self.tool_calls = []
         self.closed = 0
         self.__class__.instances.append(self)
 
@@ -183,15 +226,50 @@ class _MCPAdapterClient:
             self.http_clients.append(
                 factory(headers={"X-Adapter": "langgraph"}, timeout=1.0)
             )
+        async def invoke(arguments, config=None, **kwargs):
+            del config, kwargs
+            envelope = arguments.get("type") == "tool_call"
+            payload = arguments.get("args", {}) if envelope else arguments
+            self.tool_calls.append((server_name, dict(payload)))
+            if payload.get("fail"):
+                if envelope:
+                    return SimpleNamespace(
+                        type="tool",
+                        status="error",
+                        content="private-provider-response",
+                    )
+                raise RuntimeError("private-provider-response")
+            result = dict(payload)
+            if envelope:
+                return SimpleNamespace(
+                    type="tool", status="success", content=result
+                )
+            return result
+
         return [
-            SimpleNamespace(name=f"{server_name}_echo"),
-            SimpleNamespace(name=f"{server_name}_hidden"),
+            SimpleNamespace(name=f"{server_name}_echo", ainvoke=invoke),
+            SimpleNamespace(name=f"{server_name}_hidden", ainvoke=invoke),
         ]
 
     async def aclose(self):
         for client in self.http_clients:
             await client.aclose()
         self.closed += 1
+
+
+class _DuplicateMCPAdapterClient(_MCPAdapterClient):
+    """Return an invalid duplicate discovery result for collision coverage."""
+
+    async def get_tools(self, *, server_name):
+        async def invoke(arguments, config=None, **kwargs):
+            del config, kwargs
+            return dict(arguments)
+
+        name = f"{server_name}_echo"
+        return [
+            SimpleNamespace(name=name, ainvoke=invoke),
+            SimpleNamespace(name=name, ainvoke=invoke),
+        ]
 
 
 class _TrackedHTTPClient(httpx.AsyncClient):
@@ -254,6 +332,75 @@ def _application(target, *, bridge=None, kind=None):
     )
 
 
+def _listener(phase, callback, *, order=0):
+    return LifecycleListener(
+        phase, callback, order, f"{phase}.py", 1, callback.__name__
+    )
+
+
+class _MCPDispatchTarget:
+    """Exercise both native ToolNode-shaped and context-based MCP dispatch."""
+
+    def __init__(self, tool):
+        self.tool = tool
+        self.retained = None
+
+    async def ainvoke(self, graph_input, *, config):
+        del graph_input, config
+        native = await self.tool.ainvoke({"source": "native"})
+        client = context.mcp("legacy")
+        direct = await client.call_tool("echo", {"source": "context"})
+        recovered = await client.call_tool("echo", {"fail": True})
+        finished = await client.call_tool("echo", {"finish": True})
+        self.retained = client
+        return {
+            "messages": [
+                _Message(str((native, direct, recovered, finished)))
+            ]
+        }
+
+    async def aclose(self):
+        return None
+
+
+class _MCPNativeTarget:
+    """Model a directly owned LangGraph target with no Harnest context."""
+
+    def __init__(self, tool):
+        self.tool = tool
+
+    async def ainvoke(self, graph_input, *, config):
+        del graph_input, config
+        result = await self.tool.ainvoke({"source": "direct"})
+        return {"messages": [_Message(str(result))]}
+
+    async def aclose(self):
+        return None
+
+
+class _MCPNativeErrorTarget:
+    """Exercise native ToolCall error recovery without exposing provider content."""
+
+    def __init__(self, tool):
+        self.tool = tool
+        self.result = None
+
+    async def ainvoke(self, graph_input, *, config):
+        del graph_input, config
+        self.result = await self.tool.ainvoke(
+            {
+                "type": "tool_call",
+                "name": self.tool.name,
+                "args": {"fail": True},
+                "id": "native-error-1",
+            }
+        )
+        return {"messages": [_Message(str(self.result))]}
+
+    async def aclose(self):
+        return None
+
+
 class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         _MCPAdapterClient.instances.clear()
@@ -261,11 +408,17 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         langchain_core.__path__ = []
         messages = ModuleType("langchain_core.messages")
         messages.HumanMessage = _HumanMessage
+        tools = ModuleType("langchain_core.tools")
+        tools.__path__ = []
+        tools_base = ModuleType("langchain_core.tools.base")
+        tools_base._format_output = _format_tool_output
         self.langchain_modules = patch.dict(
             sys.modules,
             {
                 "langchain_core": langchain_core,
                 "langchain_core.messages": messages,
+                "langchain_core.tools": tools,
+                "langchain_core.tools.base": tools_base,
             },
         )
         self.langchain_modules.start()
@@ -350,6 +503,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private", result.events[2]["text"])
         self.assertEqual(result.result["counter"], 2)
         self.assertEqual(self.target.inputs[0]["request_flag"], "present")
+        self.assertEqual(self.target.durabilities, ["sync"])
 
         session = await self.driver.get_session(
             session_id="session-1", user_id="user-1"
@@ -703,6 +857,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1", user_id="user-1"
         )
         self.assertEqual(session.state["counter"], 4)
+        self.assertEqual(self.target.durabilities, ["sync"])
 
     async def test_pre_tool_narration_is_suppressed_by_default_and_can_be_included(self):
         class NarratingTarget(_Target):
@@ -862,6 +1017,315 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target.closed, 1)
         self.assertEqual(client.closed, 1)
 
+    async def test_mcp_native_and_context_dispatch_share_one_governed_path(self):
+        events = []
+
+        def before_mcp(call_context, request):
+            events.append(("mcp-before", call_context.client_name))
+            if request.arguments.get("finish"):
+                return call_context.finish({"stopped": True})
+            return call_context.next()
+
+        def after_mcp(call_context, result):
+            events.append(("mcp-after", call_context.agent_name))
+            return call_context.next(result)
+
+        def on_mcp_error(call_context, error):
+            events.append(("mcp-error", type(error).__name__, str(error)))
+            return call_context.finish({"recovered": True})
+
+        def before_tool(call_context, request):
+            events.append(("tool-before", call_context.tool_name))
+            return call_context.next(request)
+
+        def after_tool(call_context, result):
+            events.append(("tool-after", call_context.tool_name))
+            return call_context.next(result)
+
+        def on_tool_error(call_context, error):
+            events.append(("tool-error", type(error).__name__, str(error)))
+            return call_context.next()
+
+        listeners = tuple(
+            _listener(phase, callback)
+            for phase, callback in (
+                ("before_mcp", before_mcp),
+                ("after_mcp", after_mcp),
+                ("on_mcp_error", on_mcp_error),
+                ("before_tool", before_tool),
+                ("after_tool", after_tool),
+                ("on_tool_error", on_tool_error),
+            )
+        )
+        configured = replace(
+            MCPClient.sse("https://mcp.example/sse", tools=("echo",)),
+            identity="legacy",
+            capability_id="mcp__legacy",
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="mcp_agent",
+                model="openai:test",
+                instruction="Use MCP tools.",
+                mcp=(configured,),
+            )
+        )
+        application = replace(_application(plan), extensions=listeners)
+        backend = LangGraphRuntimeDriver(application)
+        driver = ExtensionRuntimeDriver(backend, listeners)
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+        target = None
+
+        def materialize(_plan, tools):
+            nonlocal target
+            target = _MCPDispatchTarget(tools[0])
+            return target
+
+        try:
+            with patch.dict(
+                sys.modules,
+                {
+                    "langchain_mcp_adapters": adapters,
+                    "langchain_mcp_adapters.client": client_module,
+                },
+            ), patch(
+                "harnest.backends.langgraph.materialize_agent",
+                side_effect=materialize,
+            ), self.assertLogs(
+                "harnest.agent.mcp.audit", level="INFO"
+            ) as captured:
+                result = await driver.invoke(_request())
+
+            self.assertIn("'recovered': True", result.text)
+            self.assertIn("'stopped': True", result.text)
+            self.assertEqual(
+                [item[0] for item in events].count("tool-before"), 3
+            )
+            self.assertEqual(
+                [item[0] for item in events].count("mcp-before"), 4
+            )
+            self.assertTrue(
+                all(
+                    item[1] == "legacy"
+                    for item in events
+                    if item[0] == "mcp-before"
+                )
+            )
+            rendered = repr(events)
+            self.assertNotIn("private-provider-response", rendered)
+            self.assertIn("MCPToolCallError", rendered)
+            self.assertEqual(
+                [record.outcome for record in captured.records],
+                ["committed", "committed", "recovered", "finished"],
+            )
+            self.assertTrue(
+                all(record.client == "mcp__legacy" for record in captured.records)
+            )
+            self.assertTrue(all(record.tool == "echo" for record in captured.records))
+            self.assertEqual(target.tool.name, "mcp__legacy_echo")
+            with self.assertRaises(MCPContextUnavailableError):
+                await target.retained.call_tool("echo")
+        finally:
+            await driver.close()
+
+    async def test_native_mcp_error_uses_safe_error_hook_and_keeps_call_identity(self):
+        observed = []
+
+        def recover(call_context, error):
+            observed.append((type(error).__name__, str(error)))
+            return call_context.finish({"recovered": True})
+
+        listener = _listener("on_mcp_error", recover)
+        configured = replace(
+            MCPClient.sse("https://mcp.example/sse", tools=("echo",)),
+            identity="legacy",
+            capability_id="mcp__legacy",
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="mcp_agent",
+                model="openai:test",
+                instruction="Use MCP tools.",
+                mcp=(configured,),
+            )
+        )
+        application = replace(_application(plan), extensions=(listener,))
+        backend = LangGraphRuntimeDriver(application)
+        driver = ExtensionRuntimeDriver(backend, (listener,))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+        target = None
+
+        def materialize(_plan, tools):
+            nonlocal target
+            target = _MCPNativeErrorTarget(tools[0])
+            return target
+
+        try:
+            with patch.dict(
+                sys.modules,
+                {
+                    "langchain_mcp_adapters": adapters,
+                    "langchain_mcp_adapters.client": client_module,
+                },
+            ), patch(
+                "harnest.backends.langgraph.materialize_agent",
+                side_effect=materialize,
+            ), self.assertLogs(
+                "harnest.agent.mcp.audit", level="INFO"
+            ) as captured:
+                await driver.invoke(_request())
+
+            self.assertEqual(
+                observed,
+                [("MCPToolCallError", "managed MCP tool returned an error")],
+            )
+            self.assertNotIn("private-provider-response", repr(observed))
+            self.assertEqual(target.result.status, "success")
+            self.assertEqual(target.result.tool_call_id, "native-error-1")
+            self.assertEqual(target.result.name, "mcp__legacy_echo")
+            self.assertIn("recovered", target.result.content)
+            self.assertEqual(captured.records[0].outcome, "recovered")
+        finally:
+            await driver.close()
+
+    async def test_mcp_context_rejects_duplicate_public_client_names(self):
+        clients = (
+            replace(
+                MCPClient.sse("https://one.example/sse"),
+                identity="billing",
+                capability_id="mcp__billing",
+            ),
+            replace(
+                MCPClient.sse("https://two.example/sse"),
+                identity="billing",
+                capability_id="plugin__payments__mcp__billing",
+            ),
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="mcp_agent",
+                model="openai:test",
+                instruction="Use MCP tools.",
+                mcp=clients,
+            )
+        )
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+
+        try:
+            with patch.dict(
+                sys.modules,
+                {
+                    "langchain_mcp_adapters": adapters,
+                    "langchain_mcp_adapters.client": client_module,
+                },
+            ), self.assertRaisesRegex(ValueError, "duplicate.*public name"):
+                await driver.invoke(_request())
+        finally:
+            await driver.close()
+
+    async def test_direct_driver_preserves_native_mcp_without_managed_context(self):
+        configured = replace(
+            MCPClient.sse("https://mcp.example/sse", tools=("echo",)),
+            identity="legacy",
+            capability_id="mcp__legacy",
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="mcp_agent",
+                model="openai:test",
+                instruction="Use MCP tools.",
+                mcp=(configured,),
+            )
+        )
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _MCPAdapterClient
+
+        def materialize(_plan, tools):
+            return _MCPNativeTarget(tools[0])
+
+        try:
+            with patch.dict(
+                sys.modules,
+                {
+                    "langchain_mcp_adapters": adapters,
+                    "langchain_mcp_adapters.client": client_module,
+                },
+            ), patch(
+                "harnest.backends.langgraph.materialize_agent",
+                side_effect=materialize,
+            ):
+                result = await driver.invoke(_request())
+
+            self.assertIn("'source': 'direct'", result.text)
+            self.assertEqual(
+                _MCPAdapterClient.instances[-1].tool_calls,
+                [("mcp__legacy", {"source": "direct"})],
+            )
+        finally:
+            await driver.close()
+
+    async def test_mcp_context_rejects_duplicate_public_tool_aliases(self):
+        configured = replace(
+            MCPClient.sse("https://mcp.example/sse"),
+            identity="legacy",
+            capability_id="mcp__legacy",
+        )
+        plan = ManagedAgentPlan(
+            AgentDefinition(
+                name="mcp_agent",
+                model="openai:test",
+                instruction="Use MCP tools.",
+                mcp=(configured,),
+            )
+        )
+        driver = LangGraphRuntimeDriver(_application(plan))
+        await driver.create_session(
+            session_id="session-1", user_id="user-1", state={}
+        )
+        adapters = ModuleType("langchain_mcp_adapters")
+        adapters.__path__ = []
+        client_module = ModuleType("langchain_mcp_adapters.client")
+        client_module.MultiServerMCPClient = _DuplicateMCPAdapterClient
+
+        try:
+            with patch.dict(
+                sys.modules,
+                {
+                    "langchain_mcp_adapters": adapters,
+                    "langchain_mcp_adapters.client": client_module,
+                },
+            ), self.assertRaisesRegex(
+                ValueError, "duplicate.*public tool name"
+            ):
+                await driver.invoke(_request())
+        finally:
+            await driver.close()
+
     async def test_mcp_gateway_lifecycle_wraps_adapter_owned_sessions(self):
         lifecycle = _RuntimeMCPLifecycle()
         configured = replace(
@@ -984,6 +1448,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             _application(target),
             session_store=store,
         )
+        self.assertIs(driver.session_context_store, store)
         await driver.create_session(
             session_id="session-1", user_id="user-1", state={"counter": 4}
         )

@@ -5,6 +5,7 @@ from harnest.lifecycle import (
     LifecycleContext,
     lifecycle,
     registration_for,
+    registrations_for,
 )
 
 
@@ -75,6 +76,90 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual(registration_for(media).name, "media")
         with self.assertRaisesRegex(ValueError, "storage identifier"):
             lifecycle.asset_store(name="not/valid")
+
+    def test_storage_namespace_allows_one_factory_to_fulfil_multiple_roles(self):
+        """Keep shared connection ownership concise without allowing hook stacking."""
+
+        @lifecycle.storage.sessions
+        @lifecycle.storage.checkpoints
+        @lifecycle.storage.custom("users")
+        def state():
+            return object()
+
+        registrations = registrations_for(state)
+
+        self.assertEqual(
+            {item.phase for item in registrations},
+            {"session_store", "checkpointer", "custom_store"},
+        )
+        custom = next(item for item in registrations if item.phase == "custom_store")
+        self.assertEqual(custom.name, "users")
+
+    def test_storage_namespace_validates_named_contributions(self):
+        """Reject names that cannot be routed consistently after compilation."""
+
+        with self.assertRaisesRegex(ValueError, "storage identifier"):
+            lifecycle.storage.assets("not/valid")
+        with self.assertRaisesRegex(ValueError, "storage identifier"):
+            lifecycle.storage.custom("")
+
+    def test_tool_and_agent_namespaces_map_to_portable_phases(self):
+        """Offer cohesive namespaces while retaining existing flat hook phases."""
+
+        @lifecycle.tool.before
+        def before_tool(_context, value):
+            return value
+
+        @lifecycle.agent.after
+        def after_agent(_context, value):
+            return value
+
+        self.assertEqual(registration_for(before_tool).phase, "before_tool")
+        self.assertEqual(registration_for(after_agent).phase, "after_invoke")
+
+    def test_http_namespace_maps_to_server_middleware_phases(self):
+        """Keep HTTP interception cohesive and distinct from route factories."""
+
+        @lifecycle.http.before
+        def before_http(_context, value):
+            return value
+
+        @lifecycle.http.after(order=5)
+        def after_http(_context, value):
+            return value
+
+        self.assertEqual(registration_for(before_http).phase, "before_http")
+        self.assertEqual(registration_for(after_http).phase, "after_http")
+        self.assertEqual(registration_for(after_http).order, 5)
+
+    def test_model_and_mcp_namespaces_map_to_portable_phases(self):
+        """Keep model and remote-tool stages discoverable without flat aliases."""
+
+        @lifecycle.model.before
+        def before_model(_context, value):
+            return value
+
+        @lifecycle.mcp.on_error
+        def on_mcp_error(_context, error):
+            return error
+
+        self.assertEqual(registration_for(before_model).phase, "before_model")
+        self.assertEqual(registration_for(on_mcp_error).phase, "on_mcp_error")
+
+    def test_lifecycle_contexts_expose_explicit_transitions(self):
+        """Let invocation listeners use the shared next/finish vocabulary."""
+
+        context = LifecycleContext(
+            framework="adk",
+            agent_name="support",
+            invocation_id="invoke-1",
+            user_id="user-1",
+            session_id="session-1",
+        )
+
+        self.assertFalse(context.next().replaces)
+        self.assertEqual(context.next("replacement").value, "replacement")
+        self.assertEqual(context.finish("done").result, "done")
 
     def test_output_policy_decorator_registers_an_optional_root_factory(self):
         @lifecycle.output_policy

@@ -610,7 +610,9 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertFalse(journal.exists())
 
             with TestClient(create_fastapi_app(output)) as client:
-                self.assertFalse(journal.exists())
+                # Lifespan startup now fails fast before traffic instead of
+                # deferring extension acquisition to the first session call.
+                self.assertEqual(journal.read_text(encoding="utf-8"), "started")
                 response = client.post("/sessions", json={})
                 self.assertEqual(response.status_code, 201)
                 self.assertEqual(journal.read_text(encoding="utf-8"), "started")

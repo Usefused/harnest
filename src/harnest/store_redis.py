@@ -1,4 +1,4 @@
-"""Redis-backed Harnest session and checkpoint storage."""
+"""Redis-backed Harnest session, checkpoint, and continuation storage."""
 
 from __future__ import annotations
 
@@ -31,12 +31,24 @@ from .checkpoint import (
     _validate_same_run,
     _validate_transition,
 )
+from .continuation import (
+    ContinuationConflictError,
+    ContinuationFailure,
+    ContinuationRecord,
+    ProviderPendingContinuation,
+    _require_page,
+    _validated_resolution,
+    audit_continuation,
+    external_id_key,
+)
+from .durable import ResumeArtifact
 from .logging import get_logger
 from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, _require_list_options
 
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "3"
+_MIGRATABLE_SCHEMA_VERSIONS = frozenset({"1", "2"})
 _AUDIT = get_logger("store.audit")
 
 
@@ -89,6 +101,11 @@ class RedisStore(HarnestStore):
         schema_key = self._key("schema")
         await self._client.set(schema_key, _SCHEMA_VERSION, nx=True)
         version = _text(await self._client.get(schema_key))
+        if version in _MIGRATABLE_SCHEMA_VERSIONS:
+            # These versions are additive: existing records need no rewrite;
+            # new continuation fields and keys appear only on their first use.
+            await self._client.set(schema_key, _SCHEMA_VERSION)
+            version = _text(await self._client.get(schema_key))
         if version != _SCHEMA_VERSION:
             raise RuntimeError(
                 f"unsupported Harnest Redis schema {version!r}; expected {_SCHEMA_VERSION}"
@@ -439,6 +456,226 @@ class RedisStore(HarnestStore):
             grouped[checkpoint_id] = tuple(_write_load(value) for value in values)
         return grouped
 
+    async def suspend_continuation(
+        self, *, record: ContinuationRecord, external_id: str
+    ) -> ContinuationRecord:
+        """Atomically persist a provider wait and move its run to waiting."""
+
+        keys = (
+            self._run_key(record.run_id),
+            self._continuation_key(record.continuation_id),
+            self._continuation_external_key(
+                record.application_id, record.provider, external_id
+            ),
+            self._continuation_pending_key(record.application_id, record.provider),
+        )
+        arguments = (
+            _continuation_dump(record, external_id),
+            record.continuation_id,
+            _json_dump(asdict(record.pending_action)),
+            _timestamp(),
+            self._checkpoint_ttl,
+        )
+        try:
+            stored = _continuation_result(
+                await self._eval(scripts.SUSPEND_CONTINUATION, keys, arguments)
+            )
+        except Exception:
+            audit_continuation("suspended", "failed", "redis")
+            raise
+        audit_continuation("suspended", "committed", "redis")
+        return stored.record
+
+    async def get_continuation(
+        self, *, scope: RunScope, continuation_id: str
+    ) -> ContinuationRecord | None:
+        """Read one private record only when all ownership fields match."""
+
+        raw, run_raw = await self._require_client().mget(
+            (
+                self._continuation_key(continuation_id),
+                self._run_key(scope.run_id),
+            )
+        )
+        if raw is None or run_raw is None:
+            return None
+        record = _continuation_load(raw).record
+        run = _run_load(run_raw)
+        return record if record.scope == scope and run.scope == scope else None
+
+    async def get_continuation_by_external_id(
+        self, *, application_id: str, provider: str, external_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Resolve a callback through its provider-owned Redis index."""
+
+        _require_fields(application_id, provider, external_id)
+        external_key = self._continuation_external_key(
+            application_id, provider, external_id
+        )
+        continuation_id = await self._require_client().get(external_key)
+        if continuation_id is None:
+            return None
+        raw = await self._require_client().get(
+            self._continuation_key(_text(continuation_id))
+        )
+        return None if raw is None else _continuation_load(raw)
+
+    async def list_pending_continuations(
+        self,
+        *,
+        application_id: str,
+        provider: str,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> Sequence[ProviderPendingContinuation]:
+        """Load one indexed provider page with a single batched value read."""
+
+        _require_fields(application_id, provider)
+        _require_page(after, limit)
+        minimum = "-" if after is None else f"({after}"
+        client = self._require_client()
+        continuation_ids = await client.zrangebylex(
+            self._continuation_pending_key(application_id, provider),
+            minimum,
+            "+",
+            start=0,
+            num=limit,
+        )
+        if not continuation_ids:
+            return ()
+        values = await client.mget(
+            [
+                self._continuation_key(_text(continuation_id))
+                for continuation_id in continuation_ids
+            ]
+        )
+        return tuple(
+            _continuation_load(raw) for raw in values if raw is not None
+        )
+
+    async def resolve_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        external_id: str,
+        schema_id: str,
+        result: Any = None,
+        failure: ContinuationFailure | None = None,
+    ) -> ContinuationRecord:
+        """Resolve an indexed provider callback with an atomic status CAS."""
+
+        result, failure = _validated_resolution(result, failure)
+        external_key = self._continuation_external_key(
+            scope.application_id, provider, external_id
+        )
+        continuation_id = await self._require_client().get(external_key)
+        if continuation_id is None:
+            audit_continuation("resolved", "failed", "redis")
+            raise ContinuationConflictError("continuation state changed")
+        continuation_id = _text(continuation_id)
+        keys = (
+            self._continuation_key(continuation_id),
+            external_key,
+            self._continuation_pending_key(scope.application_id, provider),
+            self._run_key(scope.run_id),
+        )
+        arguments = (
+            continuation_id,
+            scope.application_id,
+            scope.user_id,
+            scope.session_id,
+            scope.run_id,
+            provider,
+            schema_id,
+            "failed" if failure is not None else "completed",
+            _json_dump(result),
+            _json_dump(
+                None
+                if failure is None
+                else {"code": failure.code, "retryable": failure.retryable}
+            ),
+            _timestamp(),
+            self._checkpoint_ttl,
+        )
+        try:
+            resolved = _continuation_result(
+                await self._eval(scripts.RESOLVE_CONTINUATION, keys, arguments)
+            )
+        except Exception:
+            audit_continuation("resolved", "failed", "redis")
+            raise
+        audit_continuation("resolved", "committed", "redis")
+        return resolved.record
+
+    async def claim_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> ContinuationRecord:
+        """Claim a provider outcome and resume its run with one Lua CAS."""
+
+        keys = (
+            self._continuation_key(continuation_id),
+            self._run_key(scope.run_id),
+        )
+        arguments = (
+            scope.application_id,
+            scope.user_id,
+            scope.session_id,
+            scope.run_id,
+            provider,
+            expected_revision,
+            _timestamp(),
+            self._checkpoint_ttl,
+        )
+        try:
+            claimed = _continuation_result(
+                await self._eval(scripts.CLAIM_CONTINUATION, keys, arguments)
+            )
+        except Exception:
+            audit_continuation("claimed", "failed", "redis")
+            raise
+        audit_continuation("claimed", "committed", "redis")
+        return claimed.record
+
+    async def arm_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+    ) -> ContinuationRecord:
+        """Arm one persisted wait after the framework commits its checkpoint."""
+
+        arguments = (
+            scope.application_id,
+            scope.user_id,
+            scope.session_id,
+            scope.run_id,
+            provider,
+            expected_revision,
+            _timestamp(),
+            self._checkpoint_ttl,
+        )
+        try:
+            armed = _continuation_result(
+                await self._eval(
+                    scripts.ARM_CONTINUATION,
+                    (self._continuation_key(continuation_id),),
+                    arguments,
+                )
+            )
+        except Exception:
+            audit_continuation("armed", "failed", "redis")
+            raise
+        audit_continuation("armed", "committed", "redis")
+        return armed.record
+
     async def transition(
         self,
         *,
@@ -498,15 +735,36 @@ class RedisStore(HarnestStore):
         active = self._active_key(
             current.application_id, current.user_id, current.session_id
         )
-        keys = (
+        keys = [
             self._run_key(scope.run_id),
             active,
             self._checkpoint_index(scope.run_id, None),
             self._checkpoint_cursor(scope.run_id, None),
             self._key("checkpoint-sequence", _digest(scope.run_id)),
-        )
+        ]
+        arguments = [scope.run_id]
+        if current.pending_action is not None and current.pending_action.type == "external_continuation":
+            raw = await self._require_client().get(
+                self._continuation_key(current.pending_action.action_id)
+            )
+            if raw is not None:
+                pending = _continuation_load(raw)
+                keys.extend(
+                    (
+                        self._continuation_key(pending.record.continuation_id),
+                        self._continuation_external_key(
+                            scope.application_id,
+                            pending.record.provider,
+                            pending.external_id,
+                        ),
+                        self._continuation_pending_key(
+                            scope.application_id, pending.record.provider
+                        ),
+                    )
+                )
+                arguments.append(pending.record.continuation_id)
         try:
-            await self._eval(scripts.DELETE_RUN, keys, (scope.run_id,))
+            await self._eval(scripts.DELETE_RUN, keys, arguments)
         except Exception:
             _audit("checkpoint.run_deleted", "user", "failed", "redis")
             raise
@@ -617,6 +875,31 @@ class RedisStore(HarnestStore):
     def _writes_key(self, run_id: str, checkpoint_id: str) -> str:
         return self._key("writes", _digest(run_id), _digest(checkpoint_id))
 
+    def _continuation_key(self, continuation_id: str) -> str:
+        """Keep the opaque public id out of the Redis key namespace."""
+
+        return self._key("continuation", _digest(continuation_id))
+
+    def _continuation_external_key(
+        self, application_id: str, provider: str, external_id: str
+    ) -> str:
+        """Index provider callbacks without exposing their external identifier."""
+
+        return self._key(
+            "continuation-external",
+            _digest(application_id),
+            external_id_key(provider, external_id),
+        )
+
+    def _continuation_pending_key(
+        self, application_id: str, provider: str
+    ) -> str:
+        """Scope reconciliation indexes to a host-bound application/provider pair."""
+
+        return self._key(
+            "continuations", _digest(application_id), _digest(provider)
+        )
+
 
 class _RedisLease:
     def __init__(
@@ -635,15 +918,29 @@ class _RedisLease:
     def record(self) -> SessionRecord:
         return self._record
 
-    async def patch_state(self, delta: Mapping[str, Any]) -> None:
-        await self.replace_state({**dict(self._record.state), **json_value(delta)})
+    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord:
+        return await self.replace_state(
+            {**dict(self._record.state), **json_value(delta)}
+        )
 
-    async def replace_state(self, state: Mapping[str, Any]) -> None:
+    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord:
         """Replace leased state only if the execution still owns the token."""
 
-        updated = replace(
-            self._record, state=json_value(state), updated_at=_timestamp()
-        )
+        updated = replace(self._record, state=json_value(state))
+        return await self._replace_record(updated)
+
+    async def replace_application_data(
+        self, data: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Replace app data without mixing it into native framework state."""
+
+        updated = replace(self._record, application_data=json_value(data))
+        return await self._replace_record(updated)
+
+    async def _replace_record(self, updated: SessionRecord) -> SessionRecord:
+        """Use one token-checked write path for both protected session lanes."""
+
+        updated = replace(updated, updated_at=_timestamp())
         try:
             raw = await self._store._eval(
                 scripts.LEASE_REPLACE,
@@ -664,6 +961,7 @@ class _RedisLease:
             raise SessionConflictError("session execution lease was lost")
         self._record = _session_load(raw)
         _audit("session.lease_update", "agent", "committed", "redis")
+        return self._record
 
 
 def _create_client(url: str, options: Mapping[str, Any]) -> Any:
@@ -684,6 +982,7 @@ def _session_dump(value: SessionRecord) -> str:
             "id": value.id,
             "user_id": value.user_id,
             "state": value.state,
+            "application_data": value.application_data,
             "created_at": value.created_at,
             "updated_at": value.updated_at,
         }
@@ -692,6 +991,8 @@ def _session_dump(value: SessionRecord) -> str:
 
 def _session_load(value: Any) -> SessionRecord:
     data = _json_load(value)
+    # Records written before the protected lane was introduced remain readable.
+    data.setdefault("application_data", {})
     return SessionRecord(**data)
 
 
@@ -708,6 +1009,29 @@ def _run_load(value: Any) -> RunRecord:
         **data,
         pending_action=None if pending is None else PendingAction(**pending),
     )
+
+
+def _continuation_dump(
+    value: ContinuationRecord, external_id: str
+) -> str:
+    """Store provider-only reconciliation data outside the portable action."""
+
+    return _json_dump({"record": asdict(value), "external_id": external_id})
+
+
+def _continuation_load(value: Any) -> ProviderPendingContinuation:
+    """Restore a provider-private envelope and its typed failure category."""
+
+    envelope = _json_load(value)
+    data = envelope["record"]
+    failure = data.pop("failure", None)
+    resume = data.pop("resume", None)
+    record = ContinuationRecord(
+        **data,
+        resume=None if resume is None else ResumeArtifact.from_mapping(resume),
+        failure=None if failure is None else ContinuationFailure(**failure),
+    )
+    return ProviderPendingContinuation(record, envelope["external_id"])
 
 
 def _checkpoint_dump(value: CheckpointRecord) -> str:
@@ -754,6 +1078,17 @@ def _run_result(result: Any) -> RunRecord:
     code = _text(result[0])
     _raise_checkpoint_result(code)
     return _run_load(result[1])
+
+
+def _continuation_result(result: Any) -> ProviderPendingContinuation:
+    """Translate one atomic Lua result to the provider-private record."""
+
+    code = _text(result[0])
+    try:
+        _raise_checkpoint_result(code)
+    except (KeyError, CheckpointConflictError) as exc:
+        raise ContinuationConflictError("continuation state changed") from exc
+    return _continuation_load(result[1])
 
 
 def _raise_checkpoint_result(code: str) -> None:

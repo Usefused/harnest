@@ -66,7 +66,11 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         with patch("langchain.agents.create_agent", return_value=object()) as create:
             build_agent(definition, middleware=(middleware,))
 
-        self.assertEqual(create.call_args.kwargs["middleware"], [middleware])
+        configured = create.call_args.kwargs["middleware"]
+        self.assertEqual(configured[1:], [middleware])
+        self.assertEqual(
+            type(configured[0]).__name__, "HarnestAgentScopeMiddleware"
+        )
 
     def test_portable_middleware_is_bound_to_managed_agent_name(self):
         from harnest.backends.langgraph import build_agent
@@ -86,7 +90,231 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
             build_agent(definition, middleware=(middleware,))
 
         self.assertEqual(middleware.agent_name, "researcher")
-        self.assertEqual(create.call_args.kwargs["middleware"], [bound])
+        configured = create.call_args.kwargs["middleware"]
+        self.assertEqual(configured[1:], [bound])
+        self.assertEqual(
+            type(configured[0]).__name__, "HarnestAgentScopeMiddleware"
+        )
+
+    async def test_native_base_tool_uses_one_derived_agent_lifecycle(self):
+        from pydantic import BaseModel
+        from langchain_core.tools import StructuredTool
+        from harnest.backends.langgraph import build_agent
+        from harnest.context import (
+            activate_context,
+            create_agent_context,
+            revoke_context,
+        )
+        from harnest.lifecycle import LifecycleListener
+        from harnest.tool_lifecycle import tool_lifecycle_scope
+
+        class Arguments(BaseModel):
+            value: int
+
+        called = []
+
+        async def operation(value: int) -> int:
+            called.append(value)
+            return value * 2
+
+        native = StructuredTool.from_function(
+            coroutine=operation,
+            name="native_lookup",
+            description="A deterministic native tool.",
+            args_schema=Arguments,
+        )
+        definition = AgentDefinition(
+            name="researcher",
+            model="test:model",
+            instruction="Research.",
+            tools=(native,),
+        )
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition)
+            # Reusing a compiled definition must not stack another wrapper on
+            # the same native BaseTool instance.
+            build_agent(definition)
+        self.assertEqual(create.call_count, 2)
+        configured_tool = create.call_args.kwargs["tools"][0]
+        scope = create.call_args.kwargs["middleware"][0]
+        seen = []
+
+        def before(call_context, request):
+            seen.append((call_context.agent_name, call_context.tool_name))
+            return call_context.next(request)
+
+        listener = LifecycleListener(
+            "before_tool", before, 0, "tool.py", 1, "before"
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="portable",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+
+        async def handler(_request):
+            return await configured_tool.ainvoke({"value": 3})
+
+        try:
+            with activate_context(active), tool_lifecycle_scope((listener,)):
+                result = await scope.awrap_tool_call(object(), handler)
+        finally:
+            revoke_context(active)
+
+        self.assertEqual(result, 6)
+        self.assertEqual(called, [3])
+        self.assertEqual(seen, [("researcher", "native_lookup")])
+
+    async def test_native_base_tool_finish_retains_tool_call_envelope(self):
+        """Keep portable Finish output valid for LangGraph's native ToolNode."""
+
+        from langchain_core.messages import ToolMessage
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel
+
+        from harnest.backends.langgraph import build_agent
+        from harnest.context import (
+            activate_context,
+            create_agent_context,
+            revoke_context,
+        )
+        from harnest.lifecycle import LifecycleListener
+        from harnest.tool_lifecycle import tool_lifecycle_scope
+
+        class Arguments(BaseModel):
+            value: int
+
+        called = []
+
+        async def operation(value: int) -> int:
+            called.append(value)
+            return value * 2
+
+        native = StructuredTool.from_function(
+            coroutine=operation,
+            name="native_lookup",
+            description="A deterministic native tool.",
+            args_schema=Arguments,
+        )
+        definition = AgentDefinition(
+            name="researcher",
+            model="test:model",
+            instruction="Research.",
+            tools=(native,),
+        )
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition)
+        configured_tool = create.call_args.kwargs["tools"][0]
+
+        def finish(call_context, _request):
+            return call_context.finish({"stopped": True})
+
+        listener = LifecycleListener(
+            "before_tool", finish, 0, "tool.py", 1, "finish"
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="researcher",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        tool_call = {
+            "name": "native_lookup",
+            "args": {"value": 3},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+
+        try:
+            with activate_context(active), tool_lifecycle_scope((listener,)):
+                result = await configured_tool.ainvoke(tool_call)
+        finally:
+            revoke_context(active)
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.content, '{"stopped": true}')
+        self.assertEqual(result.tool_call_id, "call-1")
+        self.assertEqual(result.name, "native_lookup")
+        self.assertEqual(result.status, "success")
+        self.assertEqual(called, [])
+
+    async def test_native_base_tool_replacement_cannot_change_call_identity(self):
+        """Keep authored result replacement bound to the model-selected call."""
+
+        from langchain_core.messages import ToolMessage
+        from langchain_core.tools import StructuredTool
+
+        from harnest.backends.langgraph import build_agent
+        from harnest.context import (
+            activate_context,
+            create_agent_context,
+            revoke_context,
+        )
+        from harnest.lifecycle import LifecycleListener
+        from harnest.tool_lifecycle import tool_lifecycle_scope
+
+        async def operation(value: int) -> int:
+            return value * 2
+
+        native = StructuredTool.from_function(
+            coroutine=operation,
+            name="native_lookup",
+            description="A deterministic native tool.",
+        )
+        definition = AgentDefinition(
+            name="researcher",
+            model="test:model",
+            instruction="Research.",
+            tools=(native,),
+        )
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition)
+        configured_tool = create.call_args.kwargs["tools"][0]
+
+        def replace(call_context, _result):
+            return call_context.finish(
+                ToolMessage(
+                    content="replacement",
+                    tool_call_id="wrong-call",
+                    name="wrong-tool",
+                )
+            )
+
+        listener = LifecycleListener(
+            "after_tool", replace, 0, "tool.py", 1, "replace"
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="researcher",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        tool_call = {
+            "name": "native_lookup",
+            "args": {"value": 3},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+
+        try:
+            with activate_context(active), tool_lifecycle_scope((listener,)):
+                result = await configured_tool.ainvoke(tool_call)
+        finally:
+            revoke_context(active)
+
+        self.assertEqual(result.content, "replacement")
+        self.assertEqual(result.tool_call_id, "call-1")
+        self.assertEqual(result.name, "native_lookup")
 
     async def test_agent_history_projects_session_or_current_turn(self):
         from langchain_core.messages import AIMessage, HumanMessage

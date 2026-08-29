@@ -1,20 +1,31 @@
+import base64
+import json
 import types as python_types
 import unittest
-import base64
 from dataclasses import replace
 from typing import Any, ClassVar
 from unittest.mock import patch
 
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.models import BaseLlm, LlmResponse
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from pydantic import BaseModel
 
+from harnest._adk_warnings import suppress_adk_warnings
 from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
+from harnest.checkpoint import MemoryStore, PendingAction, RunScope
 from harnest.content import Image
+from harnest.durable import (
+    NativeDurableSuspended,
+    NativeResumeInput,
+    adk_durable_tool,
+    current_native_durable_call,
+)
+from harnest.external_continuation import PendingExternalContinuation
 from harnest.graph import START, Edge, Event, Graph
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
@@ -33,6 +44,9 @@ from harnest.runtime_adk import (
     _ADKEventNormalizer,
     _asset_content_plugin,
     _function_response_items,
+    _register_agent_context_plugins,
+    _register_mcp_context_plugins,
+    _register_tool_lifecycle_plugin,
 )
 from harnest.structured import FrameworkMetadata, provider_output_schema
 from harnest.transient_media import (
@@ -40,6 +54,7 @@ from harnest.transient_media import (
     TransientMediaLeaseStore,
     TransientMediaScope,
 )
+from harnest.tool import tool
 
 
 _MODEL_PNG = (
@@ -76,6 +91,33 @@ class RuntimeDetails(BaseModel):
 class StructuredAnswerWithMetadata(BaseModel):
     answer: str
     metadata: FrameworkMetadata[RuntimeDetails]
+
+
+class ADKManagedPluginOrderingTests(unittest.TestCase):
+    def test_context_and_tool_governance_bracket_authored_plugins(self):
+        manager = python_types.SimpleNamespace(
+            plugins=[python_types.SimpleNamespace(name="authored")]
+        )
+
+        _register_agent_context_plugins(manager)
+        _register_mcp_context_plugins(
+            manager,
+            python_types.SimpleNamespace(tools=[], sub_agents=[], graph=None),
+            (),
+        )
+        _register_tool_lifecycle_plugin(manager, ())
+
+        self.assertEqual(
+            [item.name for item in manager.plugins],
+            [
+                "_harnest_agent_context_enter",
+                "_harnest_mcp_context_enter",
+                "_harnest_portable_tool_lifecycle",
+                "authored",
+                "_harnest_mcp_context_exit",
+                "_harnest_agent_context_exit",
+            ],
+        )
 
 
 class StructuredLlm(BaseLlm):
@@ -121,6 +163,124 @@ class MediaOutputLlm(BaseLlm):
                 ],
             )
         )
+
+
+class DurableResumeLlm(BaseLlm):
+    """Issue one stable durable call, then report its injected response."""
+
+    responses: ClassVar[list[dict[str, Any]]] = []
+
+    async def generate_content_async(self, llm_request, stream=False):
+        del stream
+        function_responses = [
+            part.function_response
+            for content in llm_request.contents
+            for part in content.parts
+            if part.function_response is not None
+        ]
+        if function_responses:
+            response = function_responses[-1]
+            self.responses.append(
+                {
+                    "id": response.id,
+                    "name": response.name,
+                    "response": dict(response.response),
+                }
+            )
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text=f"resumed:{response.response['report']}")],
+                )
+            )
+            return
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            id="call-1",
+                            name="wait_for_job",
+                            args={"job_id": "job-1"},
+                        )
+                    )
+                ],
+            )
+        )
+
+
+class _RecordingCheckpointStore(MemoryStore):
+    """Record begin calls so a resume cannot silently start a second run."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.begin_calls = 0
+
+    async def begin_run(self, **kwargs):
+        """Count run creation attempts before delegating to atomic storage."""
+
+        self.begin_calls += 1
+        return await super().begin_run(**kwargs)
+
+
+def _durable_resume_application(
+    store: _RecordingCheckpointStore,
+    observations: dict[str, list[Any]],
+) -> CompiledApplication:
+    """Build a fresh ADK application replica over shared durable state."""
+
+    @tool(durable=True)
+    async def wait_for_job(job_id: str) -> dict[str, Any]:
+        """Suspend until an external job supplies its durable result."""
+
+        active = current_native_durable_call()
+        assert active is not None
+        observations["executions"].append(job_id)
+        observations["artifacts"].append(active.artifact)
+        scope = RunScope(
+            "durable_resume", "test-user", "durable-session", "portable-run"
+        )
+        checkpoint = await store.get_checkpoint(scope=scope, namespace="events")
+        # The model event must be committed before ADK advances into this tool;
+        # otherwise another replica would not have the unresolved call identity.
+        observations["checkpoint_payloads"].append(
+            None if checkpoint is None else json.loads(checkpoint.payload)
+        )
+        await store.transition(
+            scope=scope,
+            expected_status="running",
+            status="waiting",
+            pending_action=PendingAction(
+                "external_continuation", "continuation-1", "durable.test"
+            ),
+        )
+        return active.suspend(
+            PendingExternalContinuation("continuation-1", "durable.test")
+        )
+
+    native_tool = adk_durable_tool(wait_for_job)
+    agent = LlmAgent(
+        name="durable_resume",
+        description="Durable resume test agent",
+        model=DurableResumeLlm(model="durable-resume"),
+        instruction="Call wait_for_job once, then report its result.",
+        tools=[native_tool],
+    )
+    with suppress_adk_warnings("resumability"):
+        app = App(
+            name="durable_resume",
+            root_agent=agent,
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    return CompiledApplication(
+        name="durable_resume",
+        framework="adk",
+        mode="managed",
+        target=agent,
+        native_app=app,
+        checkpointer=store,
+    )
 
 
 class _RecordingMCPLifecycle(MCPClientLifecycle):
@@ -402,6 +562,112 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_durable_tool_resumes_on_a_fresh_driver_replica(self):
+        """Resume ADK by persisted identity without replaying the tool frame."""
+
+        store = _RecordingCheckpointStore()
+        service = InMemorySessionService()
+        observations: dict[str, list[Any]] = {
+            "executions": [],
+            "artifacts": [],
+            "checkpoint_payloads": [],
+        }
+        DurableResumeLlm.responses.clear()
+        await store.start()
+        self.addAsyncCleanup(store.close)
+        first_driver = ADKRuntimeDriver(
+            _durable_resume_application(store, observations),
+            session_service=service,
+        )
+        try:
+            await first_driver.create_session(
+                session_id="durable-session", user_id="test-user", state={}
+            )
+            with self.assertRaises(NativeDurableSuspended):
+                await first_driver.invoke(
+                    InvocationRequest(
+                        input="start",
+                        user_id="test-user",
+                        session_id="durable-session",
+                        invocation_id="portable-run",
+                        metadata={"phase": "initial"},
+                        state_delta={"count": 1},
+                    )
+                )
+        finally:
+            await first_driver.close()
+
+        scope = RunScope(
+            "durable_resume", "test-user", "durable-session", "portable-run"
+        )
+        waiting = await store.get_run(scope=scope)
+        self.assertIsNotNone(waiting)
+        assert waiting is not None
+        self.assertEqual(waiting.status, "waiting")
+        self.assertEqual(store.begin_calls, 1)
+        self.assertEqual(observations["executions"], ["job-1"])
+        checkpoint_payload = observations["checkpoint_payloads"][0]
+        self.assertIsNotNone(checkpoint_payload)
+        checkpoint_json = json.dumps(checkpoint_payload)
+        self.assertIn("call-1", checkpoint_json)
+        self.assertIn("longRunningToolIds", checkpoint_json)
+        artifact = observations["artifacts"][0]
+
+        # Completion claims the waiting run before it dispatches the resume to
+        # whichever replica currently owns the session execution lease.
+        await store.transition(
+            scope=scope,
+            expected_status="waiting",
+            status="running",
+        )
+        second_driver = ADKRuntimeDriver(
+            _durable_resume_application(store, observations),
+            session_service=service,
+        )
+        try:
+            resumed = await second_driver.invoke(
+                InvocationRequest(
+                    input=NativeResumeInput(artifact, {"report": "ready"}),
+                    user_id="test-user",
+                    session_id="durable-session",
+                    invocation_id="portable-run",
+                    metadata={"phase": "resume"},
+                    state_delta={"count": 99},
+                )
+            )
+            session = await service.get_session(
+                app_name="durable_resume",
+                user_id="test-user",
+                session_id="durable-session",
+            )
+        finally:
+            await second_driver.close()
+
+        self.assertEqual(resumed.text, "resumed:ready")
+        self.assertEqual(observations["executions"], ["job-1"])
+        self.assertEqual(store.begin_calls, 1)
+        self.assertEqual(
+            DurableResumeLlm.responses,
+            [
+                {
+                    "id": artifact.tool_call_id,
+                    "name": artifact.tool_name,
+                    "response": {"report": "ready"},
+                }
+            ],
+        )
+        self.assertIsNotNone(session)
+        assert session is not None
+        self.assertEqual(session.state["count"], 1)
+        self.assertEqual(
+            {event.invocation_id for event in session.events},
+            {artifact.native_invocation_id},
+        )
+        completed = await store.get_run(scope=scope)
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed.status, "completed")
 
     async def test_structured_output_is_a_result_for_invoke_and_stream(self):
         driver = ADKRuntimeDriver(_structured_application())

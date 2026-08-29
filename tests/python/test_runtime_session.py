@@ -12,8 +12,10 @@ from harnest.runtime import (
     _attach_driver_lifecycle,
     _runtime_driver,
 )
+from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
+from harnest.storage_registry import StorageRegistry
 
 
 class RecordingStore(InMemorySessionStore):
@@ -28,6 +30,37 @@ class RecordingStore(InMemorySessionStore):
     async def close(self):
         self.closed += 1
         await super().close()
+
+
+class RecordingResource:
+    """Expose partial startup and cleanup ordering without a real backend."""
+
+    def __init__(
+        self,
+        name,
+        events,
+        *,
+        start_error=None,
+        close_error=None,
+    ):
+        self.name = name
+        self.events = events
+        self.start_error = start_error
+        self.close_error = close_error
+
+    async def start(self):
+        """Record lifecycle entry before simulating partial initialization."""
+
+        self.events.append(f"start:{self.name}")
+        if self.start_error is not None:
+            raise self.start_error
+
+    async def close(self):
+        """Record the matching ownership release and optional failure."""
+
+        self.events.append(f"close:{self.name}")
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def _driver():
@@ -70,9 +103,84 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         inner = _driver()
         inner.close.side_effect = RuntimeError("backend failed")
         driver = StorageRuntimeDriver(inner, store)
+        await driver.start_owned_resources()
 
         with self.assertRaisesRegex(RuntimeError, "backend failed"):
             await driver.close()
+        self.assertEqual(store.closed, 1)
+
+    async def test_close_skips_resources_that_never_entered_startup(self):
+        events = []
+        resource = RecordingResource("unused", events)
+        driver = StorageRuntimeDriver(_driver(), resource)
+
+        await driver.close()
+
+        self.assertEqual(events, [])
+
+    async def test_partial_start_unwinds_only_attempted_resources_in_reverse(self):
+        events = []
+        startup = ValueError("primary-startup-detail")
+        first = RecordingResource("first", events)
+        failed = RecordingResource("failed", events, start_error=startup)
+        untouched = RecordingResource("untouched", events)
+        driver = StorageRuntimeDriver(_driver(), first, failed, untouched)
+
+        with self.assertRaises(ValueError) as captured:
+            await driver.start_owned_resources()
+
+        self.assertIs(captured.exception, startup)
+        self.assertEqual(
+            events,
+            ["start:first", "start:failed", "close:failed", "close:first"],
+        )
+        await driver.close()
+        self.assertEqual(events.count("close:first"), 1)
+        self.assertNotIn("start:untouched", events)
+
+    async def test_startup_cleanup_failure_cannot_replace_primary_error(self):
+        events = []
+        startup = ValueError("primary-startup-detail")
+        first = RecordingResource(
+            "first",
+            events,
+            close_error=RuntimeError("private-first-cleanup"),
+        )
+        failed = RecordingResource(
+            "failed",
+            events,
+            start_error=startup,
+            close_error=OSError("private-failed-cleanup"),
+        )
+        driver = StorageRuntimeDriver(_driver(), first, failed)
+
+        with self.assertRaises(ValueError) as captured:
+            await driver.start_owned_resources()
+
+        self.assertIs(captured.exception, startup)
+        notes = getattr(captured.exception, "__notes__", ())
+        self.assertTrue(any("storage startup cleanup" in note for note in notes))
+        self.assertNotIn("private-failed-cleanup", " ".join(notes))
+        self.assertEqual(
+            events,
+            ["start:first", "start:failed", "close:failed", "close:first"],
+        )
+
+    async def test_registry_starts_shared_and_custom_resources_once(self):
+        """Deduplicate one object even when it fulfils several compiled roles."""
+
+        store = RecordingStore()
+        registry = StorageRegistry(
+            sessions=store,
+            checkpoints=None,
+            custom={"users": store},
+        )
+        driver = StorageRuntimeDriver(_driver(), storage_registry=registry)
+
+        await driver.create_session(session_id="session", user_id="user", state={})
+        await driver.close()
+
+        self.assertEqual(store.started, 1)
         self.assertEqual(store.closed, 1)
 
 
@@ -124,7 +232,8 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             selected = _runtime_driver(application)
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIs(selected._driver, backend)
+        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
+        self.assertIs(selected._driver._driver, backend)
         self.assertIs(constructor.call_args.kwargs["session_store"], store)
 
     def test_adk_lifecycle_store_is_adapted_and_runtime_owned(self):
@@ -152,6 +261,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             selected = _runtime_driver(application)
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
+        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
         adapt.assert_called_once_with(store)
         self.assertIs(constructor.call_args.kwargs["session_service"], service)
 
@@ -174,6 +284,8 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
         ) as constructor:
             selected = _runtime_driver(application)
 
+        self.assertIsInstance(selected, StorageRuntimeDriver)
+        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
         self.assertEqual(selected._resources, (store,))
         self.assertIs(constructor.call_args.kwargs["session_service"], service)
 
