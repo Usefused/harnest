@@ -125,6 +125,13 @@ when applications need them.
   custom retrieval results portable across ADK, LangGraph, and Harnest
   transports.
 
+## [0.4.1](https://github.com/Usefused/harnest/compare/v0.4.0...v0.4.1) (2026-08-29)
+
+
+### Fixes
+
+* target current repository for releases ([a3da0a6](https://github.com/Usefused/harnest/commit/a3da0a6af2b5777ae231aff7b25eefca996ba3dd))
+
 ## [0.4.0](https://github.com/Usefused/harnest/compare/v0.3.0...v0.4.0) (2026-08-28)
 
 
