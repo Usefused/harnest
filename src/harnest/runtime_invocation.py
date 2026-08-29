@@ -37,6 +37,7 @@ async def resolved_transport_input(
     input_schema: Any,
     store: AssetStore,
     scope: AssetScope,
+    stores: Mapping[str, AssetStore] | None = None,
 ) -> Any:
     """Run structural Pydantic validation before trusted metadata resolution."""
 
@@ -48,7 +49,9 @@ async def resolved_transport_input(
             if isinstance(value, input_schema)
             else input_schema.model_validate(value)
         )
-        resolved = await resolve_model_content(model, store=store, scope=scope)
+        resolved = await resolve_model_content(
+            model, store=store, stores=stores, scope=scope
+        )
         return resolved.model_dump(mode="json", by_alias=True)
     except (ValidationError, ContentValidationError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="Invalid content input") from exc
@@ -62,6 +65,7 @@ class InvocationCoordinator:
     approvals: InMemoryApprovalStore
     client_tools: InMemoryClientToolStore
     assets: AssetStore
+    asset_stores: Mapping[str, AssetStore]
     semaphore: asyncio.Semaphore
     request_timeout: float
     max_request_bytes: int
@@ -123,6 +127,7 @@ class InvocationCoordinator:
             self.driver.info.input_schema,
             self.assets,
             AssetScope(user_id=user_id, session_id=session_id),
+            stores=self.asset_stores,
         )
 
     def validate_input(self, value: Any, *, require_non_empty_text: bool) -> None:

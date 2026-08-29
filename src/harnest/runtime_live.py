@@ -106,7 +106,9 @@ async def _consume_live_run(
                 websocket.receive_json(), timeout=remaining
             )
             output = _live_client_tool_result(frame, value.id)
-            client_tools.submit(value.id, user_id=value.user_id, output=output)
+            await client_tools.submit(
+                value.id, user_id=value.user_id, output=output
+            )
             state.sequence += 1
             continue
         if kind == "error":

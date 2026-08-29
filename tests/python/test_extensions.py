@@ -104,6 +104,36 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ExtensionDiscoveryError, "AssetStore"):
                 discover_extensions(root, framework="langgraph")
 
+    def test_asset_stores_are_named_and_duplicate_names_fail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._session_store(root)
+            (root / "assets.py").write_text(
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.asset_store(name='media')\n"
+                "def media(): return MemoryAssetStore()\n"
+                "@lifecycle.asset_store\n"
+                "def default(): return MemoryAssetStore()\n",
+                encoding="utf-8",
+            )
+
+            configured = discover_extensions(root, framework="langgraph")
+
+            self.assertEqual(set(configured.asset_stores), {"default", "media"})
+            self.assertIs(configured.asset_store, configured.asset_stores["default"])
+            (root / "assets.py").write_text(
+                "from harnest.assets import MemoryAssetStore\n"
+                "from harnest.lifecycle import lifecycle\n"
+                "@lifecycle.asset_store(name='media')\n"
+                "def first(): return MemoryAssetStore()\n"
+                "@lifecycle.asset_store(name='media')\n"
+                "def second(): return MemoryAssetStore()\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ExtensionDiscoveryError, "duplicate.*media"):
+                discover_extensions(root, framework="langgraph")
+
     def test_telemetry_exporter_factories_are_repeatable_and_runtime_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -55,16 +55,28 @@ when applications need them.
   and typed `Data[T]` Pydantic parts. Users configure accepted MIME types,
   byte size, dimensions, pixels, duration, animation, pages, and related limits
   with reusable `Annotated` constraints rather than `server.yaml`.
-* Added authenticated session asset upload, range download, metadata, deletion,
-  inspection, and lifecycle-owned storage contracts.
-* ADK and LangGraph keep reference-only media in sessions and checkpoints,
-  materialize bytes only for model calls, and stage inspected model media before
-  publication.
-* JSON, SSE, WebSocket, structured output, and session messages share the same
-  contracts. Traces and native transcript metadata exclude content and asset
-  identifiers.
-* Added live coverage against a vision model for upload inspection, Pydantic
-  input and output, JSON, SSE, WebSocket, and reference-only messages.
+* Inline base64 is now the default transient media policy. For media consumed
+  as model input, Harnest validates and leases decoded bytes before framework
+  persistence, injects them only into the immediate model call, and excludes
+  them and private lease identifiers from checkpoints, history, logs, traces,
+  audits, intermediate public events, and session messages.
+* Applied transient media handling to top-level structured input, typed local
+  tool output, and mid-turn client-tool results, including retry-safe subagent
+  model calls in ADK and LangGraph. Native framework history persists only
+  content-free attachment placeholders, never private lease identifiers.
+* Final inline media output is returned once on its authenticated response
+  transport. Durable or replayable output requires an explicit `Stored(...)`
+  policy.
+* Added explicit `Stored(...)` field metadata for durable media, named
+  `@lifecycle.asset_store(name=...)` factories, model-call-time signed URLs,
+  and scoped `context.assets` access. Retention, path, and URL expiry are
+  authored in the Pydantic contract rather than `server.yaml`.
+* Ordinary tools using `Stored(...)` output are explicitly asynchronous so
+  storage can be awaited without changing synchronous direct-call behavior.
+* Retained authenticated session asset upload, range download, metadata,
+  deletion, inspection, and lifecycle-owned storage contracts. JSON, SSE,
+  WebSocket, structured output, and session messages share the same portable
+  shapes while public transcript projections remain content-free.
 
 ### Telemetry export
 

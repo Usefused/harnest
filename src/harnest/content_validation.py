@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from types import UnionType
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any, Mapping, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from .assets import AssetRecord, AssetScope, AssetStore
+from .asset_inspection import inspect_asset
+from .assets import AssetMediaMetadata, AssetRecord, AssetScope, AssetStore
 from .content import (
     AssetRef,
     Audio,
@@ -50,19 +53,52 @@ class ContentCapabilities:
             raise ValueError("content capability max_asset_bytes must be positive")
 
 
+def validate_inline_content(
+    part: Image | Audio | Video | File,
+    data: bytes,
+    constraints: tuple[ContentConstraints, ...] = (),
+    capabilities: ContentCapabilities | None = None,
+) -> tuple[AssetMediaMetadata, str]:
+    """Inspect inline bytes and enforce the same policy as stored content."""
+
+    if part.media_type is None:
+        raise ContentValidationError("inline content media type is required")
+    try:
+        metadata, media_type = inspect_asset(data, part.media_type)
+    except ValueError as exc:
+        raise ContentValidationError("inline content is invalid") from exc
+    record = AssetRecord(
+        asset_id="transient",
+        scope=AssetScope("transient", "transient"),
+        media_type=media_type,
+        size_bytes=len(data),
+        created_at=datetime.now(timezone.utc),
+        metadata=metadata,
+    )
+    active_capabilities = capabilities or ContentCapabilities()
+    _validate_capabilities(part.type, record, active_capabilities)
+    _validate_media_family(part.type, media_type)
+    for constraint in constraints:
+        _validate_constraint(part.type, record, constraint)
+    return metadata, media_type
+
+
 async def resolve_model_content(
     value: Any,
     *,
     store: AssetStore,
+    stores: Mapping[str, AssetStore] | None = None,
     scope: AssetScope,
     capabilities: ContentCapabilities | None = None,
 ) -> Any:
     """Return a copy whose content metadata came only from the scoped store."""
 
+    registry = dict(stores or {})
+    registry.setdefault("default", store)
     return await _resolve(
         value,
         type(value),
-        store=store,
+        stores=registry,
         scope=scope,
         constraints=(),
         capabilities=capabilities or ContentCapabilities(),
@@ -73,7 +109,7 @@ async def _resolve(
     value: Any,
     annotation: Any,
     *,
-    store: AssetStore,
+    stores: Mapping[str, AssetStore],
     scope: AssetScope,
     constraints: tuple[ContentConstraints, ...],
     capabilities: ContentCapabilities,
@@ -82,8 +118,10 @@ async def _resolve(
 
     annotation, local = _annotation_constraints(annotation)
     active = constraints + local
+    if isinstance(value, (Image, Audio, Video, File)) and value.data is not None:
+        return _resolve_inline(value, active, capabilities)
     if isinstance(value, (AssetRef, Image, Audio, Video, File)):
-        return await _resolve_asset(value, store, scope, active, capabilities)
+        return await _resolve_asset(value, stores, scope, active, capabilities)
     if isinstance(value, Data):
         _validate_data(value, active, capabilities)
         return value
@@ -94,7 +132,7 @@ async def _resolve(
             updates[name] = await _resolve(
                 getattr(value, name),
                 field_annotation,
-                store=store,
+                stores=stores,
                 scope=scope,
                 constraints=(),
                 capabilities=capabilities,
@@ -103,7 +141,7 @@ async def _resolve(
     return await _resolve_container(
         value,
         annotation,
-        store=store,
+        stores=stores,
         scope=scope,
         constraints=active,
         capabilities=capabilities,
@@ -114,7 +152,7 @@ async def _resolve_container(
     value: Any,
     annotation: Any,
     *,
-    store: AssetStore,
+    stores: Mapping[str, AssetStore],
     scope: AssetScope,
     constraints: tuple[ContentConstraints, ...],
     capabilities: ContentCapabilities,
@@ -128,7 +166,7 @@ async def _resolve_container(
         return await _resolve_sequence(
             value,
             (item_annotation,) * len(value),
-            store=store,
+            stores=stores,
             scope=scope,
             constraints=constraints,
             capabilities=capabilities,
@@ -138,7 +176,7 @@ async def _resolve_container(
         resolved = await _resolve_sequence(
             value,
             item_annotations,
-            store=store,
+            stores=stores,
             scope=scope,
             constraints=constraints,
             capabilities=capabilities,
@@ -149,7 +187,7 @@ async def _resolve_container(
         return await _resolve_mapping(
             value,
             value_annotation,
-            store=store,
+            stores=stores,
             scope=scope,
             constraints=constraints,
             capabilities=capabilities,
@@ -161,7 +199,7 @@ async def _resolve_sequence(
     values: list[Any] | tuple[Any, ...],
     annotations: tuple[Any, ...],
     *,
-    store: AssetStore,
+    stores: Mapping[str, AssetStore],
     scope: AssetScope,
     constraints: tuple[ContentConstraints, ...],
     capabilities: ContentCapabilities,
@@ -172,7 +210,7 @@ async def _resolve_sequence(
         await _resolve(
             item,
             item_annotation,
-            store=store,
+            stores=stores,
             scope=scope,
             constraints=constraints,
             capabilities=capabilities,
@@ -185,7 +223,7 @@ async def _resolve_mapping(
     values: dict[Any, Any],
     value_annotation: Any,
     *,
-    store: AssetStore,
+    stores: Mapping[str, AssetStore],
     scope: AssetScope,
     constraints: tuple[ContentConstraints, ...],
     capabilities: ContentCapabilities,
@@ -196,7 +234,7 @@ async def _resolve_mapping(
         key: await _resolve(
             item,
             value_annotation,
-            store=store,
+            stores=stores,
             scope=scope,
             constraints=constraints,
             capabilities=capabilities,
@@ -266,13 +304,16 @@ def _tuple_annotations(arguments: tuple[Any, ...], size: int) -> tuple[Any, ...]
 
 async def _resolve_asset(
     part: AssetRef | Image | Audio | Video | File,
-    store: AssetStore,
+    stores: Mapping[str, AssetStore],
     scope: AssetScope,
     constraints: tuple[ContentConstraints, ...],
     capabilities: ContentCapabilities,
 ) -> AssetRef | Image | Audio | Video | File:
     """Authorize one reference, enforce policy, and replace client metadata."""
 
+    store = stores.get(part.store)
+    if store is None:
+        raise ContentValidationError("content asset storage is unavailable")
     record = await store.stat(scope=scope, asset_id=part.asset_id)
     if record is None:
         raise ContentValidationError("content asset is unavailable")
@@ -282,6 +323,28 @@ async def _resolve_asset(
     for constraint in constraints:
         _validate_constraint(kind, record, constraint)
     return _authoritative_part(part, record)
+
+
+def _resolve_inline(
+    part: Image | Audio | Video | File,
+    constraints: tuple[ContentConstraints, ...],
+    capabilities: ContentCapabilities,
+) -> Image | Audio | Video | File:
+    """Inspect inline bytes while preserving them until model-boundary staging."""
+
+    if part.data is None:
+        raise ContentValidationError("inline content is invalid")
+    try:
+        data = base64.b64decode(part.data, validate=True)
+    except ValueError as exc:
+        raise ContentValidationError("inline content is invalid") from exc
+    metadata, media_type = validate_inline_content(
+        part,
+        data,
+        constraints,
+        capabilities,
+    )
+    return _authoritative_inline_part(part, metadata, media_type, len(data))
 
 
 def _validate_capabilities(
@@ -530,6 +593,7 @@ def _authoritative_part(
 
     common = {
         "assetId": record.asset_id,
+        "store": part.store,
         "mediaType": record.media_type,
         "sizeBytes": record.size_bytes,
     }
@@ -568,8 +632,48 @@ def _authoritative_part(
     return AssetRef.model_validate(common)
 
 
+def _authoritative_inline_part(
+    part: Image | Audio | Video | File,
+    metadata: AssetMediaMetadata,
+    media_type: str,
+    size_bytes: int,
+) -> Image | Audio | Video | File:
+    """Replace client-claimed inline metadata without copying encoded content."""
+
+    common = {"media_type": media_type, "size_bytes": size_bytes}
+    if isinstance(part, Image):
+        return part.model_copy(
+            update={
+                **common,
+                "width": metadata.width,
+                "height": metadata.height,
+                "frame_count": metadata.frame_count,
+            }
+        )
+    if isinstance(part, Audio):
+        return part.model_copy(
+            update={
+                **common,
+                "duration_seconds": metadata.duration_seconds,
+                "sample_rate_hz": metadata.sample_rate_hz,
+                "channels": metadata.channel_count,
+            }
+        )
+    if isinstance(part, Video):
+        return part.model_copy(
+            update={
+                **common,
+                "width": metadata.width,
+                "height": metadata.height,
+                "duration_seconds": metadata.duration_seconds,
+            }
+        )
+    return part.model_copy(update=common)
+
+
 __all__ = [
     "ContentCapabilities",
     "ContentValidationError",
     "resolve_model_content",
+    "validate_inline_content",
 ]

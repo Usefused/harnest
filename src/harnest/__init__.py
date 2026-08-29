@@ -27,6 +27,8 @@ from .mcp import (
 from .approval import request_human_approval, require_human_approval
 from .client_tool import client_tool
 from .checkpoint import ADKStore, HarnestStore, LangGraphStore
+from .asset_policy import Stored
+from .assets import AssetStorage, AssetURLStorage
 from .context import AgentContext, context
 from .credentials import (
     Credential,
@@ -61,6 +63,8 @@ __all__ = [
     "AgentContext",
     "AgentSource",
     "ADKStore",
+    "AssetStorage",
+    "AssetURLStorage",
     "CompiledApplication",
     "Credential",
     "CredentialError",
@@ -109,6 +113,7 @@ __all__ = [
     "Sandbox",
     "START",
     "StructuredOutputError",
+    "Stored",
     "TelemetryExporter",
     "TelemetryExporterError",
     "Tracer",

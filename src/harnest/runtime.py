@@ -592,10 +592,10 @@ def _application_with_asset_store(application: Any) -> Any:
         return application
     from .assets import MemoryAssetStore
 
-    return replace(
-        application,
-        asset_store=MemoryAssetStore(),
-    )
+    default = MemoryAssetStore()
+    stores = dict(getattr(application, "asset_stores", {}))
+    stores["default"] = default
+    return replace(application, asset_store=default, asset_stores=stores)
 
 
 def create_fastapi_app(
@@ -812,6 +812,7 @@ def _build_native_adk_app(
         max_concurrency=max_concurrency,
         max_request_bytes=max_request_bytes,
         asset_store=application.asset_store,
+        asset_stores=application.asset_stores,
         http_routes=application.http_routes,
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.

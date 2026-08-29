@@ -29,12 +29,14 @@ def build_runtime_pipeline(
         extensions
         or capabilities.context_values
         or capabilities.credential_provider is not None
+        or capabilities.asset_stores
     ):
         return current
     return ExtensionRuntimeDriver(
         current,
         extensions,
         context_values=capabilities.context_values,
+        asset_stores=capabilities.asset_stores,
         credential_provider=capabilities.credential_provider,
         manage_credential_provider=manage_credential_provider,
     )
@@ -49,6 +51,7 @@ def _with_storage(
         capabilities.session_store is not None
         or capabilities.checkpointer is not None
         or capabilities.asset_store is not None
+        or capabilities.asset_stores
     ):
         return driver
     return StorageRuntimeDriver(
@@ -56,6 +59,7 @@ def _with_storage(
         capabilities.session_store,
         capabilities.checkpointer,
         capabilities.asset_store,
+        *capabilities.asset_stores.values(),
     )
 
 

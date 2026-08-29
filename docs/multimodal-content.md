@@ -1,94 +1,204 @@
 # Multimodal Pydantic content
 
-Harnest represents multimodal input, output, tool results, streams, WebSocket
-frames, and session messages with portable Pydantic content parts. Authored
-models belong in the root `models/` folder and import as `harnest.models.*`.
+Harnest uses portable Pydantic parts for multimodal agent input, output, and
+tool results. Keep the application contracts in the root `models/` folder so
+agents, tools, client tools, extensions, and subagents import one definition
+through `harnest.models.*`.
 
 ```python
-# models/conversation.py
+# models/vision.py
 from typing import Annotated
 
 from pydantic import BaseModel
 
-from harnest.content import (
-    Data,
-    DataConstraints,
-    Image,
-    ImageConstraints,
-    Text,
-)
+from harnest.content import Image, ImageConstraints
 
 
-SupportImage = Annotated[
+Screenshot = Annotated[
     Image,
     ImageConstraints(
-        media_types=frozenset({"image/png", "image/jpeg"}),
-        max_bytes=5 * 1024 * 1024,
-        max_width=4096,
-        max_height=4096,
-        max_pixels=12_000_000,
+        media_types=frozenset({"image/jpeg", "image/png"}),
+        max_bytes=500 * 1024,
+        max_width=1920,
+        max_height=1080,
+        max_pixels=2_073_600,
         animated=False,
     ),
 ]
-TicketData = Annotated[Data[dict[str, str]], DataConstraints(max_bytes=8192)]
 
 
-class Request(BaseModel):
-    content: list[Text | SupportImage | TicketData]
+class VisionRequest(BaseModel):
+    question: str
+    screenshot: Screenshot
 
 
-class Result(BaseModel):
+class VisionResult(BaseModel):
     answer: str
-    image: SupportImage | None = None
 ```
 
-Configure the agent with `input_schema=Request` and `output_schema=Result`.
-The same contracts apply to JSON responses, SSE, `/live`, ADK, LangGraph, and
-`GET /sessions/{sessionId}/messages`. `@tool(output_schema=Result)` and
-`@client_tool(output_schema=Result)` use the same structural Pydantic types.
+Use the model on the agent boundary:
 
-## Asset references
+```python
+# agent.py
+from harnest.agent import Agent
+from harnest.models.vision import VisionRequest, VisionResult
+from harnest.model import LiteLLMModel
 
-Media parts contain an opaque `assetId`; they never contain a URL, base64,
-provider file ID, or bytes. Upload bytes into an existing session first:
 
-```bash
-curl -X POST http://127.0.0.1:8080/sessions/demo/assets \
-  -H 'Content-Type: image/png' \
-  --data-binary @diagram.png
+root_agent = Agent(
+    name="vision",
+    model=LiteLLMModel("provider/vision-model"),
+    input_schema=VisionRequest,
+    output_schema=VisionResult,
+)
 ```
 
-Then send the returned reference:
+The same contracts apply to JSON and SSE requests, `/live` WebSocket frames,
+structured responses, and `GET /sessions/{sessionId}/messages` projections.
+`@tool(output_schema=...)` and `@client_tool(output_schema=...)` use the same
+Pydantic models, including when a client-tool result resumes a subagent in the
+middle of a turn.
+
+`Text`, `Image`, `Audio`, `Video`, `File`, `AssetRef`, and typed `Data[T]` are
+available from `harnest.content`. Their corresponding `Annotated` constraints
+configure accepted MIME types, decoded byte size, dimensions, pixels,
+animation, duration, sample rate, channels, pages, and other applicable limits.
+These are field contracts, not `server.yaml` settings. Harnest validates
+decoded bytes and trusted inspected metadata rather than trusting values
+claimed by a client.
+
+## Transient media is the default
+
+With no storage annotation, media is inline base64 for the current turn:
 
 ```json
 {
   "sessionId": "demo",
   "input": {
-    "content": [
-      {"type": "text", "text": "Explain this diagram"},
-      {"type": "image", "assetId": "asset_..."}
-    ]
+    "question": "What is visible?",
+    "screenshot": {
+      "type": "image",
+      "mediaType": "image/jpeg",
+      "data": "<base64>"
+    }
   }
 }
 ```
 
-Use `GET`, `HEAD`, or `DELETE
-/sessions/{sessionId}/assets/{assetId}` to stream, inspect, or delete an owned
-asset. Downloads support a single HTTP byte range. Asset lookup is bound to the
-authenticated user and session, and deleting a session removes its assets.
+Harnest validates and leases the decoded bytes before a framework can persist
+the value. The ADK or LangGraph model adapter injects those bytes only into the
+immediate model call. This applies to top-level input, ordinary typed tool
+output, and mid-turn typed client-tool output, including client tools called by
+subagents. A provider retry may reuse the private lease; a successful model
+call consumes it, and terminal failure or cancellation clears it.
 
-Harnest validates in two stages: Pydantic checks the authored reference shape,
-then Harnest reads store-owned MIME, byte size, dimensions, duration, and count
-metadata and enforces the field's `Annotated` constraints. Client-claimed
-metadata is discarded. Fixed internal abuse ceilings remain above authored
-constraints and are not configured in `server.yaml`.
+Transient input and tool-result base64 stays in a private invocation lease.
+Neither those bytes nor the lease identifier enters native ADK/LangGraph
+checkpoints, session history, logs, traces, audit records, or intermediate
+public events. Framework-visible history contains only a non-secret attachment
+placeholder. Public streams and `/messages` retain ordering without retaining
+the content, for example:
 
-ADK and LangGraph sessions/checkpoints keep only references. Harnest loads bytes
-inside the framework's model-call boundary, and stages inspected inline model
-output into the asset store before persistence. Session messages expose ordered
-portable parts. Harnest traces and audit logs record only counts, kinds, and
-outcomes—not bytes, URLs, filenames, captions, custom data, or asset IDs.
+```json
+{
+  "type": "image",
+  "mediaType": "image/jpeg",
+  "content": "attached"
+}
+```
 
-For a custom durable store, return an `AssetStore` from one root
-`@lifecycle.asset_store` factory. The default `MemoryAssetStore` is bounded and
-development-only.
+Because transient media is deliberately not durable, it has no later asset to
+fetch through `context.assets`.
+
+When inline media is deliberately part of the agent's final `output_schema`,
+the authenticated JSON, SSE, or WebSocket response returns that authored data
+once. It is not durable or replayable through session messages. Use
+`Stored(...)` when output must remain retrievable by reference after the
+response.
+
+## Durable media is explicit
+
+Add `Stored(...)` to a media field only when the application needs durable
+storage and a later reference:
+
+```python
+# models/capture.py
+from datetime import timedelta
+from typing import Annotated
+
+from pydantic import BaseModel
+
+from harnest import Stored
+from harnest.content import Image, ImageConstraints
+
+
+class CaptureResult(BaseModel):
+    screenshot: Annotated[
+        Image,
+        ImageConstraints(max_bytes=5 * 1024 * 1024),
+        Stored(
+            store="media",
+            path="screenshots",
+            expires_in=60,
+            retention=timedelta(days=7),
+        ),
+    ]
+```
+
+`store` selects a named root `AssetStorage`. `path` is a storage hint,
+`retention` controls the stored bytes, and `expires_in` controls the lifetime
+of the model-facing URL; URL lifetime and storage retention are independent.
+The durable public value is an opaque, user-and-session-scoped reference with
+`assetId` and `store`, never a storage credential or permanent URL.
+
+Configure each storage implementation through the existing extension
+lifecycle:
+
+```python
+# extensions/assets.py
+from harnest import AssetStorage, lifecycle
+from harnest.lib.assets import S3AssetStorage
+
+
+@lifecycle.asset_store(name="media")
+def media_assets() -> AssetStorage:
+    return S3AssetStorage(bucket="agent-media")
+```
+
+An inline value accepted by a `Stored(...)` field is inspected and saved to
+that named store before it becomes framework-visible. At the immediate model
+boundary, a URL-capable storage receives the scoped reference and creates a
+fresh signed URL using `expires_in`; signed URLs are not created when the media
+is captured and are not persisted in history. The framework adapter then
+lowers the URL to the provider's media shape.
+
+An ordinary `@tool` whose output model contains `Stored(...)` must be declared
+with `async def`, because Harnest awaits the selected storage before returning
+the tool result. Harnest rejects a synchronous declaration instead of silently
+changing its call semantics. A `@client_tool` remains a client-executed stub;
+Harnest performs its awaited storage pass when the client submits the result.
+
+Managed agent code accesses a stored reference through the invocation-scoped
+capability rather than the backend object:
+
+```python
+from harnest.context import context
+
+
+record = await context.assets.stat(result.screenshot)
+payload = await context.assets.get(result.screenshot, max_bytes=5 * 1024 * 1024)
+async for chunk in context.assets.open(result.screenshot):
+    ...
+temporary_url = await context.assets.url(result.screenshot, expires_in=60)
+```
+
+`context.assets` supplies the current authenticated user and session. It also
+offers scoped `delete(...)`. Calls outside an active Harnest invocation fail.
+Application code outside that boundary must apply equivalent user-and-session
+ownership checks through its own storage API.
+
+Existing clients may also upload directly to
+`POST /sessions/{sessionId}/assets` and pass a matching `assetId`/`store`
+reference. `GET`, `HEAD`, and `DELETE
+/sessions/{sessionId}/assets/{assetId}` remain the neutral asset endpoints for
+the default store, including bounded range downloads.

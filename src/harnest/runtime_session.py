@@ -26,12 +26,15 @@ class StorageRuntimeDriver(RuntimeDriver):
         store: SessionStore | None = None,
         checkpoint_provider: Any | None = None,
         asset_store: Any | None = None,
+        *asset_stores: Any,
     ) -> None:
         """Deduplicate shared resources so each is started and closed once."""
 
         self._driver = driver
         self._store = store
-        self._resources = _unique_resources(store, checkpoint_provider, asset_store)
+        self._resources = _unique_resources(
+            store, checkpoint_provider, asset_store, *asset_stores
+        )
         self._start_lock = asyncio.Lock()
         self._started = False
         self._closed = False

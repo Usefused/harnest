@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+import re
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
 
 from .agent import _AdvancedAgentDefinition
 from .assets import AssetStore
@@ -17,6 +19,9 @@ from .session import SessionStore
 from .structured import PydanticModel, validate_output_schema
 
 
+_ASSET_STORE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeCapabilities:
     """Validated application-owned resources consumed by every runtime."""
@@ -24,6 +29,7 @@ class RuntimeCapabilities:
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
+    asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
     credential_provider: CredentialProvider | None = field(default=None, repr=False)
     http_routes: Sequence[HTTPRouteExtension] = field(default=(), repr=False)
     output_policy: OutputPolicy = OutputPolicy()
@@ -37,9 +43,9 @@ class RuntimeCapabilities:
         _validate_optional_type(
             self.checkpointer, CheckpointAuthority, field_name="checkpointer"
         )
-        _validate_optional_type(
-            self.asset_store, AssetStore, field_name="asset_store"
-        )
+        stores = _asset_storage_capabilities(self.asset_store, self.asset_stores)
+        object.__setattr__(self, "asset_stores", stores)
+        object.__setattr__(self, "asset_store", stores.get("default"))
         _validate_optional_type(
             self.credential_provider,
             CredentialProvider,
@@ -75,6 +81,7 @@ class CompiledApplication:
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
+    asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
     credential_provider: CredentialProvider | None = field(default=None, repr=False)
     http_routes: Sequence[HTTPRouteExtension] = field(default=(), repr=False)
     output_policy: OutputPolicy = OutputPolicy()
@@ -103,6 +110,7 @@ class CompiledApplication:
             session_store=self.session_store,
             checkpointer=self.checkpointer,
             asset_store=self.asset_store,
+            asset_stores=self.asset_stores,
             credential_provider=self.credential_provider,
             http_routes=self.http_routes,
             output_policy=self.output_policy,
@@ -134,6 +142,7 @@ def _publish_compatibility_attributes(
         "session_store",
         "checkpointer",
         "asset_store",
+        "asset_stores",
         "credential_provider",
         "http_routes",
         "output_policy",
@@ -155,6 +164,28 @@ def _validate_optional_type(value: Any, expected: type[Any], *, field_name: str)
 
     if value is not None and not isinstance(value, expected):
         raise TypeError(f"{field_name} must implement {expected.__name__}")
+
+
+def _asset_storage_capabilities(
+    legacy: AssetStore | None, configured: Mapping[str, AssetStore]
+) -> Mapping[str, AssetStore]:
+    """Normalize named stores while preserving the legacy default field."""
+
+    if not isinstance(configured, Mapping):
+        raise TypeError("asset_stores must be a mapping")
+    stores = dict(configured)
+    for name, store in stores.items():
+        if not isinstance(name, str) or not _ASSET_STORE_NAME.fullmatch(name):
+            raise ValueError(
+                "asset store names must be valid storage identifiers"
+            )
+        _validate_optional_type(store, AssetStore, field_name=f"asset_stores[{name!r}]")
+    if legacy is not None:
+        _validate_optional_type(legacy, AssetStore, field_name="asset_store")
+        if "default" in stores and stores["default"] is not legacy:
+            raise ValueError("asset_store must match asset_stores['default']")
+        stores["default"] = legacy
+    return MappingProxyType(stores)
 
 
 def _http_route_extensions(values: Sequence[Any]) -> tuple[HTTPRouteExtension, ...]:

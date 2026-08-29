@@ -72,7 +72,7 @@ tools, client tools, extensions, subagents, tests, and compiled runtime code.
 
 ### Multimodal content
 
-Use reference-only types from `harnest.content` inside those Pydantic models:
+Use portable types from `harnest.content` inside those Pydantic models:
 `Text`, `Image`, `Audio`, `Video`, `File`, `AssetRef`, and typed `Data[T]`.
 Define reusable policies with `Annotated`, for example
 `Annotated[Image, ImageConstraints(media_types=frozenset({"image/png"}),
@@ -80,14 +80,32 @@ max_bytes=5 * 1024 * 1024, max_width=4096, max_height=4096)]`. Audio, video,
 file, and custom data have corresponding constraint classes. The constraints
 appear as `x-harnest-media` in JSON Schema.
 
-Media values carry `assetId`, never URLs, base64, bytes, or provider IDs. A
-client uploads bytes to `POST /sessions/{sessionId}/assets`, then uses the
-returned reference in `/responses` or `/live`. Harnest discards client-claimed
-metadata, resolves trusted store metadata, and applies the authored field
-constraints. The same reference-only parts appear in session messages and
-structured output. ADK and LangGraph materialize bytes only around model calls;
-checkpoints, traces, audits, and native transcript metadata remain content-free.
-See `docs/multimodal-content.md` for the complete request and asset lifecycle.
+Without storage metadata, `Image`, `Audio`, `Video`, and `File` accept canonical
+base64 in `data` plus a concrete `mediaType`. Harnest inspects and leases those
+bytes before framework persistence, injects them only into the immediate model
+call, and then clears them. This works for top-level input, ordinary typed tool
+output, and client-tool results returned mid-turn by root agents or subagents.
+For media consumed as model input, outgoing JSON, SSE, WebSocket events, and
+session messages never expose intermediate base64 or private lease IDs;
+transcripts use a content-free `"attached"` placeholder. Native framework
+checkpoints, history, traces, logs, and audits contain neither bytes nor private
+lease IDs. Inline media deliberately declared in the final output model is
+returned once on the authenticated response transport, but is not durable or
+replayable through session messages. Use `Stored(...)` when it must remain
+retrievable.
+
+For deliberate durability, annotate the field with
+`Stored(store="media", path="screenshots", expires_in=60,
+retention=timedelta(days=7))` and configure the named storage with
+`@lifecycle.asset_store(name="media")`. An inline value is saved before it
+becomes framework-visible; the durable value carries scoped `assetId` and
+`store` fields. A URL-capable storage generates a fresh signed URL only at the
+model-call boundary. Agent code can use `context.assets.stat/get/open/delete`
+and `context.assets.url` within the active user-and-session scope. Existing
+clients may still upload to `POST /sessions/{sessionId}/assets` and send a
+reference. See the [multimodal data guide](https://docs.usefused.com/harnest/build/models-and-libraries/typed-multimodal-contracts)
+and [media storage guide](https://docs.usefused.com/harnest/build/models-and-libraries/store-and-retrieve-media)
+for the complete two-policy lifecycle.
 
 `Graph` nodes may be `Agent` definitions, typed callables, nested `Graph`
 objects, `Join()` nodes, accepted backend-native nodes, or strings naming
@@ -127,6 +145,11 @@ Use `@tool(output_schema=ResultModel)` to accept a mapping or model instance and
 validate it as that Pydantic type. A direct `-> ResultModel` return annotation
 enables the same behavior. `@client_tool` accepts the same option and validates
 the caller-submitted output before resuming execution.
+
+An ordinary `@tool` returning a model with `Stored(...)` must use `async def`
+because asset persistence is awaited. Harnest rejects a synchronous declaration
+rather than changing its direct-call semantics. `@client_tool` is still a
+client-executed stub; Harnest awaits storage when its result is submitted.
 
 Tool arguments and results must be structured values. Harnest preserves JSON
 values, mappings, lists, tuples, dataclasses, enums, UUIDs, paths, temporal

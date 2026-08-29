@@ -1,3 +1,4 @@
+import base64
 import math
 from typing import Annotated
 import unittest
@@ -61,7 +62,10 @@ class PortableContentTests(unittest.TestCase):
         self.assertEqual(wire[2]["durationSeconds"], 1.25)
         self.assertEqual(wire[3]["hasAudio"], True)
         self.assertEqual(wire[4]["pageCount"], 3)
-        self.assertEqual(wire[5], {"assetId": "asset_other-1", "type": "asset"})
+        self.assertEqual(
+            wire[5],
+            {"assetId": "asset_other-1", "store": "default", "type": "asset"},
+        )
         with self.assertRaises(ValidationError):
             Image(assetId="asset-1", width=2.5)  # type: ignore[arg-type]
         with self.assertRaises(ValidationError):
@@ -76,6 +80,24 @@ class PortableContentTests(unittest.TestCase):
         ):
             with self.subTest(field=unsafe_field), self.assertRaises(ValidationError):
                 Image.model_validate({"assetId": "asset-1", unsafe_field: value})
+
+    def test_media_accepts_exactly_one_inline_or_stored_source(self):
+        encoded = base64.b64encode(b"private-image").decode("ascii")
+
+        inline = Image(data=encoded, mediaType="IMAGE/JPEG")
+        stored = Image(assetId="asset-1", store="private_media")
+
+        self.assertEqual(inline.media_type, "image/jpeg")
+        self.assertNotIn(encoded, repr(inline))
+        self.assertEqual(stored.store, "private_media")
+        for invalid in (
+            {},
+            {"assetId": "asset-1", "data": encoded, "mediaType": "image/jpeg"},
+            {"data": encoded},
+            {"data": "not-base64", "mediaType": "image/jpeg"},
+        ):
+            with self.subTest(invalid=tuple(invalid)), self.assertRaises(ValidationError):
+                Image.model_validate(invalid)
 
     def test_asset_metadata_requires_safe_identifiers_and_concrete_mime_types(self):
         invalid = (

@@ -25,8 +25,9 @@ class _Output(BaseModel):
 
 
 class _Driver:
-    def __init__(self, asset_id: str) -> None:
+    def __init__(self, asset_id: str, store: str = "default") -> None:
         self.asset_id = asset_id
+        self.store = store
         self.info = AgentInfo(
             id="content",
             name="content",
@@ -36,13 +37,36 @@ class _Driver:
         )
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
-        result = {"image": {"assetId": self.asset_id, "width": 999}}
+        result = {
+            "image": {
+                "assetId": self.asset_id,
+                "store": self.store,
+                "width": 999,
+            }
+        }
         return InvocationResult("ready", (), result, request.session_id, {})
 
     async def stream(self, request: InvocationRequest) -> AsyncIterator[RuntimeEvent]:
         yield {
             "type": "output",
-            "value": {"image": {"assetId": self.asset_id, "width": 999}},
+            "value": {
+                "image": {
+                    "assetId": self.asset_id,
+                    "store": self.store,
+                    "width": 999,
+                }
+            },
+        }
+        yield {
+            "type": "graph_output",
+            "output": {
+                "image": {
+                    "assetId": self.asset_id,
+                    "store": self.store,
+                    "width": 999,
+                }
+            },
+            "result": {"untrusted": "must be replaced"},
         }
 
     async def create_session(
@@ -94,6 +118,8 @@ class ContentRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.result["image"]["width"], 3)
         self.assertEqual(result.result["image"]["mediaType"], "image/png")
         self.assertEqual(events[0]["value"]["image"]["height"], 4)
+        self.assertEqual(events[1]["output"], events[1]["result"])
+        self.assertEqual(events[1]["result"]["image"]["width"], 3)
 
     async def test_output_constraints_fail_before_publication(self):
         scope = AssetScope("user", "session")
@@ -109,6 +135,28 @@ class ContentRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ContentValidationError):
             await driver.invoke(request)
+
+    async def test_named_output_reference_uses_its_declared_store(self):
+        scope = AssetScope("user", "session")
+        default = MemoryAssetStore()
+        media = MemoryAssetStore()
+        record = await media.save(
+            scope=scope,
+            media_type="image/png",
+            chunks=_chunks(b"image"),
+            metadata=AssetMediaMetadata(width=3, height=4),
+        )
+        driver = ContentRuntimeDriver(
+            _Driver(record.asset_id, "media"),
+            default,
+            {"default": default, "media": media},
+        )
+        request = InvocationRequest({}, "user", "session", "invoke", {}, {})
+
+        result = await driver.invoke(request)
+
+        self.assertEqual(result.result["image"]["store"], "media")
+        self.assertEqual(result.result["image"]["width"], 3)
 
 
 if __name__ == "__main__":

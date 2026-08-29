@@ -202,6 +202,7 @@ def create_neutral_router(
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
+    asset_stores: Mapping[str, AssetStore] | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
     """Create the one Harnest router shared by every runtime backend."""
@@ -220,17 +221,22 @@ def create_neutral_router(
     router = APIRouter()
     semaphore = asyncio.Semaphore(max_concurrency)
     approvals = approval_store or InMemoryApprovalStore()
-    client_tools = client_tool_store or InMemoryClientToolStore()
     assets = asset_store or MemoryAssetStore()
+    stores = dict(asset_stores or {})
+    stores.setdefault("default", assets)
+    client_tools = client_tool_store or InMemoryClientToolStore(
+        asset_stores=stores
+    )
     from .runtime_content import ContentRuntimeDriver
 
-    driver = ContentRuntimeDriver(driver, assets)
+    driver = ContentRuntimeDriver(driver, assets, stores)
     response_request_model = _response_request_model(driver.info.input_schema)
     coordinator = InvocationCoordinator(
         driver=driver,
         approvals=approvals,
         client_tools=client_tools,
         assets=assets,
+        asset_stores=stores,
         semaphore=semaphore,
         request_timeout=request_timeout,
         max_request_bytes=max_request_bytes,
@@ -645,7 +651,7 @@ def create_neutral_router(
         if set(payload) != {"output"}:
             raise HTTPException(status_code=400, detail="Expected client tool output")
         try:
-            pending = client_tools.submit(
+            pending = await client_tools.submit(
                 tool_request_id,
                 user_id=principal_for(request).user_id,
                 output=payload["output"],
@@ -777,6 +783,7 @@ def create_neutral_router(
                         driver.info.input_schema,
                         assets,
                         AssetScope(user_id=user_id, session_id=session.id),
+                        stores=stores,
                     )
                 except HTTPException:
                     await websocket.send_json(

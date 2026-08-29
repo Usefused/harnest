@@ -29,9 +29,10 @@ from .approval import (
     record_approved_failure,
 )
 from .application import CompiledApplication
-from .assets import AssetScope, AssetStore
+from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
 from .checkpoint import CheckpointStore, HarnestStore
+from .client_tool import current_transient_media
 from .content import AssetRef, Audio, Data, File, Image, Text, Video
 from .graph import _model_input_text
 from .model_lifecycle import close_litellm_lifecycles
@@ -52,6 +53,21 @@ from .runtime_contract import (
 from .output import OutputPolicy
 from .session import InMemorySessionStore, SessionLease, SessionStore
 from .structured import validate_runtime_output
+from .transient_media import (
+    TransientMediaAccess,
+    TransientMediaLease,
+    is_transient_media_placeholder,
+    matching_transient_leases,
+    sanitize_transient_media,
+    transient_media_lease_id,
+    transient_media_placeholders,
+)
+from .stored_media import (
+    sanitize_stored_media,
+    stored_media_reference,
+    stored_media_references,
+    stage_stored_media,
+)
 
 
 _TURN_START_KEY = "_harnest_turn_start"
@@ -89,6 +105,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         recursion_limit: int = 64,
         session_store: SessionStore | None = None,
         asset_store: AssetStore | None = None,
+        asset_stores: Mapping[str, AssetStore] | None = None,
     ) -> None:
         plan = _runtime_plan(application, recursion_limit)
         card_value = dict(card or {})
@@ -117,7 +134,12 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             configured_assets, AssetStore
         ):
             raise TypeError("asset_store must implement AssetStore")
-        self._asset_store = configured_assets
+        stores = dict(getattr(application, "asset_stores", {}))
+        stores.update(asset_stores or {})
+        if configured_assets is not None:
+            stores["default"] = configured_assets
+        self._asset_stores = stores
+        self._asset_store = stores.get("default")
         self._closed = False
 
     @property
@@ -217,8 +239,13 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             session_id=session_id, user_id=request.user_id
         ) as session:
             await self._apply_request_delta(session, request)
-            graph_input = _graph_input(
-                self._application, request.input, session.record.state
+            scope = AssetScope(user_id=request.user_id, session_id=session_id)
+            graph_input = await _graph_input(
+                self._application,
+                request.input,
+                session.record.state,
+                stores=self._asset_stores,
+                scope=AssetScope(request.user_id, session_id),
             )
             await self._begin_checkpoint(request, session_id)
             config = self._execution_config(request.invocation_id)
@@ -279,13 +306,17 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             session_id=session_id, user_id=request.user_id
         ) as session:
             await self._apply_request_delta(session, request)
-            graph_input = _graph_input(
-                self._application, request.input, session.record.state
+            scope = AssetScope(user_id=request.user_id, session_id=session_id)
+            graph_input = await _graph_input(
+                self._application,
+                request.input,
+                session.record.state,
+                stores=self._asset_stores,
+                scope=scope,
             )
             await self._begin_checkpoint(request, session_id)
             config = self._execution_config(request.invocation_id)
             state = _StreamState()
-            scope = AssetScope(user_id=request.user_id, session_id=session_id)
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
                 async for event in _target_stream(
@@ -369,7 +400,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 else managed_graph_mcp_clients(plan)
             )
             tool_groups = await self._resolve_tool_groups(configured)
-            runtime_plan = _plan_with_asset_middleware(plan, self._asset_store)
+            runtime_plan = _plan_with_asset_middleware(
+                plan,
+                self._asset_stores,
+                structured_input=self._application.input_schema is not None,
+            )
             self._target = (
                 materialize_agent(runtime_plan, tool_groups[0])
                 if isinstance(plan, ManagedAgentPlan)
@@ -596,7 +631,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
 
         metadata = {
             **dict(record.metadata),
-            "langgraph": json_value(record.state),
+            "langgraph": sanitize_stored_media(json_value(record.state)),
         }
         if self._application.kind == "advanced":
             return replace(record, metadata=metadata)
@@ -623,45 +658,136 @@ def _runtime_plan(application: Any, recursion_limit: int) -> Any | None:
     return None
 
 
-def _plan_with_asset_middleware(plan: Any, store: AssetStore | None) -> Any:
+def _plan_with_asset_middleware(
+    plan: Any,
+    stores: Mapping[str, AssetStore] | AssetStore | None,
+    *,
+    structured_input: bool = False,
+) -> Any:
     """Attach byte materialization as the innermost managed-model boundary."""
 
-    if store is None:
+    if not stores and not structured_input and not _plan_has_typed_tools(plan):
         return plan
     middleware = tuple(getattr(plan, "middleware", ()))
     # Appending keeps extension middleware outside this adapter so hooks and
     # telemetry observe references, while only the provider sees byte content.
     return replace(
         plan,
-        middleware=(*middleware, _langgraph_asset_middleware(store)),
+        middleware=(*middleware, _langgraph_asset_middleware(stores)),
     )
 
 
-def _langgraph_asset_middleware(store: AssetStore) -> Any:
+def _plan_has_typed_tools(plan: Any) -> bool:
+    """Detect tools whose Pydantic output may declare transient media."""
+
+    definition = getattr(plan, "definition", None)
+    if definition is not None:
+        return any(
+            getattr(tool, "__harnest_output_schema__", None) is not None
+            for tool in getattr(definition, "tools", ())
+        )
+    graph = getattr(plan, "graph", None)
+    nodes = getattr(graph, "nodes", None)
+    if not isinstance(nodes, Mapping):
+        return False
+    return any(
+        _plan_node_has_typed_tools(node) for node in nodes.values()
+    )
+
+
+def _plan_node_has_typed_tools(node: Any) -> bool:
+    """Inspect nested portable graph definitions without materializing them."""
+
+    if any(
+        getattr(tool, "__harnest_output_schema__", None) is not None
+        for tool in getattr(node, "tools", ())
+    ):
+        return True
+    nodes = getattr(node, "nodes", None)
+    return isinstance(nodes, Mapping) and any(
+        _plan_node_has_typed_tools(child) for child in nodes.values()
+    )
+
+
+def _langgraph_asset_middleware(
+    stores: Mapping[str, AssetStore] | AssetStore | None,
+) -> Any:
     """Build middleware that swaps scoped references only around model I/O."""
 
     from langchain.agents.middleware import AgentMiddleware
 
+    if stores is None:
+        storage_registry: dict[str, AssetStore] = {}
+    elif isinstance(stores, AssetStore):
+        storage_registry = {"default": stores}
+    else:
+        storage_registry = dict(stores)
+    default_store = storage_registry.get("default")
+
     class AssetBoundaryMiddleware(AgentMiddleware):
+        def __init__(self) -> None:
+            self._transient_tools: dict[
+                tuple[str, str, str, str],
+                tuple[TransientMediaAccess, tuple[str, ...]],
+            ] = {}
+
+        async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+            """Bind safe tool placeholders to their private native tool-call ID."""
+
+            result = await handler(request)
+            access = current_transient_media()
+            content = getattr(result, "content", None)
+            sanitized, _, _ = _message_transient_value(content)
+            leases = matching_transient_leases(
+                transient_media_placeholders(sanitized),
+                access.pending() if access is not None else (),
+            )
+            tool_call_id = getattr(result, "tool_call_id", None)
+            if access is not None and leases and isinstance(tool_call_id, str):
+                self._transient_tools[_langgraph_tool_key(access, tool_call_id)] = (
+                    access,
+                    tuple(lease.lease_id for lease in leases),
+                )
+            return result
+
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             scope = _MODEL_ASSET_SCOPE.get()
             if scope is None:
                 if _messages_have_asset_references(request.messages):
                     raise RuntimeError("asset model call requires invocation scope")
-                return await handler(request)
-            messages = [
-                await _materialize_model_message(message, store=store, scope=scope)
-                for message in request.messages
-            ]
+            access = current_transient_media()
+            transient_by_message = _langgraph_pending_messages(
+                request.messages, access, self._transient_tools
+            )
+            messages: list[Any] = []
+            lease_ids: list[str] = []
+            for index, message in enumerate(request.messages):
+                projected, discovered = await _materialize_model_message(
+                    message,
+                    stores=storage_registry,
+                    scope=scope,
+                    transient_leases=transient_by_message.get(index, ()),
+                )
+                messages.append(projected)
+                lease_ids.extend(discovered)
+            # Commit follows success only. Invocation cleanup owns terminal
+            # failure, leaving framework retries able to reuse identical bytes.
             response = await handler(request.override(messages=messages))
+            if access is not None and lease_ids:
+                access.commit(lease_ids)
+                _forget_langgraph_tools(self._transient_tools, lease_ids)
+            if default_store is None or scope is None:
+                return response
             return await _reference_safe_model_response(
-                response, store=store, scope=scope
+                response, store=default_store, scope=scope
             )
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
-            if _messages_have_asset_references(request.messages):
+            if _messages_have_asset_references(
+                request.messages
+            ) or _messages_have_transient_markers(request.messages):
                 raise RuntimeError(
-                    "asset-backed LangGraph calls require asynchronous invocation"
+                    "media-backed LangGraph calls require asynchronous invocation"
                 )
             return handler(request)
 
@@ -677,38 +803,226 @@ def _messages_have_asset_references(messages: Sequence[Any]) -> bool:
     )
 
 
+def _messages_have_transient_markers(messages: Sequence[Any]) -> bool:
+    """Detect legacy markers or safe placeholders requiring async lowering."""
+
+    for message in messages:
+        value, lease_ids, _ = _message_transient_value(
+            getattr(message, "content", None)
+        )
+        if lease_ids or transient_media_placeholders(value):
+            return True
+    return False
+
+
 def _content_has_asset_reference(content: Any) -> bool:
     """Recognize reference blocks in one native message content value."""
 
-    if not isinstance(content, (list, tuple)):
-        return False
-    return any(
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(content, Mapping):
+        if isinstance(content.get("assetId") or content.get("asset_id"), str):
+            return True
+        return any(_content_has_asset_reference(item) for item in content.values())
+    if isinstance(content, (list, tuple)):
+        return any(_content_has_asset_reference(item) for item in content)
+    return False
+
+
+def _message_transient_value(content: Any) -> tuple[Any, tuple[str, ...], bool]:
+    """Sanitize nested markers, including LangChain's JSON tool-result text."""
+
+    value = content
+    was_json = False
+    if isinstance(content, str):
+        try:
+            value = json.loads(content)
+        except (TypeError, ValueError):
+            return content, (), False
+        was_json = True
+    sanitized, lease_ids = sanitize_transient_media(value)
+    return sanitized, lease_ids, was_json
+
+
+def _langgraph_skeleton_blocks(value: Any) -> list[dict[str, Any]]:
+    """Render marker-free tool JSON without provider-specific media syntax."""
+
+    return [
+        {
+            "type": "text",
+            "text": json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        }
+    ]
+
+
+def _langgraph_pending_messages(
+    messages: Sequence[Any],
+    access: TransientMediaAccess | None,
+    bindings: Mapping[
+        tuple[str, str, str, str],
+        tuple[TransientMediaAccess, tuple[str, ...]],
+    ] | None = None,
+) -> dict[int, tuple[TransientMediaLease, ...]]:
+    """Bind pending bytes to newest matching messages in the current branch."""
+
+    remaining = list(access.pending()) if access is not None else []
+    matched: dict[int, tuple[TransientMediaLease, ...]] = {}
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        content = getattr(message, "content", None)
+        sanitized, _, _ = _message_transient_value(content)
+        candidates = _langgraph_bound_leases(message, access, bindings)
+        leases = matching_transient_leases(
+            transient_media_placeholders(sanitized), candidates or remaining
+        )
+        if not leases:
+            continue
+        matched[index] = leases
+        selected = {lease.lease_id for lease in leases}
+        remaining = [lease for lease in remaining if lease.lease_id not in selected]
+    return matched
+
+
+def _langgraph_tool_key(
+    access: TransientMediaAccess, tool_call_id: str
+) -> tuple[str, str, str, str]:
+    """Build a private invocation and native-tool correlation key."""
+
+    scope = access.scope
+    return scope.user_id, scope.session_id, scope.call_id, tool_call_id
+
+
+def _langgraph_bound_leases(
+    message: Any,
+    access: TransientMediaAccess | None,
+    bindings: Mapping[
+        tuple[str, str, str, str],
+        tuple[TransientMediaAccess, tuple[str, ...]],
+    ] | None,
+) -> tuple[TransientMediaLease, ...]:
+    """Resolve the exact tool binding across LangGraph task boundaries."""
+
+    tool_call_id = getattr(message, "tool_call_id", None)
+    if access is None or not isinstance(tool_call_id, str) or not bindings:
+        return ()
+    binding = bindings.get(_langgraph_tool_key(access, tool_call_id))
+    if binding is None:
+        return ()
+    owner, lease_ids = binding
+    return tuple(
+        lease
+        for lease_id in lease_ids
+        if (lease := owner.peek(lease_id)) is not None
+    )
+
+
+def _forget_langgraph_tools(
+    bindings: dict[
+        tuple[str, str, str, str],
+        tuple[TransientMediaAccess, tuple[str, ...]],
+    ],
+    lease_ids: Sequence[str],
+) -> None:
+    """Remove successful tool correlations while preserving retry bindings."""
+
+    committed = set(lease_ids)
+    stale = [
+        key
+        for key, (_, values) in bindings.items()
+        if committed.intersection(values)
+    ]
+    for key in stale:
+        bindings.pop(key, None)
+
+
+def _langgraph_transient_block(lease: TransientMediaLease) -> dict[str, Any]:
+    """Translate one lease into LangChain's provider-neutral media block."""
+
+    return {
+        "type": lease.kind,
+        "base64": base64.b64encode(lease.data).decode("ascii"),
+        "mime_type": lease.media_type,
+    }
+
+
+async def _materialize_model_message(
+    message: Any,
+    *,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope | None,
+    transient_leases: Sequence[TransientMediaLease] = (),
+) -> tuple[Any, list[str]]:
+    """Clone a message with provider-ready bytes for this model call only."""
+
+    content = getattr(message, "content", None)
+    sanitized, discovered, _ = _message_transient_value(content)
+    durable = stored_media_references(sanitized)
+    direct_assets = _direct_asset_blocks(content)
+    if not direct_assets and not discovered and not durable and not transient_leases:
+        return message, []
+    blocks = await _langgraph_base_blocks(
+        content, sanitized, direct_assets, stores, scope
+    )
+    blocks.extend(_langgraph_transient_block(lease) for lease in transient_leases)
+    blocks.extend(await _langgraph_durable_blocks(durable, stores, scope))
+    copier = getattr(message, "model_copy", None)
+    if not callable(copier):
+        raise TypeError("LangChain messages must support model_copy")
+    return copier(update={"content": blocks}), [
+        lease.lease_id for lease in transient_leases
+    ]
+
+
+def _direct_asset_blocks(content: Any) -> bool:
+    """Detect a native content-block list containing direct asset references."""
+
+    return isinstance(content, (list, tuple)) and any(
         isinstance(block, Mapping)
         and isinstance(block.get("assetId") or block.get("asset_id"), str)
         for block in content
     )
 
 
-async def _materialize_model_message(
-    message: Any, *, store: AssetStore, scope: AssetScope
-) -> Any:
-    """Clone a message with provider-ready bytes for this model call only."""
+async def _langgraph_base_blocks(
+    content: Any,
+    sanitized: Any,
+    direct_assets: bool,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope | None,
+) -> list[Any]:
+    """Build the detached ordinary or reference-backed message blocks."""
 
-    content = getattr(message, "content", None)
-    if not _content_has_asset_reference(content):
-        return message
-    blocks = [
-        await _materialize_model_block(block, store=store, scope=scope)
+    if not direct_assets:
+        return _langgraph_skeleton_blocks(sanitize_stored_media(sanitized))
+    if not stores or scope is None:
+        raise RuntimeError("asset model call requires invocation scope")
+    return [
+        await _materialize_model_block(block, stores=stores, scope=scope)
         for block in content
     ]
-    copier = getattr(message, "model_copy", None)
-    if not callable(copier):
-        raise TypeError("LangChain messages must support model_copy")
-    return copier(update={"content": blocks})
+
+
+async def _langgraph_durable_blocks(
+    references: tuple[Any, ...],
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope | None,
+) -> list[dict[str, Any]]:
+    """Resolve nested durable tool references for one model attempt."""
+
+    if not references:
+        return []
+    if scope is None:
+        raise RuntimeError("asset model call requires invocation scope")
+    return [
+        await _langgraph_stored_block(item, stores, scope) for item in references
+    ]
 
 
 async def _materialize_model_block(
-    block: Any, *, store: AssetStore, scope: AssetScope
+    block: Any, *, stores: Mapping[str, AssetStore], scope: AssetScope
 ) -> Any:
     """Resolve one opaque asset into a standard LangChain content block."""
 
@@ -717,6 +1031,13 @@ async def _materialize_model_block(
     asset_id = block.get("assetId") or block.get("asset_id")
     if not isinstance(asset_id, str):
         return dict(block)
+    durable = stored_media_reference(block)
+    if durable is not None:
+        return await _langgraph_stored_block(durable, stores, scope)
+    store_name = block.get("store", "default")
+    store = stores.get(store_name) if isinstance(store_name, str) else None
+    if store is None:
+        raise ValueError("content asset storage is unavailable")
     record = await store.stat(scope=scope, asset_id=asset_id)
     if record is None:
         raise ValueError("content asset is unavailable")
@@ -725,6 +1046,33 @@ async def _materialize_model_block(
     return {
         "type": kind,
         "base64": base64.b64encode(b"".join(chunks)).decode("ascii"),
+        "mime_type": record.media_type,
+    }
+
+
+async def _langgraph_stored_block(
+    reference: Any,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope,
+) -> dict[str, Any]:
+    """Generate one explicit temporary URL immediately before a model call."""
+
+    storage = stores.get(reference.store)
+    if storage is None or not isinstance(storage, AssetURLStorage):
+        raise RuntimeError("declared asset storage cannot generate model URLs")
+    record = await storage.stat(scope=scope, asset_id=reference.asset_id)
+    if record is None:
+        raise ValueError("content asset is unavailable")
+    url = await storage.signed_url(
+        scope=scope,
+        asset_id=reference.asset_id,
+        expires_in=reference.expires_in,
+    )
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise RuntimeError("declared asset storage returned an invalid model URL")
+    return {
+        "type": _provider_content_kind(reference.kind, record.media_type),
+        "url": url,
         "mime_type": record.media_type,
     }
 
@@ -996,10 +1344,13 @@ async def _close_resource(resource: Any) -> None:
         await close_litellm_lifecycles(resource)
 
 
-def _graph_input(
+async def _graph_input(
     application: CompiledApplication,
     text_value: Any,
     state: Mapping[str, Any],
+    *,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope,
 ) -> Any:
     """Build graph state with reference-only content safe for checkpointing."""
 
@@ -1012,12 +1363,18 @@ def _graph_input(
     previous_messages = state.get("messages", ())
     if not isinstance(previous_messages, (list, tuple)):
         previous_messages = ()
+    authored = _managed_authored_input(application, text_value)
+    access = current_transient_media()
+    if isinstance(authored, BaseModel):
+        authored = await stage_stored_media(
+            authored, stores=stores, scope=scope
+        )
+        if access is not None:
+            authored = access.stage(authored)
     messages = [
         *previous_messages,
         HumanMessage(
-            content=_portable_input_content(
-                _managed_authored_input(application, text_value)
-            )
+            content=_portable_input_content(authored)
         ),
     ]
     if application.kind == "graph":
@@ -1052,15 +1409,36 @@ def _portable_input_content(value: Any) -> Any:
 
     if isinstance(value, _CONTENT_PART_TYPES):
         return [_portable_content_block(value)]
-    if isinstance(value, (list, tuple)) and value and all(
-        isinstance(item, _CONTENT_PART_TYPES) for item in value
-    ):
+    if _portable_content_sequence(value):
         return [_portable_content_block(item) for item in value]
     if isinstance(value, BaseModel):
         blocks = _model_content_blocks(value)
-        if blocks:
-            return blocks
+        return blocks or _model_input_text(value)
+    if isinstance(value, Mapping):
+        blocks = _mapping_content_blocks(value)
+        return blocks or _model_input_text(value)
     return _model_input_text(value)
+
+
+def _portable_content_sequence(value: Any) -> bool:
+    """Recognize a non-empty authored content sequence."""
+
+    return isinstance(value, (list, tuple)) and bool(value) and all(
+        isinstance(item, _CONTENT_PART_TYPES) for item in value
+    )
+
+
+def _mapping_content_blocks(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project one structured mapping into ordered model input blocks."""
+
+    ordinary, blocks = _extract_content(value)
+    if not blocks:
+        return []
+    if ordinary is not _NO_ORDINARY_CONTENT:
+        blocks.insert(
+            0, {"type": "text", "text": _model_input_text(ordinary)}
+        )
+    return blocks
 
 
 def _model_content_blocks(value: BaseModel) -> list[dict[str, Any]]:
@@ -1082,6 +1460,13 @@ def _extract_content(value: Any) -> tuple[Any, list[dict[str, Any]]]:
 
     if isinstance(value, _CONTENT_PART_TYPES):
         return _NO_ORDINARY_CONTENT, [_portable_content_block(value)]
+    if (
+        transient_media_lease_id(value) is not None
+        or is_transient_media_placeholder(value)
+    ):
+        return _NO_ORDINARY_CONTENT, [dict(value)]
+    if stored_media_reference(value) is not None:
+        return _NO_ORDINARY_CONTENT, [dict(value)]
     if isinstance(value, BaseModel):
         fields = (
             (name, getattr(value, name)) for name in type(value).model_fields
@@ -1279,6 +1664,13 @@ async def _reference_safe_message(
     if not isinstance(native, Mapping):
         return {"type": "ai", "content": None}
     content = native.get("content")
+    sanitized, lease_ids, was_json = _message_transient_value(content)
+    if lease_ids:
+        content = (
+            json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+            if was_json
+            else sanitized
+        )
     if isinstance(content, list):
         content = await _reference_safe_blocks(
             content, store=store, scope=scope
@@ -1502,7 +1894,14 @@ def _langgraph_message_content(message: Mapping[str, Any], *, role: str) -> Any:
     """Expose text compatibly or ordered portable reference-only blocks."""
 
     content = message.get("content")
-    if isinstance(content, str) or content is None:
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError):
+            return content
+        safe = sanitize_stored_media(sanitize_transient_media(parsed)[0])
+        return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
+    if content is None:
         return content
     if not isinstance(content, list):
         return content
@@ -1565,12 +1964,21 @@ def _message_tool_events(message: Any) -> list[dict[str, Any]]:
                 }
             )
     if getattr(message, "type", None) == "tool":
+        result = json_value(getattr(message, "content", None))
+        sanitized, lease_ids, was_json = _message_transient_value(result)
+        sanitized = sanitize_stored_media(sanitized)
+        if was_json:
+            result = (
+                json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+            )
+        elif lease_ids or sanitized != result:
+            result = sanitized
         events.append(
             {
                 "type": "tool_result",
                 "id": getattr(message, "tool_call_id", None),
                 "name": getattr(message, "name", None),
-                "result": json_value(getattr(message, "content", None)),
+                "result": result,
             }
         )
     return events

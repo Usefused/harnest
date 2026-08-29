@@ -1,6 +1,9 @@
 import types as python_types
 import unittest
+import base64
+from dataclasses import replace
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
@@ -10,7 +13,8 @@ from google.genai import types
 from pydantic import BaseModel
 
 from harnest.application import CompiledApplication
-from harnest.assets import AssetScope, MemoryAssetStore
+from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
+from harnest.content import Image
 from harnest.graph import START, Edge, Event, Graph
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
@@ -24,8 +28,18 @@ from harnest.neutral_runtime import (
     SessionConflictError,
 )
 from harnest.output import OutputPolicy
-from harnest.runtime_adk import ADKRuntimeDriver, _ADKEventNormalizer
+from harnest.runtime_adk import (
+    ADKRuntimeDriver,
+    _ADKEventNormalizer,
+    _asset_content_plugin,
+    _function_response_items,
+)
 from harnest.structured import FrameworkMetadata, provider_output_schema
+from harnest.transient_media import (
+    TransientMediaAccess,
+    TransientMediaLeaseStore,
+    TransientMediaScope,
+)
 
 
 _MODEL_PNG = (
@@ -502,6 +516,58 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-image", str(native_payload))
         self.assertNotIn("data", native_payload["events"][0]["content"]["parts"][1])
 
+    async def test_inline_structured_input_is_leased_before_adk_persistence(self):
+        class InlineRequest(BaseModel):
+            prompt: str
+            screenshot: Image
+
+        application = replace(
+            _multimodal_application(), input_schema=InlineRequest
+        )
+        driver = ADKRuntimeDriver(application)
+        scope = TransientMediaScope("test-user", "inline-input", "inline-call")
+        leases = TransientMediaLeaseStore(max_total_bytes=512)
+        access = TransientMediaAccess(leases, scope)
+        encoded = base64.b64encode(_MODEL_PNG).decode("ascii")
+        MultimodalLlm.requests.clear()
+        try:
+            await driver.create_session(
+                session_id=scope.session_id, user_id=scope.user_id, state={}
+            )
+            request = InvocationRequest(
+                input={
+                    "prompt": "inspect",
+                    "screenshot": {
+                        "type": "image",
+                        "data": encoded,
+                        "mediaType": "image/png",
+                    },
+                },
+                user_id=scope.user_id,
+                session_id=scope.session_id,
+                invocation_id=scope.call_id,
+                metadata={},
+                state_delta={},
+            )
+            with patch(
+                "harnest.runtime_adk.current_transient_media",
+                return_value=access,
+            ):
+                await driver.invoke(request)
+            native = await driver._runner.session_service.get_session(
+                app_name="multimodal",
+                user_id=scope.user_id,
+                session_id=scope.session_id,
+            )
+        finally:
+            await driver.close()
+
+        parts = MultimodalLlm.requests[-1].contents[-1].parts
+        self.assertEqual(parts[-1].inline_data.data, _MODEL_PNG)
+        self.assertEqual(parts[-1].inline_data.mime_type, "image/png")
+        self.assertNotIn(encoded, repr(native))
+        self.assertEqual(leases.total_bytes, 0)
+
     async def test_multimodal_reference_requires_asset_store(self):
         await self.driver.create_session(
             session_id="missing-store", user_id="test-user", state={}
@@ -516,6 +582,98 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "requires an asset store"):
             await self.driver.invoke(request)
+
+    async def test_subagent_client_tool_media_is_model_only_and_retry_safe(self):
+        scope = TransientMediaScope("test-user", "media-session", "call-1")
+        leases = TransientMediaLeaseStore(max_total_bytes=128)
+        lease = leases.stage(
+            scope=scope,
+            kind="image",
+            media_type="image/png",
+            data=b"private-image",
+            metadata=AssetMediaMetadata(width=1, height=1),
+        )
+        access = TransientMediaAccess(store=leases, scope=scope)
+        access.bind((lease.lease_id,))
+        marker = {
+            "type": "image",
+            "mediaType": "image/png",
+            "content": "attached",
+        }
+        original = types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="tool-1",
+                        name="capture",
+                        response={"screenshot": marker},
+                    )
+                )
+            ],
+        )
+        callback = python_types.SimpleNamespace(
+            user_id=scope.user_id,
+            session=python_types.SimpleNamespace(id=scope.session_id),
+            invocation_id=scope.call_id,
+            agent_name="vision_child",
+            branch="root.vision_child",
+            node_path="root/vision_child",
+        )
+        plugin = _asset_content_plugin(None)
+        first = python_types.SimpleNamespace(contents=[original])
+
+        with patch(
+            "harnest.runtime_adk.current_transient_media", return_value=access
+        ):
+            await plugin.before_model_callback(
+                callback_context=callback, llm_request=first
+            )
+            await plugin.on_model_error_callback(
+                callback_context=callback,
+                llm_request=first,
+                error=RuntimeError("provider failed"),
+            )
+            retry = python_types.SimpleNamespace(contents=[original])
+            await plugin.before_model_callback(
+                callback_context=callback, llm_request=retry
+            )
+
+        self.assertNotIn("harnestTransient", repr(original))
+        self.assertNotIn(lease.lease_id, repr(original))
+        self.assertNotIn("harnestTransient", repr(first.contents))
+        self.assertEqual(
+            first.contents[0].parts[-1].inline_data.data, b"private-image"
+        )
+        self.assertEqual(
+            retry.contents[0].parts[-1].inline_data.data, b"private-image"
+        )
+        self.assertIsNotNone(access.peek(lease.lease_id))
+
+        await plugin.after_model_callback(
+            callback_context=callback,
+            llm_response=python_types.SimpleNamespace(),
+        )
+        self.assertIsNone(access.peek(lease.lease_id))
+        stale = python_types.SimpleNamespace(contents=[original])
+        with patch(
+            "harnest.runtime_adk.current_transient_media", return_value=access
+        ):
+            await plugin.before_model_callback(
+                callback_context=callback, llm_request=stale
+            )
+        self.assertNotIn("harnestTransient", repr(stale.contents))
+        self.assertIsNone(stale.contents[0].parts[-1].inline_data)
+        event = python_types.SimpleNamespace(
+            get_function_responses=lambda: [
+                types.FunctionResponse(
+                    id="tool-1",
+                    name="capture",
+                    response={"screenshot": marker},
+                )
+            ]
+        )
+        self.assertNotIn("harnestTransient", repr(_function_response_items(event)))
 
     async def test_model_media_is_staged_before_session_persistence(self):
         store = MemoryAssetStore(max_asset_bytes=128, max_total_bytes=512)

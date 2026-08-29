@@ -65,6 +65,16 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertIsNotNone(registration)
         self.assertEqual(registration.phase, "asset_store")
         self.assertIsNone(registration.framework)
+        self.assertEqual(registration.name, "default")
+
+    def test_asset_store_decorator_records_an_explicit_name(self):
+        @lifecycle.asset_store(name="media")
+        def media():
+            return object()
+
+        self.assertEqual(registration_for(media).name, "media")
+        with self.assertRaisesRegex(ValueError, "storage identifier"):
+            lifecycle.asset_store(name="not/valid")
 
     def test_output_policy_decorator_registers_an_optional_root_factory(self):
         @lifecycle.output_policy

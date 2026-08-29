@@ -7,7 +7,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Mapping
 import uuid
 
 from .assets import AssetStore
@@ -47,6 +47,7 @@ class DiscoveredExtensions:
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
+    asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
     credential_provider: CredentialProvider | None = field(default=None, repr=False)
     http_routes: tuple[HTTPRouteExtension, ...] = field(default=(), repr=False)
     output_policy: OutputPolicy = OutputPolicy()
@@ -71,7 +72,8 @@ def discover_extensions(
     checkpointer, checkpoint_listener, remaining = _create_checkpointer(
         remaining, framework
     )
-    asset_store, asset_listener, remaining = _create_asset_store(remaining)
+    asset_stores, asset_listeners, remaining = _create_asset_stores(remaining)
+    asset_store = asset_stores.get("default")
     credential_provider, remaining = _create_credential_provider(remaining)
     http_routes, remaining = _create_http_routes(remaining)
     output_policy, remaining = _create_output_policy(remaining)
@@ -83,7 +85,10 @@ def discover_extensions(
     context_values = _factory_context_values(
         (session_listener, session_store),
         (checkpoint_listener, checkpointer),
-        (asset_listener, asset_store),
+        *(
+            (listener, asset_stores[listener.registration_name or "default"])
+            for listener in asset_listeners
+        ),
     )
     return DiscoveredExtensions(
         listeners=portable,
@@ -91,6 +96,7 @@ def discover_extensions(
         session_store=session_store,
         checkpointer=checkpointer,
         asset_store=asset_store,
+        asset_stores=asset_stores,
         credential_provider=credential_provider,
         http_routes=http_routes,
         output_policy=output_policy,
@@ -121,28 +127,46 @@ def _create_http_routes(
     raise ExtensionDiscoveryError(message)
 
 
-def _create_asset_store(
+def _create_asset_stores(
     listeners: tuple[LifecycleListener, ...],
-) -> tuple[AssetStore | None, LifecycleListener | None, tuple[LifecycleListener, ...]]:
-    """Instantiate the optional root authority for scoped binary content."""
+) -> tuple[
+    dict[str, AssetStore],
+    tuple[LifecycleListener, ...],
+    tuple[LifecycleListener, ...],
+]:
+    """Instantiate named authorities for scoped binary content."""
 
     factories = tuple(item for item in listeners if item.phase == "asset_store")
-    if len(factories) > 1:
+    names = tuple(item.registration_name or "default" for item in factories)
+    duplicates = _duplicates(names)
+    if duplicates:
         raise ExtensionDiscoveryError(
-            "root extensions may declare at most one @lifecycle.asset_store "
-            f"factory; found {len(factories)}"
+            "duplicate asset store names: " + ", ".join(duplicates)
         )
     remaining = tuple(item for item in listeners if item.phase != "asset_store")
-    if not factories:
-        return None, None, remaining
-    factory = factories[0]
+    stores = {
+        name: _create_asset_storage(factory)
+        for factory, name in zip(factories, names, strict=True)
+    }
+    return stores, factories, remaining
+
+
+def _create_asset_storage(factory: LifecycleListener) -> AssetStore:
+    """Instantiate and type-check one named asset storage factory."""
+
     value = _call_factory(factory, label="asset store")
     if not isinstance(value, AssetStore):
         raise ExtensionDiscoveryError(
             f"asset store lifecycle factory {factory.identity} must return "
             f"AssetStore; got {type(value).__name__}"
         )
-    return value, factory, remaining
+    return value
+
+
+def _duplicates(values: tuple[str, ...]) -> list[str]:
+    """Return deterministic duplicate names for authoring diagnostics."""
+
+    return sorted({value for value in values if values.count(value) > 1})
 
 
 def _extract_telemetry_exporters(
@@ -428,7 +452,14 @@ def _listener_from_export(
         context_name=(
             context_registration.name if context_registration is not None else None
         ),
+        registration_name=_registration_name(registration),
     )
+
+
+def _registration_name(registration: Any) -> str | None:
+    """Read optional factory naming metadata without burdening discovery flow."""
+
+    return registration.name if registration is not None else None
 
 
 def _validate_context_provider(

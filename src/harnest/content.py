@@ -1,7 +1,9 @@
-"""Portable, reference-only multimodal content contracts."""
+"""Portable transient-inline and durable-reference multimodal contracts."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import re
@@ -28,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 _MIME_TOKEN = r"[!#$%&'+.^_`|~A-Za-z0-9-]+"
 _MIME_PATTERN = re.compile(rf"^(?:\*/\*|{_MIME_TOKEN}/(?:\*|{_MIME_TOKEN}))$")
 _ASSET_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,254}$"
+_STORE_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$"
 _CAMEL_BOUNDARY = re.compile(r"_([a-z])")
 
 
@@ -53,6 +56,7 @@ class _AssetContent(_PortableModel):
     """Shared authoritative metadata for a reference-only stored asset."""
 
     asset_id: str = Field(alias="assetId", pattern=_ASSET_ID_PATTERN)
+    store: str = Field(default="default", pattern=_STORE_NAME_PATTERN)
     media_type: str | None = Field(default=None, alias="mediaType")
     size_bytes: int | None = Field(default=None, alias="sizeBytes", ge=0)
 
@@ -72,8 +76,54 @@ class AssetRef(_AssetContent):
     type: Literal["asset"] = "asset"
 
 
-class Image(_AssetContent):
-    """A stored image reference with optional authoritative dimensions."""
+class _MediaContent(_PortableModel):
+    """Media carried inline for one turn or referenced from durable storage."""
+
+    asset_id: str | None = Field(
+        default=None, alias="assetId", pattern=_ASSET_ID_PATTERN
+    )
+    store: str = Field(default="default", pattern=_STORE_NAME_PATTERN)
+    data: str | None = Field(default=None, repr=False)
+    media_type: str | None = Field(default=None, alias="mediaType")
+    size_bytes: int | None = Field(default=None, alias="sizeBytes", ge=0)
+
+    @field_validator("data")
+    @classmethod
+    def _validate_base64(cls, value: str | None) -> str | None:
+        """Require canonical base64 without retaining decoded duplicate bytes."""
+
+        if value is None:
+            return None
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("data must be valid base64") from exc
+        if not decoded:
+            raise ValueError("data must encode non-empty content")
+        return value
+
+    @field_validator("media_type")
+    @classmethod
+    def _validate_media_type(cls, value: str | None) -> str | None:
+        """Require concrete normalized MIME types for both media sources."""
+
+        if value is not None and (not _valid_mime_pattern(value) or "*" in value):
+            raise ValueError("media_type must be a concrete MIME type")
+        return value.lower() if value is not None else None
+
+    @model_validator(mode="after")
+    def _require_one_source(self) -> "_MediaContent":
+        """Keep inline bytes and durable references mutually exclusive."""
+
+        if (self.asset_id is None) == (self.data is None):
+            raise ValueError("media must contain exactly one of assetId or data")
+        if self.data is not None and self.media_type is None:
+            raise ValueError("inline media requires mediaType")
+        return self
+
+
+class Image(_MediaContent):
+    """An inline or stored image with optional authoritative dimensions."""
 
     type: Literal["image"] = "image"
     width: int | None = Field(default=None, gt=0)
@@ -82,8 +132,8 @@ class Image(_AssetContent):
     frame_count: int | None = Field(default=None, alias="frameCount", gt=0)
 
 
-class Audio(_AssetContent):
-    """A stored audio reference with optional authoritative media metadata."""
+class Audio(_MediaContent):
+    """Inline or stored audio with optional authoritative media metadata."""
 
     type: Literal["audio"] = "audio"
     duration_seconds: float | None = Field(
@@ -93,8 +143,8 @@ class Audio(_AssetContent):
     channels: int | None = Field(default=None, gt=0)
 
 
-class Video(_AssetContent):
-    """A stored video reference with optional authoritative media metadata."""
+class Video(_MediaContent):
+    """Inline or stored video with optional authoritative media metadata."""
 
     type: Literal["video"] = "video"
     width: int | None = Field(default=None, gt=0)
@@ -108,8 +158,8 @@ class Video(_AssetContent):
     has_audio: bool | None = Field(default=None, alias="hasAudio")
 
 
-class File(_AssetContent):
-    """A stored file reference with safe display and document metadata."""
+class File(_MediaContent):
+    """An inline or stored file with safe display and document metadata."""
 
     type: Literal["file"] = "file"
     name: str | None = Field(default=None, min_length=1, max_length=255)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Annotated
 import unittest
 
@@ -112,6 +113,33 @@ class ContentValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(ContentValidationError, "custom data"):
             await resolve_model_content(value, store=self.store, scope=self.scope)
+
+    async def test_inline_media_is_inspected_without_durable_store_access(self):
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "YAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+
+        class InlineRequest(BaseModel):
+            image: Annotated[
+                Image,
+                ImageConstraints(max_bytes=100, max_width=1, max_height=1),
+            ]
+
+        resolved = await resolve_model_content(
+            InlineRequest(
+                image=Image(
+                    data=base64.b64encode(png).decode("ascii"),
+                    mediaType="image/png",
+                    width=999,
+                )
+            ),
+            store=self.store,
+            scope=self.scope,
+        )
+
+        self.assertEqual(resolved.image.size_bytes, len(png))
+        self.assertEqual((resolved.image.width, resolved.image.height), (1, 1))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import unittest
 
+from harnest.assets import AssetNotFoundError, AssetScope, MemoryAssetStore
 from harnest.context import (
     ContextResourceError,
     ContextUnavailableError,
@@ -12,6 +13,10 @@ from harnest.context import (
 from harnest.client_tool import client_tool
 from harnest.lifecycle import lifecycle
 from harnest.tool import tool
+
+
+async def _chunks(value: bytes):
+    yield value
 
 
 class ContextAuthoringTests(unittest.TestCase):
@@ -98,6 +103,58 @@ class ContextAuthoringTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "already bound"):
             bind_resource(active, "memory", object())
+
+
+class ContextAssetsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_assets_route_by_reference_and_apply_invocation_scope(self):
+        default = MemoryAssetStore()
+        media = MemoryAssetStore()
+        scope = AssetScope(user_id="user-1", session_id="session-1")
+        record = await media.save(
+            scope=scope,
+            media_type="image/jpeg",
+            chunks=_chunks(b"pixels"),
+        )
+        active = create_agent_context(
+            framework="adk",
+            agent_name="support",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+            asset_stores={"default": default, "media": media},
+        )
+
+        class Reference:
+            asset_id = record.asset_id
+            store = "media"
+
+        with activate_context(active):
+            self.assertEqual(await context.assets.get(Reference()), b"pixels")
+            self.assertEqual((await context.assets.stat(Reference())).size_bytes, 6)
+            with self.assertRaises(AssetNotFoundError):
+                await context.assets.get(record.asset_id)
+
+    async def test_assets_do_not_cross_session_scope(self):
+        media = MemoryAssetStore()
+        record = await media.save(
+            scope=AssetScope(user_id="user-1", session_id="other"),
+            media_type="image/jpeg",
+            chunks=_chunks(b"pixels"),
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="support",
+            invocation_id="run-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+            asset_stores={"media": media},
+        )
+        with activate_context(active), self.assertRaises(AssetNotFoundError):
+            await context.assets.get(record.asset_id, store="media")
 
 
 if __name__ == "__main__":

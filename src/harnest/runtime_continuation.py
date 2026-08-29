@@ -211,10 +211,11 @@ def start_approval_run(
         """Wait for the concurrency gate before entering scoped continuations."""
 
         await run.activation.wait()
+        execution = ClientToolExecution(client_tools, run)
         try:
             # Client tools wrap approvals because a resumed approved tool may
             # itself suspend on a browser- or application-owned client tool.
-            with client_tool_execution(ClientToolExecution(client_tools, run)):
+            with client_tool_execution(execution):
                 with approval_execution(
                     ApprovalExecution(
                         user_id=request.user_id,
@@ -233,6 +234,11 @@ def start_approval_run(
             run.notifications.put_nowait(("error", exc))
         else:
             run.notifications.put_nowait(("result", result))
+        finally:
+            # This owns transient bytes from every boundary: request input,
+            # server tools, and client tools. Model adapters normally commit
+            # consumed leases earlier; terminal cleanup covers every other path.
+            execution.transient_media.clear()
 
     run.task = asyncio.create_task(execute())
     return run

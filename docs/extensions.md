@@ -35,25 +35,49 @@ competing authorities. See [checkpoints.md](checkpoints.md).
 
 ## Asset storage
 
-Multimodal content uses one optional root `@lifecycle.asset_store` factory. It
-must be synchronous, zero-argument, unique, and return an `AssetStore`:
+Durable multimodal content can use named root `@lifecycle.asset_store`
+factories. Each
+must be synchronous, zero-argument, uniquely named, and return an
+`AssetStorage` (`AssetStore` remains a compatible import):
 
 ```python
-from harnest.assets import MemoryAssetStore
+from harnest.assets import AssetStorage, MemoryAssetStore
 from harnest.lifecycle import lifecycle
+from harnest.lib.assets import MyS3AssetStorage
 
 
 @lifecycle.asset_store
-def asset_store():
+def default_assets() -> AssetStorage:
     return MemoryAssetStore()
+
+
+@lifecycle.asset_store(name="media")
+def media_assets() -> AssetStorage:
+    return MyS3AssetStorage(bucket="agent-media")
 ```
 
-Without the factory, the standalone runtime installs the bounded process-local
-store. Production implementations must preserve opaque identifiers,
-authenticated user-and-session isolation, atomic streamed writes, bounded
-reads, retention, and deletion. ADK and LangGraph receive media bytes only
-inside their model-call adapters; their session and checkpoint stores retain
-references. See [multimodal-content.md](multimodal-content.md).
+The unnamed decorator configures the backward-compatible `"default"` store.
+Without one, the standalone runtime installs its bounded process-local default;
+other named stores remain available. Inline media without `Stored(...)` is
+transient and does not use any asset store. Production implementations must
+preserve opaque identifiers, authenticated user-and-session isolation, atomic
+streamed writes, bounded reads, retention, and deletion. A storage used to send
+durable media to a model also implements `AssetURLStorage`, generating a fresh
+signed URL only at the model-call boundary. ADK and LangGraph checkpoints
+retain the scoped reference, not the URL or bytes. See
+[Store and retrieve media](https://docs.usefused.com/harnest/build/models-and-libraries/store-and-retrieve-media).
+
+Agent code reads a stored reference through the scoped capability rather than
+the raw backend:
+
+```python
+payload = await context.assets.get(image)
+async for chunk in context.assets.open(image):
+    ...
+```
+
+The reference carries its store name. `context.assets` supplies the active
+authenticated user and session, so a reference cannot cross either boundary.
 
 ## Output policy
 

@@ -1,4 +1,5 @@
 import base64
+import json
 import sys
 import unittest
 from dataclasses import dataclass, replace
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 from harnest.agent import Agent, AgentDefinition
 from harnest.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
-from harnest.assets import AssetScope, MemoryAssetStore
+from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
 from harnest.graph import START, Edge, Graph
@@ -27,8 +28,14 @@ from harnest.runtime_langgraph import (
     LangGraphRuntimeDriver,
     _MODEL_ASSET_SCOPE,
     _langgraph_asset_middleware,
+    _message_tool_events,
 )
 from harnest.session import InMemorySessionStore
+from harnest.transient_media import (
+    TransientMediaAccess,
+    TransientMediaLeaseStore,
+    TransientMediaScope,
+)
 
 
 _PNG = base64.b64decode(
@@ -456,7 +463,14 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             [block["type"] for block in blocks],
             ["text", "text", "image"],
         )
-        self.assertEqual(blocks[-1], {"type": "image", "assetId": record.asset_id})
+        self.assertEqual(
+            blocks[-1],
+            {
+                "type": "image",
+                "assetId": record.asset_id,
+                "store": "default",
+            },
+        )
         self.assertNotIn("base64", repr(target.inputs[0]))
         messages = await driver.get_session_messages(
             session_id="content-session", user_id="user-1"
@@ -466,6 +480,58 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].metadata, {"langgraph": {"type": "human"}})
         self.assertNotIn("base64", repr(messages))
         await driver.close()
+
+    async def test_inline_structured_input_is_leased_before_graph_persistence(self):
+        class InlineRequest(BaseModel):
+            prompt: str
+            screenshot: Image
+
+        target = _Target()
+        application = replace(_application(target), input_schema=InlineRequest)
+        driver = LangGraphRuntimeDriver(application)
+        scope = TransientMediaScope("user-1", "inline-input", "inline-call")
+        leases = TransientMediaLeaseStore(max_total_bytes=512)
+        access = TransientMediaAccess(leases, scope)
+        encoded = base64.b64encode(_PNG).decode("ascii")
+        await driver.create_session(
+            session_id=scope.session_id, user_id=scope.user_id, state={}
+        )
+        request = InvocationRequest(
+            input={
+                "prompt": "inspect",
+                "screenshot": {
+                    "type": "image",
+                    "data": encoded,
+                    "mediaType": "image/png",
+                },
+            },
+            user_id=scope.user_id,
+            session_id=scope.session_id,
+            invocation_id=scope.call_id,
+            metadata={},
+            state_delta={},
+        )
+        try:
+            with patch(
+                "harnest.runtime_langgraph.current_transient_media",
+                return_value=access,
+            ):
+                await driver.invoke(request)
+            messages = await driver.get_session_messages(
+                session_id=scope.session_id, user_id=scope.user_id
+            )
+        finally:
+            await driver.close()
+
+        authored = target.inputs[0]["messages"][-1].content
+        self.assertNotIn("harnestTransient", repr(authored))
+        self.assertNotIn("leaseId", repr(authored))
+        self.assertIn("'content': 'attached'", repr(authored))
+        self.assertNotIn(encoded, repr(authored))
+        self.assertNotIn(encoded, repr(messages))
+        # The model-boundary middleware owns successful consumption. This fake
+        # target has no model call, so the test explicitly closes its lease.
+        access.clear()
 
     async def test_model_middleware_materializes_then_stages_media(self):
         store = MemoryAssetStore(
@@ -539,6 +605,79 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(
             await store.stat(scope=scope, asset_id=output[1]["assetId"])
         )
+
+    async def test_client_tool_media_is_private_retry_safe_model_content(self):
+        scope = TransientMediaScope("user-1", "session-1", "call-1")
+        leases = TransientMediaLeaseStore(max_total_bytes=128)
+        lease = leases.stage(
+            scope=scope,
+            kind="image",
+            media_type="image/png",
+            data=b"private-image",
+            metadata=AssetMediaMetadata(width=1, height=1),
+        )
+        access = TransientMediaAccess(store=leases, scope=scope)
+        access.bind((lease.lease_id,))
+        marker = {
+            "type": "image",
+            "mediaType": "image/png",
+            "content": "attached",
+        }
+        original = _CopyMessage(content=json.dumps({"screenshot": marker}))
+
+        class Request:
+            messages = [original]
+
+            def override(self, **values):
+                return SimpleNamespace(**values)
+
+        attempts = []
+
+        async def handler(request):
+            attempts.append(request.messages[0].content)
+            if len(attempts) == 1:
+                raise RuntimeError("provider failed")
+            return _ModelResponse(result=[])
+
+        langchain = ModuleType("langchain")
+        langchain.__path__ = []
+        agents = ModuleType("langchain.agents")
+        agents.__path__ = []
+        middleware_module = ModuleType("langchain.agents.middleware")
+        middleware_module.AgentMiddleware = type("AgentMiddleware", (), {})
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain": langchain,
+                "langchain.agents": agents,
+                "langchain.agents.middleware": middleware_module,
+            },
+        ):
+            middleware = _langgraph_asset_middleware(None)
+            with patch(
+                "harnest.runtime_langgraph.current_transient_media",
+                return_value=access,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "provider failed"):
+                    await middleware.awrap_model_call(Request(), handler)
+                self.assertIsNotNone(access.peek(lease.lease_id))
+                await middleware.awrap_model_call(Request(), handler)
+
+        self.assertNotIn("harnestTransient", original.content)
+        self.assertNotIn(lease.lease_id, original.content)
+        for content in attempts:
+            self.assertNotIn("harnestTransient", repr(content))
+            self.assertEqual(
+                base64.b64decode(content[-1]["base64"]), b"private-image"
+            )
+        self.assertIsNone(access.peek(lease.lease_id))
+        tool = _Message(
+            original.content,
+            message_type="tool",
+            tool_call_id="tool-1",
+            name="capture",
+        )
+        self.assertNotIn("harnestTransient", repr(_message_tool_events(tool)))
 
     async def test_stream_emits_only_canonical_events_and_updates_state(self):
         await self.driver.create_session(

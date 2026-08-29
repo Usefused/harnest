@@ -8,7 +8,7 @@ import functools
 import inspect
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,12 +16,25 @@ from threading import Lock
 from typing import Any, Iterator, TypeVar, overload
 
 from .approval import ApprovalRun, bind_tool_arguments
+from .assets import AssetScope, AssetStorage, AssetStoreError
 from .logging import get_logger
 from .structured import (
     PydanticModel,
     callable_output_schema,
     validate_output_schema,
     validate_output_value,
+)
+from .transient_media import (
+    TransientMediaAccess,
+    TransientMediaError,
+    TransientMediaLeaseStore,
+    TransientMediaScope,
+    stage_transient_media_batch,
+)
+from .stored_media import (
+    StoredMediaError,
+    StoredMediaStage,
+    stage_stored_media_transaction,
 )
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -33,6 +46,22 @@ _AUDIT = get_logger("client_tool.audit")
 
 class ClientToolError(RuntimeError):
     """A client tool request could not be completed safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedClientToolResult:
+    """Carry sanitized JSON past the wrapper's ordinary validation path."""
+
+    value: Any = field(repr=False)
+    lease_ids: tuple[str, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedClientToolResult:
+    """Keep a durable rollback handle until the future commit succeeds."""
+
+    value: Any = field(repr=False)
+    durable: StoredMediaStage | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -49,6 +78,7 @@ class PendingClientTool:
     expires_at: float
     run: ApprovalRun = field(repr=False)
     future: asyncio.Future[Any] = field(repr=False)
+    submitting: bool = field(default=False, repr=False)
 
     def public(self) -> dict[str, Any]:
         return {
@@ -65,10 +95,27 @@ class PendingClientTool:
 class InMemoryClientToolStore:
     """Development store for one-time client tool result delivery."""
 
-    def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.time,
+        transient_media: TransientMediaLeaseStore | None = None,
+        asset_stores: Mapping[str, AssetStorage] | None = None,
+    ) -> None:
+        """Configure one-time continuations and their private media leases."""
+
         self._clock = clock
         self._items: dict[str, PendingClientTool] = {}
         self._lock = Lock()
+        self._transient_media = transient_media or TransientMediaLeaseStore()
+        self._asset_stores = dict(asset_stores or {})
+        self._cleanup_registered: set[TransientMediaScope] = set()
+
+    @property
+    def transient_media(self) -> TransientMediaLeaseStore:
+        """Expose the lease boundary to framework adapters, never to clients."""
+
+        return self._transient_media
 
     async def suspend(
         self,
@@ -105,25 +152,39 @@ class InMemoryClientToolStore:
             with self._lock:
                 self._items.pop(pending.id, None)
 
-    def submit(self, request_id: str, *, user_id: str, output: Any) -> PendingClientTool:
+    async def submit(
+        self, request_id: str, *, user_id: str, output: Any
+    ) -> PendingClientTool:
+        """Validate and sanitize a client result before its framework resumes."""
+
+        pending = self._reserve_submission(request_id, user_id)
+        try:
+            prepared = await self._prepared_output(pending, output)
+        except (
+            ValueError,
+            AssetStoreError,
+            StoredMediaError,
+            TransientMediaError,
+        ) as exc:
+            self._release_submission(pending)
+            raise ClientToolError(str(exc)) from exc
+        except BaseException:
+            self._release_submission(pending)
+            raise
         with self._lock:
-            pending = self._items.get(request_id)
-        if pending is None or pending.user_id != user_id:
-            raise KeyError("client tool request not found")
-        if self._clock() >= pending.expires_at:
-            raise ClientToolError("client tool request is expired")
-        if pending.future.done():
-            raise ClientToolError("client tool result was already submitted")
-        if pending.output_schema is not None:
-            try:
-                output = validate_output_value(
-                    pending.output_schema,
-                    output,
-                    boundary=f"client tool {pending.name!r} output",
+            if pending.future.done():
+                pending.submitting = False
+                committed = False
+            else:
+                pending.future.set_result(prepared.value)
+                committed = True
+            pending.submitting = False
+        if not committed:
+            if prepared.durable is not None:
+                await prepared.durable.rollback(
+                    scope=AssetScope(pending.user_id, pending.session_id)
                 )
-            except ValueError as exc:
-                raise ClientToolError(str(exc)) from exc
-        pending.future.set_result(output)
+            raise ClientToolError("client tool result was already submitted")
         _audit(
             pending.name,
             "result_submitted",
@@ -131,6 +192,79 @@ class InMemoryClientToolStore:
             outcome="committed",
         )
         return pending
+
+    def _reserve_submission(
+        self, request_id: str, user_id: str
+    ) -> PendingClientTool:
+        """Atomically grant one caller the right to cross async validation."""
+
+        with self._lock:
+            pending = self._items.get(request_id)
+            if pending is None or pending.user_id != user_id:
+                raise KeyError("client tool request not found")
+            if self._clock() >= pending.expires_at:
+                raise ClientToolError("client tool request is expired")
+            if pending.future.done() or pending.submitting:
+                raise ClientToolError("client tool result was already submitted")
+            pending.submitting = True
+            return pending
+
+    def _release_submission(self, pending: PendingClientTool) -> None:
+        """Allow a clean retry after validation or storage failed."""
+
+        with self._lock:
+            pending.submitting = False
+
+    async def _prepared_output(
+        self, pending: PendingClientTool, output: Any
+    ) -> _PreparedClientToolResult:
+        """Validate and stage typed media after submission is reserved."""
+
+        if pending.output_schema is None:
+            return _PreparedClientToolResult(output)
+        validated = validate_output_value(
+            pending.output_schema,
+            output,
+            boundary=f"client tool {pending.name!r} output",
+        )
+        scope = _transient_scope(pending)
+        durable = await stage_stored_media_transaction(
+            validated,
+            stores=self._asset_stores,
+            scope=AssetScope(pending.user_id, pending.session_id),
+        )
+        try:
+            value, lease_ids = stage_transient_media_batch(
+                durable.value,
+                store=self._transient_media,
+                scope=scope,
+            )
+            result = _StagedClientToolResult(value, lease_ids)
+        except BaseException:
+            await durable.rollback(
+                scope=AssetScope(pending.user_id, pending.session_id)
+            )
+            raise
+        self._register_cleanup(pending, scope)
+        return _PreparedClientToolResult(result, durable)
+
+    def _register_cleanup(
+        self, pending: PendingClientTool, scope: TransientMediaScope
+    ) -> None:
+        """Force-clear leases when completion, failure, or cancellation ends the run."""
+
+        task = pending.run.task
+        if task is None or scope in self._cleanup_registered:
+            return
+        self._cleanup_registered.add(scope)
+
+        def cleanup(_task: asyncio.Task[Any]) -> None:
+            # The model adapter normally commits after success; this terminal
+            # guard owns every exceptional and disconnected path.
+            self._transient_media.clear(scope=scope)
+            self._cleanup_registered.discard(scope)
+
+        task.add_done_callback(cleanup)
 
     def run_for(self, pending: PendingClientTool) -> ApprovalRun:
         return pending.run
@@ -159,6 +293,19 @@ class ClientToolExecution:
             timeout_seconds=timeout_seconds,
         )
 
+    @property
+    def transient_media(self) -> TransientMediaAccess:
+        """Return private media access already scoped to this invocation."""
+
+        return TransientMediaAccess(
+            store=self.store.transient_media,
+            scope=TransientMediaScope(
+                self.run.user_id,
+                self.run.session_id,
+                self.run.call_id,
+            ),
+        )
+
 
 @contextmanager
 def client_tool_execution(execution: ClientToolExecution) -> Iterator[None]:
@@ -167,6 +314,13 @@ def client_tool_execution(execution: ClientToolExecution) -> Iterator[None]:
         yield
     finally:
         _CURRENT.reset(token)
+
+
+def current_transient_media() -> TransientMediaAccess | None:
+    """Expose scoped staged bytes only during a managed invocation."""
+
+    execution = _CURRENT.get()
+    return execution.transient_media if isinstance(execution, ClientToolExecution) else None
 
 
 @overload
@@ -225,6 +379,11 @@ def client_tool(
                 output_schema=schema,
                 timeout_seconds=timeout_seconds,
             )
+            if isinstance(output, _StagedClientToolResult):
+                # Submission happens in the transport task. Establish private
+                # correlation only when the owning framework branch resumes.
+                execution.transient_media.bind(output.lease_ids)
+                return output.value
             if schema is None:
                 return output
             return validate_output_value(
@@ -263,6 +422,16 @@ def _audit(name: str, operation: str, *, trigger: str, outcome: str) -> None:
     )
 
 
+def _transient_scope(pending: PendingClientTool) -> TransientMediaScope:
+    """Derive lease ownership only from the authenticated pending request."""
+
+    return TransientMediaScope(
+        user_id=pending.user_id,
+        session_id=pending.session_id,
+        call_id=pending.call_id,
+    )
+
+
 __all__ = [
     "ClientToolError",
     "ClientToolExecution",
@@ -270,4 +439,5 @@ __all__ = [
     "PendingClientTool",
     "client_tool",
     "client_tool_execution",
+    "current_transient_media",
 ]

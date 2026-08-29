@@ -65,6 +65,7 @@ class AgentContext:
     session_id: str
     metadata: Mapping[str, Any]
     _resources: Mapping[str, Any] = field(repr=False)
+    _asset_stores: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
@@ -146,6 +147,19 @@ class _ContextAccess:
         return credentials
 
     @property
+    def assets(self) -> Any:
+        """Return storage access scoped to the active user and session."""
+
+        active = self.current()
+        from .assets import AssetScope
+        from .context_assets import ScopedAssets
+
+        return ScopedAssets(
+            AssetScope(user_id=active.user_id, session_id=active.session_id),
+            active._asset_stores,
+        )
+
+    @property
     def framework(self) -> str:
         return self.current().framework
 
@@ -186,6 +200,7 @@ def create_agent_context(
     session_id: str,
     metadata: Mapping[str, Any],
     resources: Mapping[str, Any],
+    asset_stores: Mapping[str, Any] | None = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
 
@@ -200,6 +215,7 @@ def create_agent_context(
         session_id=session_id,
         metadata=MappingProxyType(dict(metadata)),
         _resources=MappingProxyType(registry),
+        _asset_stores=MappingProxyType(dict(asset_stores or {})),
         _lifetime=_ContextLifetime(),
     )
 

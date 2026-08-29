@@ -5,17 +5,15 @@ description: Build, modify, test, or review Harnest agents and source. Use for a
 
 # Harnest authoring
 
-Produce tested agents. Never edit generated
-`.harnest/` artifacts.
+Produce tested agents. Never edit `.harnest/`.
 
 Not a runtime skill.
 
 ## Modify safely
 
-1. Preserve unrelated changes. For a legacy project, run read-only `harnest
-   upgrade AGENT_DIR` before editing; apply only after reviewing it. Never run
-   `init` over existing work.
-   Init uses ignored guides; request `--example` for full samples.
+1. Preserve unrelated changes. For legacy projects, inspect `harnest upgrade
+   AGENT_DIR` before editing. Never run `init` over existing work; request
+   `--example` for full samples.
 2. Preserve framework, mode, and `Agent.history` unless the user requests
    architectural migration.
    Preserve both storage factories; read `docs/checkpoints.md` before changing
@@ -26,6 +24,8 @@ Not a runtime skill.
 4. Keep authored imports side-effect free. Put Pydantic contracts in root
    `models/` and code in root `lib/`; import via `harnest.models.*` and
    `harnest.lib.*`. Neither needs `__init__.py`. Publish values with `@context`.
+   Inline media is transient; `Stored(...)` requires named storage and an async
+   `@tool`.
 5. Import authoring symbols explicitly from `harnest.*`; no magic globals or
    compatibility aliases exist.
 6. Match path/export contracts. MCP `client()` factories take no parameters;

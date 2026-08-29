@@ -17,9 +17,10 @@ from typing import Any
 
 from ._json import json_value
 from .application import CompiledApplication
-from .assets import AssetScope, AssetStore
+from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
 from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore
+from .client_tool import current_transient_media
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp_lifecycle import (
     close_mcp_lifecycles,
@@ -40,6 +41,22 @@ from .structured import (
     framework_metadata_field,
     validate_runtime_output,
 )
+from .transient_media import (
+    TransientMediaAccess,
+    TransientMediaLease,
+    is_transient_media_placeholder,
+    matching_transient_leases,
+    sanitize_transient_media,
+    transient_media_lease_id,
+    transient_media_placeholder,
+    transient_media_placeholders,
+)
+from .stored_media import (
+    sanitize_stored_media,
+    stored_media_reference,
+    stored_media_references,
+    stage_stored_media,
+)
 
 
 _CONTENT_KINDS = frozenset(
@@ -56,13 +73,15 @@ def _model_input_text(value: Any) -> str:
     return json.dumps(json_value(value), ensure_ascii=False)
 
 
-async def _adk_input_parts(value: Any, store: AssetStore | None, types: Any) -> list[Any]:
+async def _adk_input_parts(
+    value: Any, stores: Mapping[str, AssetStore], types: Any
+) -> list[Any]:
     """Build reference-only ADK input and retain authored content ordering."""
 
     payload = json_value(value)
     direct = _direct_content_sequence(payload)
     if direct is not None:
-        return [await _adk_reference_part(item, store, types) for item in direct]
+        return [await _adk_reference_part(item, stores, types) for item in direct]
     skeleton, content = _extract_content(payload)
     if not content:
         return [types.Part(text=_model_input_text(value))]
@@ -70,7 +89,7 @@ async def _adk_input_parts(value: Any, store: AssetStore | None, types: Any) -> 
     # prevent model prompts and ADK sessions from acquiring asset identifiers.
     parts = [types.Part(text=json.dumps(skeleton, ensure_ascii=False))]
     parts.extend(
-        [await _adk_reference_part(item, store, types) for item in content]
+        [await _adk_reference_part(item, stores, types) for item in content]
     )
     return parts
 
@@ -119,7 +138,7 @@ def _is_content_part(value: Any) -> bool:
 
 
 async def _adk_reference_part(
-    part: Mapping[str, Any], store: AssetStore | None, types: Any
+    part: Mapping[str, Any], stores: Mapping[str, AssetStore], types: Any
 ) -> Any:
     """Translate one portable part without reading asset bytes."""
 
@@ -129,12 +148,24 @@ async def _adk_reference_part(
     if kind == "data":
         marker = {"type": "data", "value": part.get("value")}
         return _marker_part(marker, types)
+    if transient_media_lease_id(part) is not None or is_transient_media_placeholder(part):
+        return _marker_part(part, types)
     asset_id = part.get("assetId")
-    if not isinstance(asset_id, str) or store is None:
+    store_name = part.get("store", "default")
+    if (
+        not isinstance(asset_id, str)
+        or not isinstance(store_name, str)
+        or store_name not in stores
+    ):
         raise RuntimeError("referenced ADK content requires an asset store")
     # Metadata is re-read from the scoped store at the model boundary. The
     # request marker deliberately contains no client-claimed MIME or size data.
     marker = {"type": kind, "assetId": asset_id}
+    if "store" in part:
+        marker["store"] = store_name
+    policy = part.get("harnestStored")
+    if policy is not None:
+        marker["harnestStored"] = policy
     return _marker_part(marker, types)
 
 
@@ -219,6 +250,48 @@ class _ADKTurnOutput:
         return items
 
 
+def _adk_agent_info(
+    application: CompiledApplication,
+    card: Mapping[str, Any] | None,
+    extra_endpoints: Mapping[str, str] | None,
+) -> AgentInfo:
+    """Build public agent metadata without mixing it into runtime setup."""
+
+    card_data = dict(card or {})
+    description = card_data.get("description")
+    if not isinstance(description, str):
+        description = getattr(application.target, "description", "") or ""
+    display_name = card_data.get("name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        display_name = application.name
+    return AgentInfo(
+        id=application.name,
+        name=display_name,
+        description=description,
+        card=card_data,
+        framework=application.framework,
+        mode=application.mode,
+        extra_endpoints=dict(extra_endpoints or {}),
+        input_schema=application.input_schema,
+        output_schema=application.output_schema,
+    )
+
+
+def _adk_asset_stores(
+    application: CompiledApplication,
+    default: AssetStore | None,
+    configured: Mapping[str, AssetStore] | None,
+) -> dict[str, AssetStore]:
+    """Merge explicit test injection with compiled named storage."""
+
+    stores = dict(getattr(application, "asset_stores", {}))
+    stores.update(configured or {})
+    selected = default or getattr(application, "asset_store", None)
+    if selected is not None:
+        stores["default"] = selected
+    return stores
+
+
 class ADKRuntimeDriver(RuntimeDriver):
     """Run ADK with its development runner or an injected session service."""
 
@@ -232,6 +305,7 @@ class ADKRuntimeDriver(RuntimeDriver):
         extra_endpoints: Mapping[str, str] | None = None,
         session_service: Any | None = None,
         asset_store: AssetStore | None = None,
+        asset_stores: Mapping[str, AssetStore] | None = None,
     ) -> None:
         if application.framework != "adk":
             raise ValueError("ADKRuntimeDriver requires an ADK application")
@@ -239,33 +313,16 @@ class ADKRuntimeDriver(RuntimeDriver):
             raise ValueError("compiled ADK application does not contain an App")
 
         self.application = application
-        card_data = dict(card or {})
-        description = card_data.get("description")
-        if not isinstance(description, str):
-            description = getattr(application.target, "description", "") or ""
-        display_name = card_data.get("name")
-        if not isinstance(display_name, str) or not display_name.strip():
-            display_name = application.name
-        self._info = AgentInfo(
-            id=application.name,
-            name=display_name,
-            description=description,
-            card=card_data,
-            framework=application.framework,
-            mode=application.mode,
-            extra_endpoints=dict(extra_endpoints or {}),
-            input_schema=application.input_schema,
-            output_schema=application.output_schema,
-        )
-        self._asset_store = (
-            asset_store
-            if asset_store is not None
-            else getattr(application, "asset_store", None)
-        )
+        self._info = _adk_agent_info(application, card, extra_endpoints)
+        stores = _adk_asset_stores(application, asset_store, asset_stores)
+
+        self._asset_stores = stores
+        self._asset_store = stores.get("default")
         self._runner = _create_runner(
             application,
             session_service,
             asset_store=self._asset_store,
+            asset_stores=self._asset_stores,
         )
         self._closed = False
         self._close_lock = asyncio.Lock()
@@ -501,7 +558,18 @@ class ADKRuntimeDriver(RuntimeDriver):
             mcp_lifecycle_bindings(self.application.target)
         )
 
-        parts = await _adk_input_parts(request.input, self._asset_store, types)
+        value = request.input
+        access = current_transient_media()
+        schema = self.application.input_schema
+        if schema is not None:
+            authored = value if isinstance(value, schema) else schema.model_validate(value)
+            authored = await stage_stored_media(
+                authored,
+                stores=self._asset_stores,
+                scope=AssetScope(request.user_id, request.session_id),
+            )
+            value = authored if access is None else access.stage(authored)
+        parts = await _adk_input_parts(value, self._asset_stores, types)
         message = types.Content(role="user", parts=parts)
         metadata = dict(request.metadata)
         run_config = RunConfig(custom_metadata=metadata) if metadata else None
@@ -783,7 +851,12 @@ def _output_items(event: Any, text: str) -> list[dict[str, Any]]:
                 items.append(
                     {"type": "message", "role": "assistant", "text": output}
                 )
-        normalized_output = json_value(output)
+        # Graph outputs can contain a client-tool result when an authored graph
+        # forwards child output. Keep private continuation markers out of every
+        # public transport just as we do for ordinary function responses.
+        normalized_output = sanitize_stored_media(
+            sanitize_transient_media(json_value(output))[0]
+        )
         items.append(
             {
                 "type": "graph_output",
@@ -818,7 +891,11 @@ def _function_response_items(event: Any) -> list[dict[str, Any]]:
                 "type": "tool_result",
                 "id": getattr(response, "id", None),
                 "name": getattr(response, "name", None),
-                "result": json_value(getattr(response, "response", None)),
+                "result": sanitize_stored_media(
+                    sanitize_transient_media(
+                        json_value(getattr(response, "response", None))
+                    )[0]
+                ),
             }
         )
     return items
@@ -836,10 +913,13 @@ def _session_record(session: Any) -> SessionRecord:
     """Preserve native ADK event metadata beside portable session state."""
 
     updated_at = _timestamp(getattr(session, "last_update_time", 0.0))
+    state = sanitize_stored_media(
+        sanitize_transient_media(json_value(session.state))[0]
+    )
     return SessionRecord(
         id=session.id,
         user_id=session.user_id,
-        state=json_value(session.state),
+        state=state,
         updated_at=updated_at,
         metadata=_adk_session_metadata(session),
     )
@@ -906,18 +986,23 @@ def _adk_portable_content(parts: list[Any]) -> list[dict[str, Any]] | None:
 
     if not any(_record_marker(part) is not None for part in parts):
         return None
-    result: list[dict[str, Any]] = []
-    for part in parts:
-        if not isinstance(part, Mapping) or part.get("thought") is True:
-            continue
-        marker = _record_marker(part)
-        if marker is not None:
-            result.append(dict(marker))
-            continue
-        text = part.get("text")
-        if isinstance(text, str) and text:
-            result.append({"type": "text", "text": text})
-    return result
+    return [value for part in parts if (value := _portable_adk_part(part))]
+
+
+def _portable_adk_part(part: Any) -> dict[str, Any] | None:
+    """Project one non-private ADK part into portable session content."""
+
+    if not isinstance(part, Mapping) or part.get("thought") is True:
+        return None
+    marker = _record_marker(part)
+    if marker is not None:
+        if transient_media_lease_id(marker) is not None:
+            return None
+        if is_transient_media_placeholder(marker):
+            return None
+        return sanitize_stored_media(dict(marker))
+    text = part.get("text")
+    return {"type": "text", "text": text} if isinstance(text, str) and text else None
 
 
 def _record_marker(part: Any) -> Mapping[str, Any] | None:
@@ -954,7 +1039,8 @@ def _adk_tool_response(parts: list[Any]) -> Any:
         if isinstance(part, Mapping)
         and isinstance(part.get("functionResponse"), Mapping)
     ]
-    return responses[0] if len(responses) == 1 else responses
+    value = responses[0] if len(responses) == 1 else responses
+    return sanitize_stored_media(sanitize_transient_media(value)[0])
 
 
 def _adk_turn_metadata(events: list[Any]) -> dict[str, Any]:
@@ -999,16 +1085,28 @@ def _safe_adk_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
 
     safe: dict[str, Any] = {}
     for key, item in value.items():
-        if key in {"data", "fileData", "fileUri", "thoughtSignature"}:
+        if key in {
+            "data",
+            "fileData",
+            "fileUri",
+            "thoughtSignature",
+            "harnestTransient",
+            "harnestStored",
+            "leaseId",
+        }:
             continue
-        if key == "partMetadata" and isinstance(item, Mapping):
+        if key == "partMetadata":
             # Portable content is already exposed through SessionMessage.content;
             # duplicating it in opaque native metadata risks accidental logging.
-            filtered = {
-                name: _safe_adk_value(child)
-                for name, child in item.items()
-                if name != _CONTENT_MARKER
-            }
+            filtered = (
+                {
+                    name: _safe_adk_value(child)
+                    for name, child in item.items()
+                    if name != _CONTENT_MARKER
+                }
+                if isinstance(item, Mapping)
+                else {}
+            )
             if filtered:
                 safe[key] = filtered
             continue
@@ -1021,6 +1119,7 @@ def _create_runner(
     session_service: Any,
     *,
     asset_store: AssetStore | None = None,
+    asset_stores: Mapping[str, AssetStore] | None = None,
 ) -> Any:
     """Create ADK's runner while preserving actionable advanced-mode logs."""
 
@@ -1055,14 +1154,19 @@ def _create_runner(
             InMemoryRunner,
             Runner,
         )
-    _register_asset_plugin(result.plugin_manager, asset_store)
+    stores = dict(asset_stores or {})
+    if asset_store is not None:
+        stores.setdefault("default", asset_store)
+    _register_asset_plugin(result.plugin_manager, stores)
     return result
 
 
-def _register_asset_plugin(manager: Any, store: AssetStore | None) -> None:
+def _register_asset_plugin(
+    manager: Any, stores: Mapping[str, AssetStore]
+) -> None:
     """Put the reference boundary ahead of callbacks that may short-circuit."""
 
-    plugin = _asset_content_plugin(store)
+    plugin = _asset_content_plugin(stores)
     if any(item.name == plugin.name for item in manager.plugins):
         raise ValueError("ADK application reserves the harnest_asset_content plugin")
     # ADK stops callback traversal at the first replacement. Running this
@@ -1070,31 +1174,144 @@ def _register_asset_plugin(manager: Any, store: AssetStore | None) -> None:
     manager.plugins.insert(0, plugin)
 
 
-def _asset_content_plugin(store: AssetStore | None) -> Any:
+def _asset_content_plugin(
+    stores: Mapping[str, AssetStore] | AssetStore | None,
+) -> Any:
     """Create the optional ADK plugin that materializes only model requests."""
 
     from google.adk.plugins import BasePlugin
+
+    if stores is None:
+        storage_registry: dict[str, AssetStore] = {}
+    elif isinstance(stores, AssetStore):
+        storage_registry = {"default": stores}
+    else:
+        storage_registry = dict(stores)
+    default_store = storage_registry.get("default")
 
     class _AssetContentPlugin(BasePlugin):
         """Keep ADK history reference-only while serving scoped model bytes."""
 
         def __init__(self) -> None:
             super().__init__(name="harnest_asset_content")
+            self._transient_calls: dict[
+                tuple[str, str, str, str, str, str],
+                tuple[TransientMediaAccess, tuple[str, ...]],
+            ] = {}
+            self._transient_branches: dict[
+                tuple[str, str, str, str, str, str],
+                tuple[TransientMediaAccess, tuple[str, ...]],
+            ] = {}
+
+        async def after_tool_callback(
+            self,
+            *,
+            tool: Any,
+            tool_args: dict[str, Any],
+            tool_context: Any,
+            result: dict[str, Any],
+        ) -> None:
+            """Bind private bytes to the ADK branch that produced the placeholder."""
+
+            del tool, tool_args
+            access = current_transient_media()
+            signatures = transient_media_placeholders(result)
+            leases = matching_transient_leases(
+                signatures, access.pending() if access is not None else ()
+            )
+            if access is not None and leases:
+                self._transient_branches[_adk_model_call_key(tool_context)] = (
+                    access,
+                    tuple(lease.lease_id for lease in leases),
+                )
+            return None
 
         async def before_model_callback(
             self, *, callback_context: Any, llm_request: Any
         ) -> None:
-            """Replace reference markers on a detached model-request copy."""
+            """Materialize stored and transient media on a detached request."""
 
             scope = AssetScope(
                 user_id=callback_context.user_id,
                 session_id=callback_context.session.id,
             )
-            llm_request.contents = [
-                await _materialized_content(item, store, scope)
-                for item in llm_request.contents
-            ]
+            key = _adk_model_call_key(callback_context)
+            branch = self._transient_branches.get(key)
+            access = branch[0] if branch is not None else current_transient_media()
+            candidates = _adk_branch_leases(branch)
+            contents: list[Any] = []
+            for item in llm_request.contents:
+                materialized, _ = await _materialized_content(
+                    item, storage_registry, scope
+                )
+                contents.append(materialized)
+            leases = _adk_pending_leases(contents, access, candidates=candidates)
+            contents = _attach_adk_pending(contents, leases)
+            llm_request.contents = contents
+            if access is not None and leases:
+                # The key includes ADK's branch/node identity so parallel and
+                # nested agent model calls cannot acknowledge each other's bytes.
+                self._transient_calls[key] = (
+                    access,
+                    tuple(lease.lease_id for lease in leases),
+                )
             return None
+
+        async def after_model_callback(
+            self, *, callback_context: Any, llm_response: Any
+        ) -> None:
+            """Consume only media acknowledged by a successful model call."""
+
+            del llm_response
+            pending = self._transient_calls.pop(
+                _adk_model_call_key(callback_context), None
+            )
+            if pending is not None:
+                access, lease_ids = pending
+                access.commit(lease_ids)
+                self._transient_branches.pop(
+                    _adk_model_call_key(callback_context), None
+                )
+            return None
+
+        async def on_model_error_callback(
+            self, *, callback_context: Any, llm_request: Any, error: Exception
+        ) -> None:
+            """Retain media for framework retries and drop per-attempt bookkeeping."""
+
+            del llm_request, error
+            # Invocation cleanup owns terminal failure. Clearing here would
+            # make ADK's next provider attempt silently lose its media bytes.
+            self._transient_calls.pop(_adk_model_call_key(callback_context), None)
+            return None
+
+        async def after_run_callback(self, *, invocation_context: Any) -> None:
+            """Release completed invocation bookkeeping after ADK finishes."""
+
+            self._forget_invocation(invocation_context)
+
+        async def on_run_error_callback(
+            self, *, invocation_context: Any, error: Exception
+        ) -> None:
+            """Release failed invocation bookkeeping without exposing errors."""
+
+            del error
+            self._forget_invocation(invocation_context)
+
+        def _forget_invocation(self, context: Any) -> None:
+            """Drop callback state; the client-tool store owns byte cleanup."""
+
+            prefix = _adk_invocation_key(context)
+            self._transient_calls = {
+                key: value
+                for key, value in self._transient_calls.items()
+                if key[:3] != prefix
+            }
+            self._transient_branches = {
+                key: value
+                for key, value in self._transient_branches.items()
+                if key[:3] != prefix
+            }
 
         async def on_event_callback(
             self, *, invocation_context: Any, event: Any
@@ -1103,33 +1320,181 @@ def _asset_content_plugin(store: AssetStore | None) -> Any:
 
             if getattr(event, "partial", False):
                 return None
-            if store is None:
+            if default_store is None:
                 return None
             scope = AssetScope(
                 user_id=invocation_context.user_id,
                 session_id=invocation_context.session.id,
             )
-            return await _reference_only_event(event, store, scope)
+            return await _reference_only_event(event, default_store, scope)
 
     return _AssetContentPlugin()
 
 
+def _adk_invocation_key(context: Any) -> tuple[str, str, str]:
+    """Identify one principal-scoped ADK invocation for callback cleanup."""
+
+    session = getattr(context, "session", None)
+    return (
+        str(getattr(context, "user_id", "") or ""),
+        str(getattr(session, "id", "") or ""),
+        str(getattr(context, "invocation_id", "") or ""),
+    )
+
+
+def _adk_model_call_key(
+    callback_context: Any,
+) -> tuple[str, str, str, str, str, str]:
+    """Identify one ADK agent branch without exposing its values externally."""
+
+    return (
+        *_adk_invocation_key(callback_context),
+        *(
+            str(getattr(callback_context, name, "") or "")
+            for name in ("agent_name", "branch", "node_path")
+        ),
+    )
+
+
+def _adk_transient_part(lease: TransientMediaLease) -> Any:
+    """Translate one private lease into ADK's provider-facing blob shape."""
+
+    from google.genai import types
+
+    return types.Part(
+        inline_data=types.Blob(mime_type=lease.media_type, data=lease.data)
+    )
+
+
+def _adk_pending_leases(
+    contents: list[Any],
+    access: TransientMediaAccess | None,
+    *,
+    candidates: tuple[TransientMediaLease, ...] = (),
+) -> tuple[TransientMediaLease, ...]:
+    """Correlate safe request placeholders with this invocation's private bytes."""
+
+    if access is None:
+        return ()
+    signatures = [
+        signature
+        for content in contents
+        for signature in _adk_content_transient_signatures(content)
+    ]
+    return matching_transient_leases(signatures, candidates or access.pending())
+
+
+def _adk_branch_leases(
+    branch: tuple[TransientMediaAccess, tuple[str, ...]] | None,
+) -> tuple[TransientMediaLease, ...]:
+    """Resolve one branch binding without relying on callback task context."""
+
+    if branch is None:
+        return ()
+    access, lease_ids = branch
+    return tuple(
+        lease
+        for lease_id in lease_ids
+        if (lease := access.peek(lease_id)) is not None
+    )
+
+
+def _adk_content_transient_signatures(content: Any) -> tuple[tuple[str, str], ...]:
+    """Read safe signatures from native parts without requiring correlation IDs."""
+
+    signatures: list[tuple[str, str]] = []
+    for part in getattr(content, "parts", None) or ():
+        marker = _part_marker(part)
+        if marker is not None:
+            safe_marker = sanitize_transient_media(marker)[0]
+            signatures.extend(transient_media_placeholders(safe_marker))
+        response = getattr(part, "function_response", None)
+        value = getattr(response, "response", None) if response is not None else None
+        safe_value = sanitize_transient_media(value)[0]
+        signatures.extend(transient_media_placeholders(safe_value))
+    return tuple(signatures)
+
+
+def _attach_adk_pending(
+    contents: list[Any], leases: tuple[TransientMediaLease, ...]
+) -> list[Any]:
+    """Append pending media only to the newest matching provider content."""
+
+    if not leases:
+        return contents
+    for index in range(len(contents) - 1, -1, -1):
+        content = contents[index]
+        if not _adk_content_transient_signatures(content):
+            continue
+        parts = list(getattr(content, "parts", None) or ())
+        replacement = content.model_copy(
+            update={"parts": [*parts, *(_adk_transient_part(item) for item in leases)]}
+        )
+        return [*contents[:index], replacement, *contents[index + 1 :]]
+    return contents
+
+
 async def _materialized_content(
-    content: Any, store: AssetStore | None, scope: AssetScope
-) -> Any:
-    """Copy one ADK content value and resolve its Harnest reference markers."""
+    content: Any,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope,
+    transient: TransientMediaAccess | None = None,
+) -> tuple[Any, list[str]]:
+    """Copy one ADK content value and resolve model-only media bytes."""
 
     parts = getattr(content, "parts", None) or ()
-    materialized = [
-        await _materialized_part(part, store, scope) for part in parts
+    materialized: list[Any] = []
+    lease_ids: list[str] = []
+    for part in parts:
+        projected, attached, discovered = await _materialized_parts(
+            part, stores, scope, transient
+        )
+        materialized.append(projected)
+        materialized.extend(attached)
+        lease_ids.extend(discovered)
+    if len(parts) == len(materialized) and all(
+        left is right for left, right in zip(parts, materialized)
+    ):
+        return content, lease_ids
+    return content.model_copy(update={"parts": materialized}), lease_ids
+
+
+async def _materialized_parts(
+    part: Any,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope,
+    transient: TransientMediaAccess | None,
+) -> tuple[Any, list[Any], list[str]]:
+    """Materialize one native part plus transient function-result attachments."""
+
+    marker = _part_marker(part)
+    direct_id = transient_media_lease_id(marker)
+    if direct_id is not None:
+        from google.genai import types
+
+        safe = transient_media_placeholder(
+            str(marker["type"]), str(marker["mediaType"])
+        )
+        return _marker_part(safe, types), [], []
+    projected = await _materialized_part(part, stores, scope)
+    response = getattr(part, "function_response", None)
+    value = getattr(response, "response", None) if response is not None else None
+    skeleton, discovered = sanitize_transient_media(value)
+    durable = stored_media_references(skeleton)
+    if not discovered and not durable:
+        return projected, [], []
+    # Even stale markers are removed from the detached provider JSON. Only
+    # leases still active for this invocation are attached to this model call.
+    response = response.model_copy(update={"response": sanitize_stored_media(skeleton)})
+    projected = part.model_copy(update={"function_response": response})
+    attached = [
+        await _adk_stored_part(reference, stores, scope) for reference in durable
     ]
-    if all(left is right for left, right in zip(parts, materialized)):
-        return content
-    return content.model_copy(update={"parts": materialized})
+    return projected, attached, list(discovered)
 
 
 async def _materialized_part(
-    part: Any, store: AssetStore | None, scope: AssetScope
+    part: Any, stores: Mapping[str, AssetStore], scope: AssetScope
 ) -> Any:
     """Load bytes only for the detached part passed to the ADK model adapter."""
 
@@ -1143,9 +1508,24 @@ async def _materialized_part(
         return types.Part(
             text=json.dumps(marker.get("value"), ensure_ascii=False)
         )
+    if is_transient_media_placeholder(marker):
+        return part
+    durable = stored_media_reference(marker)
+    if durable is not None:
+        return await _adk_stored_part(durable, stores, scope)
     asset_id = marker.get("assetId")
+    store_name = marker.get("store", "default")
+    store = stores.get(store_name) if isinstance(store_name, str) else None
     if not isinstance(asset_id, str) or store is None:
         raise RuntimeError("ADK content reference is invalid")
+    return await _adk_inline_asset_part(store, scope, asset_id, types)
+
+
+async def _adk_inline_asset_part(
+    store: AssetStore, scope: AssetScope, asset_id: str, types: Any
+) -> Any:
+    """Read one ordinary stored reference into an ADK inline-data part."""
+
     record = await store.stat(scope=scope, asset_id=asset_id)
     if record is None:
         raise RuntimeError("ADK content asset is unavailable")
@@ -1161,6 +1541,33 @@ async def _materialized_part(
             mime_type=record.media_type,
             data=bytes(data),
         )
+    )
+
+
+async def _adk_stored_part(
+    reference: Any,
+    stores: Mapping[str, AssetStore],
+    scope: AssetScope,
+) -> Any:
+    """Generate one explicit temporary URL immediately before an ADK call."""
+
+    storage = stores.get(reference.store)
+    if storage is None or not isinstance(storage, AssetURLStorage):
+        raise RuntimeError("declared asset storage cannot generate model URLs")
+    record = await storage.stat(scope=scope, asset_id=reference.asset_id)
+    if record is None:
+        raise RuntimeError("ADK content asset is unavailable")
+    url = await storage.signed_url(
+        scope=scope,
+        asset_id=reference.asset_id,
+        expires_in=reference.expires_in,
+    )
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise RuntimeError("declared asset storage returned an invalid model URL")
+    from google.genai import types
+
+    return types.Part(
+        file_data=types.FileData(file_uri=url, mime_type=record.media_type)
     )
 
 

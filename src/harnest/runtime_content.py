@@ -7,6 +7,7 @@ from typing import Any
 
 from .assets import AssetScope, AssetStore
 from .content_validation import resolve_model_content
+from .stored_media import stage_stored_media
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -21,9 +22,16 @@ from .runtime_contract import (
 class ContentRuntimeDriver(RuntimeDriver):
     """Apply authored output constraints before any public transport emits data."""
 
-    def __init__(self, inner: RuntimeDriver, store: AssetStore) -> None:
+    def __init__(
+        self,
+        inner: RuntimeDriver,
+        store: AssetStore,
+        asset_stores: Mapping[str, AssetStore] | None = None,
+    ) -> None:
         self._inner = inner
         self._store = store
+        self._stores = dict(asset_stores or {})
+        self._stores.setdefault("default", store)
 
     @property
     def info(self) -> AgentInfo:
@@ -94,14 +102,14 @@ class ContentRuntimeDriver(RuntimeDriver):
         async for event in self._inner.stream(request):
             event_type = event.get("type")
             if event_type == "graph_output":
-                yield {
-                    **event,
-                    "output": await self._resolve_output(event.get("output"), request),
-                }
+                source = event.get("output", event.get("result"))
+                resolved = await self._resolve_output(source, request)
+                yield {**event, "output": resolved, "result": resolved}
             elif event_type == "output":
+                resolved = await self._resolve_output(event.get("value"), request)
                 yield {
                     **event,
-                    "value": await self._resolve_output(event.get("value"), request),
+                    "value": resolved,
                 }
             else:
                 yield event
@@ -119,9 +127,15 @@ class ContentRuntimeDriver(RuntimeDriver):
         resolved = await resolve_model_content(
             model,
             store=self._store,
+            stores=self._stores,
             scope=AssetScope(request.user_id, request.session_id),
         )
-        return resolved.model_dump(mode="json", by_alias=True)
+        staged = await stage_stored_media(
+            resolved,
+            stores=self._stores,
+            scope=AssetScope(request.user_id, request.session_id),
+        )
+        return staged.model_dump(mode="json", by_alias=True)
 
 
 __all__ = ["ContentRuntimeDriver"]

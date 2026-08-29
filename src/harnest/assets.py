@@ -9,6 +9,7 @@ import secrets
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
 
 
@@ -125,6 +126,7 @@ class AssetStore(Protocol):
         chunks: AsyncIterable[bytes],
         metadata: AssetMediaMetadata | None = None,
         retention_seconds: float | None = None,
+        path: str | None = None,
     ) -> AssetRecord: ...
 
     async def stat(
@@ -138,6 +140,24 @@ class AssetStore(Protocol):
     async def delete_scope(self, *, scope: AssetScope) -> int: ...
 
     async def close(self) -> None: ...
+
+
+# Keep the shipped name source-compatible while making ``AssetStorage`` the
+# clearer authoring name for user-owned S3, database, and blob implementations.
+AssetStorage = AssetStore
+
+
+@runtime_checkable
+class AssetURLStorage(Protocol):
+    """Optional capability for model-call-time temporary URL generation."""
+
+    async def signed_url(
+        self,
+        *,
+        scope: AssetScope,
+        asset_id: str,
+        expires_in: float,
+    ) -> str: ...
 
 
 @dataclass(slots=True)
@@ -196,11 +216,13 @@ class MemoryAssetStore:
         chunks: AsyncIterable[bytes],
         metadata: AssetMediaMetadata | None = None,
         retention_seconds: float | None = None,
+        path: str | None = None,
     ) -> AssetRecord:
         """Stream an asset into reserved capacity and publish it atomically."""
 
         _require_scope(scope)
         _require_metadata(metadata)
+        _require_storage_path(path)
         normalized_media_type = _require_media_type(media_type)
         retention = self._effective_retention(retention_seconds)
         buffered: list[bytes] = []
@@ -497,6 +519,18 @@ def _require_retention(value: float | None) -> None:
         raise ValueError("asset retention_seconds must be finite and positive")
 
 
+def _require_storage_path(value: str | None) -> None:
+    """Reject storage prefixes that could escape a backend-owned namespace."""
+
+    if value is None:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise AssetValidationError("asset path must be a non-empty relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise AssetValidationError("asset path must be a safe relative POSIX path")
+
+
 def _require_aware_datetime(value: datetime) -> None:
     """Require unambiguous timestamps for retention enforcement."""
 
@@ -533,6 +567,8 @@ __all__ = [
     "AssetRecord",
     "AssetScope",
     "AssetStore",
+    "AssetStorage",
+    "AssetURLStorage",
     "AssetStoreError",
     "DEFAULT_MAX_ASSET_BYTES",
     "DEFAULT_MAX_TOTAL_ASSET_BYTES",

@@ -163,6 +163,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         extensions: Sequence[LifecycleListener],
         *,
         context_values: Sequence[ContextValue] = (),
+        asset_stores: Mapping[str, Any] | None = None,
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
     ) -> None:
@@ -182,6 +183,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self._driver = driver
         self._extensions = normalized
         self._context_values = values
+        self._asset_stores = dict(asset_stores or {})
         self._credential_provider = credential_provider
         self._manage_credential_provider = manage_credential_provider
         self._credential_provider_started = False
@@ -482,6 +484,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             session_id=request.session_id,
             metadata=request.metadata,
             resources=self._application_resources,
+            asset_stores=self._asset_stores,
         )
 
     def _credential_scope(self) -> Any:

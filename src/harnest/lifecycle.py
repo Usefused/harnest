@@ -7,6 +7,7 @@ are the explicit opt-in that makes one of its functions executable by Harnest.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Callable, Mapping, MutableMapping
 
 
@@ -38,6 +39,7 @@ _FACTORY_PHASES = frozenset(
 )
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
+_ASSET_STORE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 
 
 class _DropEvent:
@@ -56,6 +58,7 @@ class LifecycleRegistration:
     phase: str
     order: int
     framework: str | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +73,7 @@ class LifecycleListener:
     function_name: str
     framework: str | None = None
     context_name: str | None = None
+    registration_name: str | None = None
 
     @property
     def identity(self) -> str:
@@ -155,7 +159,6 @@ class _LifecycleDecorators:
     # owns committed conversation state and resumable in-progress state.
     session_store = _PhaseDecorator("session_store")
     checkpointer = _PhaseDecorator("checkpointer")
-    asset_store = _PhaseDecorator("asset_store")
     credential_provider = _PhaseDecorator("credential_provider")
     http_routes = _PhaseDecorator("http_routes")
     output_policy = _PhaseDecorator("output_policy")
@@ -169,6 +172,27 @@ class _LifecycleDecorators:
     before_model = _PhaseDecorator("before_model")
     after_model = _PhaseDecorator("after_model")
     on_model_error = _PhaseDecorator("on_model_error")
+
+    def asset_store(
+        self,
+        function: Callable[..., Any] | None = None,
+        *,
+        name: str = "default",
+        order: int = 0,
+    ) -> Any:
+        """Declare one named binary storage authority.
+
+        The unnamed decorator remains the ``default`` store for backward
+        compatibility.  Names select storage policy; they never carry tenant
+        or session identity.
+        """
+
+        if not isinstance(name, str) or not _ASSET_STORE_NAME.fullmatch(name):
+            raise ValueError("asset store name must be a valid storage identifier")
+        decorator = _registration_decorator(
+            "asset_store", order=order, name=name
+        )
+        return decorator if function is None else decorator(function)
 
     def adk_plugin(
         self, function: Callable[..., Any] | None = None, *, order: int = 0
@@ -188,7 +212,11 @@ class _LifecycleDecorators:
 
 
 def _registration_decorator(
-    phase: str, *, order: int, framework: str | None = None
+    phase: str,
+    *,
+    order: int,
+    framework: str | None = None,
+    name: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     if phase not in _PHASES | _FACTORY_PHASES:
         raise ValueError(f"unsupported lifecycle phase {phase!r}")
@@ -205,7 +233,7 @@ def _registration_decorator(
         setattr(
             function,
             _REGISTRATION_ATTRIBUTE,
-            LifecycleRegistration(phase, order, framework),
+            LifecycleRegistration(phase, order, framework, name),
         )
         return function
 
