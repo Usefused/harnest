@@ -11,6 +11,10 @@ business state. `CheckpointStore` holds private in-progress execution state:
 run status, framework snapshots, pending parallel writes, and resumable wait
 metadata. A session permits one running or waiting invocation. Status changes
 use compare-and-swap so two replicas cannot resume the same run successfully.
+After `begin_run`, every checkpoint operation requires a `RunScope` containing
+the application, authenticated user, session, and run IDs. Built-in stores
+apply the complete scope before returning or mutating data; a bare `run_id` is
+not a checkpoint lookup capability.
 
 ## Managed agents
 
@@ -54,8 +58,10 @@ def session_store():
 Managed nodes, tools, and subagents can then call
 `context.resource("storage")` inside an active invocation. The same pattern may
 publish the checkpointer under a distinct name. This is privileged raw access:
-agent code must scope every operation with `context.user_id` and
-`context.session_id` and must not mutate checkpoint state behind the framework.
+agent code must scope session operations with `context.user_id` and
+`context.session_id`. Checkpoint operations additionally require the compiled
+application and invocation IDs through a `RunScope`; agent code must not mutate
+checkpoint state behind the framework.
 Harnest still owns startup, shutdown, and framework adapter selection.
 
 Harnest starts and closes the shared object once. Managed LangGraph receives a

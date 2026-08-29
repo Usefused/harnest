@@ -19,7 +19,9 @@ from .checkpoint import (
     HarnestStore,
     PendingAction,
     RunRecord,
+    RunScope,
     RunStatus,
+    _require_checkpoint_scope,
     _require_fields,
     _validate_same_run,
     _validate_transition,
@@ -230,7 +232,15 @@ class PostgresStore(HarnestStore):
                 )
                 if row is None:
                     row = await connection.fetchrow(
-                        "SELECT * FROM harnest_runs WHERE run_id=$1", run_id
+                        """
+                        SELECT * FROM harnest_runs
+                        WHERE run_id=$1 AND application_id=$2
+                          AND user_id=$3 AND session_id=$4
+                        """,
+                        run_id,
+                        application_id,
+                        user_id,
+                        session_id,
                     )
         except Exception:
             _audit("checkpoint.run_started", "agent", "failed", "postgres")
@@ -249,17 +259,22 @@ class PostgresStore(HarnestStore):
         _audit("checkpoint.run_started", "agent", "committed", "postgres")
         return record
 
-    async def get_run(self, *, run_id: str) -> RunRecord | None:
+    async def get_run(self, *, scope: RunScope) -> RunRecord | None:
         async with self._connection() as connection:
             row = await connection.fetchrow(
-                "SELECT * FROM harnest_runs WHERE run_id=$1", run_id
+                """
+                SELECT * FROM harnest_runs
+                WHERE run_id=$1 AND application_id=$2
+                  AND user_id=$3 AND session_id=$4
+                """,
+                *_scope_values(scope),
             )
         return None if row is None else _run_from_row(row)
 
     async def get_checkpoint(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str | None = None,
         namespace: str = "",
     ) -> CheckpointRecord | None:
@@ -267,17 +282,24 @@ class PostgresStore(HarnestStore):
 
         if checkpoint_id is None:
             query = """
-            SELECT * FROM harnest_checkpoints
-            WHERE run_id=$1 AND namespace=$2
-            ORDER BY revision DESC, checkpoint_id DESC LIMIT 1
+            SELECT checkpoint.* FROM harnest_checkpoints AS checkpoint
+            JOIN harnest_runs AS run USING (run_id)
+            WHERE checkpoint.run_id=$1 AND run.application_id=$2
+              AND run.user_id=$3 AND run.session_id=$4
+              AND checkpoint.namespace=$5
+            ORDER BY checkpoint.revision DESC, checkpoint.checkpoint_id DESC
+            LIMIT 1
             """
-            arguments = (run_id, namespace)
+            arguments = (*_scope_values(scope), namespace)
         else:
             query = """
-            SELECT * FROM harnest_checkpoints
-            WHERE run_id=$1 AND namespace=$2 AND checkpoint_id=$3
+            SELECT checkpoint.* FROM harnest_checkpoints AS checkpoint
+            JOIN harnest_runs AS run USING (run_id)
+            WHERE checkpoint.run_id=$1 AND run.application_id=$2
+              AND run.user_id=$3 AND run.session_id=$4
+              AND checkpoint.namespace=$5 AND checkpoint.checkpoint_id=$6
             """
-            arguments = (run_id, namespace, checkpoint_id)
+            arguments = (*_scope_values(scope), namespace, checkpoint_id)
         async with self._connection() as connection:
             row = await connection.fetchrow(query, *arguments)
         return None if row is None else _checkpoint_from_row(row)
@@ -285,7 +307,7 @@ class PostgresStore(HarnestStore):
     async def list_checkpoints(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         namespace: str | None = None,
         before: str | None = None,
         limit: int = 20,
@@ -294,23 +316,32 @@ class PostgresStore(HarnestStore):
 
         _require_limit(limit)
         query = """
-        SELECT * FROM harnest_checkpoints
-        WHERE run_id=$1
-          AND ($2::text IS NULL OR namespace=$2)
-          AND ($3::text IS NULL OR checkpoint_id < $3)
-        ORDER BY revision DESC, checkpoint_id DESC
-        LIMIT $4
+        SELECT checkpoint.* FROM harnest_checkpoints AS checkpoint
+        JOIN harnest_runs AS run USING (run_id)
+        WHERE checkpoint.run_id=$1 AND run.application_id=$2
+          AND run.user_id=$3 AND run.session_id=$4
+          AND ($5::text IS NULL OR checkpoint.namespace=$5)
+          AND ($6::text IS NULL OR checkpoint.checkpoint_id < $6)
+        ORDER BY checkpoint.revision DESC, checkpoint.checkpoint_id DESC
+        LIMIT $7
         """
         async with self._connection() as connection:
-            rows = await connection.fetch(query, run_id, namespace, before, limit)
+            rows = await connection.fetch(
+                query, *_scope_values(scope), namespace, before, limit
+            )
         for row in rows:
             yield _checkpoint_from_row(row)
 
     async def put(
-        self, checkpoint: CheckpointRecord, *, expected_revision: int | None
+        self,
+        checkpoint: CheckpointRecord,
+        *,
+        scope: RunScope,
+        expected_revision: int | None,
     ) -> CheckpointRecord:
         """Allocate a serialized revision and write only on matching CAS state."""
 
+        _require_checkpoint_scope(checkpoint, scope)
         query = """
         INSERT INTO harnest_checkpoints(
             run_id, namespace, checkpoint_id, framework, type_name, payload,
@@ -330,7 +361,7 @@ class PostgresStore(HarnestStore):
         try:
             async with self._connection() as connection:
                 async with connection.transaction():
-                    await _lock_active_run(connection, checkpoint.run_id)
+                    await _lock_active_run(connection, scope)
                     await _validate_checkpoint_revision(
                         connection, checkpoint, expected_revision
                     )
@@ -355,7 +386,7 @@ class PostgresStore(HarnestStore):
     async def put_writes(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str,
         writes: Sequence[CheckpointWrite],
     ) -> None:
@@ -369,11 +400,12 @@ class PostgresStore(HarnestStore):
         )
         SELECT $1, $2, item.*
         FROM UNNEST(
-            $3::text[], $4::text[], $5::text[], $6::bytea[], $7::text[]
+            $6::text[], $7::text[], $8::text[], $9::bytea[], $10::text[]
         ) AS item(task_id, channel, type_name, payload, task_path)
         WHERE EXISTS (
             SELECT 1 FROM harnest_runs
-            WHERE run_id=$1 AND status IN ('running', 'waiting')
+            WHERE run_id=$1 AND application_id=$3 AND user_id=$4 AND session_id=$5
+              AND status IN ('running', 'waiting')
         )
         ON CONFLICT DO NOTHING
         """
@@ -381,33 +413,44 @@ class PostgresStore(HarnestStore):
         try:
             async with self._connection() as connection:
                 status = await connection.execute(
-                    query, run_id, checkpoint_id, *columns
+                    query,
+                    scope.run_id,
+                    checkpoint_id,
+                    scope.application_id,
+                    scope.user_id,
+                    scope.session_id,
+                    *columns,
                 )
             if status == "INSERT 0 0":
-                await self._require_active_run(run_id)
+                await self._require_active_run(scope)
         except Exception:
             _audit("checkpoint.writes_saved", "agent", "failed", "postgres")
             raise
         _audit("checkpoint.writes_saved", "agent", "committed", "postgres")
 
     async def get_writes(
-        self, *, run_id: str, checkpoint_id: str
+        self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
         async with self._connection() as connection:
             rows = await connection.fetch(
                 """
                 SELECT task_id, channel, type_name, payload, task_path
-                FROM harnest_checkpoint_writes
-                WHERE run_id=$1 AND checkpoint_id=$2
+                FROM harnest_checkpoint_writes AS write
+                WHERE write.run_id=$1 AND write.checkpoint_id=$5
+                  AND EXISTS (
+                    SELECT 1 FROM harnest_runs AS run
+                    WHERE run.run_id=write.run_id AND run.application_id=$2
+                      AND run.user_id=$3 AND run.session_id=$4
+                  )
                 ORDER BY task_id, channel
                 """,
-                run_id,
+                *_scope_values(scope),
                 checkpoint_id,
             )
         return tuple(_write_from_row(row) for row in rows)
 
     async def get_writes_batch(
-        self, *, run_id: str, checkpoint_ids: Sequence[str]
+        self, *, scope: RunScope, checkpoint_ids: Sequence[str]
     ) -> Mapping[str, Sequence[CheckpointWrite]]:
         """Fetch pending writes for several checkpoints in one query."""
 
@@ -417,11 +460,16 @@ class PostgresStore(HarnestStore):
             rows = await connection.fetch(
                 """
                 SELECT checkpoint_id, task_id, channel, type_name, payload, task_path
-                FROM harnest_checkpoint_writes
-                WHERE run_id=$1 AND checkpoint_id=ANY($2::text[])
+                FROM harnest_checkpoint_writes AS write
+                WHERE write.run_id=$1 AND write.checkpoint_id=ANY($5::text[])
+                  AND EXISTS (
+                    SELECT 1 FROM harnest_runs AS run
+                    WHERE run.run_id=write.run_id AND run.application_id=$2
+                      AND run.user_id=$3 AND run.session_id=$4
+                  )
                 ORDER BY checkpoint_id, task_id, channel
                 """,
-                run_id,
+                *_scope_values(scope),
                 list(checkpoint_ids),
             )
         grouped: dict[str, list[CheckpointWrite]] = {}
@@ -436,7 +484,7 @@ class PostgresStore(HarnestStore):
     async def transition(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         expected_status: RunStatus,
         status: RunStatus,
         pending_action: PendingAction | None = None,
@@ -446,15 +494,16 @@ class PostgresStore(HarnestStore):
         _validate_transition(expected_status, status, pending_action)
         query = """
         UPDATE harnest_runs SET
-            status=$3, pending_action=$4::jsonb,
+            status=$6, pending_action=$7::jsonb,
             revision=revision + 1, updated_at=now()
-        WHERE run_id=$1 AND status=$2 RETURNING *
+        WHERE run_id=$1 AND application_id=$2 AND user_id=$3 AND session_id=$4
+          AND status=$5 RETURNING *
         """
         try:
             async with self._connection() as connection:
                 row = await connection.fetchrow(
                     query,
-                    run_id,
+                    *_scope_values(scope),
                     expected_status,
                     status,
                     _pending_dump(pending_action),
@@ -464,7 +513,7 @@ class PostgresStore(HarnestStore):
             raise
         if row is None:
             try:
-                await self._raise_transition_conflict(run_id)
+                await self._raise_transition_conflict(scope)
             except Exception:
                 _audit("checkpoint.transition", "agent", "failed", "postgres")
                 raise
@@ -472,13 +521,19 @@ class PostgresStore(HarnestStore):
         _audit("checkpoint.transition", "agent", "committed", "postgres")
         return record
 
-    async def delete_run(self, *, run_id: str) -> None:
+    async def delete_run(self, *, scope: RunScope) -> None:
         """Delete a run and cascade its private checkpoint data."""
 
         try:
             async with self._connection() as connection:
                 row = await connection.fetchrow(
-                    "DELETE FROM harnest_runs WHERE run_id=$1 RETURNING *", run_id
+                    """
+                    DELETE FROM harnest_runs
+                    WHERE run_id=$1 AND application_id=$2
+                      AND user_id=$3 AND session_id=$4
+                    RETURNING *
+                    """,
+                    *_scope_values(scope),
                 )
         except Exception:
             _audit("checkpoint.run_deleted", "user", "failed", "postgres")
@@ -512,20 +567,20 @@ class PostgresStore(HarnestStore):
         async with self._connection() as connection:
             await _validate_postgres_version(connection)
 
-    async def _require_active_run(self, run_id: str) -> RunRecord:
+    async def _require_active_run(self, scope: RunScope) -> RunRecord:
         """Explain a zero-row set write as missing or terminal run state."""
 
-        record = await self.get_run(run_id=run_id)
+        record = await self.get_run(scope=scope)
         if record is None:
             raise KeyError("checkpoint run not found")
         if record.status not in {"running", "waiting"}:
             raise CheckpointConflictError("checkpoint run is already terminal")
         return record
 
-    async def _raise_transition_conflict(self, run_id: str) -> None:
+    async def _raise_transition_conflict(self, scope: RunScope) -> None:
         """Distinguish a missing run from a stale status transition."""
 
-        if await self.get_run(run_id=run_id) is None:
+        if await self.get_run(scope=scope) is None:
             raise KeyError("checkpoint run not found")
         raise CheckpointConflictError("checkpoint run status changed")
 
@@ -704,11 +759,16 @@ def _write_values(value: CheckpointWrite) -> tuple[Any, ...]:
     )
 
 
-async def _lock_active_run(connection: Any, run_id: str) -> None:
+async def _lock_active_run(connection: Any, scope: RunScope) -> None:
     """Lock and validate the run before mutating its checkpoints."""
 
     row = await connection.fetchrow(
-        "SELECT status FROM harnest_runs WHERE run_id=$1 FOR UPDATE", run_id
+        """
+        SELECT status FROM harnest_runs
+        WHERE run_id=$1 AND application_id=$2 AND user_id=$3 AND session_id=$4
+        FOR UPDATE
+        """,
+        *_scope_values(scope),
     )
     if row is None:
         raise KeyError("checkpoint run not found")
@@ -742,6 +802,15 @@ def _pending_dump(value: PendingAction | None) -> str | None:
         return None
     return json.dumps(
         {"type": value.type, "action_id": value.action_id, "capability": value.capability}
+    )
+
+
+def _scope_values(scope: RunScope) -> tuple[str, str, str, str]:
+    return (
+        scope.run_id,
+        scope.application_id,
+        scope.user_id,
+        scope.session_id,
     )
 
 

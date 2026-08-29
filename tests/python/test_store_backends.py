@@ -11,10 +11,12 @@ from harnest.checkpoint import (
     CheckpointRecord,
     CheckpointStore,
     MemoryStore,
+    RunRecord,
+    RunScope,
 )
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
-from harnest.store_redis import _checkpoint_dump
+from harnest.store_redis import _checkpoint_dump, _run_dump
 
 
 class _Transaction(AbstractAsyncContextManager):
@@ -165,6 +167,10 @@ def _checkpoint():
     )
 
 
+def _scope():
+    return RunScope("support", "u-1", "s-1", "run-1")
+
+
 def _checkpoint_row(arguments):
     names = (
         "run_id",
@@ -215,6 +221,20 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_lookup_applies_complete_ownership_scope(self):
+        connection = _PostgresConnection()
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        self.assertIsNone(await store.get_run(scope=_scope()))
+
+        query, arguments = connection.fetched[-1]
+        self.assertIn("application_id=$2", query)
+        self.assertIn("user_id=$3", query)
+        self.assertIn("session_id=$4", query)
+        self.assertEqual(arguments, ("run-1", "support", "u-1", "s-1"))
+
     async def test_start_bootstraps_schema_under_advisory_lock(self):
         connection = _PostgresConnection()
         store = PostgresStore("postgres://example", _pool=_Pool(connection))
@@ -256,14 +276,17 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         values = [
             value
             async for value in store.list_checkpoints(
-                run_id="run-1", namespace="graph", before="cp-9", limit=7
+                scope=_scope(), namespace="graph", before="cp-9", limit=7
             )
         ]
 
         self.assertEqual(values, [])
         query, arguments = connection.fetched[-1]
-        self.assertIn("LIMIT $4", query)
-        self.assertEqual(arguments, ("run-1", "graph", "cp-9", 7))
+        self.assertIn("LIMIT $7", query)
+        self.assertEqual(
+            arguments,
+            ("run-1", "support", "u-1", "s-1", "graph", "cp-9", 7),
+        )
 
     async def test_checkpoint_put_serializes_global_revision_allocation(self):
         connection = _PostgresCheckpointConnection(next_revision=4)
@@ -271,7 +294,9 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             "postgres://example", _pool=_Pool(connection), setup_schema=False
         )
 
-        stored = await store.put(_checkpoint(), expected_revision=None)
+        stored = await store.put(
+            _checkpoint(), scope=_scope(), expected_revision=None
+        )
 
         self.assertEqual(stored.revision, 4)
         queries = "\n".join(query for query, _ in connection.fetched)
@@ -285,7 +310,9 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(CheckpointConflictError):
-            await store.put(_checkpoint(), expected_revision=2)
+            await store.put(
+                _checkpoint(), scope=_scope(), expected_revision=2
+            )
 
         self.assertFalse(
             any("INSERT INTO harnest_checkpoints" in query for query, _ in connection.fetched)
@@ -302,6 +329,21 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_foreign_scope_cannot_read_or_delete_run(self):
+        client = _RedisClient()
+        store = RedisStore("redis://example", _client=client)
+        client.values[store._run_key("run-1")] = _run_dump(
+            RunRecord("support", "u-1", "s-1", "run-1", "langgraph")
+        )
+        foreign = RunScope("support", "other-user", "s-1", "run-1")
+
+        self.assertIsNone(await store.get_run(scope=foreign))
+        self.assertIsNone(await store.get_checkpoint(scope=foreign))
+        await store.delete_run(scope=foreign)
+
+        self.assertEqual(client.evals, [])
+        self.assertIsNotNone(await store.get_run(scope=_scope()))
+
     async def test_start_sets_and_validates_schema_version(self):
         client = _RedisClient()
         store = RedisStore("redis://example", _client=client)
@@ -385,8 +427,13 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_checkpoint_put_round_trips_opaque_bytes(self):
         client = _RedisClient()
         store = RedisStore("redis://example", _client=client)
+        client.values[store._run_key("run-1")] = _run_dump(
+            RunRecord("support", "u-1", "s-1", "run-1", "langgraph")
+        )
 
-        stored = await store.put(_checkpoint(), expected_revision=None)
+        stored = await store.put(
+            _checkpoint(), scope=_scope(), expected_revision=None
+        )
 
         self.assertEqual(stored.payload, b"payload")
         self.assertEqual(stored.metadata, b"metadata")

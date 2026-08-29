@@ -19,6 +19,8 @@ from harnest.model_hooks import (
     ModelLifecycleError,
     ModelLifecyclePipeline,
     portable_model_extension,
+    bind_model_extension,
+    _adk_context,
 )
 from types import SimpleNamespace
 
@@ -296,6 +298,58 @@ class ModelLifecyclePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.user_id, "two")
         self.assertEqual(second.invocation_id, "invoke-two")
         self.assertIsNone(current_model_context("adk").user_id)
+
+    def test_adk_callback_uses_active_subagent_without_replacing_ownership(self):
+        invocation = LifecycleContext(
+            framework="adk",
+            agent_name="root",
+            invocation_id="invoke-1",
+            user_id="owner",
+            session_id="session-1",
+        )
+        callback = SimpleNamespace(
+            agent_name="researcher",
+            invocation_id="native-invocation",
+            user_id="untrusted-user",
+            session_id="untrusted-session",
+        )
+
+        with model_invocation_scope(invocation):
+            context = _adk_context(callback)
+
+        self.assertEqual(context.agent_name, "researcher")
+        self.assertEqual(context.invocation_id, "invoke-1")
+        self.assertEqual(context.user_id, "owner")
+        self.assertEqual(context.session_id, "session-1")
+
+    def test_langgraph_middleware_binds_each_managed_agent_name(self):
+        seen = []
+        extension = portable_model_extension(
+            (listener("before_model", lambda context, _request: seen.append(context)),),
+            framework="langgraph",
+        )
+        researcher = bind_model_extension(extension, agent_name="researcher")
+        writer = bind_model_extension(extension, agent_name="writer")
+        request = SimpleNamespace(
+            model=SimpleNamespace(model="openai/test"),
+            messages=[],
+            override=lambda **values: SimpleNamespace(**values),
+        )
+        response = SimpleNamespace(result=[])
+        invocation = LifecycleContext(
+            framework="langgraph",
+            agent_name="root",
+            invocation_id="invoke-1",
+            user_id="owner",
+            session_id="session-1",
+        )
+
+        with model_invocation_scope(invocation):
+            researcher.wrap_model_call(request, lambda _request: response)
+            writer.wrap_model_call(request, lambda _request: response)
+
+        self.assertEqual([item.agent_name for item in seen], ["researcher", "writer"])
+        self.assertEqual([item.user_id for item in seen], ["owner", "owner"])
 
 
 async def _response(value):

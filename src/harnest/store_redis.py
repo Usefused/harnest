@@ -24,7 +24,9 @@ from .checkpoint import (
     HarnestStore,
     PendingAction,
     RunRecord,
+    RunScope,
     RunStatus,
+    _require_checkpoint_scope,
     _require_fields,
     _validate_same_run,
     _validate_transition,
@@ -267,39 +269,42 @@ class RedisStore(HarnestStore):
         _audit("checkpoint.run_started", "agent", "committed", "redis")
         return stored
 
-    async def get_run(self, *, run_id: str) -> RunRecord | None:
-        raw = await self._require_client().get(self._run_key(run_id))
-        return None if raw is None else _run_load(raw)
+    async def get_run(self, *, scope: RunScope) -> RunRecord | None:
+        raw = await self._require_client().get(self._run_key(scope.run_id))
+        if raw is None:
+            return None
+        record = _run_load(raw)
+        return record if record.scope == scope else None
 
     async def get_checkpoint(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str | None = None,
         namespace: str = "",
     ) -> CheckpointRecord | None:
         """Resolve an exact or newest checkpoint through its Redis index."""
 
-        if await self.get_run(run_id=run_id) is None:
+        if await self.get_run(scope=scope) is None:
             return None
         client = self._require_client()
         if checkpoint_id is None:
             members = await client.zrevrange(
-                self._checkpoint_index(run_id, namespace), 0, 0
+                self._checkpoint_index(scope.run_id, namespace), 0, 0
             )
             if not members:
                 return None
             raw = await client.get(members[0])
         else:
             raw = await client.get(
-                self._checkpoint_key(run_id, namespace, checkpoint_id)
+                self._checkpoint_key(scope.run_id, namespace, checkpoint_id)
             )
         return None if raw is None else _checkpoint_load(raw)
 
     async def list_checkpoints(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         namespace: str | None = None,
         before: str | None = None,
         limit: int = 20,
@@ -307,10 +312,10 @@ class RedisStore(HarnestStore):
         """Read bounded checkpoint history from sorted-set indexes."""
 
         _require_limit(limit)
-        if await self.get_run(run_id=run_id) is None:
+        if await self.get_run(scope=scope) is None:
             return
-        index = self._checkpoint_index(run_id, namespace)
-        cursor = self._checkpoint_cursor(run_id, namespace)
+        index = self._checkpoint_index(scope.run_id, namespace)
+        cursor = self._checkpoint_cursor(scope.run_id, namespace)
         maximum: Any = "+inf"
         if before is not None:
             score = await self._require_client().hget(cursor, before)
@@ -328,10 +333,16 @@ class RedisStore(HarnestStore):
                 yield _checkpoint_load(raw)
 
     async def put(
-        self, checkpoint: CheckpointRecord, *, expected_revision: int | None
+        self,
+        checkpoint: CheckpointRecord,
+        *,
+        scope: RunScope,
+        expected_revision: int | None,
     ) -> CheckpointRecord:
         """Persist checkpoint data and revision indexes with one Lua CAS."""
 
+        _require_checkpoint_scope(checkpoint, scope)
+        await self._require_active_run(scope)
         checkpoint_key = self._checkpoint_key(
             checkpoint.run_id, checkpoint.namespace, checkpoint.checkpoint_id
         )
@@ -370,7 +381,7 @@ class RedisStore(HarnestStore):
     async def put_writes(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str,
         writes: Sequence[CheckpointWrite],
     ) -> None:
@@ -378,6 +389,7 @@ class RedisStore(HarnestStore):
 
         if not writes:
             return
+        await self._require_active_run(scope)
         arguments: list[Any] = []
         for value in writes:
             arguments.extend((_write_field(value), _write_dump(value)))
@@ -385,7 +397,10 @@ class RedisStore(HarnestStore):
         try:
             result = await self._eval(
                 scripts.PUT_WRITES,
-                (self._run_key(run_id), self._writes_key(run_id, checkpoint_id)),
+                (
+                    self._run_key(scope.run_id),
+                    self._writes_key(scope.run_id, checkpoint_id),
+                ),
                 arguments,
             )
         except Exception:
@@ -395,23 +410,25 @@ class RedisStore(HarnestStore):
         _audit("checkpoint.writes_saved", "agent", "committed", "redis")
 
     async def get_writes(
-        self, *, run_id: str, checkpoint_id: str
+        self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
-        if await self.get_run(run_id=run_id) is None:
+        if await self.get_run(scope=scope) is None:
             return ()
         values = await self._require_client().hvals(
-            self._writes_key(run_id, checkpoint_id)
+            self._writes_key(scope.run_id, checkpoint_id)
         )
         return tuple(_write_load(value) for value in values)
 
     async def get_writes_batch(
-        self, *, run_id: str, checkpoint_ids: Sequence[str]
+        self, *, scope: RunScope, checkpoint_ids: Sequence[str]
     ) -> Mapping[str, Sequence[CheckpointWrite]]:
         """Fetch several pending-write hashes in one Redis round trip."""
 
-        if not checkpoint_ids or await self.get_run(run_id=run_id) is None:
+        if not checkpoint_ids or await self.get_run(scope=scope) is None:
             return {}
-        keys = [self._writes_key(run_id, value) for value in checkpoint_ids]
+        keys = [
+            self._writes_key(scope.run_id, value) for value in checkpoint_ids
+        ]
         result = await self._eval(
             scripts.GET_WRITES_BATCH, keys, checkpoint_ids
         )
@@ -425,7 +442,7 @@ class RedisStore(HarnestStore):
     async def transition(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         expected_status: RunStatus,
         status: RunStatus,
         pending_action: PendingAction | None = None,
@@ -433,7 +450,7 @@ class RedisStore(HarnestStore):
         """Apply one status compare-and-swap and release terminal ownership."""
 
         _validate_transition(expected_status, status, pending_action)
-        current = await self.get_run(run_id=run_id)
+        current = await self.get_run(scope=scope)
         if current is None:
             _audit("checkpoint.transition", "agent", "failed", "redis")
             raise KeyError("checkpoint run not found")
@@ -443,13 +460,13 @@ class RedisStore(HarnestStore):
         try:
             result = await self._eval(
                 scripts.TRANSITION_RUN,
-                (self._run_key(run_id), active_key),
+                (self._run_key(scope.run_id), active_key),
                 (
                     expected_status,
                     status,
                     _json_dump(None if pending_action is None else asdict(pending_action)),
                     _timestamp(),
-                    run_id,
+                    scope.run_id,
                     self._checkpoint_ttl,
                 ),
             )
@@ -464,24 +481,32 @@ class RedisStore(HarnestStore):
         _audit("checkpoint.transition", "agent", "committed", "redis")
         return record
 
-    async def delete_run(self, *, run_id: str) -> None:
+    async def _require_active_run(self, scope: RunScope) -> RunRecord:
+        record = await self.get_run(scope=scope)
+        if record is None:
+            raise KeyError("checkpoint run not found")
+        if record.status not in {"running", "waiting"}:
+            raise CheckpointConflictError("checkpoint run is already terminal")
+        return record
+
+    async def delete_run(self, *, scope: RunScope) -> None:
         """Make run data unreachable immediately and let private blobs expire."""
 
-        current = await self.get_run(run_id=run_id)
+        current = await self.get_run(scope=scope)
         if current is None:
             return
         active = self._active_key(
             current.application_id, current.user_id, current.session_id
         )
         keys = (
-            self._run_key(run_id),
+            self._run_key(scope.run_id),
             active,
-            self._checkpoint_index(run_id, None),
-            self._checkpoint_cursor(run_id, None),
-            self._key("checkpoint-sequence", _digest(run_id)),
+            self._checkpoint_index(scope.run_id, None),
+            self._checkpoint_cursor(scope.run_id, None),
+            self._key("checkpoint-sequence", _digest(scope.run_id)),
         )
         try:
-            await self._eval(scripts.DELETE_RUN, keys, (run_id,))
+            await self._eval(scripts.DELETE_RUN, keys, (scope.run_id,))
         except Exception:
             _audit("checkpoint.run_deleted", "user", "failed", "redis")
             raise

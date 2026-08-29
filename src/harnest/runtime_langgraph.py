@@ -31,7 +31,8 @@ from .approval import (
 from .application import CompiledApplication
 from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
-from .checkpoint import CheckpointStore, HarnestStore
+from .checkpoint import CheckpointStore, HarnestStore, RunScope
+from .checkpoint_langgraph import managed_run_config
 from .client_tool import current_transient_media
 from .content import AssetRef, Audio, Data, File, Image, Text, Video
 from .graph import _model_input_text
@@ -248,7 +249,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 scope=AssetScope(request.user_id, session_id),
             )
             await self._begin_checkpoint(request, session_id)
-            config = self._execution_config(request.invocation_id)
+            config = self._execution_config(request, session_id)
             target = await self._target_for_run()
             scope_token = _MODEL_ASSET_SCOPE.set(
                 AssetScope(user_id=request.user_id, session_id=session_id)
@@ -263,11 +264,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                     ),
                 )
             except BaseException:
-                await self._finish_checkpoint(request.invocation_id, "failed")
+                await self._finish_checkpoint(request, session_id, "failed")
                 raise
             finally:
                 _MODEL_ASSET_SCOPE.reset(scope_token)
-            await self._finish_checkpoint(request.invocation_id, "completed")
+            await self._finish_checkpoint(request, session_id, "completed")
 
         turn_start = _message_count(graph_input)
         text_value, public_result = _graph_output(
@@ -315,7 +316,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 scope=scope,
             )
             await self._begin_checkpoint(request, session_id)
-            config = self._execution_config(request.invocation_id)
+            config = self._execution_config(request, session_id)
             state = _StreamState()
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
@@ -332,11 +333,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 )
                 await self._store_result(session, state.final_state, scope=scope)
             except BaseException:
-                await self._finish_checkpoint(request.invocation_id, "failed")
+                await self._finish_checkpoint(request, session_id, "failed")
                 raise
             finally:
                 _MODEL_ASSET_SCOPE.reset(scope_token)
-            await self._finish_checkpoint(request.invocation_id, "completed")
+            await self._finish_checkpoint(request, session_id, "completed")
 
         turn_start = _message_count(graph_input)
         for event in _final_stream_events(
@@ -590,16 +591,19 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             framework="langgraph",
         )
 
-    async def _finish_checkpoint(self, run_id: str, status: str) -> None:
+    async def _finish_checkpoint(
+        self, request: InvocationRequest, session_id: str, status: str
+    ) -> None:
         """Release portable run ownership after the graph becomes terminal."""
 
         store = self._portable_checkpoints()
         if store is None:
             return
-        record = await store.get_run(run_id=run_id)
+        scope = self._run_scope(request, session_id)
+        record = await store.get_run(scope=scope)
         if record is not None and record.status == "running":
             await store.transition(
-                run_id=run_id,
+                scope=scope,
                 expected_status="running",
                 status=status,
             )
@@ -610,15 +614,25 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         provider = self._application.checkpointer
         return provider if isinstance(provider, HarnestStore) else None
 
-    def _execution_config(self, run_id: str) -> dict[str, Any]:
+    def _run_scope(
+        self, request: InvocationRequest, session_id: str
+    ) -> RunScope:
+        return RunScope(
+            self._application.name,
+            request.user_id,
+            session_id,
+            request.invocation_id,
+        )
+
+    def _execution_config(
+        self, request: InvocationRequest, session_id: str
+    ) -> dict[str, Any]:
         """Isolate native checkpoint threads while SessionStore carries history."""
 
+        # A thread represents one invocation. SessionStore remains the
+        # committed multi-turn authority across these isolated runs.
         return {
-            "configurable": {
-                # A thread represents one invocation. SessionStore remains the
-                # committed multi-turn authority across these isolated runs.
-                "thread_id": run_id,
-            },
+            **managed_run_config(self._run_scope(request, session_id)),
             "recursion_limit": self._recursion_limit,
         }
 

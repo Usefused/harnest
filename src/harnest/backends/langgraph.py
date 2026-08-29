@@ -20,6 +20,7 @@ from ..graph import (
     call_graph_node,
 )
 from ..model_lifecycle import propagate_litellm_lifecycles
+from ..model_hooks import bind_model_extension
 from ..structured import provider_output_schema
 
 
@@ -149,7 +150,10 @@ def _build_ready_agent(
         "tools": _langchain_tools((*definition.tools, *tools)),
         "system_prompt": definition.instruction,
         "name": definition.name,
-        "middleware": list(middleware),
+        "middleware": [
+            bind_model_extension(item, agent_name=definition.name)
+            for item in middleware
+        ],
     }
     if definition.output_schema is not None:
         # Passing the model class lets LangChain select provider-native output

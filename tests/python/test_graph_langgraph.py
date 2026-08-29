@@ -68,6 +68,26 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(create.call_args.kwargs["middleware"], [middleware])
 
+    def test_portable_middleware_is_bound_to_managed_agent_name(self):
+        from harnest.backends.langgraph import build_agent
+
+        bound = object()
+
+        class PortableMiddleware:
+            def _harnest_bind_agent(self, agent_name):
+                self.agent_name = agent_name
+                return bound
+
+        definition = AgentDefinition(
+            name="researcher", model="test:model", instruction="Research."
+        )
+        middleware = PortableMiddleware()
+        with patch("langchain.agents.create_agent", return_value=object()) as create:
+            build_agent(definition, middleware=(middleware,))
+
+        self.assertEqual(middleware.agent_name, "researcher")
+        self.assertEqual(create.call_args.kwargs["middleware"], [bound])
+
     async def test_agent_history_projects_session_or_current_turn(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.runnables import RunnableLambda

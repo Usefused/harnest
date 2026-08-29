@@ -185,6 +185,13 @@ def portable_model_extension(
     return _adk_plugin(pipeline) if framework == "adk" else _langgraph_middleware(pipeline)
 
 
+def bind_model_extension(extension: Any, *, agent_name: str) -> Any:
+    """Bind a portable native adapter to one managed agent when supported."""
+
+    binder = getattr(extension, "_harnest_bind_agent", None)
+    return binder(agent_name) if callable(binder) else extension
+
+
 def _before_value(
     listener: LifecycleListener, current: ModelCallRequest, value: Any
 ) -> tuple[ModelCallRequest, ModelCallResponse | None]:
@@ -264,11 +271,17 @@ def _adk_plugin(pipeline: ModelLifecyclePipeline) -> Any:
 
 def _adk_context(value: Any) -> ModelLifecycleContext:
     current = current_model_context("adk")
-    updates = {
+    updates: dict[str, Any] = {
         name: getattr(value, name, None)
-        for name in ("agent_name", "invocation_id", "user_id", "session_id")
+        for name in ("invocation_id", "user_id", "session_id")
         if getattr(current, name) is None and getattr(value, name, None) is not None
     }
+    # ADK's callback context identifies the agent executing this particular
+    # model call. It must replace the invocation-level root name for managed
+    # subagents, while authenticated invocation ownership remains fill-only.
+    agent_name = getattr(value, "agent_name", None)
+    if agent_name is not None:
+        updates["agent_name"] = agent_name
     return replace(current, **updates) if updates else current
 
 
@@ -333,13 +346,26 @@ def _apply_adk_response(native: Any, updated: ModelCallResponse) -> Any:
     return replacement
 
 
-def _langgraph_middleware(pipeline: ModelLifecyclePipeline) -> Any:
+def _langgraph_middleware(
+    pipeline: ModelLifecyclePipeline, *, agent_name: str | None = None
+) -> Any:
     from langchain.agents.middleware import AgentMiddleware
 
     class PortableModelMiddleware(AgentMiddleware):
+        def _harnest_bind_agent(self, value: str) -> Any:
+            return _langgraph_middleware(pipeline, agent_name=value)
+
+        def _context(self) -> ModelLifecycleContext:
+            current = current_model_context("langgraph")
+            return (
+                replace(current, agent_name=agent_name)
+                if agent_name is not None
+                else current
+            )
+
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             original = _langgraph_request(request)
-            context = current_model_context("langgraph")
+            context = self._context()
             try:
                 updated_request, short = await pipeline._before(context, original)
                 if short is not None:
@@ -356,7 +382,7 @@ def _langgraph_middleware(pipeline: ModelLifecyclePipeline) -> Any:
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
             original = _langgraph_request(request)
-            context = current_model_context("langgraph")
+            context = self._context()
             try:
                 updated_request, short = pipeline._before_sync(context, original)
                 if short is not None:
@@ -503,4 +529,5 @@ __all__ = [
     "current_model_context",
     "model_invocation_scope",
     "portable_model_extension",
+    "bind_model_extension",
 ]

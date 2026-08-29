@@ -19,7 +19,7 @@ from ._json import json_value
 from .application import CompiledApplication
 from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
-from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore
+from .checkpoint import CheckpointRecord, CheckpointStore, HarnestStore, RunScope
 from .client_tool import current_transient_media
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp_lifecycle import (
@@ -539,9 +539,9 @@ class ADKRuntimeDriver(RuntimeDriver):
                 for item in output.complete():
                     yield item
             except BaseException:
-                await self._finish_checkpoint(request.invocation_id, "failed")
+                await self._finish_checkpoint(request, "failed")
                 raise
-            await self._finish_checkpoint(request.invocation_id, "completed")
+            await self._finish_checkpoint(request, "completed")
 
     async def _prepare_stream_request(
         self, request: InvocationRequest
@@ -642,14 +642,14 @@ class ADKRuntimeDriver(RuntimeDriver):
         ).encode("utf-8")
         checkpoint_id = getattr(event, "id", None) or uuid.uuid4().hex
         existing = await store.get_checkpoint(
-            run_id=request.invocation_id,
+            scope=self._run_scope(request),
             checkpoint_id=checkpoint_id,
             namespace="events",
         )
         if existing is not None:
             return
         previous = await store.get_checkpoint(
-            run_id=request.invocation_id, namespace="events"
+            scope=self._run_scope(request), namespace="events"
         )
         record = CheckpointRecord(
             run_id=request.invocation_id,
@@ -666,21 +666,34 @@ class ADKRuntimeDriver(RuntimeDriver):
                 None if previous is None else previous.checkpoint_id
             ),
         )
-        await store.put(record, expected_revision=None)
+        await store.put(
+            record, scope=self._run_scope(request), expected_revision=None
+        )
 
-    async def _finish_checkpoint(self, run_id: str, status: str) -> None:
+    async def _finish_checkpoint(
+        self, request: InvocationRequest, status: str
+    ) -> None:
         """Release portable run ownership after ADK reaches a terminal outcome."""
 
         store = self._portable_checkpoints()
         if store is None:
             return
-        record = await store.get_run(run_id=run_id)
+        scope = self._run_scope(request)
+        record = await store.get_run(scope=scope)
         if record is not None and record.status == "running":
             await store.transition(
-                run_id=run_id,
+                scope=scope,
                 expected_status="running",
                 status=status,
             )
+
+    def _run_scope(self, request: InvocationRequest) -> RunScope:
+        return RunScope(
+            self.application.name,
+            request.user_id,
+            request.session_id,
+            request.invocation_id,
+        )
 
     def _portable_checkpoints(self) -> CheckpointStore | None:
         """Use portable checkpoints only when Harnest, not ADK, owns storage."""

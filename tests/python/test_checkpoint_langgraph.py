@@ -1,7 +1,7 @@
 import unittest
 
-from harnest.checkpoint import MemoryStore
-from harnest.checkpoint_langgraph import HarnestCheckpointSaver
+from harnest.checkpoint import MemoryStore, RunScope
+from harnest.checkpoint_langgraph import HarnestCheckpointSaver, managed_run_config
 
 
 class LangGraphCheckpointAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -16,12 +16,13 @@ class LangGraphCheckpointAdapterTests(unittest.IsolatedAsyncioTestCase):
             framework="langgraph",
         )
         self.saver = HarnestCheckpointSaver(self.store)
+        self.scope = RunScope("support", "user-1", "session-1", "run-1")
 
     async def asyncTearDown(self):
         await self.store.close()
 
     async def test_native_round_trip_preserves_parent_and_pending_writes(self):
-        root_config = {"configurable": {"thread_id": "run-1"}}
+        root_config = self._config()
         first = await self.saver.aput(
             root_config,
             {"id": "checkpoint-1", "channel_values": {"value": 1}},
@@ -48,8 +49,8 @@ class LangGraphCheckpointAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(parent.pending_writes, [("task-1", "value", 2)])
 
-    async def test_listing_is_newest_first_and_thread_delete_cleans_run(self):
-        config = {"configurable": {"thread_id": "run-1"}}
+    async def test_listing_is_newest_first_and_owned_thread_delete_cleans_run(self):
+        config = self._config()
         for index in range(3):
             config = await self.saver.aput(
                 config,
@@ -59,13 +60,23 @@ class LangGraphCheckpointAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         values = [item async for item in self.saver.alist(config, limit=2)]
-        await self.saver.adelete_thread("run-1")
+        await self.saver.adelete_thread(config["configurable"]["thread_id"])
 
         self.assertEqual(
             [item.checkpoint["id"] for item in values],
             ["checkpoint-2", "checkpoint-1"],
         )
-        self.assertIsNone(await self.store.get_run(run_id="run-1"))
+        self.assertIsNone(await self.store.get_run(scope=self.scope))
+
+    async def test_bare_run_id_cannot_access_or_delete_a_managed_thread(self):
+        with self.assertRaisesRegex(ValueError, "requires Harnest run ownership"):
+            await self.saver.aget_tuple({"configurable": {"thread_id": "run-1"}})
+        with self.assertRaisesRegex(ValueError, "requires Harnest run ownership"):
+            await self.saver.adelete_thread("run-1")
+        self.assertIsNotNone(await self.store.get_run(scope=self.scope))
+
+    def _config(self):
+        return managed_run_config(self.scope)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from harnest.checkpoint import (
     CheckpointWrite,
     MemoryStore,
     PendingAction,
+    RunScope,
 )
 
 
@@ -42,18 +43,27 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
             framework="langgraph",
         )
 
+    def _scope(self, run_id="run-1", *, user_id="user-1"):
+        return RunScope("support", user_id, "session-1", run_id)
+
     async def test_compare_and_swap_rejects_stale_checkpoint_write(self):
         await self._begin()
         first = await self.store.put(
-            _checkpoint("run-1"), expected_revision=None
+            _checkpoint("run-1"), scope=self._scope(), expected_revision=None
         )
 
         self.assertEqual(first.revision, 0)
         with self.assertRaisesRegex(CheckpointConflictError, "revision changed"):
-            await self.store.put(_checkpoint("run-1"), expected_revision=None)
+            await self.store.put(
+                _checkpoint("run-1"),
+                scope=self._scope(),
+                expected_revision=None,
+            )
 
         updated = await self.store.put(
-            _checkpoint("run-1"), expected_revision=first.revision
+            _checkpoint("run-1"),
+            scope=self._scope(),
+            expected_revision=first.revision,
         )
         self.assertEqual(updated.revision, 1)
 
@@ -63,7 +73,7 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
             await self._begin("run-2")
 
         await self.store.transition(
-            run_id="run-1", expected_status="running", status="completed"
+            scope=self._scope(), expected_status="running", status="completed"
         )
         resumed = await self._begin("run-2")
 
@@ -74,20 +84,20 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
         pending = PendingAction("human_approval", "approval-1", "deploy")
 
         waiting = await self.store.transition(
-            run_id="run-1",
+            scope=self._scope(),
             expected_status="running",
             status="waiting",
             pending_action=pending,
         )
         running = await self.store.transition(
-            run_id="run-1", expected_status="waiting", status="running"
+            scope=self._scope(), expected_status="waiting", status="running"
         )
 
         self.assertEqual(waiting.pending_action, pending)
         self.assertIsNone(running.pending_action)
         with self.assertRaises(CheckpointConflictError):
             await self.store.transition(
-                run_id="run-1", expected_status="waiting", status="running"
+                scope=self._scope(), expected_status="waiting", status="running"
             )
 
     async def test_concurrent_status_cas_has_one_winner(self):
@@ -95,10 +105,10 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
 
         results = await asyncio.gather(
             self.store.transition(
-                run_id="run-1", expected_status="running", status="completed"
+                scope=self._scope(), expected_status="running", status="completed"
             ),
             self.store.transition(
-                run_id="run-1", expected_status="running", status="failed"
+                scope=self._scope(), expected_status="running", status="failed"
             ),
             return_exceptions=True,
         )
@@ -110,22 +120,42 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_writes_and_delete_cleanup(self):
         await self._begin()
-        await self.store.put(_checkpoint("run-1"), expected_revision=None)
+        await self.store.put(
+            _checkpoint("run-1"), scope=self._scope(), expected_revision=None
+        )
         write = CheckpointWrite("task-1", "messages", "json", b"[]")
         await self.store.put_writes(
-            run_id="run-1", checkpoint_id="checkpoint-1", writes=(write,)
+            scope=self._scope(), checkpoint_id="checkpoint-1", writes=(write,)
         )
 
         self.assertEqual(
             await self.store.get_writes(
-                run_id="run-1", checkpoint_id="checkpoint-1"
+                scope=self._scope(), checkpoint_id="checkpoint-1"
             ),
             (write,),
         )
-        await self.store.delete_run(run_id="run-1")
+        await self.store.delete_run(scope=self._scope())
 
-        self.assertIsNone(await self.store.get_run(run_id="run-1"))
-        self.assertIsNone(await self.store.get_checkpoint(run_id="run-1"))
+        self.assertIsNone(await self.store.get_run(scope=self._scope()))
+        self.assertIsNone(await self.store.get_checkpoint(scope=self._scope()))
+
+    async def test_foreign_scope_cannot_read_mutate_or_delete_run(self):
+        await self._begin()
+        await self.store.put(
+            _checkpoint("run-1"), scope=self._scope(), expected_revision=None
+        )
+        foreign = self._scope(user_id="other-user")
+
+        self.assertIsNone(await self.store.get_run(scope=foreign))
+        self.assertIsNone(await self.store.get_checkpoint(scope=foreign))
+        with self.assertRaises(KeyError):
+            await self.store.transition(
+                scope=foreign,
+                expected_status="running",
+                status="completed",
+            )
+        await self.store.delete_run(scope=foreign)
+        self.assertIsNotNone(await self.store.get_run(scope=self._scope()))
 
 
 if __name__ == "__main__":

@@ -425,6 +425,9 @@ suppress an event. `authenticate` resolves the existing `AuthPrincipal` from a
 read-only connection context. `before_model`, `after_model`, and
 `on_model_error` receive only Harnest-neutral types and are guaranteed for
 managed model boundaries. Portable v1 changes visible text or short-circuits;
+the lifecycle context names the managed agent or subagent performing that
+specific model call while retaining the root invocation's authenticated user,
+session, and invocation identity.
 structural message/model control requires zero-argument `@lifecycle.adk_plugin` or
 `@lifecycle.langgraph_middleware` factories for native framework callbacks.
 Read `docs/extensions.md` for phase and advanced-mode guarantees.
@@ -440,7 +443,10 @@ connection and uses the same sessions, approvals, client tools, lifecycle,
 credentials, limits, and telemetry as `/responses`. Compilation rejects
 duplicate and Harnest-owned paths. Subagents cannot own routes. See
 `https://docs.usefused.com/harnest/runtime/custom-http-endpoints` for the public
-contract and example.
+contract and example. Keep domain-specific session queries, such as filtering
+by a site's origin, in an authenticated custom route backed by an
+application-owned index. Do not fetch one neutral `/sessions` page and filter
+it locally because matches can exist on later pages.
 
 ### Public output policy
 
@@ -553,6 +559,12 @@ compiles with `store.as_langgraph_checkpointer()`, or uses the exact lifecycle-o
 one `ADKStore(session_service)` returned from both storage factories. Hidden,
 raw, duplicate, or mismatched authorities fail compilation. Read
 `docs/checkpoints.md` for schema and recovery limits.
+
+Custom `CheckpointStore` implementations require the complete `RunScope`
+(`application_id`, `user_id`, `session_id`, and `run_id`) for every operation
+after `begin_run`. Apply all four values in the datastore predicate and return
+the same not-found result for missing and foreign runs. Never expose a helper
+that loads checkpoints by `run_id` alone.
 
 For other database, vector-store, embedding, or HTTP clients, declare a
 zero-argument provider and decorate it with `@context("name")`. On its own the

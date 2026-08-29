@@ -57,6 +57,29 @@ class RunRecord:
     created_at: str = field(default_factory=lambda: _timestamp())
     updated_at: str = field(default_factory=lambda: _timestamp())
 
+    @property
+    def scope(self) -> RunScope:
+        """Return the complete ownership key required for later operations."""
+
+        return RunScope(
+            self.application_id, self.user_id, self.session_id, self.run_id
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunScope:
+    """Complete ownership key required at the store boundary for one run."""
+
+    application_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+
+    def __post_init__(self) -> None:
+        _require_fields(
+            self.application_id, self.user_id, self.session_id, self.run_id
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CheckpointWrite:
@@ -104,12 +127,12 @@ class CheckpointStore(Protocol):
         framework: Literal["adk", "langgraph"],
     ) -> RunRecord: ...
 
-    async def get_run(self, *, run_id: str) -> RunRecord | None: ...
+    async def get_run(self, *, scope: RunScope) -> RunRecord | None: ...
 
     async def get_checkpoint(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str | None = None,
         namespace: str = "",
     ) -> CheckpointRecord | None: ...
@@ -117,42 +140,46 @@ class CheckpointStore(Protocol):
     def list_checkpoints(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         namespace: str | None = None,
         before: str | None = None,
         limit: int = 20,
     ) -> AsyncIterator[CheckpointRecord]: ...
 
     async def put(
-        self, checkpoint: CheckpointRecord, *, expected_revision: int | None
+        self,
+        checkpoint: CheckpointRecord,
+        *,
+        scope: RunScope,
+        expected_revision: int | None,
     ) -> CheckpointRecord: ...
 
     async def put_writes(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str,
         writes: Sequence[CheckpointWrite],
     ) -> None: ...
 
     async def get_writes(
-        self, *, run_id: str, checkpoint_id: str
+        self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]: ...
 
     async def get_writes_batch(
-        self, *, run_id: str, checkpoint_ids: Sequence[str]
+        self, *, scope: RunScope, checkpoint_ids: Sequence[str]
     ) -> Mapping[str, Sequence[CheckpointWrite]]: ...
 
     async def transition(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         expected_status: RunStatus,
         status: RunStatus,
         pending_action: PendingAction | None = None,
     ) -> RunRecord: ...
 
-    async def delete_run(self, *, run_id: str) -> None: ...
+    async def delete_run(self, *, scope: RunScope) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -248,35 +275,37 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         _audit(record, "run_started", "committed")
         return record
 
-    async def get_run(self, *, run_id: str) -> RunRecord | None:
+    async def get_run(self, *, scope: RunScope) -> RunRecord | None:
         async with self._lock:
-            return self._state.runs.get(run_id)
+            return _owned_run(self._state.runs.get(scope.run_id), scope)
 
     async def get_checkpoint(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str | None = None,
         namespace: str = "",
     ) -> CheckpointRecord | None:
         """Load an exact checkpoint or the newest checkpoint in a namespace."""
 
         async with self._lock:
+            if _owned_run(self._state.runs.get(scope.run_id), scope) is None:
+                return None
             if checkpoint_id is not None:
                 return self._state.checkpoints.get(
-                    (run_id, namespace, checkpoint_id)
+                    (scope.run_id, namespace, checkpoint_id)
                 )
             matches = (
                 value
                 for key, value in self._state.checkpoints.items()
-                if key[0] == run_id and key[1] == namespace
+                if key[0] == scope.run_id and key[1] == namespace
             )
             return max(matches, key=lambda item: item.revision, default=None)
 
     async def list_checkpoints(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         namespace: str | None = None,
         before: str | None = None,
         limit: int = 20,
@@ -286,10 +315,12 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         if limit < 1:
             raise ValueError("checkpoint list limit must be positive")
         async with self._lock:
+            if _owned_run(self._state.runs.get(scope.run_id), scope) is None:
+                return
             values = tuple(
                 value
                 for key, value in self._state.checkpoints.items()
-                if key[0] == run_id
+                if key[0] == scope.run_id
                 and (namespace is None or key[1] == namespace)
                 and (before is None or value.checkpoint_id < before)
             )
@@ -299,13 +330,21 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
             yield value
 
     async def put(
-        self, checkpoint: CheckpointRecord, *, expected_revision: int | None
+        self,
+        checkpoint: CheckpointRecord,
+        *,
+        scope: RunScope,
+        expected_revision: int | None,
     ) -> CheckpointRecord:
         """Persist a checkpoint only when its expected revision still matches."""
 
+        _require_checkpoint_scope(checkpoint, scope)
         key = (checkpoint.run_id, checkpoint.namespace, checkpoint.checkpoint_id)
         async with self._lock:
-            _require_running(self._state.runs.get(checkpoint.run_id))
+            record = _require_owned_run(
+                self._state.runs.get(checkpoint.run_id), scope
+            )
+            _require_running(record)
             current = self._state.checkpoints.get(key)
             current_revision = -1 if current is None else current.revision
             if current_revision != (
@@ -329,38 +368,49 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
     async def put_writes(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         checkpoint_id: str,
         writes: Sequence[CheckpointWrite],
     ) -> None:
         """Add pending writes idempotently by task and channel."""
 
         async with self._lock:
-            _require_running(self._state.runs.get(run_id))
-            target = self._state.writes.setdefault((run_id, checkpoint_id), [])
+            record = _require_owned_run(
+                self._state.runs.get(scope.run_id), scope
+            )
+            _require_running(record)
+            target = self._state.writes.setdefault(
+                (scope.run_id, checkpoint_id), []
+            )
             existing = {(item.task_id, item.channel) for item in target}
             target.extend(
                 item
                 for item in writes
                 if (item.task_id, item.channel) not in existing
             )
-        _audit(self._state.runs[run_id], "writes_saved", "committed")
+        _audit(record, "writes_saved", "committed")
 
     async def get_writes(
-        self, *, run_id: str, checkpoint_id: str
+        self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
         async with self._lock:
-            return tuple(self._state.writes.get((run_id, checkpoint_id), ()))
+            if _owned_run(self._state.runs.get(scope.run_id), scope) is None:
+                return ()
+            return tuple(
+                self._state.writes.get((scope.run_id, checkpoint_id), ())
+            )
 
     async def get_writes_batch(
-        self, *, run_id: str, checkpoint_ids: Sequence[str]
+        self, *, scope: RunScope, checkpoint_ids: Sequence[str]
     ) -> Mapping[str, Sequence[CheckpointWrite]]:
         """Load writes for several checkpoints without per-checkpoint calls."""
 
         async with self._lock:
+            if _owned_run(self._state.runs.get(scope.run_id), scope) is None:
+                return {}
             return {
                 checkpoint_id: tuple(
-                    self._state.writes.get((run_id, checkpoint_id), ())
+                    self._state.writes.get((scope.run_id, checkpoint_id), ())
                 )
                 for checkpoint_id in checkpoint_ids
             }
@@ -368,7 +418,7 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
     async def transition(
         self,
         *,
-        run_id: str,
+        scope: RunScope,
         expected_status: RunStatus,
         status: RunStatus,
         pending_action: PendingAction | None = None,
@@ -377,9 +427,9 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
 
         _validate_transition(expected_status, status, pending_action)
         async with self._lock:
-            current = self._state.runs.get(run_id)
-            if current is None:
-                raise KeyError("checkpoint run not found")
+            current = _require_owned_run(
+                self._state.runs.get(scope.run_id), scope
+            )
             if current.status != expected_status:
                 raise CheckpointConflictError("checkpoint run status changed")
             updated = replace(
@@ -389,25 +439,26 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
                 revision=current.revision + 1,
                 updated_at=_timestamp(),
             )
-            self._state.runs[run_id] = updated
+            self._state.runs[scope.run_id] = updated
             if status in _TERMINAL:
                 self._state.active.pop(_run_key(current), None)
         _audit(updated, f"run_{status}", "committed")
         return updated
 
-    async def delete_run(self, *, run_id: str) -> None:
+    async def delete_run(self, *, scope: RunScope) -> None:
         """Delete a run and every private checkpoint owned by it."""
 
         async with self._lock:
-            record = self._state.runs.pop(run_id, None)
+            record = _owned_run(self._state.runs.get(scope.run_id), scope)
             if record is None:
                 return
+            self._state.runs.pop(scope.run_id)
             self._state.active.pop(_run_key(record), None)
             for key in tuple(self._state.checkpoints):
-                if key[0] == run_id:
+                if key[0] == scope.run_id:
                     self._state.checkpoints.pop(key)
             for key in tuple(self._state.writes):
-                if key[0] == run_id:
+                if key[0] == scope.run_id:
                     self._state.writes.pop(key)
         _audit(record, "run_deleted", "committed")
 
@@ -585,6 +636,30 @@ def _require_running(record: RunRecord | None) -> None:
         raise CheckpointConflictError("checkpoint run is already terminal")
 
 
+def _owned_run(record: RunRecord | None, scope: RunScope) -> RunRecord | None:
+    """Return a run only when every ownership component matches."""
+
+    if record is None or record.scope != scope:
+        return None
+    return record
+
+
+def _require_owned_run(record: RunRecord | None, scope: RunScope) -> RunRecord:
+    """Reject missing and foreign runs with the same non-disclosing error."""
+
+    owned = _owned_run(record, scope)
+    if owned is None:
+        raise KeyError("checkpoint run not found")
+    return owned
+
+
+def _require_checkpoint_scope(
+    checkpoint: CheckpointRecord, scope: RunScope
+) -> None:
+    if checkpoint.run_id != scope.run_id:
+        raise ValueError("checkpoint run_id does not match ownership scope")
+
+
 def _validate_transition(
     current: RunStatus, target: RunStatus, pending: PendingAction | None
 ) -> None:
@@ -643,6 +718,7 @@ __all__ = [
     "MemoryStore",
     "PendingAction",
     "RunRecord",
+    "RunScope",
     "RunStatus",
     "checkpoint_metadata",
 ]

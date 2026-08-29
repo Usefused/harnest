@@ -4,7 +4,7 @@ import os
 import unittest
 import uuid
 
-from harnest.checkpoint import CheckpointRecord
+from harnest.checkpoint import CheckpointRecord, RunScope
 from harnest.store import PostgresStore, RedisStore
 
 
@@ -51,21 +51,24 @@ class _LiveStoreContract:
                 run_id=run_id,
                 framework="langgraph",
             )
+            scope = RunScope("integration", user_id, session_id, run_id)
             stored = await self.store.put(
-                _record(run_id), expected_revision=None
+                _record(run_id), scope=scope, expected_revision=None
             )
             self.assertEqual(stored.payload, b"{}")
             await self.store.transition(
-                run_id=run_id,
+                scope=scope,
                 expected_status="running",
                 status="completed",
             )
             self.assertEqual(
-                (await self.store.get_run(run_id=run_id)).status,
+                (await self.store.get_run(scope=scope)).status,
                 "completed",
             )
         finally:
-            await self.store.delete_run(run_id=run_id)
+            await self.store.delete_run(
+                scope=RunScope("integration", user_id, session_id, run_id)
+            )
             await self.store.delete(session_id=session_id, user_id=user_id)
             await self.store.close()
 

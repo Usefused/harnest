@@ -15,6 +15,7 @@ from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
+from harnest.checkpoint_langgraph import _decode_thread_id
 from harnest.graph import START, Edge, Graph
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
@@ -378,7 +379,10 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         await self.driver.invoke(_request(invocation_id="invocation-2"))
         thread_ids = [item["configurable"]["thread_id"] for item in self.target.configs]
         self.assertEqual(len(set(thread_ids)), 2)
-        self.assertEqual(thread_ids, ["invocation-1", "invocation-2"])
+        self.assertEqual(
+            [_decode_thread_id(value).run_id for value in thread_ids],
+            ["invocation-1", "invocation-2"],
+        )
         self.assertNotIn("session-1", thread_ids)
         self.assertEqual(len(self.target.inputs[1]["messages"]), 4)
 
