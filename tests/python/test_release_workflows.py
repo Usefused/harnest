@@ -178,6 +178,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "--outdir internal/runtimewheel/assets",
         )
         self.assertEqual(config["release"]["mode"], "keep-existing")
+        self.assertEqual(
+            config["release"]["github"],
+            {"owner": "Usefused", "name": "harnest"},
+        )
         self.assertEqual(config["archives"][0]["ids"], ["harnest"])
         self.assertEqual(config["builds"][0]["tags"], ["harnest_release"])
         self.assertEqual(
@@ -244,6 +248,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
+        self.assertIn("repo=${HARNEST_REPO:-Usefused/harnest}", installer)
         self.assertIn('"${extract_directory}/harnest" runtime install', installer)
         self.assertIn('[ -n "${HARNEST_BOOTSTRAP_PYTHON:-}" ]', installer)
         self.assertNotIn("HARNEST_BOOTSTRAP_PYTHON:-python3", installer)

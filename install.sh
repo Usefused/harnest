@@ -60,7 +60,7 @@ need_command grep
 need_command awk
 need_command dirname
 
-repo=${HARNEST_REPO:-creativeJoe007/harnest}
+repo=${HARNEST_REPO:-Usefused/harnest}
 printf '%s\n' "$repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || \
   fail 'HARNEST_REPO must use owner/repository form'
 

@@ -12,7 +12,7 @@ Install the latest release from the canonical repository:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
+  https://raw.githubusercontent.com/Usefused/harnest/main/install.sh |
   sh
 ```
 
@@ -23,7 +23,7 @@ other deliberately non-interactive callers must opt in explicitly:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
+  https://raw.githubusercontent.com/Usefused/harnest/main/install.sh |
   HARNEST_YES=1 sh
 ```
 
@@ -32,13 +32,13 @@ script:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
-  HARNEST_VERSION=v0.1.18 HARNEST_REPO=creativeJoe007/harnest sh
+  https://raw.githubusercontent.com/Usefused/harnest/main/install.sh |
+  HARNEST_VERSION=v0.1.18 HARNEST_REPO=Usefused/harnest sh
 ```
 
 `HARNEST_VERSION` accepts a release version with or without the leading `v`.
 When omitted, the installer follows the repository's latest GitHub Release.
-`HARNEST_REPO` defaults to `creativeJoe007/harnest` and accepts an
+`HARNEST_REPO` defaults to `Usefused/harnest` and accepts an
 `owner/repository` override. Set `GITHUB_TOKEN` for a private fork; the installer
 does not print it.
 
@@ -139,7 +139,7 @@ Releases use GoReleaser v2.18 or newer. Each platform archive contains:
 - the Apache 2.0 `LICENSE`.
 
 GoReleaser also publishes `checksums.txt` with SHA-256 checksums for every
-archive. Releases are explicitly targeted at `creativeJoe007/harnest`, matching
+archive. Releases are explicitly targeted at `Usefused/harnest`, matching
 the installer's default source.
 
 Release Please derives semantic versions from Conventional Commit messages and

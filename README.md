@@ -27,7 +27,7 @@ Install the latest macOS or Linux release:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/creativeJoe007/harnest/main/install.sh |
+  https://raw.githubusercontent.com/Usefused/harnest/main/install.sh |
   sh
 ```
 

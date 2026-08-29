@@ -4,7 +4,7 @@ project_name: harnest
 
 release:
   github:
-    owner: creativeJoe007
+    owner: Usefused
     name: harnest
   # Release Please owns the reviewed notes; GoReleaser only adds artifacts.
   mode: keep-existing
