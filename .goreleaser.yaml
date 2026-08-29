@@ -3,10 +3,8 @@ version: 2
 project_name: harnest
 
 release:
-  github:
-    owner: Usefused
-    name: harnest
   # Release Please owns the reviewed notes; GoReleaser only adds artifacts.
+  # Infer the repository from origin so transfers do not strand tagged builds.
   mode: keep-existing
 
 before:

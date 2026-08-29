@@ -35,6 +35,29 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
+      - name: Target the current repository
+        env:
+          CURRENT_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          # Tagged source may retain a pre-transfer destination; origin is authoritative.
+          git remote set-url origin "https://github.com/${CURRENT_REPOSITORY}.git"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path(".goreleaser.yaml")
+          source = path.read_text(encoding="utf-8")
+          source, _ = re.subn(
+              r"(?m)^(release:\n)  github:\n(?:    .*\n)+",
+              r"\1",
+              source,
+              count=1,
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
+          echo "GoReleaser will publish to ${CURRENT_REPOSITORY}"
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:

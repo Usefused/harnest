@@ -178,10 +178,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "--outdir internal/runtimewheel/assets",
         )
         self.assertEqual(config["release"]["mode"], "keep-existing")
-        self.assertEqual(
-            config["release"]["github"],
-            {"owner": "Usefused", "name": "harnest"},
-        )
+        self.assertNotIn("github", config["release"])
         self.assertEqual(config["archives"][0]["ids"], ["harnest"])
         self.assertEqual(config["builds"][0]["tags"], ["harnest_release"])
         self.assertEqual(
@@ -189,6 +186,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
             ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/uv-LICENSE-MIT", "README.md"],
         )
         self.assertEqual(config["snapshot"]["version_template"], "{{ incpatch .Version }}.dev0")
+
+    def test_release_checkout_discards_stale_repository_targets(self):
+        workflow = load_yaml(".github/workflows/release.yml")
+        release_job = workflow["jobs"]["goreleaser"]
+        target_step = next(
+            step
+            for step in release_job["steps"]
+            if step["name"] == "Target the current repository"
+        )
+
+        self.assertEqual(
+            target_step["env"]["CURRENT_REPOSITORY"],
+            "${{ github.repository }}",
+        )
+        self.assertIn("git remote set-url origin", target_step["run"])
+        self.assertIn("re.subn(", target_step["run"])
 
     def test_snapshot_wheel_uses_the_explicit_build_version(self):
         snapshot_version = "9.8.7.dev0"
