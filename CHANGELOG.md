@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.1](https://github.com/Usefused/harnest/compare/v0.4.0...v0.4.1) (2026-08-29)
 
 ### Harnest agent runtime integrations
 
@@ -251,9 +251,6 @@ when applications need them.
 * Structured tool boundaries reject unsupported output shapes early, making
   custom retrieval results portable across ADK, LangGraph, and Harnest
   transports.
-
-## [0.4.1](https://github.com/Usefused/harnest/compare/v0.4.0...v0.4.1) (2026-08-29)
-
 
 ### Fixes
 
