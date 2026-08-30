@@ -8,6 +8,7 @@ from threading import RLock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from ._exception_notes import add_exception_note
 from .plugin_runtime_context import (
     PluginInvocationBinding,
     PluginStartContext,
@@ -352,7 +353,8 @@ async def _stop_plugins(activated: tuple[Any, ...]) -> BaseException | None:
         if primary is None:
             primary = failure
         else:
-            primary.add_note(
+            add_exception_note(
+                primary,
                 "plugin cleanup also failed with " f"{type(failure).__name__}"
             )
     return primary
@@ -408,7 +410,8 @@ def _annotate_cleanup(
     """Record only cleanup type while retaining the primary startup failure."""
 
     if cleanup is not None:
-        primary.add_note(
+        add_exception_note(
+            primary,
             "plugin startup cleanup also failed with " f"{type(cleanup).__name__}"
         )
 
@@ -425,7 +428,9 @@ def _merge_failure(
         return primary
     if primary is None:
         return cleanup
-    primary.add_note(f"{label} cleanup also failed with {type(cleanup).__name__}")
+    add_exception_note(
+        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
+    )
     return primary
 
 

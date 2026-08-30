@@ -57,12 +57,16 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
             metadata=AssetMediaMetadata(width=1, height=1),
         )
         self.access = TransientMediaAccess(self.store, self.scope)
-        self.access.bind((self.lease.lease_id,))
         self.marker = {
             "type": "image",
             "mediaType": "image/jpeg",
             "content": "attached",
         }
+
+    async def asyncSetUp(self) -> None:
+        """Bind media inside the test task on every supported Python version."""
+
+        self.access.bind((self.lease.lease_id,))
 
     def assert_private_values_absent(self, value: object) -> None:
         rendered = repr(value)

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import os
 from pathlib import Path
 import shutil
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -389,12 +389,34 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
             transport = object.__new__(client_module.HatchetSDKTransport)
             transport._client = SimpleNamespace(stubs=_Stubs())
-            run_id = await transport._submit_idempotent(
-                "consumer-report",
-                {"topic": "quarterly"},
-                correlation_id="invoke-1",
-                idempotency_key="durable-key",
-            )
+
+            class _Collision(Exception):
+                pass
+
+            class _Options:
+                def __init__(self, *, key, additional_metadata):
+                    self.key = key
+                    self.additional_metadata = additional_metadata
+
+            exceptions = ModuleType("hatchet_sdk.exceptions")
+            exceptions.IdempotencyCollisionError = _Collision
+            trigger = ModuleType("hatchet_sdk.types.trigger")
+            trigger.TriggerWorkflowOptions = _Options
+            modules = {
+                "hatchet_sdk": ModuleType("hatchet_sdk"),
+                "hatchet_sdk.exceptions": exceptions,
+                "hatchet_sdk.types": ModuleType("hatchet_sdk.types"),
+                "hatchet_sdk.types.trigger": trigger,
+            }
+            # The example dependency belongs to its compiled plugin environment;
+            # this unit exercises the adapter without polluting Harnest's root env.
+            with patch.dict("sys.modules", modules):
+                run_id = await transport._submit_idempotent(
+                    "consumer-report",
+                    {"topic": "quarterly"},
+                    correlation_id="invoke-1",
+                    idempotency_key="durable-key",
+                )
 
             self.assertEqual(run_id, "durable-run")
             self.assertEqual(calls[0], ("consumer-report", dict))

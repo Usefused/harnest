@@ -138,7 +138,12 @@ class HatchetSDKTransport:
         try:
             from hatchet_sdk.exceptions import IdempotencyCollisionError
             from hatchet_sdk.types.trigger import TriggerWorkflowOptions
+        except (ImportError, AttributeError) as error:
+            raise HatchetPluginError(
+                f"Hatchet trigger support failed with {type(error).__name__}"
+            ) from None
 
+        try:
             workflow = self._client.stubs.workflow(
                 name=workflow_name, input_validator=dict
             )

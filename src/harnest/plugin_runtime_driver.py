@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
+from ._exception_notes import add_exception_note
 from .plugin_runtime_manager import PluginRuntimeManager
 from .runtime_contract import (
     AgentInfo,
@@ -174,7 +175,8 @@ def _merge_failure(
         return primary
     if primary is None:
         return cleanup
-    primary.add_note(
+    add_exception_note(
+        primary,
         f"plugin runtime cleanup also failed with {type(cleanup).__name__}"
     )
     return primary

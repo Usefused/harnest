@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Mapping, Sequence
 
+from ._exception_notes import add_exception_note
 from .external_continuation import ExternalContinuationRuntime
 from .runtime_contract import (
     AgentInfo,
@@ -111,7 +112,8 @@ class ExternalContinuationRuntimeDriver(RuntimeDriver):
             if failure is None:
                 failure = error
             else:
-                failure.add_note(
+                add_exception_note(
+                    failure,
                     "runtime cleanup also failed with " f"{type(error).__name__}"
                 )
         if failure is not None:

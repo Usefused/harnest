@@ -8,6 +8,7 @@ import inspect
 from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
+from ._exception_notes import add_exception_note
 from .lifecycle import DROP_EVENT, LifecycleContext, LifecycleListener
 from .lifecycle_transition import Finish, Next, UNCHANGED
 from .context import (
@@ -770,7 +771,9 @@ def _merge_cleanup_failure(
         return primary
     if primary is None:
         return cleanup
-    primary.add_note(f"{label} cleanup also failed with {type(cleanup).__name__}")
+    add_exception_note(
+        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
+    )
     return primary
 
 
@@ -782,7 +785,8 @@ async def _start_credential_provider(provider: CredentialProvider) -> None:
         return
     cleanup = await _credential_provider_hook(provider, "close")
     if cleanup is not None:
-        failure.add_note(
+        add_exception_note(
+            failure,
             "credential provider cleanup also failed with "
             f"{type(cleanup).__name__}"
         )

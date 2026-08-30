@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, AsyncIterator, Mapping, Sequence
 import uuid
 
+from ._exception_notes import add_exception_note
 from .context import (
     ContextUnavailableError,
     activate_context,
@@ -860,7 +861,8 @@ class TaskRuntimeDriver(RuntimeDriver):
                 self._state = "failed"
                 cleanup = await _cleanup_failure(self._driver.close)
                 if cleanup is not None:
-                    failure.add_note(
+                    add_exception_note(
+                        failure,
                         "runtime cleanup also failed with "
                         f"{type(cleanup).__name__}"
                     )
@@ -951,7 +953,8 @@ class TaskRuntimeDriver(RuntimeDriver):
             if failure is None:
                 failure = continuation_failure
             elif continuation_failure is not None:
-                failure.add_note(
+                add_exception_note(
+                    failure,
                     "runtime cleanup also failed with "
                     f"{type(continuation_failure).__name__}"
                 )
@@ -959,7 +962,8 @@ class TaskRuntimeDriver(RuntimeDriver):
         if failure is None:
             failure = inner_failure
         elif inner_failure is not None:
-            failure.add_note(
+            add_exception_note(
+                failure,
                 "runtime cleanup also failed with "
                 f"{type(inner_failure).__name__}"
             )

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 remains inside Harnest's supported range.
+    import tomli as tomllib
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet

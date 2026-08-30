@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator, Mapping, Sequence
 
+from ._exception_notes import add_exception_note
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -224,7 +225,9 @@ def _merge_cleanup_failure(
         return primary
     if primary is None:
         return cleanup
-    primary.add_note(f"{label} cleanup also failed with {type(cleanup).__name__}")
+    add_exception_note(
+        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
+    )
     return primary
 
 

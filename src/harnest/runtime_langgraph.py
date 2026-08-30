@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ._exception_notes import add_exception_note
 from ._json import json_value
 from .approval import ApprovalPolicy
 from .application import CompiledApplication
@@ -452,12 +453,11 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             except BaseException as cleanup_error:
                 # Startup remains the actionable failure; lifecycle errors are
                 # redacted and retained only as a type-level diagnostic note.
-                add_note = getattr(error, "add_note", None)
-                if callable(add_note):
-                    add_note(
-                        "MCP startup cleanup also failed with "
-                        f"{type(cleanup_error).__name__}"
-                    )
+                add_exception_note(
+                    error,
+                    "MCP startup cleanup also failed with "
+                    f"{type(cleanup_error).__name__}",
+                )
             raise
 
     async def _resolve_tool_groups(
