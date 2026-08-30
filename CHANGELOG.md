@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/Usefused/harnest/compare/v0.4.1...v0.5.0) (2026-08-30)
+
+
+### Features
+
+* add runtime plugins and durable execution ([276df43](https://github.com/Usefused/harnest/commit/276df43c60104076184809ed9dc90468bf3108a2))
+* add typed multimodal media contracts ([cb00755](https://github.com/Usefused/harnest/commit/cb007557d3f79b04c4d615b6a08e4285975c8995))
+
+
+### Fixes
+
+* finalize authored changelog notes before tagging ([c51b696](https://github.com/Usefused/harnest/commit/c51b696c47b61eca50a1454f9e6e870175218d2d))
+* preserve Python 3.10 runtime compatibility ([055d9dc](https://github.com/Usefused/harnest/commit/055d9dcc95ec8ea47474e7cf9379bc5ddf9e00ec))
+* scope checkpoints and subagent model hooks ([ecdce19](https://github.com/Usefused/harnest/commit/ecdce19148f7a4a23487b626e4c1dbf5d645993a))
+
 ## [0.4.1](https://github.com/Usefused/harnest/compare/v0.4.0...v0.4.1) (2026-08-29)
 
 ### Harnest agent runtime integrations
