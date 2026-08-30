@@ -42,7 +42,7 @@ REAL_LIVE_READY = REAL_MODEL_LIVE and all(
 )
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer"
 _REAL_FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer_real"
-_PRODUCER_PLUGIN = Path(__file__).parents[2] / "examples" / "runtime-plugins" / "hatchet"
+_PRODUCER_PLUGIN = Path(__file__).parents[2] / "examples" / "plugins" / "hatchet"
 
 
 def _install_hatchet_plugin(source: Path) -> Path:

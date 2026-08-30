@@ -24,7 +24,7 @@ from harnest.runtime_plugins import discover_runtime_plugins
 _SOURCE = (
     Path(__file__).resolve().parents[2]
     / "examples"
-    / "runtime-plugins"
+    / "plugins"
     / "hatchet"
 )
 

@@ -17,7 +17,7 @@ _SDK_AVAILABLE = importlib.util.find_spec("hatchet_sdk") is not None
 _CLIENT_SOURCE = (
     Path(__file__).resolve().parents[2]
     / "examples"
-    / "runtime-plugins"
+    / "plugins"
     / "hatchet"
     / "lib"
     / "client.py"
