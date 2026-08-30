@@ -102,6 +102,10 @@ jobs:
             exit 1
           fi
 
+          # The tag is immutable by this point, so packaging must fail rather
+          # than publish artifacts with authored notes still marked unreleased.
+          python3 scripts/finalize_release_changelog.py --version "${tag_version}" --check
+
           # Packaging only enriches the release that owns this source commit;
           # it must never create an unreviewed release independently.
           gh release view "${RELEASE_TAG}" >/dev/null

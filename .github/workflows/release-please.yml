@@ -46,3 +46,30 @@ jobs:
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Check out release proposal
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
+
+      - name: Mark authored changelog notes with the proposed release
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        shell: bash
+        run: |
+          python3 scripts/finalize_release_changelog.py
+          if git diff --quiet -- CHANGELOG.md; then
+            exit 0
+          fi
+
+          # This hidden maintenance commit keeps authored notes inside the
+          # release proposal without feeding a second user-facing release note.
+          git config user.name "release-please[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: finalize release changelog"
+          git push origin "HEAD:${RELEASE_BRANCH}"

@@ -105,7 +105,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflow = load_yaml(".github/workflows/release-please.yml")
         events = workflow_events(workflow)
         release_job = workflow["jobs"]["release-please"]
-        token_step, release_step = release_job["steps"]
+        token_step = next(
+            step
+            for step in release_job["steps"]
+            if step["name"] == "Require release automation token"
+        )
+        release_step = next(
+            step
+            for step in release_job["steps"]
+            if step["name"] == "Propose or create release"
+        )
+        checkout_step = next(
+            step
+            for step in release_job["steps"]
+            if step["name"] == "Check out release proposal"
+        )
+        finalize_step = next(
+            step
+            for step in release_job["steps"]
+            if step["name"] == "Mark authored changelog notes with the proposed release"
+        )
 
         self.assertEqual(workflow["name"], "Prepare Release")
         self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
@@ -120,6 +139,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
             release_step["with"]["token"],
             "${{ secrets.RELEASE_PLEASE_TOKEN }}",
         )
+        self.assertEqual(
+            checkout_step["with"]["ref"],
+            "${{ fromJSON(steps.release.outputs.pr).headBranchName }}",
+        )
+        self.assertEqual(
+            checkout_step["with"]["token"],
+            "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+        )
+        self.assertIn("scripts/finalize_release_changelog.py", finalize_step["run"])
+        self.assertIn('git push origin "HEAD:${RELEASE_BRANCH}"', finalize_step["run"])
         self.assertEqual(tuple(workflow["jobs"]), ("release-please",))
 
     def test_release_please_updates_both_source_versions(self):
@@ -161,6 +190,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")', scripts)
         self.assertIn('pathlib.Path("pyproject.toml")', scripts)
         self.assertIn("src/harnest/compatibility.py", scripts)
+        self.assertIn(
+            'scripts/finalize_release_changelog.py --version "${tag_version}" --check',
+            scripts,
+        )
         self.assertIn('gh release view "${RELEASE_TAG}"', scripts)
         self.assertNotIn("git tag --annotate", scripts)
         self.assertNotIn("git push origin", scripts)
