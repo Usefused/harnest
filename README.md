@@ -144,6 +144,14 @@ Compile and start the standalone development server:
 harnest serve support-agent
 ```
 
+During development, recompile and replace the local process after source changes:
+
+```bash
+harnest serve support-agent --reload
+```
+
+Reload uses fresh immutable artifacts and never mutates a running ADK or LangGraph graph. It is restricted to loopback development serving.
+
 Open [http://127.0.0.1:8080/](http://127.0.0.1:8080/) for the built-in test UI.
 The same playground works with managed or advanced ADK and LangGraph agents.
 The neutral API is documented at

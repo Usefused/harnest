@@ -19,6 +19,15 @@ var ignoredDirectories = map[string]bool{
 	".ruff_cache": true, ".venv": true, "__pycache__": true, "venv": true,
 }
 
+// BundleDigest returns the source identity used by compilation and reload.
+func BundleDigest(directory string) (string, error) {
+	resolved, err := resolveBundleDirectory(directory)
+	if err != nil {
+		return "", err
+	}
+	return digestDirectory(resolved)
+}
+
 func digestDirectory(root string) (string, error) {
 	var files []string
 	err := filepath.WalkDir(root, collectDigestFile(root, &files))

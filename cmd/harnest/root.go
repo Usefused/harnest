@@ -51,6 +51,7 @@ Typical workflow:
   harnest test my-agent --evals --eval-trajectory strict
   harnest compile my-agent --output .harnest/my-agent
   harnest serve my-agent
+  harnest serve my-agent --reload
 
 Released compile, test, and serve commands use an isolated environment derived
 from config.yaml, pyproject.toml, uv.lock, and the embedded Harnest wheel.

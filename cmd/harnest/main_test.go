@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}

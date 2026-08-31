@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -117,6 +118,7 @@ func (a *application) newTestCommand() *cobra.Command {
 	return command
 }
 
+// newServeCommand exposes one-shot serving and the constrained development supervisor.
 func (a *application) newServeCommand() *cobra.Command {
 	var output string
 	var host string
@@ -124,6 +126,7 @@ func (a *application) newServeCommand() *cobra.Command {
 	var requestTimeout float64
 	var maxConcurrency int
 	var allowRemote bool
+	var reload bool
 	command := &cobra.Command{
 		Use:   "serve AGENT_DIR",
 		Short: "Compile an agent and run its standalone HTTP server",
@@ -136,7 +139,7 @@ func (a *application) newServeCommand() *cobra.Command {
 			options := serveOptions{
 				output: output, host: host, port: port,
 				requestTimeout: requestTimeout, maxConcurrency: maxConcurrency,
-				allowRemote: allowRemote,
+				allowRemote: allowRemote, reload: reload,
 				overrides: serveOverrides{
 					host:           command.Flags().Changed("host"),
 					port:           command.Flags().Changed("port"),
@@ -162,6 +165,12 @@ func (a *application) newServeCommand() *cobra.Command {
 		false,
 		"allow a non-loopback bind (the server has no built-in authentication)",
 	)
+	command.Flags().BoolVar(
+		&reload,
+		"reload",
+		false,
+		"recompile and restart on authored file changes (development only)",
+	)
 	return command
 }
 
@@ -171,6 +180,7 @@ type serveOptions struct {
 	requestTimeout float64
 	maxConcurrency int
 	allowRemote    bool
+	reload         bool
 	overrides      serveOverrides
 }
 
@@ -178,7 +188,16 @@ type serveOverrides struct {
 	host, port, requestTimeout, maxConcurrency, allowRemote bool
 }
 
+// validate keeps transport policy separate from reload-generation policy.
 func (o serveOptions) validate() error {
+	if err := o.validateHTTPOverrides(); err != nil {
+		return err
+	}
+	return o.validateReload()
+}
+
+// validateHTTPOverrides applies only to explicitly authored CLI values.
+func (o serveOptions) validateHTTPOverrides() error {
 	if o.overrides.host && strings.TrimSpace(o.host) == "" {
 		return fmt.Errorf("--host cannot be empty")
 	}
@@ -194,7 +213,25 @@ func (o serveOptions) validate() error {
 	return nil
 }
 
+// validateReload prevents a development process supervisor becoming a deployment path.
+func (o serveOptions) validateReload() error {
+	if !o.reload {
+		return nil
+	}
+	if strings.TrimSpace(o.output) != "" {
+		return fmt.Errorf("--reload uses ephemeral immutable artifacts and cannot use --output")
+	}
+	if o.allowRemote || !isLoopbackHost(o.host) {
+		return fmt.Errorf("--reload is development-only and requires a loopback host without --allow-remote")
+	}
+	return nil
+}
+
+// serveBundle selects one-shot execution unless development reload is explicit.
 func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, options serveOptions) error {
+	if options.reload {
+		return a.serveReload(command, bundle, options)
+	}
 	python, err := a.agentPython(command, bundle)
 	if err != nil {
 		return err
@@ -256,9 +293,10 @@ func compiledLauncher(artifact string) (string, error) {
 	return launcher, nil
 }
 
+// arguments forces loopback host ownership when the reload supervisor is active.
 func (o serveOptions) arguments(launcher string) []string {
 	args := []string{launcher}
-	if o.overrides.host {
+	if o.reload || o.overrides.host {
 		args = append(args, "--host", o.host)
 	}
 	if o.overrides.port {
@@ -274,4 +312,14 @@ func (o serveOptions) arguments(launcher string) []string {
 		args = append(args, "--allow-remote")
 	}
 	return args
+}
+
+// isLoopbackHost accepts only names and addresses that cannot bind externally.
+func isLoopbackHost(host string) bool {
+	trimmed := strings.TrimSpace(host)
+	if strings.EqualFold(trimmed, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(trimmed)
+	return ip != nil && ip.IsLoopback()
 }
