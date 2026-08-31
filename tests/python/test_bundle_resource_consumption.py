@@ -12,6 +12,7 @@ from harnest.backends import get_backend
 from harnest.bundle import (
     BundleConventionError,
     BundleExportError,
+    BundleSkillError,
     _discover_subagents,
     compile_application,
 )
@@ -224,6 +225,11 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 compiled = compile_application(
                     root, entrypoint="agent:root_agent", framework="langgraph"
                 )
+                root_tools = {
+                    tool.__name__: tool
+                    for tool in compiled.target.nodes["inline"].tools
+                }
+                loaded_root_skill = root_tools["load_skill"]("root_skill")
 
         inline = compiled.target.nodes["inline"]
         researcher = compiled.target.nodes["researcher"]
@@ -234,11 +240,16 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self.assertIn("local_tool", researcher_tools)
         self.assertNotIn("root_tool", researcher_tools)
         self.assertEqual(
-            json.loads(inline_tools["list_skills"]())["skills"], ["root_skill"]
+            json.loads(inline_tools["list_skills"]())["skills"],
+            [{"name": "root_skill", "description": "Root guidance."}],
         )
         self.assertEqual(
             json.loads(researcher_tools["list_skills"]())["skills"],
-            ["local_skill"],
+            [{"name": "local_skill", "description": "Local guidance."}],
+        )
+        self.assertIn(
+            "description: Root guidance.",
+            loaded_root_skill,
         )
         self.assertEqual([client.tool_name_prefix for client in inline.mcp], ["root"])
         self.assertEqual(
@@ -251,6 +262,44 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             [client.capability_id for client in researcher.mcp],
             ["agent__researcher__mcp__local_mcp"],
         )
+
+    def test_langgraph_skill_catalog_requires_portable_routing_metadata(self):
+        """Fail compilation when LangGraph cannot describe a skill before loading it."""
+
+        cases = (
+            ("# Missing frontmatter\n", "start with YAML frontmatter"),
+            (
+                "---\nname: another\ndescription: Route requests.\n---\n",
+                "name must match directory",
+            ),
+            (
+                "---\nname: routing\ndescription: ''\n---\n",
+                "description must be a non-empty string",
+            ),
+            (
+                "---\nname: routing\ndescription: " + ("x" * 1025) + "\n---\n",
+                "description must be at most 1024 characters",
+            ),
+        )
+        for contents, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self._write(
+                    root / "agent.py",
+                    "from harnest.agent import Agent\n"
+                    "root_agent = Agent(name='root', model='test/model')\n",
+                )
+                self._write(root / "instructions.md", "Use relevant skills.\n")
+                self._write(root / "skills" / "routing" / "SKILL.md", contents)
+                write_session_store(root)
+
+                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                    with self.assertRaisesRegex(BundleSkillError, expected):
+                        compile_application(
+                            root,
+                            entrypoint="agent:root_agent",
+                            framework="langgraph",
+                        )
 
     def test_nested_reference_does_not_consume_any_root_resource(self):
         cases = {

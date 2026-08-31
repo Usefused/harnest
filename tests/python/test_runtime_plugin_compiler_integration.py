@@ -225,7 +225,14 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         }
                         self.assertEqual(
                             json.loads(tools["list_skills"]())["skills"],
-                            ["catalog-guide"],
+                            [
+                                {
+                                    "name": "catalog-guide",
+                                    "description": (
+                                        "Explain how to use the local catalog capability."
+                                    ),
+                                }
+                            ],
                         )
                 finally:
                     if compiled is not None:

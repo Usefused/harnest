@@ -395,11 +395,13 @@ LangGraph also rejects ADK sandbox executors, `output_key`,
 silently ignoring them.
 
 Skills expose progressive list, load, and resource tools instead of
-placing every skill body in the root prompt. ADK uses its standard loader and
-one `SkillToolset`; LangGraph receives portable callable tools providing the
-same progressive access. A skill may contain Agent-Skills-style
-`references/`, `assets/`, and `scripts/` content. Public entries directly under
-`skills/` must be skill directories; symlinks are rejected.
+placing every skill body in the root prompt. Both backends list each skill's
+name and frontmatter description so the model can select before loading its
+instructions. ADK uses its standard loader and one `SkillToolset`; LangGraph
+receives portable callable tools providing the same progressive access. A skill
+may contain Agent-Skills-style `references/`, `assets/`, and `scripts/`
+content. Public entries directly under `skills/` must be skill directories;
+symlinks are rejected.
 
 The optional `evals/test_config.json` is an ADK `EvalConfig`. Eval sets are
 sorted and validated during compilation, including unique case IDs, but remain

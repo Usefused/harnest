@@ -16,6 +16,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
+import yaml
+
 from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .application import CompiledApplication
 from .checkpoint import (
@@ -71,6 +73,7 @@ from .task import CompiledTask, registration_for as task_registration_for
 _T = TypeVar("_T")
 _IGNORED_FILE_NAMES = {"__init__.py"}
 _MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
+_MAX_SKILL_DESCRIPTION_CHARS = 1024
 _PROCRASTINATE_REQUIREMENT = "procrastinate==3.9.0"
 _SKILL_TOOL_NAMES = {
     "list_skills",
@@ -152,6 +155,15 @@ class BundleDuplicateError(BundleError):
 
 class BundleSkillError(BundleError):
     """A discovered progressive skill is invalid or cannot be loaded."""
+
+
+@dataclass(frozen=True, slots=True)
+class _SkillDescriptor:
+    """Portable routing metadata retained without loading full instructions."""
+
+    name: str
+    description: str
+    directory: Path
 
 
 class BundleEvalError(BundleError):
@@ -2076,7 +2088,8 @@ def _discover_portable_skill_tools(
             "tools conflict with Harnest skill tools: "
             + ", ".join(repr(name) for name in conflicts)
         )
-    skills = {path.name: path for path in skill_directories}
+    descriptors = tuple(_load_skill_descriptor(path) for path in skill_directories)
+    skills = {item.name: item.directory for item in descriptors}
 
     def _skill_path(name: str) -> Path:
         if name not in skills:
@@ -2086,14 +2099,25 @@ def _discover_portable_skill_tools(
         return skills[name]
 
     def list_skills() -> str:
-        """List the names of skills available for progressive loading."""
+        """List skill names and descriptions for progressive selection."""
 
-        return json.dumps({"skills": sorted(skills)})
+        # Keep discovery metadata-only so an irrelevant skill body cannot
+        # consume model context before the agent deliberately loads it.
+        return json.dumps(
+            {
+                "skills": [
+                    {"name": item.name, "description": item.description}
+                    for item in descriptors
+                ]
+            }
+        )
 
     def load_skill(name: str) -> str:
         """Load the complete SKILL.md instructions for one named skill."""
 
-        return _read_text(_skill_path(name) / "SKILL.md", kind="skill manifest")
+        return _read_skill_text(
+            _skill_path(name) / "SKILL.md", kind="skill manifest"
+        )
 
     def load_skill_resource(name: str, path: str) -> str:
         """Load a UTF-8 resource contained within one named skill directory."""
@@ -2108,9 +2132,78 @@ def _discover_portable_skill_tools(
             raise ValueError("skill resource path escapes its skill directory") from exc
         if candidate.is_symlink() or not candidate.is_file():
             raise ValueError(f"skill resource does not exist: {path}")
-        return _read_text(candidate, kind="skill resource")
+        return _read_skill_text(candidate, kind="skill resource")
 
     return (list_skills, load_skill, load_skill_resource)
+
+
+def _load_skill_descriptor(directory: Path) -> _SkillDescriptor:
+    """Read the bounded Agent Skills routing metadata used before activation."""
+
+    manifest = directory / "SKILL.md"
+    contents = _read_skill_text(manifest, kind="skill manifest")
+    frontmatter = _skill_frontmatter(contents, manifest)
+    name = frontmatter.get("name")
+    description = frontmatter.get("description")
+    if not isinstance(name, str) or name != directory.name:
+        raise BundleSkillError(
+            f"skill frontmatter name must match directory {directory.name!r}: {manifest}"
+        )
+    if not isinstance(description, str) or not description.strip():
+        raise BundleSkillError(
+            f"skill frontmatter description must be a non-empty string: {manifest}"
+        )
+    normalized_description = description.strip()
+    if len(normalized_description) > _MAX_SKILL_DESCRIPTION_CHARS:
+        raise BundleSkillError(
+            "skill frontmatter description must be at most "
+            f"{_MAX_SKILL_DESCRIPTION_CHARS} characters: {manifest}"
+        )
+    return _SkillDescriptor(name, normalized_description, directory)
+
+
+def _skill_frontmatter(contents: str, manifest: Path) -> Mapping[str, Any]:
+    """Decode one explicit YAML frontmatter block without reading the skill body."""
+
+    lines = contents.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise BundleSkillError(f"skill must start with YAML frontmatter: {manifest}")
+    closing = next(
+        (index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"),
+        None,
+    )
+    if closing is None:
+        raise BundleSkillError(f"skill frontmatter is not closed: {manifest}")
+    try:
+        value = yaml.safe_load("\n".join(lines[1:closing]))
+    except yaml.YAMLError as exc:
+        raise BundleSkillError(
+            f"skill frontmatter is invalid YAML: {type(exc).__name__}: {manifest}"
+        ) from exc
+    if not isinstance(value, Mapping):
+        raise BundleSkillError(f"skill frontmatter must be a mapping: {manifest}")
+    return value
+
+
+def _read_skill_text(path: Path, *, kind: str) -> str:
+    """Read one bounded skill file while preserving its authored text."""
+
+    if path.is_symlink() or not path.is_file():
+        raise BundleSkillError(f"{kind} must be a regular file: {path}")
+    try:
+        if path.stat().st_size > _MAX_METADATA_FILE_BYTES:
+            raise BundleSkillError(
+                f"{kind} exceeds {_MAX_METADATA_FILE_BYTES} bytes: {path}"
+            )
+        return path.read_text(encoding="utf-8")
+    except BundleSkillError:
+        raise
+    except UnicodeDecodeError as exc:
+        raise BundleSkillError(f"{kind} must be UTF-8 text: {path}") from exc
+    except OSError as exc:
+        raise BundleSkillError(
+            f"unable to read {kind} with {type(exc).__name__}: {path}"
+        ) from exc
 
 
 def _bundle_skill_directories(

@@ -75,7 +75,12 @@ class PluginIntegrationTests(unittest.TestCase):
                     tools = {tool.__name__: tool for tool in compiled.target.tools}
                     self.assertEqual(
                         json.loads(tools["list_skills"]())["skills"],
-                        ["support-guide"],
+                        [
+                            {
+                                "name": "support-guide",
+                                "description": "Explain how to use support MCP tools.",
+                            }
+                        ],
                     )
 
     def test_graph_agent_node_receives_plugin_capability(self):
@@ -106,7 +111,13 @@ class PluginIntegrationTests(unittest.TestCase):
             self.assertEqual([client.tool_name_prefix for client in worker.mcp], ["support"])
             tools = {tool.__name__: tool for tool in worker.tools}
             self.assertEqual(
-                json.loads(tools["list_skills"]())["skills"], ["support-guide"]
+                json.loads(tools["list_skills"]())["skills"],
+                [
+                    {
+                        "name": "support-guide",
+                        "description": "Explain how to use support MCP tools.",
+                    }
+                ],
             )
 
     def test_callable_graph_rejects_plugin_without_agent_consumer(self):
