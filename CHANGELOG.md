@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0](https://github.com/Usefused/harnest/compare/v0.5.0...v0.6.0) (2026-08-31)
+
+
+### Features
+
+* add runtime skill sources ([10bf8ad](https://github.com/Usefused/harnest/commit/10bf8ad85ded8353f0b99b5ff6c9f1577d3a1405))
+
+
+### Fixes
+
+* expose skill descriptions to LangGraph agents ([058965d](https://github.com/Usefused/harnest/commit/058965df3d1d743c8cd6294e587dcb7952e2c56c))
+* preserve managed framework execution options ([5dfa41a](https://github.com/Usefused/harnest/commit/5dfa41a9ce667348e08dd294ba5eb40ddd25d905))
+
+
+### Refactoring
+
+* remove obsolete skill loader code ([ca0e65c](https://github.com/Usefused/harnest/commit/ca0e65c42f637108794e73cad195659cd6d5ad67))
+
 ## [0.5.0](https://github.com/Usefused/harnest/compare/v0.4.1...v0.5.0) (2026-08-30)
 
 

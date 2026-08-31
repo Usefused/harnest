@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "harnest"
-version = "0.5.0"
+version = "0.6.0"
 description = "Filesystem-first Python authoring SDK for ADK and LangGraph agents"
 readme = "README.md"
 requires-python = ">=3.10"
