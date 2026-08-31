@@ -41,6 +41,7 @@ from .runtime_auth import (
 )
 from .model_hooks import model_invocation_scope
 from .session import SessionStore
+from .skills import SkillRegistry
 from .tool_lifecycle import tool_lifecycle_scope
 
 
@@ -260,6 +261,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         context_values: Sequence[ContextValue] = (),
         asset_stores: Mapping[str, Any] | None = None,
         custom_stores: Mapping[str, Any] | None = None,
+        skill_registry: SkillRegistry | None = None,
         session_store: SessionStore | None = None,
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
@@ -278,6 +280,9 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self._context_values = values
         self._asset_stores = dict(asset_stores or {})
         self._custom_stores = dict(custom_stores or {})
+        self._skill_registry = skill_registry or SkillRegistry()
+        if not isinstance(self._skill_registry, SkillRegistry):
+            raise TypeError("skill_registry must be SkillRegistry")
         self._session_store = session_store
         self._credential_provider = credential_provider
         self._manage_credential_provider = manage_credential_provider
@@ -614,6 +619,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             resources=self._application_resources,
             asset_stores=self._asset_stores,
             custom_stores=self._custom_stores,
+            skill_registry=self._skill_registry,
             plugin_bindings=(
                 None if self._plugin_bindings is None else self._plugin_bindings()
             ),

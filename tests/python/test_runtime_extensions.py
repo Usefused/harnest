@@ -29,6 +29,27 @@ from harnest.runtime_extensions import (
 )
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError, ConnectionContext
 from harnest.session import InMemorySessionStore
+from harnest.skills import (
+    SkillDescriptor,
+    SkillDocument,
+    SkillPage,
+    SkillRegistry,
+    SkillScope,
+    SkillSource,
+)
+
+
+class RuntimeSkillSource(SkillSource):
+    """Expose active identity to verify runtime registry propagation."""
+
+    async def list(self, active, *, query=None, cursor=None, limit=50):
+        return SkillPage(
+            (SkillDescriptor("generated", "generated", active.agent_name, "v1"),)
+        )
+
+    async def load(self, skill_id, active, *, version=None):
+        descriptor = SkillDescriptor(skill_id, skill_id, active.agent_name, "v1")
+        return SkillDocument(descriptor, "Generated instructions.")
 
 
 class FakeDriver:
@@ -138,6 +159,29 @@ def listener(phase, callback, *, name="hook", order=0, context_name=None):
 
 
 class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_context_skills_receives_the_compiled_runtime_registry(self):
+        """Make lifecycle hooks and framework tools share one invocation scope."""
+
+        seen = []
+
+        async def before(_lifecycle, value):
+            page = await context.skills.list(source="wex")
+            seen.append(page.items[0].descriptor.description)
+            return value
+
+        registry = SkillRegistry(
+            {"support": SkillScope({"wex": RuntimeSkillSource()})}
+        )
+        wrapped = ExtensionRuntimeDriver(
+            FakeDriver(),
+            [listener("before_invoke", before)],
+            skill_registry=registry,
+        )
+
+        await wrapped.invoke(request())
+
+        self.assertEqual(seen, ["support"])
+
     async def test_session_context_spans_agent_hooks_and_reuses_backend_lease(self):
         """Keep application data available without nested session acquisition."""
 

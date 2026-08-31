@@ -18,6 +18,7 @@ from harnest.bundle import (
 )
 from harnest.graph import Graph
 from _session_store_fixture import write_session_store
+from _skill_fixture import run_skill_tool
 
 
 class BundleResourceConsumptionTests(unittest.TestCase):
@@ -110,9 +111,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write_scoped_graph(root, sandbox=False)
         for relative in (
             "mcp",
-            "skills",
             "subagents/researcher/mcp",
-            "subagents/researcher/skills",
         ):
             shutil.rmtree(root / relative)
         if framework == "langgraph":
@@ -146,8 +145,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             compiled, graph = self._compile_with_real_backend(Path(temp), framework)
         inline = graph.nodes["inline"]
         researcher = graph.nodes["researcher"]
-        self.assertEqual([tool.__name__ for tool in inline.tools], ["root_tool"])
-        self.assertEqual([tool.__name__ for tool in researcher.tools], ["local_tool"])
+        self.assertEqual(
+            [tool.__name__ for tool in inline.tools],
+            ["root_tool", "list_skills", "load_skill", "load_skill_resource"],
+        )
+        self.assertEqual(
+            [tool.__name__ for tool in researcher.tools],
+            ["local_tool", "list_skills", "load_skill", "load_skill_resource"],
+        )
         self.assertIsNotNone(compiled.target)
 
     def test_adk_real_backend_lowers_folder_scoped_tools(self):
@@ -173,20 +178,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 "instruction='Critique the research.')\n",
             )
 
-            def skill_toolset(directories, _tools):
-                if not directories:
-                    return None
-                return SimpleNamespace(
-                    skill_names=tuple(path.name for path in directories)
-                )
-
-            with (
-                patch("harnest.bundle.get_backend", return_value=self._backend()),
-                patch(
-                    "harnest.bundle._discover_skill_toolset",
-                    side_effect=skill_toolset,
-                ),
-            ):
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
                 compiled = compile_application(
                     root, entrypoint="agent:root_agent", framework="adk"
                 )
@@ -196,10 +188,20 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         researcher = compiled.target.nodes["researcher"]
         self.assertIsInstance(inline, AgentDefinition)
         self.assertIsInstance(researcher, AgentDefinition)
-        self.assertEqual(inline.tools[0].__name__, "root_tool")
-        self.assertEqual(inline.tools[1].skill_names, ("root_skill",))
-        self.assertEqual(researcher.tools[0].__name__, "local_tool")
-        self.assertEqual(researcher.tools[1].skill_names, ("local_skill",))
+        inline_tools = {tool.__name__: tool for tool in inline.tools}
+        researcher_tools = {tool.__name__: tool for tool in researcher.tools}
+        self.assertIn("root_tool", inline_tools)
+        self.assertIn("local_tool", researcher_tools)
+        inline_catalog = json.loads(
+            run_skill_tool(compiled, "inline", inline_tools["list_skills"])
+        )["skills"]
+        researcher_catalog = json.loads(
+            run_skill_tool(compiled, "researcher", researcher_tools["list_skills"])
+        )["skills"]
+        self.assertEqual([item["name"] for item in inline_catalog], ["root_skill"])
+        self.assertEqual(
+            [item["name"] for item in researcher_catalog], ["local_skill"]
+        )
         self.assertEqual([client.tool_name_prefix for client in inline.mcp], ["root"])
         self.assertEqual(
             [client.capability_id for client in inline.mcp], ["mcp__root_mcp"]
@@ -229,7 +231,9 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                     tool.__name__: tool
                     for tool in compiled.target.nodes["inline"].tools
                 }
-                loaded_root_skill = root_tools["load_skill"]("root_skill")
+                loaded_root_skill = run_skill_tool(
+                    compiled, "inline", root_tools["load_skill"], "root_skill"
+                )
 
         inline = compiled.target.nodes["inline"]
         researcher = compiled.target.nodes["researcher"]
@@ -240,12 +244,26 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self.assertIn("local_tool", researcher_tools)
         self.assertNotIn("root_tool", researcher_tools)
         self.assertEqual(
-            json.loads(inline_tools["list_skills"]())["skills"],
-            [{"name": "root_skill", "description": "Root guidance."}],
+            [
+                (item["name"], item["description"], item["source"], item["id"])
+                for item in json.loads(
+                    run_skill_tool(
+                        compiled, "inline", inline_tools["list_skills"]
+                    )
+                )["skills"]
+            ],
+            [("root_skill", "Root guidance.", "filesystem", "root_skill")],
         )
         self.assertEqual(
-            json.loads(researcher_tools["list_skills"]())["skills"],
-            [{"name": "local_skill", "description": "Local guidance."}],
+            [
+                (item["name"], item["description"], item["source"], item["id"])
+                for item in json.loads(
+                    run_skill_tool(
+                        compiled, "researcher", researcher_tools["list_skills"]
+                    )
+                )["skills"]
+            ],
+            [("local_skill", "Local guidance.", "filesystem", "local_skill")],
         )
         self.assertIn(
             "description: Root guidance.",

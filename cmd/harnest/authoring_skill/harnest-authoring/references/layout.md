@@ -82,7 +82,9 @@ requires:
   plugins: [core]
 capabilities:
   - lifecycle.tool
+  - lifecycle.skills
   - context.continuations
+  - context.skills
   - context.storage
 ```
 

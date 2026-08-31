@@ -1672,11 +1672,9 @@ class AuthoringTests(unittest.TestCase):
                 )
 
         self.assertEqual(built.kwargs["instruction"], "Use relevant skills.")
-        self.assertEqual(len(built.kwargs["tools"]), 1)
-        skill_toolset = built.kwargs["tools"][0]
         self.assertEqual(
-            [skill.name for skill in skill_toolset.kwargs["skills"]],
-            ["alpha", "zeta"],
+            [tool.__name__ for tool in built.kwargs["tools"]],
+            ["list_skills", "load_skill", "load_skill_resource"],
         )
 
     def test_bundle_agent_rejects_invalid_and_conflicting_skills(self):
@@ -1702,7 +1700,7 @@ class AuthoringTests(unittest.TestCase):
                 "---\nname: research\ndescription: Research.\n---\nResearch.\n",
             )
             with patch.dict(sys.modules, _fake_adk_modules()):
-                with self.assertRaisesRegex(BundleDuplicateError, "SkillToolset"):
+                with self.assertRaisesRegex(BundleDuplicateError, "skill tools"):
                     bundle_agent(
                         anchor,
                         Agent(

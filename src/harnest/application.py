@@ -17,6 +17,7 @@ from .lifecycle import LifecycleListener
 from .lifecycle_coverage import LifecycleCoverage, lifecycle_coverage
 from .output import OutputPolicy
 from .session import SessionStore
+from .skills import SkillRegistry
 from .storage_registry import CustomStorage, StorageRegistry
 from .structured import PydanticModel, validate_output_schema
 
@@ -38,6 +39,7 @@ class RuntimeCapabilities:
     telemetry_exporters: Sequence[LifecycleListener] = field(default=(), repr=False)
     context_values: Sequence[ContextValue] = ()
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
+    skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
     storage_registry: StorageRegistry = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -76,6 +78,8 @@ class RuntimeCapabilities:
         object.__setattr__(
             self, "context_values", _context_capabilities(self.context_values)
         )
+        if not isinstance(self.skill_registry, SkillRegistry):
+            raise TypeError("skill_registry must be SkillRegistry")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +112,7 @@ class CompiledApplication:
     framework_distribution: str | None = None
     framework_version: str | None = None
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
+    skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
     runtime_capabilities: RuntimeCapabilities = field(
         init=False, repr=False, compare=False
     )
@@ -136,6 +141,7 @@ class CompiledApplication:
             output_policy=self.output_policy,
             telemetry_exporters=self.telemetry_exporters,
             context_values=self.context_values,
+            skill_registry=self.skill_registry,
         )
         object.__setattr__(self, "runtime_capabilities", capabilities)
         _publish_compatibility_attributes(self, capabilities)
@@ -177,6 +183,7 @@ def _publish_compatibility_attributes(
         "output_policy",
         "telemetry_exporters",
         "context_values",
+        "skill_registry",
     ):
         object.__setattr__(application, name, getattr(capabilities, name))
 

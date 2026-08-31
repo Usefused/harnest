@@ -9,6 +9,7 @@ from harnest.credentials import CredentialProvider, CredentialRequest
 from harnest.http_routes import AgentInvoker, HTTPRouteExtension
 from harnest.lifecycle import LifecycleListener
 from harnest.output import OutputPolicy
+from harnest.skills import SkillRegistry, SkillScope
 
 
 class _CredentialProvider(CredentialProvider):
@@ -37,6 +38,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         policy = OutputPolicy(subagent_messages="include")
         telemetry = _listener()
         context_value = ContextValue("sessions", store, "sessions.py:1:sessions")
+        skill_registry = SkillRegistry({"root": SkillScope()})
         application = CompiledApplication(
             name="root",
             framework="langgraph",
@@ -50,6 +52,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             output_policy=policy,
             telemetry_exporters=[telemetry],
             context_values=[context_value],
+            skill_registry=skill_registry,
         )
 
         capabilities = application.runtime_capabilities
@@ -63,6 +66,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             "output_policy",
             "telemetry_exporters",
             "context_values",
+            "skill_registry",
         ):
             self.assertIs(getattr(application, name), getattr(capabilities, name))
         self.assertEqual(application.http_routes, (route,))
@@ -113,6 +117,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
             ("output_policy", object(), "OutputPolicy"),
             ("telemetry_exporters", (object(),), "LifecycleListener"),
             ("context_values", (object(),), "ContextValue"),
+            ("skill_registry", object(), "SkillRegistry"),
         )
         for field_name, value, message in invalid_values:
             with self.subTest(field_name=field_name):

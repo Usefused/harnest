@@ -278,6 +278,8 @@ class RuntimePluginDiscoveryTests(unittest.TestCase):
         self.assertIn("lifecycle.agent", RUNTIME_PLUGIN_CAPABILITIES)
         self.assertIn("context.credentials", RUNTIME_PLUGIN_CAPABILITIES)
         self.assertIn("context.continuations", RUNTIME_PLUGIN_CAPABILITIES)
+        self.assertIn("context.skills", RUNTIME_PLUGIN_CAPABILITIES)
+        self.assertIn("lifecycle.skills", RUNTIME_PLUGIN_CAPABILITIES)
         self.assertIn("native.langgraph", RUNTIME_PLUGIN_CAPABILITIES)
         self.assertTrue(all("." in value for value in RUNTIME_PLUGIN_CAPABILITIES))
 

@@ -84,6 +84,22 @@ from .lifecycle import DROP_EVENT, Finish, LifecycleContext, Next, lifecycle
 from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
 from .logging import Logger, get_logger
 from .sandbox import Sandbox
+from .skills import (
+    FilesystemSkillSource,
+    SkillCatalogPage,
+    SkillContext,
+    SkillDescriptor,
+    SkillDocument,
+    SkillError,
+    SkillNotFoundError,
+    SkillPage,
+    SkillRegistry,
+    SkillResource,
+    SkillResourceNotSupported,
+    SkillSource,
+    SkillSourceExecutionError,
+    SkillValidationError,
+)
 from .tool import tool
 from .task import TaskHandle, TaskUnavailableError, task
 from .tracing import Tracer, current_trace_ids, get_tracer, span, traced
@@ -115,6 +131,20 @@ __all__ = [
     "SessionContext",
     "SessionDataError",
     "StorageContext",
+    "FilesystemSkillSource",
+    "SkillCatalogPage",
+    "SkillContext",
+    "SkillDescriptor",
+    "SkillDocument",
+    "SkillError",
+    "SkillNotFoundError",
+    "SkillPage",
+    "SkillRegistry",
+    "SkillResource",
+    "SkillResourceNotSupported",
+    "SkillSource",
+    "SkillSourceExecutionError",
+    "SkillValidationError",
     "BundleConventionError",
     "BundleDuplicateError",
     "BundleError",

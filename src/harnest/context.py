@@ -69,6 +69,8 @@ class AgentContext:
     _resources: Mapping[str, Any] = field(repr=False)
     _asset_stores: Mapping[str, Any] = field(repr=False)
     _custom_stores: Mapping[str, Any] = field(repr=False)
+    _skill_registry: Any = field(repr=False)
+    _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
     _plugin_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
 
@@ -206,6 +208,13 @@ class _ContextAccess:
         return plugins
 
     @property
+    def skills(self) -> Any:
+        """Return progressive skills scoped to the currently executing agent."""
+
+        active = self.current()
+        return active._skill_registry.access(active)
+
+    @property
     def framework(self) -> str:
         return self.current().framework
 
@@ -260,6 +269,7 @@ def create_agent_context(
     resources: Mapping[str, Any],
     asset_stores: Mapping[str, Any] | None = None,
     custom_stores: Mapping[str, Any] | None = None,
+    skill_registry: Any | None = None,
     plugin_bindings: Mapping[str, Any] | None = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
@@ -272,6 +282,11 @@ def create_agent_context(
     plugins = validate_plugin_bindings(
         {} if plugin_bindings is None else plugin_bindings
     )
+    from .skills import SkillRegistry
+
+    skills = SkillRegistry() if skill_registry is None else skill_registry
+    if not isinstance(skills, SkillRegistry):
+        raise TypeError("agent context skill_registry must be SkillRegistry")
     return AgentContext(
         framework=framework,
         agent_name=agent_name,
@@ -284,6 +299,8 @@ def create_agent_context(
         _resources=MappingProxyType(registry),
         _asset_stores=MappingProxyType(dict(asset_stores or {})),
         _custom_stores=MappingProxyType(dict(custom_stores or {})),
+        _skill_registry=skills,
+        _skill_pins={},
         _plugin_bindings=plugins,
         _lifetime=_ContextLifetime(),
     )
@@ -307,6 +324,8 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _resources=active._resources,
         _asset_stores=active._asset_stores,
         _custom_stores=active._custom_stores,
+        _skill_registry=active._skill_registry,
+        _skill_pins=active._skill_pins,
         _plugin_bindings=active._plugin_bindings,
         _lifetime=active._lifetime,
     )

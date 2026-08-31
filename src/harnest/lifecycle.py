@@ -47,6 +47,7 @@ _FACTORY_PHASES = frozenset(
         "telemetry_exporter",
         "resource",
         "custom_store",
+        "skill_source",
     }
 )
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
@@ -228,6 +229,16 @@ class _MCPDecorators:
     on_error = _PhaseDecorator("on_mcp_error")
 
 
+class _SkillDecorators:
+    """Register named runtime catalogs independently of filesystem skills."""
+
+    def source(self, name: str, *, order: int = 0) -> Any:
+        """Declare one named provider queried only during managed execution."""
+
+        _validate_storage_name(name, kind="skill source", identifier="source")
+        return _registration_decorator("skill_source", order=order, name=name)
+
+
 class _LifecycleDecorators:
     # Discovery requires both factories so compiled roots always declare who
     # owns committed conversation state and resumable in-progress state.
@@ -255,6 +266,7 @@ class _LifecycleDecorators:
     agent = _AgentDecorators()
     http = _HTTPDecorators()
     mcp = _MCPDecorators()
+    skills = _SkillDecorators()
 
     def asset_store(
         self,
@@ -356,11 +368,13 @@ def _can_stack_storage(
     )
 
 
-def _validate_storage_name(name: str, *, kind: str) -> None:
+def _validate_storage_name(
+    name: str, *, kind: str, identifier: str = "storage"
+) -> None:
     """Keep authored names portable across references and serialized artifacts."""
 
     if not isinstance(name, str) or not _STORAGE_NAME.fullmatch(name):
-        raise ValueError(f"{kind} name must be a valid storage identifier")
+        raise ValueError(f"{kind} name must be a valid {identifier} identifier")
 
 
 lifecycle = _LifecycleDecorators()

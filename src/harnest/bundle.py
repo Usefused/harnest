@@ -16,8 +16,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
-import yaml
-
 from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .application import CompiledApplication
 from .checkpoint import (
@@ -67,13 +65,22 @@ from .runtime_plugins import (
 )
 from .sandbox import Sandbox
 from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
+from .skills import (
+    FilesystemSkillSource,
+    SkillRegistry,
+    SkillScope,
+    SkillSource,
+    SkillValidationError,
+    create_skill_tools,
+    filesystem_skill_source,
+    scoped_skill_sources,
+)
 from .source_tree import ignored_source_path
 from .task import CompiledTask, registration_for as task_registration_for
 
 _T = TypeVar("_T")
 _IGNORED_FILE_NAMES = {"__init__.py"}
 _MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
-_MAX_SKILL_DESCRIPTION_CHARS = 1024
 _PROCRASTINATE_REQUIREMENT = "procrastinate==3.9.0"
 _SKILL_TOOL_NAMES = {
     "list_skills",
@@ -125,6 +132,7 @@ _RUNTIME_PLUGIN_PHASE_CAPABILITIES = {
     "asset_store": "storage.assets",
     "custom_store": "storage.custom",
     "credential_provider": "context.credentials",
+    "skill_source": "lifecycle.skills",
     "http_routes": "http.routes",
     "output_policy": "policy.output",
     "telemetry_exporter": "telemetry.exporter",
@@ -155,15 +163,6 @@ class BundleDuplicateError(BundleError):
 
 class BundleSkillError(BundleError):
     """A discovered progressive skill is invalid or cannot be loaded."""
-
-
-@dataclass(frozen=True, slots=True)
-class _SkillDescriptor:
-    """Portable routing metadata retained without loading full instructions."""
-
-    name: str
-    description: str
-    directory: Path
 
 
 class BundleEvalError(BundleError):
@@ -371,6 +370,9 @@ def _compile_advanced_application(
     _validate_advanced_checkpointer(
         advanced, discovered_extensions.checkpointer, framework=framework
     )
+    skill_registry = _advanced_skill_registry(
+        advanced.name, discovered_extensions.skill_sources
+    )
     return CompiledApplication(
         name=advanced.name,
         framework=framework,
@@ -391,6 +393,7 @@ def _compile_advanced_application(
         telemetry_exporters=discovered_extensions.telemetry_exporters,
         checkpoint_metadata=checkpoint_metadata(discovered_extensions.checkpointer),
         context_values=discovered_extensions.context_values,
+        skill_registry=skill_registry,
         tasks=_discover_tasks(anchor.parent / "tasks", advanced.name),
         plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
@@ -455,12 +458,15 @@ def _compile_managed_application(
             "LangGraphStore and ADKStore are advanced-mode ownership wrappers"
         )
     native_checkpointer = _managed_checkpointer(provider, framework)
+    skill_scopes: dict[str, SkillScope] = {}
     if isinstance(value, AgentDefinition):
         definition = _compose_definition(
             anchor,
             value,
             framework=framework,
             runtime_plugins=runtime_plugins,
+            skill_sources=discovered_extensions.skill_sources,
+            skill_scopes=skill_scopes,
         )
         target = backend.lower_managed(
             definition,
@@ -473,6 +479,8 @@ def _compile_managed_application(
             value,
             framework=framework,
             runtime_plugins=runtime_plugins,
+            skill_sources=discovered_extensions.skill_sources,
+            skill_scopes=skill_scopes,
         )
         target = backend.lower_managed(
             graph,
@@ -518,12 +526,24 @@ def _compile_managed_application(
         ),
         checkpoint_metadata=checkpoint_metadata(provider),
         context_values=discovered_extensions.context_values,
+        skill_registry=SkillRegistry(skill_scopes),
         tasks=_discover_tasks(anchor.parent / "tasks", application_name),
         plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
         framework_version=compatibility.distribution_version,
     )
+
+
+def _advanced_skill_registry(
+    agent_name: str, sources: Mapping[str, SkillSource]
+) -> SkillRegistry:
+    """Expose dynamic sources to advanced code without mutating its native tools."""
+
+    try:
+        return SkillRegistry({agent_name: SkillScope(sources)})
+    except (TypeError, ValueError, SkillValidationError) as exc:
+        raise BundleSkillError(str(exc)) from exc
 
 
 def _managed_checkpointer(provider: HarnestStore, framework: str) -> Any:
@@ -1191,6 +1211,8 @@ def _resolve_graph_resources(
     *,
     framework: str,
     runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> Graph:
     """Resolve string graph nodes from filesystem-discovered tools/subagents."""
 
@@ -1200,6 +1222,8 @@ def _resolve_graph_resources(
         is_root=True,
         capability_scope="",
         runtime_plugins=runtime_plugins,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
     )
     has_root_agent_node = _graph_contains_agent(graph)
     referenced = _graph_string_references(graph)
@@ -1217,6 +1241,8 @@ def _resolve_graph_resources(
                 anchor,
                 framework,
                 runtime_plugins,
+                skill_sources,
+                skill_scopes,
             )
             for name, value in graph.nodes.items()
         },
@@ -1295,6 +1321,8 @@ def _resolve_graph_node(
     anchor: Path,
     framework: str,
     runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> Any:
     if isinstance(value, str):
         try:
@@ -1316,6 +1344,8 @@ def _resolve_graph_node(
                     anchor,
                     framework,
                     runtime_plugins,
+                    skill_sources,
+                    skill_scopes,
                 )
                 for name, node in value.nodes.items()
             },
@@ -1327,6 +1357,8 @@ def _resolve_graph_node(
             framework=framework,
             graph_resource_context=True,
             runtime_plugins=runtime_plugins,
+            skill_sources=skill_sources,
+            skill_scopes=skill_scopes,
         )
     return value
 
@@ -1340,6 +1372,8 @@ def _compose_definition(
     graph_resource_context: bool = False,
     capability_scope: str = "",
     runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> AgentDefinition:
     """Attach only resources owned by this agent's filesystem scope."""
 
@@ -1352,6 +1386,8 @@ def _compose_definition(
         is_root=is_root,
         capability_scope=capability_scope,
         runtime_plugins=runtime_plugins if is_root else (),
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
     )
     tools = _merge_named_sources(
         "tool",
@@ -1362,9 +1398,17 @@ def _compose_definition(
     discovered_subagents = _agent_subagents_for_framework(
         resources.subagents, framework, graph_resource_context
     )
+    explicit_subagents = tuple(
+        _compose_explicit_subagent_skills(
+            value,
+            skill_sources=skill_sources,
+            skill_scopes=skill_scopes,
+        )
+        for value in root.subagents
+    )
     subagents = _merge_named_sources(
         "subagent",
-        ("explicit", root.subagents),
+        ("explicit", explicit_subagents),
         ("discovered", discovered_subagents),
         identity=_subagent_name,
     )
@@ -1372,7 +1416,13 @@ def _compose_definition(
         ("explicit", root.mcp),
         ("discovered", resources.mcp),
     )
-    tools = _attach_skill_tools(framework, resources.skill_directories, tools)
+    tools = _attach_skill_tools(
+        resources.skill_directories,
+        tools,
+        agent_name=root.name,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
+    )
     sandbox = _resolve_sandbox(root.sandbox, resources.sandbox, framework)
     return replace(
         root,
@@ -1415,6 +1465,8 @@ def _discover_folder_resources(
     is_root: bool,
     capability_scope: str,
     runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> _DiscoveredResources:
     tools = _merge_named_sources(
         "tool",
@@ -1436,6 +1488,8 @@ def _discover_folder_resources(
                 bundle_root / "subagents",
                 framework=framework,
                 capability_scope=capability_scope,
+                skill_sources=skill_sources,
+                skill_scopes=skill_scopes,
             ),
         ),
         *(
@@ -1445,6 +1499,8 @@ def _discover_folder_resources(
                     plugin.directory / "subagents",
                     framework=framework,
                     capability_scope=f"plugin__{plugin.name}",
+                    skill_sources=skill_sources,
+                    skill_scopes=skill_scopes,
                 ),
             )
             for plugin in runtime_plugins
@@ -1527,12 +1583,59 @@ def _agent_subagents_for_framework(
 
 
 def _attach_skill_tools(
-    framework: str, skill_directories: Sequence[Path], tools: tuple[Any, ...]
+    skill_directories: Sequence[Path],
+    tools: tuple[Any, ...],
+    *,
+    agent_name: str,
+    skill_sources: Mapping[str, SkillSource] | None,
+    skill_scopes: dict[str, SkillScope] | None,
 ) -> tuple[Any, ...]:
-    if framework == "adk":
-        skill_toolset = _discover_skill_toolset(skill_directories, tools)
-        return tools if skill_toolset is None else (*tools, skill_toolset)
-    return (*tools, *_discover_portable_skill_tools(skill_directories, tools))
+    """Attach one shared progressive tool surface regardless of framework."""
+
+    scope = _register_skill_scope(
+        agent_name,
+        skill_directories,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
+    )
+    if not scope.source_names:
+        return tools
+    conflicts = sorted({_tool_name(item) for item in tools} & _SKILL_TOOL_NAMES)
+    if conflicts:
+        raise BundleDuplicateError(
+            "tools conflict with Harnest skill tools: "
+            + ", ".join(repr(name) for name in conflicts)
+        )
+    return (*tools, *create_skill_tools(scope))
+
+
+def _register_skill_scope(
+    agent_name: str,
+    skill_directories: Sequence[Path],
+    *,
+    skill_sources: Mapping[str, SkillSource] | None,
+    skill_scopes: dict[str, SkillScope] | None,
+) -> SkillScope:
+    """Build one scope through SkillSource and retain it for `context.skills`."""
+
+    try:
+        filesystem = (
+            filesystem_skill_source(skill_directories)
+            if skill_directories
+            else None
+        )
+        scope = scoped_skill_sources(skill_sources or {}, filesystem)
+    except (TypeError, ValueError, SkillValidationError) as exc:
+        raise BundleSkillError(str(exc)) from exc
+    if skill_scopes is None:
+        return scope
+    existing = skill_scopes.get(agent_name)
+    if existing is not None:
+        if existing.routing_identity == scope.routing_identity:
+            return existing
+        raise BundleDuplicateError(f"duplicate skill scope for agent {agent_name!r}")
+    skill_scopes[agent_name] = scope
+    return scope
 
 
 def _resolve_sandbox(
@@ -1644,7 +1747,12 @@ def _discover_tasks(directory: Path, application_name: str) -> tuple[CompiledTas
 
 
 def _discover_subagents(
-    directory: Path, *, framework: str = "adk", capability_scope: str = ""
+    directory: Path,
+    *,
+    framework: str = "adk",
+    capability_scope: str = "",
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
     """Discover managed and explicitly advanced filesystem subagents."""
 
@@ -1663,7 +1771,11 @@ def _discover_subagents(
         if (entry := _subagent_entry(path)) is not None
     ]
     return _load_subagent_entries(
-        entries, framework=framework, capability_scope=capability_scope
+        entries,
+        framework=framework,
+        capability_scope=capability_scope,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
     )
 
 
@@ -1706,6 +1818,8 @@ def _load_subagent_entries(
     *,
     framework: str,
     capability_scope: str,
+    skill_sources: Mapping[str, SkillSource] | None = None,
+    skill_scopes: dict[str, SkillScope] | None = None,
 ) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
     """Load, validate, and compose ordered filesystem subagent exports."""
 
@@ -1756,6 +1870,8 @@ def _load_subagent_entries(
                 framework=framework,
                 capability_scope=_agent_scope(capability_scope, export_name),
                 export_name=export_name,
+                skill_sources=skill_sources,
+                skill_scopes=skill_scopes,
             )
         )
     return tuple(agents)
@@ -1769,11 +1885,17 @@ def _compose_subagent_entry(
     framework: str,
     capability_scope: str,
     export_name: str,
+    skill_sources: Mapping[str, SkillSource] | None,
+    skill_scopes: dict[str, SkillScope] | None,
 ) -> AgentDefinition | _AdvancedAgentDefinition:
     """Compose a nested managed export or preserve one flat export."""
 
     if not nested:
-        return value
+        return _compose_flat_subagent_skills(
+            value,
+            skill_sources=skill_sources,
+            skill_scopes=skill_scopes,
+        )
     # A nested folder promises Harnest-owned resource composition. Advanced
     # targets own native composition, so accepting that shape would silently
     # ignore sibling instructions and capabilities.
@@ -1788,7 +1910,60 @@ def _compose_subagent_entry(
         is_root=False,
         framework=framework,
         capability_scope=capability_scope,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
     )
+
+
+def _compose_flat_subagent_skills(
+    value: AgentDefinition | _AdvancedAgentDefinition,
+    *,
+    skill_sources: Mapping[str, SkillSource] | None,
+    skill_scopes: dict[str, SkillScope] | None,
+) -> AgentDefinition | _AdvancedAgentDefinition:
+    """Attach only application-wide dynamic sources to a flat subagent."""
+
+    return _compose_explicit_subagent_skills(
+        value,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
+    )
+
+
+def _compose_explicit_subagent_skills(
+    value: AgentDefinition | _AdvancedAgentDefinition | Any,
+    *,
+    skill_sources: Mapping[str, SkillSource] | None,
+    skill_scopes: dict[str, SkillScope] | None,
+) -> AgentDefinition | _AdvancedAgentDefinition | Any:
+    """Give code-owned subagents dynamic sources without claiming folder content."""
+
+    if isinstance(value, _AdvancedAgentDefinition):
+        _register_skill_scope(
+            _subagent_name(value),
+            (),
+            skill_sources=skill_sources,
+            skill_scopes=skill_scopes,
+        )
+        return value
+    if not isinstance(value, AgentDefinition):
+        return value
+    children = tuple(
+        _compose_explicit_subagent_skills(
+            child,
+            skill_sources=skill_sources,
+            skill_scopes=skill_scopes,
+        )
+        for child in value.subagents
+    )
+    tools = _attach_skill_tools(
+        (),
+        tuple(value.tools),
+        agent_name=value.name,
+        skill_sources=skill_sources,
+        skill_scopes=skill_scopes,
+    )
+    return replace(value, tools=tools, subagents=children)
 
 
 def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]:
@@ -2019,191 +2194,6 @@ def _discover_sandbox(directory: Path) -> Sandbox | None:
         predicate=lambda item: isinstance(item, Sandbox),
     )
     return value
-
-
-def _discover_skill_toolset(
-    skill_directories: Sequence[Path], tools: Sequence[Any]
-) -> Any | None:
-    if not skill_directories:
-        return None
-
-    tool_names = {_tool_name(item) for item in tools}
-    conflicts = sorted(tool_names & _SKILL_TOOL_NAMES)
-    if conflicts:
-        rendered = ", ".join(repr(name) for name in conflicts)
-        raise BundleDuplicateError(
-            f"tools conflict with ADK SkillToolset names: {rendered}"
-        )
-
-    load_skill_from_dir, skill_toolset_class = _adk_skill_api()
-    skills = _load_adk_skills(skill_directories, load_skill_from_dir)
-    expected_names = [path.name for path in skill_directories]
-    loaded_names = [getattr(skill, "name", None) for skill in skills]
-    if loaded_names != expected_names:
-        raise BundleSkillError(
-            f"ADK loaded unexpected skills: expected "
-            f"{expected_names!r}, got {loaded_names!r}"
-        )
-    try:
-        return skill_toolset_class(skills=skills)
-    except Exception as exc:
-        raise BundleSkillError(
-            "failed to create ADK SkillToolset: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-
-
-def _adk_skill_api() -> tuple[Callable[..., Any], type[Any]]:
-    try:
-        from google.adk.skills import load_skill_from_dir
-        from google.adk.tools.skill_toolset import SkillToolset
-    except ImportError as exc:  # pragma: no cover - runtime dependency
-        raise BundleImportError(
-            "discovered skills require Google ADK 2.x skill support"
-        ) from exc
-    return load_skill_from_dir, SkillToolset
-
-
-def _load_adk_skills(
-    skill_directories: Sequence[Path], loader: Callable[..., Any]
-) -> list[Any]:
-    try:
-        return [loader(path) for path in skill_directories]
-    except Exception as exc:
-        raise BundleSkillError(
-            f"failed to load skills: {type(exc).__name__}: {exc}"
-        ) from exc
-
-
-def _discover_portable_skill_tools(
-    skill_directories: Sequence[Path], tools: Sequence[Any]
-) -> tuple[Callable[..., Any], ...]:
-    """Expose filesystem skills through framework-neutral progressive loaders."""
-
-    if not skill_directories:
-        return ()
-    conflicts = sorted({_tool_name(item) for item in tools} & _SKILL_TOOL_NAMES)
-    if conflicts:
-        raise BundleDuplicateError(
-            "tools conflict with Harnest skill tools: "
-            + ", ".join(repr(name) for name in conflicts)
-        )
-    descriptors = tuple(_load_skill_descriptor(path) for path in skill_directories)
-    skills = {item.name: item.directory for item in descriptors}
-
-    def _skill_path(name: str) -> Path:
-        if name not in skills:
-            raise ValueError(
-                f"unknown skill {name!r}; available: {', '.join(sorted(skills))}"
-            )
-        return skills[name]
-
-    def list_skills() -> str:
-        """List skill names and descriptions for progressive selection."""
-
-        # Keep discovery metadata-only so an irrelevant skill body cannot
-        # consume model context before the agent deliberately loads it.
-        return json.dumps(
-            {
-                "skills": [
-                    {"name": item.name, "description": item.description}
-                    for item in descriptors
-                ]
-            }
-        )
-
-    def load_skill(name: str) -> str:
-        """Load the complete SKILL.md instructions for one named skill."""
-
-        return _read_skill_text(
-            _skill_path(name) / "SKILL.md", kind="skill manifest"
-        )
-
-    def load_skill_resource(name: str, path: str) -> str:
-        """Load a UTF-8 resource contained within one named skill directory."""
-
-        if not isinstance(path, str) or not path or Path(path).is_absolute():
-            raise ValueError("skill resource path must be a non-empty relative path")
-        root = _skill_path(name).resolve()
-        candidate = (root / path).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("skill resource path escapes its skill directory") from exc
-        if candidate.is_symlink() or not candidate.is_file():
-            raise ValueError(f"skill resource does not exist: {path}")
-        return _read_skill_text(candidate, kind="skill resource")
-
-    return (list_skills, load_skill, load_skill_resource)
-
-
-def _load_skill_descriptor(directory: Path) -> _SkillDescriptor:
-    """Read the bounded Agent Skills routing metadata used before activation."""
-
-    manifest = directory / "SKILL.md"
-    contents = _read_skill_text(manifest, kind="skill manifest")
-    frontmatter = _skill_frontmatter(contents, manifest)
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-    if not isinstance(name, str) or name != directory.name:
-        raise BundleSkillError(
-            f"skill frontmatter name must match directory {directory.name!r}: {manifest}"
-        )
-    if not isinstance(description, str) or not description.strip():
-        raise BundleSkillError(
-            f"skill frontmatter description must be a non-empty string: {manifest}"
-        )
-    normalized_description = description.strip()
-    if len(normalized_description) > _MAX_SKILL_DESCRIPTION_CHARS:
-        raise BundleSkillError(
-            "skill frontmatter description must be at most "
-            f"{_MAX_SKILL_DESCRIPTION_CHARS} characters: {manifest}"
-        )
-    return _SkillDescriptor(name, normalized_description, directory)
-
-
-def _skill_frontmatter(contents: str, manifest: Path) -> Mapping[str, Any]:
-    """Decode one explicit YAML frontmatter block without reading the skill body."""
-
-    lines = contents.splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise BundleSkillError(f"skill must start with YAML frontmatter: {manifest}")
-    closing = next(
-        (index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"),
-        None,
-    )
-    if closing is None:
-        raise BundleSkillError(f"skill frontmatter is not closed: {manifest}")
-    try:
-        value = yaml.safe_load("\n".join(lines[1:closing]))
-    except yaml.YAMLError as exc:
-        raise BundleSkillError(
-            f"skill frontmatter is invalid YAML: {type(exc).__name__}: {manifest}"
-        ) from exc
-    if not isinstance(value, Mapping):
-        raise BundleSkillError(f"skill frontmatter must be a mapping: {manifest}")
-    return value
-
-
-def _read_skill_text(path: Path, *, kind: str) -> str:
-    """Read one bounded skill file while preserving its authored text."""
-
-    if path.is_symlink() or not path.is_file():
-        raise BundleSkillError(f"{kind} must be a regular file: {path}")
-    try:
-        if path.stat().st_size > _MAX_METADATA_FILE_BYTES:
-            raise BundleSkillError(
-                f"{kind} exceeds {_MAX_METADATA_FILE_BYTES} bytes: {path}"
-            )
-        return path.read_text(encoding="utf-8")
-    except BundleSkillError:
-        raise
-    except UnicodeDecodeError as exc:
-        raise BundleSkillError(f"{kind} must be UTF-8 text: {path}") from exc
-    except OSError as exc:
-        raise BundleSkillError(
-            f"unable to read {kind} with {type(exc).__name__}: {path}"
-        ) from exc
 
 
 def _bundle_skill_directories(

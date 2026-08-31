@@ -341,6 +341,14 @@ without exposing native request types through portable hooks. Zero-argument
 does not publish the entered value by itself. Providers are discovered but not
 called by the compiler. See [Runtime extensions](extensions.md).
 
+Zero or more `@lifecycle.skills.source(<name>)` factories register dynamic
+`SkillSource` adapters. The synchronous factory is validated during compilation,
+but its catalog, documents, and resources are queried only inside a managed
+invocation. A source receives revocable agent, verified user and non-secret claim,
+session, credential, storage, and resource access through `SkillContext`; it must
+apply authorization, search, ordering, and pagination before returning a bounded
+`SkillPage`.
+
 Exactly zero or one root `@lifecycle.output_policy` factory selects public
 intermediate model messages. Its default `OutputPolicy()` suppresses subagent
 narration attached to tool calls without removing tool events or a terminal
@@ -394,14 +402,16 @@ LangGraph also rejects ADK sandbox executors, `output_key`,
 `generate_content_config`, and implicit subagent delegation rather than
 silently ignoring them.
 
-Skills expose progressive list, load, and resource tools instead of
-placing every skill body in the root prompt. Both backends list each skill's
-name and frontmatter description so the model can select before loading its
-instructions. ADK uses its standard loader and one `SkillToolset`; LangGraph
-receives portable callable tools providing the same progressive access. A skill
-may contain Agent-Skills-style `references/`, `assets/`, and `scripts/`
-content. Public entries directly under `skills/` must be skill directories;
-symlinks are rejected.
+Skills expose progressive list, load, and resource tools instead of placing
+every skill body in the root prompt. `FilesystemSkillSource` validates static
+folders and content-addresses their complete trees during compilation. Harnest
+then composes that source with lifecycle-provided dynamic sources in one
+agent-scoped registry. ADK and LangGraph receive the same three governed tools,
+and application code uses the same registry through `context.skills`. Catalog
+entries contain source, ID, name, description, and version; loaded versions are
+pinned for the active invocation. A skill may contain Agent-Skills-style
+`references/`, `assets/`, and `scripts/` content. Public entries directly under
+`skills/` must be skill directories; symlinks are rejected.
 
 The optional `evals/test_config.json` is an ADK `EvalConfig`. Eval sets are
 sorted and validated during compilation, including unique case IDs, but remain
@@ -493,10 +503,12 @@ when it needs private tools, skills, or other supported resources. Conversely,
 an `Agent` value written inline in the root `agent.py` is root-scoped when used
 as a graph node and consumes the root folder's discovered resources.
 
-Filesystem placement is the access model. There are no tool/skill name lists on
-`Agent` that select access to discovered folders, and no separate `SubAgent`
-class. An `Agent` becomes a nested subagent through its folder and its
-graph/parent relationship.
+Filesystem placement is the access model for static skills. There are no
+tool/skill name lists on `Agent` that select access to discovered folders, and
+no separate `SubAgent` class. An `Agent` becomes a nested subagent through its
+folder and its graph/parent relationship. Dynamic sources are application-wide
+registrations, but receive the active agent identity and must return only the
+skills authorized for that root or subagent.
 
 Compilation writes a separate runtime directory containing the preserved source
 tree, generated `agent.py`, `__init__.py`, and `__main__.py` adapters, the

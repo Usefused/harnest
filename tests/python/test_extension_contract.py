@@ -103,6 +103,21 @@ class ExtensionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "storage identifier"):
             lifecycle.storage.custom("")
 
+    def test_skill_namespace_registers_ordered_named_sources(self):
+        """Keep dynamic catalogs repeatable and independently routable."""
+
+        @lifecycle.skills.source("wex", order=-5)
+        def wex():
+            return object()
+
+        registration = registration_for(wex)
+
+        self.assertEqual(registration.phase, "skill_source")
+        self.assertEqual(registration.name, "wex")
+        self.assertEqual(registration.order, -5)
+        with self.assertRaisesRegex(ValueError, "source identifier"):
+            lifecycle.skills.source("not/valid")
+
     def test_tool_and_agent_namespaces_map_to_portable_phases(self):
         """Offer cohesive namespaces while retaining existing flat hook phases."""
 

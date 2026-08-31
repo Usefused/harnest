@@ -566,6 +566,7 @@ class TaskRuntimeManager:
             resources=resources,
             asset_stores=capabilities.asset_stores,
             custom_stores=capabilities.custom_stores,
+            skill_registry=capabilities.skill_registry,
             plugin_bindings=bindings,
         )
 

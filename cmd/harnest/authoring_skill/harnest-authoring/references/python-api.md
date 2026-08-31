@@ -212,6 +212,11 @@ their existing `None` compatibility. HTTP request replacements use
 store and an optional domain label. `context.credentials` remains a private
 typed resolver. `context.mcp("billing")` exposes no raw transport and is
 available only when the runtime can dispatch through the governed tool path.
+Implement changing catalogs as `SkillSource` classes under `harnest.lib`, then
+register them once with `@lifecycle.skills.source("name")`. Filesystem and
+dynamic sources share `context.skills` plus the model's progressive list, load,
+and resource tools. Sources must filter by `SkillContext` identity and paginate
+before returning descriptors; never fetch remote catalogs during construction.
 Inspect `application.lifecycle_coverage.report()` or `/agent` diagnostics before
 relying on native internals, especially in advanced mode.
 

@@ -1,17 +1,17 @@
 ---
 name: harnest-authoring
-description: Build, modify, test, or review Harnest agents and source. Use for agent folders, harnest.* imports, libraries, ADK or LangGraph graphs, durable tools, queued tasks, runtime plugins, continuations, agent-plugins, extensions, MCP, skills, evals, compilation, serving, and Harnest source changes.
+description: Build, modify, test, or review Harnest agents and source. Use for agent folders, harnest.* imports, libraries, ADK or LangGraph graphs, durable tools, queued tasks, runtime plugins, continuations, agent-plugins, extensions, MCP, static or dynamic skills, evals, compilation, serving, and Harnest source changes.
 ---
 
 # Harnest authoring
 
-Produce tested agents. Never edit `.harnest/`. Not a runtime skill.
+Produce agents. Never edit `.harnest/`. Not a runtime skill.
 
 ## Modify safely
 
 1. Preserve unrelated changes. For legacy projects, inspect `harnest upgrade
    AGENT_DIR` before editing. Never run `init` over existing work; request
-   `--example` for full samples.
+   `--example` for samples.
 2. Preserve framework, mode, and `Agent.history` unless migration is requested.
    Preserve session/checkpoint authorities; read `docs/checkpoints.md`
    before changing checkpoint ownership.
@@ -24,7 +24,7 @@ Produce tested agents. Never edit `.harnest/`. Not a runtime skill.
    `harnest.lib.*`. Neither needs `__init__.py`. Publish values with `@context`.
    Inline media is transient; `Stored(...)` requires named storage and an async
    `@tool`.
-5. Import authoring symbols explicitly from `harnest.*`; no magic globals or
+5. Import authoring symbols from `harnest.*`; no magic globals or
    compatibility aliases exist.
 6. Match path/export contracts. MCP `client()` factories take no arguments;
    `@client_tool` stubs run in callers, never the agent server. Decorate

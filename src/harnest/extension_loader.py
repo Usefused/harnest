@@ -29,6 +29,7 @@ from .http_routes import (
 from .lifecycle import LifecycleListener, registrations_for
 from .output import OutputPolicy
 from .session import SessionStore
+from .skills import SkillSource
 from .storage_registry import CustomStorage, StorageRegistry
 
 
@@ -84,6 +85,7 @@ class DiscoveredExtensions:
     output_policy: OutputPolicy = OutputPolicy()
     telemetry_exporters: tuple[LifecycleListener, ...] = ()
     context_values: tuple[ContextValue, ...] = ()
+    skill_sources: Mapping[str, SkillSource] = field(default_factory=dict, repr=False)
     storage_registry: StorageRegistry = field(default_factory=StorageRegistry)
     declared_listeners: tuple[LifecycleListener, ...] = field(
         default=(), repr=False
@@ -114,6 +116,7 @@ def discover_extension_sources(
         ordered, framework
     )
     credential_provider, remaining = _create_credential_provider(remaining)
+    skill_sources, remaining = _create_skill_sources(remaining)
     http_routes, remaining = _create_http_routes(remaining)
     output_policy, remaining = _create_output_policy(remaining)
     telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
@@ -136,9 +139,30 @@ def discover_extension_sources(
         output_policy=output_policy,
         telemetry_exporters=telemetry_exporters,
         context_values=context_values,
+        skill_sources=skill_sources,
         storage_registry=storage,
         declared_listeners=ordered,
     )
+
+
+def _create_skill_sources(
+    listeners: tuple[LifecycleListener, ...],
+) -> tuple[dict[str, SkillSource], tuple[LifecycleListener, ...]]:
+    """Materialize named source adapters without querying their remote catalogs."""
+
+    factories = tuple(item for item in listeners if item.phase == "skill_source")
+    remaining = tuple(item for item in listeners if item.phase != "skill_source")
+    _validate_named_storage(factories, kind="skill source")
+    sources: dict[str, SkillSource] = {}
+    for listener in factories:
+        value = _call_factory(listener, label="skill source")
+        if not isinstance(value, SkillSource):
+            raise ExtensionDiscoveryError(
+                f"skill source lifecycle factory {listener.identity} must return "
+                f"SkillSource; got {type(value).__name__}"
+            )
+        sources[listener.registration_name or "default"] = value
+    return sources, remaining
 
 
 def _create_storage_registry(
@@ -655,6 +679,7 @@ def _validate_listener_signature(
         "output_policy",
         "telemetry_exporter",
         "resource",
+        "skill_source",
         "context",
     }
     if phase == "http_routes":

@@ -411,10 +411,10 @@ func strictlySortedPluginCapabilities(values []string) bool {
 // a rewritten manifest cannot invent a capability the source compiler rejects.
 var compiledPluginCapabilities = map[string]struct{}{
 	"context.assets": {}, "context.credentials": {}, "context.continuations": {}, "context.mcp": {},
-	"context.resources": {}, "context.session": {}, "context.storage": {},
+	"context.resources": {}, "context.session": {}, "context.skills": {}, "context.storage": {},
 	"content.mcp": {}, "content.skills": {}, "content.subagents": {}, "content.tools": {},
 	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.mcp": {},
-	"lifecycle.model": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
+	"lifecycle.model": {}, "lifecycle.skills": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
 	"policy.output": {}, "storage.assets": {}, "storage.checkpoints": {},
 	"storage.custom": {}, "storage.sessions": {}, "telemetry.exporter": {},
 }

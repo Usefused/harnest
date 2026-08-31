@@ -19,6 +19,7 @@ from harnest.plugins import release_runtime_plugins
 from harnest.runtime_plugins import discover_runtime_plugins
 
 from _session_store_fixture import write_session_store
+from _skill_fixture import run_skill_tool
 
 
 class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
@@ -217,23 +218,23 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         == "plugins/temporal/extensions/audit.py"
                     )
                     self.assertEqual(plugin_listener.phase, "before_invoke")
-                    if framework == "langgraph":
-                        tools = {
-                            tool.__name__: tool
-                            for tool in compiled.target.tools
-                            if hasattr(tool, "__name__")
-                        }
-                        self.assertEqual(
-                            json.loads(tools["list_skills"]())["skills"],
-                            [
-                                {
-                                    "name": "catalog-guide",
-                                    "description": (
-                                        "Explain how to use the local catalog capability."
-                                    ),
-                                }
-                            ],
-                        )
+                    tools = {
+                        tool.__name__: tool
+                        for tool in compiled.target.tools
+                        if hasattr(tool, "__name__")
+                    }
+                    catalog = json.loads(
+                        run_skill_tool(compiled, "root", tools["list_skills"])
+                    )["skills"]
+                    self.assertEqual(
+                        [(item["name"], item["description"]) for item in catalog],
+                        [
+                            (
+                                "catalog-guide",
+                                "Explain how to use the local catalog capability.",
+                            )
+                        ],
+                    )
                 finally:
                     if compiled is not None:
                         self._release(compiled)
@@ -244,6 +245,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
         cases = (
             ("tools", "content.tools", "tools"),
             ("extensions", "lifecycle.agent", "extensions/audit.py"),
+            ("skill_source", "lifecycle.skills", "extensions/skills.py"),
         )
         for contribution, capability, source in cases:
             with self.subTest(contribution=contribution), tempfile.TemporaryDirectory() as temp:
@@ -259,12 +261,23 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         "    \"\"\"Return the supplied value unchanged.\"\"\"\n"
                         "    return value\n",
                     )
-                else:
+                elif contribution == "extensions":
                     self._write(
                         plugin / "extensions" / "audit.py",
                         "from harnest.lifecycle import lifecycle\n"
                         "@lifecycle.agent.before\n"
                         "def audit(context, value): return context.next()\n",
+                    )
+                else:
+                    self._write(
+                        plugin / "extensions" / "skills.py",
+                        "from harnest.lifecycle import lifecycle\n"
+                        "from harnest.skills import SkillSource\n"
+                        "class Source(SkillSource):\n"
+                        "  async def list(self, context, *, query=None, cursor=None, limit=50): pass\n"
+                        "  async def load(self, skill_id, context, *, version=None): pass\n"
+                        "@lifecycle.skills.source('generated')\n"
+                        "def generated(): return Source()\n",
                     )
 
                 with patch(

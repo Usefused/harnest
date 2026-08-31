@@ -14,6 +14,7 @@ from harnest.bundle import (
 )
 from harnest.graph import Graph
 from _session_store_fixture import write_session_store
+from _skill_fixture import run_skill_tool
 
 
 class PluginIntegrationTests(unittest.TestCase):
@@ -71,17 +72,19 @@ class PluginIntegrationTests(unittest.TestCase):
                     compiled.target.mcp[0].capability_id,
                     "plugin__support__mcp__support",
                 )
-                if framework == "langgraph":
-                    tools = {tool.__name__: tool for tool in compiled.target.tools}
-                    self.assertEqual(
-                        json.loads(tools["list_skills"]())["skills"],
-                        [
-                            {
-                                "name": "support-guide",
-                                "description": "Explain how to use support MCP tools.",
-                            }
-                        ],
-                    )
+                tools = {tool.__name__: tool for tool in compiled.target.tools}
+                catalog = json.loads(
+                    run_skill_tool(compiled, "root", tools["list_skills"])
+                )["skills"]
+                self.assertEqual(
+                    [(item["name"], item["description"]) for item in catalog],
+                    [
+                        (
+                            "support-guide",
+                            "Explain how to use support MCP tools.",
+                        )
+                    ],
+                )
 
     def test_graph_agent_node_receives_plugin_capability(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -111,12 +114,17 @@ class PluginIntegrationTests(unittest.TestCase):
             self.assertEqual([client.tool_name_prefix for client in worker.mcp], ["support"])
             tools = {tool.__name__: tool for tool in worker.tools}
             self.assertEqual(
-                json.loads(tools["list_skills"]())["skills"],
                 [
-                    {
-                        "name": "support-guide",
-                        "description": "Explain how to use support MCP tools.",
-                    }
+                    (item["name"], item["description"])
+                    for item in json.loads(
+                        run_skill_tool(compiled, "worker", tools["list_skills"])
+                    )["skills"]
+                ],
+                [
+                    (
+                        "support-guide",
+                        "Explain how to use support MCP tools.",
+                    )
                 ],
             )
 

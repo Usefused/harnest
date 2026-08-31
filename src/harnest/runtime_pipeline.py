@@ -40,6 +40,7 @@ def build_runtime_pipeline(
         context_values=capabilities.context_values,
         asset_stores=capabilities.asset_stores,
         custom_stores=capabilities.custom_stores,
+        skill_registry=capabilities.skill_registry,
         session_store=session_store,
         credential_provider=capabilities.credential_provider,
         manage_credential_provider=manage_credential_provider,
