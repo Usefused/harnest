@@ -827,14 +827,6 @@ def create_skill_tools(scope: SkillScope) -> tuple[Any, ...]:
     return list_skills, load_skill, load_skill_resource
 
 
-def filesystem_skill_source(
-    directories: Sequence[str | Path],
-) -> FilesystemSkillSource:
-    """Construct the built-in source through the same public validation boundary."""
-
-    return FilesystemSkillSource(directories)
-
-
 def scoped_skill_sources(
     dynamic: Mapping[str, SkillSource],
     filesystem: FilesystemSkillSource | None,

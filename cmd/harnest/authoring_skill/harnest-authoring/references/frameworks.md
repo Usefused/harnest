@@ -16,8 +16,8 @@ universal lifecycle as root extensions. Global authority, route, context, and
 named-resource collisions fail rather than being resolved by load order.
 
 - ADK supports portable graphs plus ADK-specific agent fields, native plugins,
-  progressive ADK skills, and sandbox executors.
-- LangGraph supports the same portable graph topology and portable skills.
+  portable progressive skills, and sandbox executors.
+- LangGraph supports the same portable graph topology and progressive skills.
   MCP discovery is deferred until runtime, including MCP-enabled agent nodes
   inside graphs.
 - Prefer explicit graph nodes for multi-agent flows. Flat `subagents/` are

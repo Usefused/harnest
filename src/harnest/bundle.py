@@ -72,7 +72,6 @@ from .skills import (
     SkillSource,
     SkillValidationError,
     create_skill_tools,
-    filesystem_skill_source,
     scoped_skill_sources,
 )
 from .source_tree import ignored_source_path
@@ -1620,7 +1619,7 @@ def _register_skill_scope(
 
     try:
         filesystem = (
-            filesystem_skill_source(skill_directories)
+            FilesystemSkillSource(skill_directories)
             if skill_directories
             else None
         )
@@ -1891,7 +1890,7 @@ def _compose_subagent_entry(
     """Compose a nested managed export or preserve one flat export."""
 
     if not nested:
-        return _compose_flat_subagent_skills(
+        return _compose_explicit_subagent_skills(
             value,
             skill_sources=skill_sources,
             skill_scopes=skill_scopes,
@@ -1910,21 +1909,6 @@ def _compose_subagent_entry(
         is_root=False,
         framework=framework,
         capability_scope=capability_scope,
-        skill_sources=skill_sources,
-        skill_scopes=skill_scopes,
-    )
-
-
-def _compose_flat_subagent_skills(
-    value: AgentDefinition | _AdvancedAgentDefinition,
-    *,
-    skill_sources: Mapping[str, SkillSource] | None,
-    skill_scopes: dict[str, SkillScope] | None,
-) -> AgentDefinition | _AdvancedAgentDefinition:
-    """Attach only application-wide dynamic sources to a flat subagent."""
-
-    return _compose_explicit_subagent_skills(
-        value,
         skill_sources=skill_sources,
         skill_scopes=skill_scopes,
     )
@@ -2241,37 +2225,13 @@ def _skill_directories(directory: Path) -> tuple[Path, ...]:
             raise BundleConventionError(f"skill resource cannot be a symlink: {path}")
         if _is_ignored(path):
             continue
-        _validate_skill_directory(path)
+        if not path.is_dir():
+            raise BundleConventionError(
+                f"unexpected resource in skills directory: {path}; "
+                "each public entry must be a skill directory"
+            )
         skill_directories.append(path)
     return tuple(skill_directories)
-
-
-def _validate_skill_directory(path: Path) -> None:
-    if path.is_symlink():
-        raise BundleConventionError(f"skill resource cannot be a symlink: {path}")
-    if not path.is_dir():
-        raise BundleConventionError(
-            f"unexpected resource in skills directory: {path}; "
-            "each public entry must be a skill directory"
-        )
-    manifest = path / "SKILL.md"
-    if manifest.is_symlink():
-        raise BundleConventionError(f"skill manifest cannot be a symlink: {manifest}")
-    if not manifest.is_file():
-        raise BundleConventionError(
-            f"skill directory must contain uppercase SKILL.md: {path}"
-        )
-    _validate_tree_has_no_symlinks(path, kind="skill")
-    if manifest.stat().st_size > _MAX_METADATA_FILE_BYTES:
-        raise BundleConventionError(
-            f"skill manifest exceeds {_MAX_METADATA_FILE_BYTES} bytes: {manifest}"
-        )
-
-
-def _validate_tree_has_no_symlinks(directory: Path, *, kind: str) -> None:
-    for path in directory.rglob("*"):
-        if path.is_symlink():
-            raise BundleConventionError(f"{kind} resource cannot be a symlink: {path}")
 
 
 def _discover_evals(directory: Path) -> EvalSuite:

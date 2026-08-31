@@ -281,8 +281,8 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             ["agent__researcher__mcp__local_mcp"],
         )
 
-    def test_langgraph_skill_catalog_requires_portable_routing_metadata(self):
-        """Fail compilation when LangGraph cannot describe a skill before loading it."""
+    def test_skill_catalog_requires_portable_routing_metadata(self):
+        """Fail compilation when a skill cannot be described before loading."""
 
         cases = (
             ("# Missing frontmatter\n", "start with YAML frontmatter"),

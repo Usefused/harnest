@@ -17,7 +17,7 @@ then change at least:
 7. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
 8. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
 9. `extensions/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
-10. `skills/<name>/SKILL.md` → optional ADK Agent Skills; and
+10. `skills/<name>/SKILL.md` → optional progressive Agent Skills; and
 11. `evals/<id>.evalset.json` → optional official ADK eval sets; and
 12. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
     live-model tests.
@@ -239,7 +239,7 @@ environment-gated MCP-and-skill plugin, a portable extension, and an ignored
 sandbox example that can be renamed to `sandbox.py` when isolation is
 configured.
 
-Each public directory directly under `skills/` is one ADK Agent Skill. Its name
+Each public directory directly under `skills/` is one Agent Skill. Its name
 must be kebab-case and its `SKILL.md` frontmatter `name` must match the directory:
 
 ```text
@@ -251,9 +251,8 @@ skills/
     └── scripts/      # optional
 ```
 
-Skills are exposed through one ADK `SkillToolset`, enabling progressive
-list/load/resource access instead of injecting every skill body into the prompt.
-Symlinks are rejected.
+ADK and LangGraph receive the same progressive list/load/resource tools instead
+of injecting every skill body into the prompt. Symlinks are rejected.
 
 These internal skills are distinct from the public capabilities advertised by
 the Agent Card's `skills` field. They do not need matching IDs, but the card

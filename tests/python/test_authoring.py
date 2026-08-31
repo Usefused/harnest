@@ -99,16 +99,8 @@ def _fake_adk_modules(*, public_mcp_exports=True):
     models.BaseLlm = _recording_class("BaseLlm")
     lite_llm = types.ModuleType("google.adk.models.lite_llm")
     lite_llm.LiteLlm = _recording_class("LiteLlm")
-    skills = types.ModuleType("google.adk.skills")
-
-    def load_skill_from_dir(directory):
-        return types.SimpleNamespace(name=Path(directory).name)
-
-    skills.load_skill_from_dir = load_skill_from_dir
     tools_package = types.ModuleType("google.adk.tools")
     tools_package.__path__ = []
-    skill_toolset = types.ModuleType("google.adk.tools.skill_toolset")
-    skill_toolset.SkillToolset = _recording_class("SkillToolset")
     mcp_tool = types.ModuleType("google.adk.tools.mcp_tool")
     mcp_tool.__path__ = []
     mcp_tool.McpToolset = _recording_class("McpToolset")
@@ -157,9 +149,7 @@ def _fake_adk_modules(*, public_mcp_exports=True):
         "google.adk.apps": apps,
         "google.adk.models": models,
         "google.adk.models.lite_llm": lite_llm,
-        "google.adk.skills": skills,
         "google.adk.tools": tools_package,
-        "google.adk.tools.skill_toolset": skill_toolset,
         "google.adk.tools.mcp_tool": mcp_tool,
         "google.adk.tools.mcp_tool.mcp_session_manager": session_manager,
         "google.adk.evaluation": evaluation,
@@ -1443,7 +1433,10 @@ class AuthoringTests(unittest.TestCase):
     def test_adk_eval_filter_scores_only_customer_facing_parts(self):
         authored_plugin = object()
         app = types.SimpleNamespace(plugins=[authored_plugin])
-        module = types.SimpleNamespace(app=app)
+        package = types.ModuleType("compiled")
+        package.__path__ = []
+        module = types.ModuleType("compiled.agent")
+        module.app = app
         event = types.SimpleNamespace(
             content=types.SimpleNamespace(
                 parts=[
@@ -1454,8 +1447,11 @@ class AuthoringTests(unittest.TestCase):
             )
         )
 
-        with patch(
-            "harnest.testing.importlib.import_module", return_value=module
+        # Install only the requested module instead of replacing the process-wide
+        # importlib function used by lazily imported ADK dependencies.
+        with patch.dict(
+            sys.modules,
+            {"compiled": package, "compiled.agent": module},
         ), _adk_eval_output_filter("compiled.agent"):
             eval_plugin = app.plugins[0]
             self.assertIs(app.plugins[1], authored_plugin)
@@ -1649,7 +1645,7 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(researcher.kwargs["tools"][0].__name__, "lookup")
         self.assertEqual(researcher.kwargs["sub_agents"][0].kwargs["name"], "critic")
 
-    def test_bundle_agent_discovers_skills_as_an_on_demand_toolset(self):
+    def test_bundle_agent_discovers_skills_as_shared_on_demand_tools(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             anchor = root / "agent.py"
@@ -1692,7 +1688,7 @@ class AuthoringTests(unittest.TestCase):
             skill = root / "skills" / "research"
             skill.mkdir(parents=True)
 
-            with self.assertRaisesRegex(BundleConventionError, "uppercase SKILL.md"):
+            with self.assertRaisesRegex(BundleSkillError, "uppercase SKILL.md"):
                 bundle_agent(anchor, Agent(name="root", model="gemini-test"))
 
             self._write(
@@ -1727,7 +1723,7 @@ class AuthoringTests(unittest.TestCase):
             references.mkdir()
             (references / "outside.md").symlink_to(outside)
 
-            with self.assertRaisesRegex(BundleConventionError, "cannot be a symlink"):
+            with self.assertRaisesRegex(BundleSkillError, "cannot be a symlink"):
                 bundle_agent(anchor, Agent(name="root", model="gemini-test"))
 
     def test_discover_evals_validates_sorted_test_only_metadata(self):
