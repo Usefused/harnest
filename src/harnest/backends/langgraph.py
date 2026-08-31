@@ -362,7 +362,9 @@ def _apply_history_projection(
             "building a LangGraph agent requires langchain-core"
         ) from exc
 
-    def projection(state: Any) -> Any:
+    def projection(state: Any, **_execution_options: Any) -> Any:
+        # RunnableSequence forwards invocation options such as checkpoint
+        # durability to its first step; history projection does not own them.
         projected = (
             _session_input(state)
             if definition.history == "session"

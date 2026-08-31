@@ -175,9 +175,10 @@ class AgentDefinition:
             "description": self.description,
             "tools": runtime_tools,
             "sub_agents": children,
-            # Explicit modes keep graph-node behavior consistent with the
-            # portable history contract instead of accepting ADK's node default.
-            "mode": "chat" if self.history == "session" else "single_turn",
+            # ADK rejects single_turn at an application root. Excluding prior
+            # contents preserves the portable turn-only contract there; the
+            # graph backend selects single_turn when this agent is a node.
+            "mode": "chat",
             "include_contents": "default"
             if self.history == "session"
             else "none",

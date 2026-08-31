@@ -191,16 +191,34 @@ def _receives_direct_input(graph: Graph, node_name: str) -> bool:
 def _build_agent_node(
     definition: AgentDefinition, *, direct_input: bool
 ) -> Any:
-    """Preserve session history while allowing ADK to inject node output."""
+    """Select ADK's workflow-only dispatch mode for a managed agent node."""
 
     built = definition.build()
-    if definition.history != "session" or not direct_input:
+    if definition.history == "turn":
+        return _copy_agent_mode(
+            built,
+            mode="single_turn",
+            include_contents="none",
+        )
+    if not direct_input:
         return built
     # ADK chat nodes reject non-START edges. Single-turn dispatch injects the
     # direct node value, while explicit content inclusion retains this node's
     # prior session events across invocations.
+    return _copy_agent_mode(
+        built,
+        mode="single_turn",
+        include_contents="default",
+    )
+
+
+def _copy_agent_mode(
+    built: Any, *, mode: str, include_contents: str
+) -> Any:
+    """Copy an ADK agent mode without dropping Harnest lifecycle ownership."""
+
     copied = built.model_copy(
-        update={"mode": "single_turn", "include_contents": "default"}
+        update={"mode": mode, "include_contents": include_contents}
     )
     # Pydantic copies declared fields, while Harnest lifecycle ownership is
     # intentionally attached out of band to avoid framework schema coupling.

@@ -319,6 +319,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_history_projects_session_or_current_turn(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.runnables import RunnableLambda
+        from langgraph.checkpoint.memory import MemorySaver
         from harnest.backends.langgraph import build_graph
 
         messages = [
@@ -352,14 +353,16 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
                 "langchain.agents.create_agent",
                 return_value=RunnableLambda(record),
             ):
-                target = build_graph(graph)
+                target = build_graph(graph, checkpointer=MemorySaver())
 
             await target.ainvoke(
                 {
                     "messages": messages,
                     "value": "second",
                     "_harnest_turn_start": 2,
-                }
+                },
+                config={"configurable": {"thread_id": history}},
+                durability="sync",
             )
 
             self.assertEqual(

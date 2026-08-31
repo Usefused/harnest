@@ -253,7 +253,7 @@ class AuthoringTests(unittest.TestCase):
 
         self.assertEqual(session_agent.kwargs["mode"], "chat")
         self.assertEqual(session_agent.kwargs["include_contents"], "default")
-        self.assertEqual(turn_agent.kwargs["mode"], "single_turn")
+        self.assertEqual(turn_agent.kwargs["mode"], "chat")
         self.assertEqual(turn_agent.kwargs["include_contents"], "none")
 
     def test_agent_advanced_is_the_only_public_advanced_boundary(self):

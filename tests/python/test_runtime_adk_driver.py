@@ -15,6 +15,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from harnest._adk_warnings import suppress_adk_warnings
+from harnest.agent import Agent
 from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.checkpoint import MemoryStore, PendingAction, RunScope
@@ -72,6 +73,28 @@ class DeterministicLlm(BaseLlm):
         yield LlmResponse(
             content=types.Content(
                 role="model", parts=[types.Part(text="deterministic response")]
+            )
+        )
+
+
+class RecordingTurnLlm(BaseLlm):
+    """Record root requests to verify turn-only history at the ADK boundary."""
+
+    seen: ClassVar[list[list[str]]] = []
+
+    async def generate_content_async(self, llm_request, stream=False):
+        del stream
+        self.seen.append(
+            [
+                part.text
+                for content in llm_request.contents
+                for part in content.parts
+                if part.text
+            ]
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text="turn response")]
             )
         )
 
@@ -538,6 +561,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(assistant.content, "deterministic response")
         self.assertIn("adk", assistant.metadata)
+
         self.assertIsNone(
             await self.driver.get_session_messages(
                 session_id="missing", user_id="test-user"
@@ -561,6 +585,40 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "text": "deterministic response",
                 }
             ],
+        )
+
+    async def test_turn_history_root_runs_without_prior_session_contents(self):
+        """Keep ADK's workflow-only single_turn mode away from app roots."""
+
+        RecordingTurnLlm.seen.clear()
+        agent = Agent(
+            name="turn_root",
+            model=RecordingTurnLlm(model="recording-turn"),
+            instruction="Answer only the current turn.",
+            history="turn",
+        ).build()
+        application = CompiledApplication(
+            name="turn_root",
+            framework="adk",
+            mode="managed",
+            target=agent,
+            native_app=App(name="turn_root", root_agent=agent),
+        )
+        driver = ADKRuntimeDriver(application)
+        try:
+            await driver.create_session(
+                session_id="turn-session", user_id="test-user", state={}
+            )
+            await driver.invoke(_request("turn-session", invocation_id="turn-1"))
+            await driver.invoke(_request("turn-session", invocation_id="turn-2"))
+        finally:
+            await driver.close()
+
+        self.assertEqual(agent.mode, "chat")
+        self.assertEqual(agent.include_contents, "none")
+        self.assertEqual(
+            RecordingTurnLlm.seen,
+            [["private prompt"], ["private prompt"]],
         )
 
     async def test_durable_tool_resumes_on_a_fresh_driver_replica(self):
