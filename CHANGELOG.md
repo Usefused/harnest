@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/Usefused/harnest/compare/v0.8.0...v0.9.0) (2026-09-01)
+
+
+### Features
+
+* **cli:** add PyPI plugin search ([afb7ca8](https://github.com/Usefused/harnest/commit/afb7ca8123413a9398f0fb93aa0a5117eb272ea5))
+
+
+### Fixes
+
+* **playground:** restore addressable sessions ([cb4d511](https://github.com/Usefused/harnest/commit/cb4d5116010092e6ae08d268d35f0624d0dd2974))
+
 ## [0.8.0](https://github.com/Usefused/harnest/compare/v0.7.0...v0.8.0) (2026-09-01)
 
 ### Features
