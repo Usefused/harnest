@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased
+## [0.10.1](https://github.com/Usefused/harnest/compare/v0.10.0...v0.10.1) (2026-09-01)
 
 ### Fixes
 
 * Route A2A cancellation through durable task ownership after the originating
   process-local A2A producer has finished.
+
+### Fixes
+
+* **a2a:** route durable task cancellation ([108f86e](https://github.com/Usefused/harnest/commit/108f86e986127cda5aedf35f5cefffabc5400ee9))
 
 ## [0.10.0](https://github.com/Usefused/harnest/compare/v0.9.0...v0.10.0) (2026-09-01)
 
