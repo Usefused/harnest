@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 
@@ -41,6 +42,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
 Typical workflow:
 
   harnest skills install
+  harnest plugins search postgres
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
@@ -73,6 +75,9 @@ type system struct {
 	commandContext func(context.Context, string, ...string) *exec.Cmd
 	embeddedWheel  func(string) (runtimewheel.Artifact, error)
 	embeddedUV     func() (uvbootstrap.Artifact, error)
+	userCacheDir   func() (string, error)
+	httpClient     *http.Client
+	pypiBaseURL    string
 }
 
 func defaultSystem() system {
@@ -83,6 +88,8 @@ func defaultSystem() system {
 		commandContext: exec.CommandContext,
 		embeddedWheel:  runtimewheel.Embedded,
 		embeddedUV:     uvbootstrap.Embedded,
+		userCacheDir:   os.UserCacheDir,
+		pypiBaseURL:    "https://pypi.org",
 	}
 }
 
@@ -121,6 +128,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newRuntimeCommand(),
 		app.newEnvironmentCommand(),
 		app.newSkillsCommand(),
+		app.newPluginsCommand(),
 		app.newModeCommand(),
 		app.newUpgradeCommand(),
 	)

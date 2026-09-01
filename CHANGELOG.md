@@ -4,6 +4,11 @@
 
 ### Features
 
+* Add `harnest plugins search` for cached public-PyPI discovery without a
+  Harnest-operated registry. Results are restricted to digest-verified wheels
+  with the Harnest entry-point and runtime-plugin bundle contract, package code
+  is never imported, and only explicitly approved Fused package names receive
+  an official label.
 * Add folder-discovered UTC cron schedules for queued tasks, task-scoped
   `context.agent` sessions, and explicitly enabled local root-agent invocation
   through `harnest run` or the generated launcher without an HTTP endpoint.
@@ -18,6 +23,8 @@
 
 ### Fixes
 
+* Restore Playground transcripts from shareable `?session=` URLs, keep session
+  selection addressable, and add bounded session-ID search with exact lookup.
 * Let live WebSocket clients cancel the active response by ID, await framework
   cleanup, receive a terminal `cancelled` response, and reuse the same socket.
 
