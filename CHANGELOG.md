@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.7.0](https://github.com/Usefused/harnest/compare/v0.6.0...v0.7.0) (2026-09-01)
 
 ### Fixes
 
@@ -22,9 +22,6 @@
 * Reduce the framework-neutral invocation overhead by indexing lifecycle hooks,
   reusing immutable tool pipelines, and bypassing empty plugin-context work
   without changing result canonicalization.
-
-## [0.7.0](https://github.com/Usefused/harnest/compare/v0.6.0...v0.7.0) (2026-09-01)
-
 
 ### Features
 
