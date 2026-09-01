@@ -158,17 +158,12 @@ class HarnestA2AExecutor(AgentExecutor):
 
         task_id = _required_identifier(context.task_id, "task")
         context_id = _required_identifier(context.context_id, "context")
-        if await self._cancel_durable_task(
-            task_id,
-            context_id=context_id,
-            user_id=context.call_context.user.user_name,
-        ):
-            await self._persist_cancelled_task(context.call_context, task_id)
+        durable = await self.cancel_durable_task(task_id, context.call_context)
+        if durable is not None:
             # A live SDK consumer still needs the event to terminate; a closed
             # queue drops it, after which the handler reasserts durable state.
             updater = TaskUpdater(event_queue, task_id, context_id)
             await updater.cancel(helpers.new_text_message("Task canceled"))
-            await self._forget(task_id)
             return
         run = await self._cancelable_run(task_id)
         if run is None:
@@ -177,6 +172,24 @@ class HarnestA2AExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue, task_id, context_id)
         await updater.cancel(helpers.new_text_message("Task canceled"))
         await self._forget(task_id)
+
+    async def cancel_durable_task(
+        self, task_id: str, context: ServerCallContext
+    ) -> Task | None:
+        """Cancel durable ownership before consulting process-local SDK state."""
+
+        task = await self._task_store.get(task_id, context)
+        if task is None:
+            return None
+        if not await self._cancel_durable_task(
+            task_id,
+            context_id=task.context_id,
+            user_id=context.user.user_name,
+        ):
+            return None
+        cancelled = await self._persist_cancelled_task(context, task_id)
+        await self._forget(task_id)
+        return cancelled
 
     async def _persist_cancelled_task(
         self, context: ServerCallContext, task_id: str
@@ -631,14 +644,22 @@ class _HarnestRequestHandler(DefaultRequestHandler):
         return await super().on_get_task(params, context)
 
     async def on_cancel_task(self, params: Any, context: ServerCallContext) -> Any:
-        """Authorize persisted ownership before consulting the process registry."""
+        """Prefer durable ownership over the SDK's process-local task registry."""
 
         await self._require_owned_task(params.id, context)
-        result = await super().on_cancel_task(params, context)
-        durable = await self._harnest_executor.finalize_durable_cancellation(
+        # A durable wait outlives the SDK producer that created it. Once that
+        # producer is cleaned up, the SDK registry cannot route cancellation,
+        # while Harnest still owns the queued task and continuation records.
+        durable = await self._harnest_executor.cancel_durable_task(
             params.id, context
         )
-        return result if durable is None else durable
+        if durable is not None:
+            return durable
+        result = await super().on_cancel_task(params, context)
+        finalized = await self._harnest_executor.finalize_durable_cancellation(
+            params.id, context
+        )
+        return result if finalized is None else finalized
 
     async def on_subscribe_to_task(
         self, params: Any, context: ServerCallContext

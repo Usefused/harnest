@@ -2,11 +2,13 @@ import asyncio
 from dataclasses import replace
 import json
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from a2a import helpers
 from a2a.auth.user import User
 from a2a.server.context import ServerCallContext
+from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.types import (
     ListTasksRequest,
     Role,
@@ -477,11 +479,18 @@ class A2AServerTests(unittest.TestCase):
                 a2a_task_store=adapter,
             )
         ) as client:
-            response = client.post(
-                "/a2a/tasks/durable-task:cancel",
-                json={"id": "durable-task"},
-                headers=_headers(),
-            )
+            # Durable ownership must not depend on the SDK registry retaining
+            # the producer that originally suspended into the external wait.
+            with patch.object(
+                DefaultRequestHandler,
+                "on_cancel_task",
+                new=AsyncMock(side_effect=AssertionError("SDK path used")),
+            ):
+                response = client.post(
+                    "/a2a/tasks/durable-task:cancel",
+                    json={"id": "durable-task"},
+                    headers=_headers(),
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(

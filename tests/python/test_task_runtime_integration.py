@@ -529,7 +529,7 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
         self.assertEqual(before["job_status"], "todo")
         self.assertEqual(before_continuation["run_status"], "waiting")
         self.assertEqual(before_continuation["continuation_status"], "pending")
-        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
         self.assertEqual(
             cancelled.json()["status"]["state"], "TASK_STATE_CANCELED"
         )
