@@ -41,6 +41,7 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | --- | --- |
 | `tools/<name>.py` | Exports one `@tool`-decorated callable named `<name>`. |
 | root `tasks/<name>.py` | Exports one `@task`-decorated callable named `<name>`. Tasks are application-owned queue work and are not model tools. |
+| root `cron/<name>.py` | Exports one same-named `Cron` that targets a discovered root task. Schedules use five fields and UTC. |
 | `subagents/<name>.py` | Exports one managed `Agent` with an explicit instruction or one native `Agent.advanced(...)`, named `<name>`. |
 | `subagents/<name>/agent.py` | Recursively composed managed subagent named `<name>` with its own folder-scoped `instructions.md`, tools, MCP clients, sandbox, and skills. Advanced subagents use the flat-file form because native source owns composition. ADK also permits child subagents; LangGraph does not. Runtime plugins, agent-plugins, and extensions remain root-only. |
 | `mcp/<name>.py` | Exports one literally zero-parameter `client()` factory returning `MCPClient`; `<name>` is its local identity. |

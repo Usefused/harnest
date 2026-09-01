@@ -531,25 +531,53 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                         root, entrypoint="agent:root_agent", framework="adk"
                     )
 
-    def test_langgraph_rejects_adk_eval_files_before_lowering(self):
+    def test_langgraph_validates_shared_eval_files_before_lowering(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._write(
                 root / "agent.py",
-                "from harnest.agent import Agent\n"
-                "root_agent = Agent(name='root', model='test/model')\n",
+                "from harnest.graph import START, Edge, Event, Graph\n"
+                "def respond(value):\n"
+                "    return Event(message='hello')\n"
+                "root_agent = Graph(\n"
+                "    name='root', nodes={'respond': respond},\n"
+                "    edges=(Edge(START, 'respond'),),\n"
+                ")\n",
             )
             self._write(root / "instructions.md", "Help clearly.\n")
-            self._write(root / "evals" / "smoke.evalset.json", "{}\n")
+            self._write(
+                root / "evals" / "smoke.evalset.json",
+                json.dumps(
+                    {
+                        "eval_set_id": "smoke",
+                        "eval_cases": [
+                            {
+                                "eval_id": "answers",
+                                "conversation": [
+                                    {
+                                        "user_content": {
+                                            "role": "user",
+                                            "parts": [{"text": "hello"}],
+                                        },
+                                        "final_response": {
+                                            "role": "model",
+                                            "parts": [{"text": "hello"}],
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+            )
             write_session_store(root)
-            with self.assertRaisesRegex(
-                BundleConventionError, "evals/.*cannot be compiled.*LangGraph"
-            ):
-                compile_application(
-                    root,
-                    entrypoint="agent:root_agent",
-                    framework="langgraph",
-                )
+            application = compile_application(
+                root,
+                entrypoint="agent:root_agent",
+                framework="langgraph",
+            )
+
+        self.assertEqual(application.framework, "langgraph")
 
 if __name__ == "__main__":
     unittest.main()

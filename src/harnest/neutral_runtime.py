@@ -847,6 +847,7 @@ def create_neutral_app(
     asset_store: AssetStore | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
     lifecycle_extensions: Sequence[Any] = (),
+    playground_eval_service: Any | None = None,
 ) -> Any:
     """Convenience application for drivers that do not mount native routes."""
 
@@ -887,7 +888,9 @@ def create_neutral_app(
 
     install_request_size_limit(app, max_request_bytes)
     if playground_enabled:
-        app.include_router(create_playground_router(trace_store))
+        app.include_router(
+            create_playground_router(trace_store, playground_eval_service)
+        )
     app.include_router(
         create_neutral_router(
             runtime_driver,

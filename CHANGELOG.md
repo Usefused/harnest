@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add folder-discovered UTC cron schedules for queued tasks, task-scoped
+  `context.agent` sessions, and explicitly enabled local root-agent invocation
+  through `harnest run` or the generated launcher without an HTTP endpoint.
+  Generated launchers use explicit `serve` and `run` commands, and task workers
+  now stop cleanly when their enclosing server cannot bind.
+* Run validated ADK EvalSet suites against LangGraph through the neutral runtime,
+  including multi-turn state, tool trajectories, every installed ADK metric,
+  judge and user-simulator criteria, and authored `customMetrics` functions;
+  discover, run, and inspect those local suites in the playground; CLI evals
+  print detailed metric results by default and support `--no-output` across
+  unit, smoke, and eval test lanes.
+
+### Fixes
+
+* Let live WebSocket clients cancel the active response by ID, await framework
+  cleanup, receive a terminal `cancelled` response, and reuse the same socket.
+
 ## [0.7.0](https://github.com/Usefused/harnest/compare/v0.6.0...v0.7.0) (2026-09-01)
 
 ### Fixes

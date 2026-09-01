@@ -40,6 +40,14 @@
             "mode": { "enum": ["managed", "advanced"], "default": "managed" }
           }
         },
+        "interfaces": {
+          "type": "object",
+          "description": "Explicit opt-ins for non-server invocation surfaces.",
+          "additionalProperties": false,
+          "properties": {
+            "cli": { "type": "boolean", "default": false }
+          }
+        },
         "runtime": {
           "type": "object",
           "additionalProperties": false,

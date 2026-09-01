@@ -32,8 +32,13 @@ from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
 )
-from harnest.approval import request_human_approval, require_human_approval
-from harnest.client_tool import client_tool
+from harnest.approval import (
+    InMemoryApprovalStore,
+    request_human_approval,
+    require_human_approval,
+)
+from harnest.client_tool import InMemoryClientToolStore, client_tool
+from harnest.runtime_sse import sse_approval_run
 from harnest.tool import tool
 
 
@@ -217,6 +222,30 @@ class FakeDriver:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class CancellableLiveDriver(FakeDriver):
+    """Block the first stream so the live transport can cancel real work."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = 0
+
+    async def stream(
+        self, request: InvocationRequest
+    ) -> AsyncIterator[RuntimeEvent]:
+        self.invocations.append(request)
+        if len(self.invocations) > 1:
+            for event in self.events():
+                await asyncio.sleep(0)
+                yield event
+            return
+        try:
+            yield {"type": "message", "role": "assistant", "text": "partial"}
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
 
 
 class StructuredInput(BaseModel):
@@ -583,7 +612,8 @@ class NeutralRuntimeTests(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("Harnest Playground", page.text)
-        self.assertIn('<span class="eyebrow">Playground</span>', page.text)
+        self.assertIn('id="workspace-eyebrow" class="eyebrow">Playground</span>', page.text)
+        self.assertIn('data-workspace="evals"', page.text)
         self.assertNotIn("Development playground", page.text)
         self.assertEqual(page.headers["cache-control"], "no-store")
         self.assertEqual(stylesheet.headers["cache-control"], "no-cache")
@@ -595,6 +625,7 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("text/javascript", javascript.headers["content-type"])
         for endpoint in ('"/agent"', '"/sessions"', '"/responses"', '"/live"'):
             self.assertIn(endpoint, javascript.text)
+        self.assertIn('"/_harnest/evals"', javascript.text)
         self.assertIn("/approvals/", javascript.text)
         self.assertIn("Human approval required", javascript.text)
         self.assertIn(
@@ -1176,6 +1207,94 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(live_trace["status"], "completed")
         self.assertEqual(live_trace["transport"], "live")
 
+    def test_live_cancel_stops_active_work_and_keeps_the_socket_reusable(self):
+        driver = CancellableLiveDriver()
+        app = create_neutral_app(driver)
+        with (
+            TestClient(app) as client,
+            self.assertLogs("harnest.agent.live.audit", level="INFO") as audit,
+        ):
+            client.post("/sessions", json={"id": "cancel-live"})
+            with client.websocket_connect("/live") as websocket:
+                websocket.send_json(
+                    {"type": "connect", "sessionId": "cancel-live"}
+                )
+                websocket.receive_json()
+                websocket.send_json(
+                    {
+                        "type": "response.create",
+                        "requestId": "cancel-request",
+                        "input": "first",
+                    }
+                )
+                created = websocket.receive_json()
+                self.assertEqual(created["type"], "response.created")
+                self.assertEqual(
+                    websocket.receive_json()["type"], "response.text.delta"
+                )
+                websocket.send_json(
+                    {
+                        "type": "response.cancel",
+                        "responseId": created["responseId"],
+                    }
+                )
+                cancelled = websocket.receive_json()
+
+                self.assertEqual(cancelled["type"], "response.completed")
+                self.assertEqual(cancelled["status"], "cancelled")
+                self.assertEqual(cancelled["sequence"], 2)
+                self.assertEqual(cancelled["outputText"], "")
+                self.assertEqual(cancelled["output"], [])
+                self.assertEqual(cancelled["requestId"], "cancel-request")
+                self.assertEqual(driver.cancelled, 1)
+
+                # Cancellation owns only the active response; the same live
+                # session must remain usable for the caller's next turn.
+                websocket.send_json(
+                    {"type": "response.create", "input": "second"}
+                )
+                completed = None
+                while completed is None:
+                    candidate = websocket.receive_json()
+                    if candidate["type"] == "response.completed":
+                        completed = candidate
+                self.assertEqual(completed["status"], "completed")
+                websocket.send_json({"type": "session.close"})
+
+            traces = client.get(
+                "/_harnest/traces", params={"sessionId": "cancel-live"}
+            ).json()["traces"]
+            self.assertIn("cancelled", [trace["status"] for trace in traces])
+
+        self.assertTrue(any("live.response_cancel" in item for item in audit.output))
+        self.assertFalse(any(created["responseId"] in item for item in audit.output))
+
+    def test_live_cancel_rejects_a_stale_response_id(self):
+        driver = CancellableLiveDriver()
+        with TestClient(create_neutral_app(driver)) as client:
+            client.post("/sessions", json={"id": "stale-cancel"})
+            with client.websocket_connect("/live") as websocket:
+                websocket.send_json(
+                    {"type": "connect", "sessionId": "stale-cancel"}
+                )
+                websocket.receive_json()
+                websocket.send_json(
+                    {"type": "response.create", "input": "first"}
+                )
+                websocket.receive_json()
+                websocket.receive_json()
+                websocket.send_json(
+                    {
+                        "type": "response.cancel",
+                        "responseId": "resp_stale",
+                    }
+                )
+                failure = websocket.receive_json()
+
+        self.assertEqual(failure["type"], "error")
+        self.assertEqual(failure["error"], "Invalid response.cancel frame")
+        self.assertEqual(driver.cancelled, 1)
+
     def test_validation_is_shared_by_all_drivers(self):
         self.assertEqual(
             self.client.post(
@@ -1510,6 +1629,47 @@ class ApprovalTransportTests(unittest.TestCase):
             )
 
 
+class SSECancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aborting_stream_cancels_the_managed_response(self):
+        """Lock the disconnect contract without inventing an SSE input frame."""
+
+        driver = CancellableLiveDriver()
+        await driver.create_session(
+            session_id="cancel-sse",
+            user_id=NEUTRAL_USER_ID,
+            state={},
+        )
+        stream = sse_approval_run(
+            store=InMemoryApprovalStore(),
+            client_tools=InMemoryClientToolStore(),
+            driver=driver,
+            request=InvocationRequest(
+                input="first",
+                user_id=NEUTRAL_USER_ID,
+                session_id="cancel-sse",
+                invocation_id="resp_cancel_sse",
+                metadata={},
+                state_delta={},
+                transport="stream",
+            ),
+            semaphore=asyncio.Semaphore(1),
+            request_timeout=30,
+            response_id="resp_cancel_sse",
+            session_id="cancel-sse",
+            metadata={},
+        )
+        self.assertIn("response.created", await anext(stream))
+        self.assertIn("response.text.delta", await anext(stream))
+        blocked = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+        blocked.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await blocked
+        await stream.aclose()
+        self.assertEqual(driver.cancelled, 1)
+
+
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
 class ClientToolTransportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1582,6 +1742,28 @@ class ClientToolTransportTests(unittest.TestCase):
             completed = websocket.receive_json()
             self.assertEqual(completed["type"], "response.completed")
             self.assertEqual(completed["outputText"], "opened:Live Example")
+
+    def test_live_cancel_releases_a_pending_client_tool(self):
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json({"type": "connect", "sessionId": "client-session"})
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "response.create", "input": "https://example.test"}
+            )
+            created = websocket.receive_json()
+            self.assertEqual(created["type"], "response.created")
+            requested = websocket.receive_json()
+            self.assertEqual(requested["type"], "client_tool.requested")
+            websocket.send_json(
+                {
+                    "type": "response.cancel",
+                    "responseId": created["responseId"],
+                }
+            )
+            cancelled = websocket.receive_json()
+
+        self.assertEqual(cancelled["type"], "response.completed")
+        self.assertEqual(cancelled["status"], "cancelled")
 
     def test_approved_client_tool_resumes_through_both_boundaries(self):
         app = create_neutral_app(ApprovedClientToolDriver())

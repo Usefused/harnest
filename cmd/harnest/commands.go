@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -37,16 +38,17 @@ func (a *application) newCompileCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			compilerArguments := []string{
+				"compile", bundle.Directory, "--output", output,
+				"--entrypoint", selectedEntrypoint,
+				"--framework", bundle.Config.Spec.Framework.Name,
+				"--mode", bundle.Config.Spec.Framework.EffectiveMode(),
+			}
 			return runPythonCLI(
 				command.Context(),
 				a,
 				python,
-				[]string{
-					"compile", bundle.Directory, "--output", output,
-					"--entrypoint", selectedEntrypoint,
-					"--framework", bundle.Config.Spec.Framework.Name,
-					"--mode", bundle.Config.Spec.Framework.EffectiveMode(),
-				},
+				withCLICompilerInterface(compilerArguments, bundle),
 				configuredEnvironment(bundle),
 				command.InOrStdin(),
 				command.OutOrStdout(),
@@ -67,6 +69,7 @@ func (a *application) newCompileCommand() *cobra.Command {
 func (a *application) newTestCommand() *cobra.Command {
 	var includeSmoke bool
 	var includeEvals bool
+	var noOutput bool
 	var evalTrajectory string
 	command := &cobra.Command{
 		Use:   "test AGENT_DIR",
@@ -90,6 +93,7 @@ func (a *application) newTestCommand() *cobra.Command {
 				"--framework", bundle.Config.Spec.Framework.Name,
 				"--mode", bundle.Config.Spec.Framework.EffectiveMode(),
 			)
+			pythonArguments = withCLICompilerInterface(pythonArguments, bundle)
 			if includeSmoke {
 				pythonArguments = append(pythonArguments, "--smoke")
 			}
@@ -100,6 +104,9 @@ func (a *application) newTestCommand() *cobra.Command {
 					"--eval-trajectory", evalTrajectory,
 				)
 			}
+			if noOutput {
+				pythonArguments = append(pythonArguments, "--no-output")
+			}
 			return runPythonCLI(
 				command.Context(), a, python, pythonArguments,
 				configuredEnvironment(bundle), command.InOrStdin(),
@@ -109,6 +116,12 @@ func (a *application) newTestCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&includeSmoke, "smoke", false, "also run tests/smoke")
 	command.Flags().BoolVar(&includeEvals, "evals", false, "run evals after Python tests pass")
+	command.Flags().BoolVar(
+		&noOutput,
+		"no-output",
+		false,
+		"suppress output from unit, smoke, and eval tests",
+	)
 	command.Flags().StringVar(
 		&evalTrajectory,
 		"eval-trajectory",
@@ -236,12 +249,14 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 	if err != nil {
 		return err
 	}
-	artifact, cleanup, err := serveArtifactDirectory(options.output, bundle.Config.Metadata.Name)
+	artifact, cleanup, err := compiledArtifactDirectory(
+		options.output, bundle.Config.Metadata.Name, "harnest-serve-",
+	)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := a.compileForServe(command, python, bundle, artifact); err != nil {
+	if err := a.compileBundle(command, python, bundle, artifact, command.InOrStdin()); err != nil {
 		return err
 	}
 	launcher, err := compiledLauncher(artifact)
@@ -264,21 +279,38 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 	return nil
 }
 
-func serveArtifactDirectory(output, name string) (string, func(), error) {
+// compiledArtifactDirectory owns cleanup only when the caller did not request retention.
+func compiledArtifactDirectory(output, name, prefix string) (string, func(), error) {
 	if strings.TrimSpace(output) != "" {
 		return output, func() {}, nil
 	}
-	root, err := os.MkdirTemp("", "harnest-serve-")
+	root, err := os.MkdirTemp("", prefix)
 	if err != nil {
 		return "", nil, fmt.Errorf("create temporary artifact root: %w", err)
 	}
 	return filepath.Join(root, name), func() { _ = os.RemoveAll(root) }, nil
 }
 
-func (a *application) compileForServe(command *cobra.Command, python pythonSelection, bundle engine.Bundle, artifact string) error {
+// compileBundle centralizes the immutable artifact contract shared by serve and run.
+func (a *application) compileBundle(
+	command *cobra.Command,
+	python pythonSelection,
+	bundle engine.Bundle,
+	artifact string,
+	stdin io.Reader,
+) error {
 	var output bytes.Buffer
 	args := []string{"compile", bundle.Directory, "--output", artifact, "--entrypoint", bundle.Config.Spec.Entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
-	return runPythonCLI(command.Context(), a, python, args, configuredEnvironment(bundle), command.InOrStdin(), &output, command.ErrOrStderr())
+	args = withCLICompilerInterface(args, bundle)
+	return runPythonCLI(command.Context(), a, python, args, configuredEnvironment(bundle), stdin, &output, command.ErrOrStderr())
+}
+
+// withCLICompilerInterface keeps source policy identical across every compile path.
+func withCLICompilerInterface(arguments []string, bundle engine.Bundle) []string {
+	if bundle.Config.Spec.Interfaces.CLI {
+		return append(arguments, "--enable-cli")
+	}
+	return arguments
 }
 
 func compiledLauncher(artifact string) (string, error) {
@@ -295,7 +327,7 @@ func compiledLauncher(artifact string) (string, error) {
 
 // arguments forces loopback host ownership when the reload supervisor is active.
 func (o serveOptions) arguments(launcher string) []string {
-	args := []string{launcher}
+	args := []string{launcher, "serve"}
 	if o.reload || o.overrides.host {
 		args = append(args, "--host", o.host)
 	}

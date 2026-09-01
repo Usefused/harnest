@@ -221,6 +221,8 @@ marked root-only:
 | `models/**/*.py` (root-only) | Pydantic contracts mounted below `harnest.models`; no resource export contract. |
 | `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
+| `tasks/<name>.py` (root-only) | An application-owned `@task` callable named `<name>`; not exposed to the model. |
+| `cron/<name>.py` (root-only) | A same-named `Cron` targeting a discovered root task; strict five-column UTC schedule. |
 | `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
 | `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
 | `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `client()` factory using the same rule. |
@@ -228,7 +230,7 @@ marked root-only:
 | `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
 | `sandbox/sandbox.py` | One optional ADK-only `Sandbox` defining the agent's lazy code-execution backend. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
-| `evals/<id>.evalset.json` (root test lane) | A test-only, ADK-only `EvalSet` whose `eval_set_id` matches its filename. |
+| `evals/<id>.evalset.json` (root test lane) | A test-only ADK `EvalSet`, executable against ADK or LangGraph, whose `eval_set_id` matches its filename. |
 | `tests/unit/test_*.py` | Offline agent/tool tests run by `harnest test`. |
 | `tests/smoke/test_*.py` | Explicitly enabled live-runtime tests. |
 
@@ -422,13 +424,17 @@ pinned for the active invocation. A skill may contain Agent-Skills-style
 `references/`, `assets/`, and `scripts/` content. Public entries directly under
 `skills/` must be skill directories; symlinks are rejected.
 
-The optional `evals/test_config.json` is an ADK `EvalConfig`. Eval sets are
+The optional `evals/test_config.json` is an ADK `EvalConfig` shared by both
+framework lanes. Eval sets are
 sorted and validated during compilation, including unique case IDs, but remain
 test-only and never become instructions or runtime tools. `discover_evals()`
 also exposes the validated paths for tooling. `harnest test <agent-folder>
 --evals` runs the unit suite first, then evaluates every validated eval set in
 deterministic filename order through ADK's official evaluator, automatically
-applying the optional config. Authors never address temporary compiled paths.
+applying the optional config. The evaluator's complete built-in metric registry,
+user-simulator configuration, judge-backed criteria, and `customMetrics` code
+references remain available without a Harnest metric allowlist. Authors never
+address temporary compiled paths.
 Eval execution is explicit because it can invoke live models and consume
 credentials, time, or paid capacity. Harnest passes `num_runs=1` to ADK's
 evaluator so a single command does not silently double model usage. The compiled
@@ -449,8 +455,19 @@ The test runner discovers and executes eval assets only from the root bundle's
 are not a nested-agent test lane and are never selected by `harnest test
 --evals`.
 
-The `--evals` lane is currently rejected when `framework.name` is `langgraph`;
-unit and opt-in smoke tests remain available through the neutral runtime.
+For LangGraph, Harnest starts the compiled runtime and adapts each text
+conversation turn, final response, tool call, and tool result into ADK's
+invocation/event contract. This keeps metric computation identical across
+frameworks while preserving LangGraph session state between multi-turn eval
+invocations. ADK `liveModelConfig` and multimodal user-content simulation remain
+ADK-native; LangGraph authors use text conversation evals and opt-in smoke tests
+for bidirectional media behavior.
+
+This portable lane is distinct from LangSmith, the LangGraph ecosystem's native
+dataset, experiment, online-evaluation, and evaluator service. Harnest does not
+silently translate LangSmith datasets or upload eval runs; a future LangSmith
+integration must be an explicit provider with its own credentials and retention
+contract.
 
 Agent-owned Python tests follow a separate, zero-import test convention.
 `harnest test <agent-folder>` compiles the source and collects only
@@ -539,12 +556,24 @@ so it is the sole regular artifact file excluded from the manifest digest. The
 authored copy under `source/` remains hashed, and the Go loader rejects a missing,
 symlinked, or non-regular adjacent file plus every other unmanifested file.
 
-The launcher reads this file without required arguments. `http` controls binding,
-remote-bind consent, timeout, and concurrency; `limits.maxRequestBytes` is
+The launcher's explicit `serve` command reads this file without additional
+flags. `http` controls binding, remote-bind consent, timeout, and concurrency;
+`limits.maxRequestBytes` is
 enforced across neutral and advanced-native HTTP bodies and WebSocket frames;
 and `playground.enabled` controls the bundled UI. Explicit launcher flags are
 short-lived operator overrides. Authentication, session storage, TLS, secrets,
 and deployment scaling remain separate injection or hosting boundaries.
+
+The launcher also accepts `run` for in-process root-agent invocation. It reads a
+bounded prompt from stdin, reuses the final framework-neutral runtime pipeline,
+and writes text, JSON, or ordered NDJSON without opening a network listener.
+One-shot execution starts task workers when needed but disables periodic
+registration so schedule ownership remains with long-lived serving processes.
+Tasks receive a separate `context.agent` capability that can create or reopen a
+persisted child session through that final pipeline. Retry-stable task identity
+prevents duplicate child sessions; cron tasks use a fixed automation principal.
+External durable waits return portable pending handles, while process-local
+approval and client-tool continuations fail closed after task execution.
 
 Setting scalars may use exact `${NAME}` environment references. Compilation
 validates their position and preserves the template bytes; the launcher resolves
@@ -601,14 +630,24 @@ tool calls carry `id`/`name`/`arguments`, tool results carry
 the JSON response. The SSE `event:` name matches the data object's `type`. A
 post-header failure is a terminal named `error` event whose data carries
 `type`, `sequence`, response/session IDs, and an `error` string.
+Because SSE is server-to-client only, its cancellation signal is closing or
+aborting the HTTP request. Harnest then cancels the managed response and awaits
+its cleanup; no terminal event can be delivered over the closed stream.
 
 The first `/live` client frame is `{"type":"connect","sessionId":"..."}`
 with an optional session ID. The server replies with `session.connected`.
 Subsequent client frames are `response.create` with non-empty `input` and
-optional `requestId`/`metadata`, or `session.close`. Server response events use
-the SSE event names and fields and echo `requestId`. Invalid frames and execution
-failures use a typed `error` frame; policy violations close with WebSocket code
-1008. There is no mode flag or protocol rerouting.
+optional `requestId`/`metadata`, or `session.close`. While a response is active,
+the client may send `{"type":"response.cancel","responseId":"..."}` using the
+ID from `response.created`; stale or malformed IDs fail closed. Harnest awaits
+framework and tool cleanup, then emits `response.completed` with
+`status: "cancelled"`, empty committed output, and leaves the socket open.
+Cancellation is cooperative and does not roll back tool or external side effects
+that already completed.
+Server response events otherwise use the SSE event names and fields and echo
+`requestId`. Invalid frames and execution failures use a typed `error` frame;
+policy violations close with WebSocket code 1008. There is no mode flag or
+protocol rerouting.
 
 The ADK and LangGraph adapters both emit assistant message/output-text items and
 neutral tool calls/results. Provider/model identifiers, reasoning details, and
@@ -655,6 +694,10 @@ rather than replaces OTLP export.
 This is a process boundary, not a deployment boundary. The CLI creates a
 fingerprinted agent environment containing Harnest, the selected framework,
 model adapters, and the dependencies locked from `pyproject.toml`.
+Local root-agent invocation is available only when the authored deployment
+contract sets `spec.interfaces.cli: true`; that opt-in is bound into the
+compiled manifest and its digest. Older or disabled artifacts remain
+server-only.
 The standalone server does not interpret deployment resources, resolve secrets,
 enforce permissions, scale replicas, or choose an identity provider. Session
 storage and authentication are separate boundaries. Every compiled application
@@ -731,7 +774,7 @@ platform components and do not need one registration branch per agent.
 | source `root_agent` | Agent owner in explicitly imported `agent.py` | Harnest compiler | Managed `Agent`/`Graph`, or `Agent.advanced(...)`, selected by config. |
 | generated `application` | Harnest compiler adapter | Standalone runtime and engine | `CompiledApplication` containing framework, mode, target, and optional advanced app/bridge. |
 | generated `app` / `root_agent` | Harnest compiler adapter | Provider tools and compatibility consumers | Selected provider application and target aliases. |
-| `evals/*.evalset.json` | Agent owner | ADK eval CLI and CI | ADK-only test conversations and expected behavior; never deployed as capabilities. |
+| `evals/*.evalset.json` | Agent owner | Shared ADK/LangGraph eval CLI and CI | Test conversations and expected behavior; never deployed as capabilities. |
 
 The schemas in `schemas/` are the editor and CI contract. The Go loader also
 uses strict YAML decoding and runtime checks. Schema defaults are documentation;
@@ -852,11 +895,13 @@ audit events through the same OTEL logging pipeline. Only the declared tool
 name crosses that boundary; arguments, results, principal IDs, and request IDs
 are excluded.
 
-The ADK eval lane prepends an eval-only event filter before authored plugins.
+The native ADK eval lane prepends an eval-only event filter before authored plugins.
 It removes parts marked as model thoughts using the same customer-facing rule
 as the neutral runtime, then lets the official ADK evaluator score the remaining
 visible text and tool trajectory. This compensates for ADK response matchers
 that otherwise concatenate every text part, including hidden reasoning.
+The LangGraph lane instead scores the neutral runtime's already-public final
+response and translates its canonical tool events into the same evaluator input.
 Each eval suite emits a balanced user-triggered start/finish audit event.
 Closed pytest-capture handlers are detached before ADK runs; handlers installed
 by evaluation dependencies are removed and closed at lane completion. This

@@ -395,6 +395,8 @@ Nested modules use the same harnest.models.* path. This root-only folder is
 bundled but never discovered as a capability. Harnest ignores this
 underscore-prefixed guide; replace it with Python modules as needed.
 `,
+		"tasks/_README.md": "Add one durable @task callable per public Python file.\n",
+		"cron/_README.md":  "Add one UTC Cron declaration per public Python file, targeting a root tasks/ export.\n",
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,
 		"mcp/_README.md": `Add direct MCP client connections here. Each public file exports a
@@ -515,8 +517,7 @@ description: Apply the agent's core instructions when answering a general reques
 	if framework == "langgraph" {
 		delete(files, "subagents/__init__.py")
 		files["subagents/_README.md"] = "Add subagents here and reference them explicitly as Graph nodes.\n"
-		delete(files, "evals/starter.evalset.json")
-		files["evals/_README.md"] = "Use authored pytest evaluations for LangGraph; ADK EvalSet JSON is not portable.\n"
+		files["evals/_README.md"] = "Add shared *.evalset.json files and optional test_config.json metrics here.\n"
 		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_agent_name(agent, tools):
     assert agent.name == %q
     assert tools["echo"]("hello") == "hello"
@@ -535,7 +536,6 @@ description: Apply the agent's core instructions when answering a general reques
 			"sandbox/_README.md",
 			"sandbox/_example.py",
 			"skills/getting-started/SKILL.md",
-			"evals/starter.evalset.json",
 		} {
 			delete(files, relative)
 		}
@@ -637,7 +637,7 @@ func minimalScaffoldFiles(
 		files["agent.py"] = minimalManagedAgentSource(agentName)
 	}
 	if framework == "langgraph" {
-		files["evals/_README.md"] = "Use authored pytest evaluations; ADK EvalSet JSON is not portable.\n"
+		files["evals/_README.md"] = "Add shared *.evalset.json files and optional test_config.json metrics here.\n"
 	}
 	return files
 }
@@ -651,17 +651,19 @@ func optionalFolderGuide(directory, mode string) string {
 		}
 		return "Add RuntimePlugin folders with plugin.yaml, or manifest-less agent-plugins combining MCP clients and skills.\n"
 	}
-	if mode == "advanced" && directory != "extensions" {
+	if mode == "advanced" && directory != "extensions" && directory != "tasks" && directory != "cron" {
 		return "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
 	}
 	guides := map[string]string{
 		"tools":      "Add one @tool callable per public Python file.\n",
+		"tasks":      "Add one durable @task callable per public Python file; Harnest discovers tasks in both authoring modes.\n",
+		"cron":       "Add one UTC Cron declaration per public Python file; Harnest owns scheduling in both authoring modes.\n",
 		"subagents":  "Add subagent definitions here; use folders when they own resources.\n",
 		"mcp":        "Add direct MCPClient connections here.\n",
 		"extensions": "Add @lifecycle-decorated functions in arbitrary public Python files here.\n",
 		"sandbox":    "Add sandbox.py only when managed ADK needs code isolation.\n",
 		"skills":     "Add one Agent Skill directory per progressive instruction pack.\n",
-		"evals":      "Add ADK *.evalset.json files and optional test_config.json here.\n",
+		"evals":      "Add shared *.evalset.json files and optional test_config.json metrics here.\n",
 	}
 	return guides[directory]
 }

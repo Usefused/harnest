@@ -42,11 +42,15 @@ func (c PythonCompiler) Compile(ctx context.Context, bundle Bundle) (CompiledArt
 	if err != nil {
 		return CompiledArtifact{}, err
 	}
-	command := exec.CommandContext(ctx, c.Python, "-m", "harnest.cli", "compile", bundle.Directory,
+	arguments := []string{"-m", "harnest.cli", "compile", bundle.Directory,
 		"--output", outputDirectory,
 		"--entrypoint", bundle.Config.Spec.Entrypoint,
 		"--framework", bundle.Config.Spec.Framework.Name,
-		"--mode", bundle.Config.Spec.Framework.EffectiveMode())
+		"--mode", bundle.Config.Spec.Framework.EffectiveMode()}
+	if bundle.Config.Spec.Interfaces.CLI {
+		arguments = append(arguments, "--enable-cli")
+	}
+	command := exec.CommandContext(ctx, c.Python, arguments...)
 	command.Stderr = c.Stderr
 	command.Env = compilerEnvironment(bundle.Config.Spec.Environment)
 	var stdout bytes.Buffer
@@ -189,7 +193,10 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 	if err := validateCompiledTaskSources(manifest.Tasks, seen); err != nil {
 		return err
 	}
-	if expected := compiledManifestDigest(manifest.Files, manifest.Plugins, manifest.Tasks, manifest.RuntimeDependencies); manifest.Digest != expected {
+	if err := validateCompiledCronSources(manifest.Crons, seen); err != nil {
+		return err
+	}
+	if expected := compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies); manifest.Digest != expected {
 		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expected)
 	}
 	return validateCompiledFileSet(directory, seen)
@@ -221,6 +228,19 @@ func validateCompiledIdentity(source Bundle, manifest CompiledManifest) error {
 			manifest.Framework.EffectiveMode(),
 			source.Config.Spec.Framework.Name,
 			source.Config.Spec.Framework.EffectiveMode(),
+		)
+	}
+	return validateCompiledRuntimeIdentity(source, manifest)
+}
+
+// validateCompiledRuntimeIdentity keeps capability and entrypoint checks
+// separate from framework naming so neither policy path exceeds the budget.
+func validateCompiledRuntimeIdentity(source Bundle, manifest CompiledManifest) error {
+	if manifest.Interfaces.CLI != source.Config.Spec.Interfaces.CLI {
+		return fmt.Errorf(
+			"compiled manifest CLI interface %t does not match config %t",
+			manifest.Interfaces.CLI,
+			source.Config.Spec.Interfaces.CLI,
 		)
 	}
 	if err := validateCompiledCompatibility(manifest); err != nil {
@@ -259,11 +279,18 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	if err := validateCompiledPlugins(manifest.Plugins); err != nil {
 		return err
 	}
-	return validateCompiledTasks(manifest.Tasks, manifest.RuntimeDependencies)
+	if err := validateCompiledTasks(manifest.Tasks, manifest.RuntimeDependencies); err != nil {
+		return err
+	}
+	return validateCompiledCrons(manifest.Name, manifest.Crons, manifest.Tasks)
 }
 
 var compiledTaskNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.tasks\.[A-Za-z_][A-Za-z0-9_]*$`)
 var compiledTaskQueuePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._~-]{0,63}$`)
+var compiledCronNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.cron\.[A-Za-z_][A-Za-z0-9_]*$`)
+var compiledCronSourcePattern = regexp.MustCompile(`^cron/([A-Za-z_][A-Za-z0-9_]*)\.py$`)
+
+var compiledCronFieldLimits = [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
 
 const procrastinateRuntimeRequirement = "procrastinate==3.9.0"
 
@@ -314,6 +341,177 @@ func validateCompiledTaskSources(tasks []CompiledTask, files map[string]struct{}
 		}
 		if _, exists := files[path]; !exists {
 			return fmt.Errorf("compiled task %q source is not manifest-bound", task.Name)
+		}
+	}
+	return nil
+}
+
+// validateCompiledCrons binds stable schedule identities to compiled task names.
+func validateCompiledCrons(application string, crons []CompiledCron, tasks []CompiledTask) error {
+	taskNames := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		taskNames[task.Name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(crons))
+	previousSource := ""
+	for index, cron := range crons {
+		if err := validateCompiledCron(application, index, previousSource, cron, seen, taskNames); err != nil {
+			return err
+		}
+		seen[cron.Name] = struct{}{}
+		previousSource = cron.Source
+	}
+	return nil
+}
+
+// validateCompiledCron verifies one public schedule without loading Python code.
+func validateCompiledCron(
+	application string,
+	index int,
+	previousSource string,
+	cron CompiledCron,
+	seen, taskNames map[string]struct{},
+) error {
+	if !compiledCronNamePattern.MatchString(cron.Name) {
+		return fmt.Errorf("compiled cron %d has invalid stable name %q", index, cron.Name)
+	}
+	if _, exists := seen[cron.Name]; exists {
+		return fmt.Errorf("compiled manifest contains duplicate cron %q", cron.Name)
+	}
+	if err := validateCompiledCronIdentity(application, cron); err != nil {
+		return err
+	}
+	if index > 0 && cron.Source <= previousSource {
+		return fmt.Errorf("compiled manifest crons must be strictly sorted by source")
+	}
+	if cron.Timezone != "UTC" {
+		return fmt.Errorf("compiled cron %q timezone must be UTC", cron.Name)
+	}
+	if err := validateCompiledCronSchedule(cron.Schedule); err != nil {
+		return fmt.Errorf("compiled cron %q has invalid schedule: %w", cron.Name, err)
+	}
+	if _, exists := taskNames[cron.Task]; !exists {
+		return fmt.Errorf("compiled cron %q references unknown task %q", cron.Name, cron.Task)
+	}
+	return nil
+}
+
+// validateCompiledCronIdentity derives the manifest name from its source file so
+// records cannot rename schedules independently from compiler discovery.
+func validateCompiledCronIdentity(application string, cron CompiledCron) error {
+	matches := compiledCronSourcePattern.FindStringSubmatch(cron.Source)
+	if matches == nil {
+		return fmt.Errorf("compiled cron %q has invalid source %q", cron.Name, cron.Source)
+	}
+	expected := "harnest." + application + ".cron." + matches[1]
+	if cron.Name != expected {
+		return fmt.Errorf("compiled cron name %q does not match stable source name %q", cron.Name, expected)
+	}
+	return nil
+}
+
+// validateCompiledCronSchedule mirrors the compiler's numeric five-column MVP
+// grammar before a schedule reaches the durable task backend.
+func validateCompiledCronSchedule(schedule string) error {
+	if schedule == "" || schedule != strings.TrimSpace(schedule) {
+		return fmt.Errorf("must be non-empty text without outer whitespace")
+	}
+	fields := strings.Fields(schedule)
+	if len(fields) != len(compiledCronFieldLimits) {
+		return fmt.Errorf("must contain exactly five columns")
+	}
+	for index, field := range fields {
+		if err := validateCompiledCronField(field, compiledCronFieldLimits[index]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateCompiledCronField accepts comma-separated values from one cron column.
+func validateCompiledCronField(field string, limits [2]int) error {
+	parts := strings.Split(field, ",")
+	for _, part := range parts {
+		if part == "" {
+			return fmt.Errorf("invalid cron field %q", field)
+		}
+		if err := validateCompiledCronFieldPart(part, limits); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateCompiledCronFieldPart accepts a wildcard, integer, or ascending range
+// and an optional positive step, matching the Python authoring boundary.
+func validateCompiledCronFieldPart(value string, limits [2]int) error {
+	base, err := compiledCronBase(value)
+	if err != nil {
+		return err
+	}
+	if base == "*" {
+		return nil
+	}
+	lower, upper, err := compiledCronRange(base, value)
+	if err != nil {
+		return err
+	}
+	if lower < limits[0] || lower > upper || upper > limits[1] {
+		return fmt.Errorf("cron field component is out of range: %q", value)
+	}
+	return nil
+}
+
+// compiledCronBase validates an optional step and returns its range component.
+func compiledCronBase(value string) (string, error) {
+	base, step, stepped := strings.Cut(value, "/")
+	if !stepped {
+		return base, nil
+	}
+	stepValue, valid := compiledCronInteger(step)
+	if strings.Contains(step, "/") || !valid || stepValue < 1 {
+		return "", fmt.Errorf("invalid cron step %q", value)
+	}
+	return base, nil
+}
+
+// compiledCronRange parses one integer or ascending range after step removal.
+func compiledCronRange(base, original string) (int, int, error) {
+	start, end, ranged := strings.Cut(base, "-")
+	lower, validStart := compiledCronInteger(start)
+	if !validStart {
+		return 0, 0, fmt.Errorf("invalid cron field component %q", original)
+	}
+	if !ranged {
+		return lower, lower, nil
+	}
+	upper, validEnd := compiledCronInteger(end)
+	if !validEnd || strings.Contains(end, "-") {
+		return 0, 0, fmt.Errorf("invalid cron field component %q", original)
+	}
+	return lower, upper, nil
+}
+
+// compiledCronInteger deliberately accepts ASCII digits only because cron
+// backends do not interpret Unicode decimal characters as numeric fields.
+func compiledCronInteger(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+	parsed, err := strconv.Atoi(value)
+	return parsed, err == nil
+}
+
+// validateCompiledCronSources binds every schedule to one immutable source file.
+func validateCompiledCronSources(crons []CompiledCron, files map[string]struct{}) error {
+	for _, cron := range crons {
+		if _, exists := files["source/"+cron.Source]; !exists {
+			return fmt.Errorf("compiled cron %q source is not manifest-bound", cron.Name)
 		}
 	}
 	return nil
@@ -529,7 +727,7 @@ func requireCompiledFiles(seen map[string]struct{}) error {
 }
 
 // compiledManifestDigest binds files and canonical runtime capability metadata.
-func compiledManifestDigest(files []CompiledFile, plugins []CompiledPlugin, tasks []CompiledTask, dependencies []string) string {
+func compiledManifestDigest(files []CompiledFile, interfaces CompiledInterfaces, plugins []CompiledPlugin, tasks []CompiledTask, crons []CompiledCron, dependencies []string) string {
 	aggregate := sha256.New()
 	for _, record := range files {
 		_, _ = io.WriteString(aggregate, record.Path)
@@ -539,6 +737,9 @@ func compiledManifestDigest(files []CompiledFile, plugins []CompiledPlugin, task
 		_, _ = io.WriteString(aggregate, strconv.FormatInt(record.Size, 10))
 		_, _ = io.WriteString(aggregate, "\n")
 	}
+	// Interface policy changes executable artifact behavior, so it belongs in
+	// the same immutable identity as runtime plugins, tasks, and schedules.
+	writeCompiledDigestField(aggregate, "interface.cli", strconv.FormatBool(interfaces.CLI))
 	for _, plugin := range plugins {
 		// The manifest is not one of its own file records, so plugin provenance
 		// needs explicit framing inside the verified aggregate identity.
@@ -563,6 +764,13 @@ func compiledManifestDigest(files []CompiledFile, plugins []CompiledPlugin, task
 		writeCompiledDigestField(aggregate, "task.source", task.Source)
 		writeCompiledDigestField(aggregate, "task.queue", task.Queue)
 		writeCompiledDigestField(aggregate, "task.max_retries", strconv.Itoa(task.MaxRetries))
+	}
+	for _, cron := range crons {
+		writeCompiledDigestField(aggregate, "cron.name", cron.Name)
+		writeCompiledDigestField(aggregate, "cron.source", cron.Source)
+		writeCompiledDigestField(aggregate, "cron.schedule", cron.Schedule)
+		writeCompiledDigestField(aggregate, "cron.timezone", cron.Timezone)
+		writeCompiledDigestField(aggregate, "cron.task", cron.Task)
 	}
 	for _, dependency := range dependencies {
 		writeCompiledDigestField(aggregate, "runtime.dependency", dependency)

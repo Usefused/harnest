@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from harnest.application import CompiledApplication
 from harnest.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore
 from harnest.context import activate_context, create_agent_context, revoke_context
+from harnest.cron import CompiledCron, Cron
 from harnest.durable import (
     NativeDurableSuspended,
     ResumeArtifact,
@@ -118,6 +120,7 @@ class _Connector:
                 "task_name": values["task_name"],
                 "arguments": values["arguments"],
                 "invocation": values["invocation"],
+                "trigger": values["trigger"],
                 "status": "pending",
                 "result": None,
                 "failure_code": None,
@@ -192,6 +195,19 @@ class _NativeTask:
         return _Configured(self, options)
 
 
+class _Worker:
+    def __init__(self) -> None:
+        self.stopped = False
+        self._stop = asyncio.Event()
+
+    async def run(self):
+        await self._stop.wait()
+
+    def stop(self):
+        self.stopped = True
+        self._stop.set()
+
+
 class _App:
     def __init__(self, *, connector) -> None:
         self.connector = connector
@@ -202,6 +218,9 @@ class _App:
         self.opened = False
         self.closed = False
         self.tasks = {}
+        self.periodic_schedules = []
+        self.worker_options = None
+        self.worker_controller = None
 
     def task(self, *, name, queue, retry, pass_context=False):
         def register(function):
@@ -218,6 +237,13 @@ class _App:
 
         return register
 
+    def periodic(self, *, cron, periodic_id):
+        def register(native):
+            self.periodic_schedules.append((cron, periodic_id, native))
+            return native
+
+        return register
+
     async def open_async(self):
         self.opened = True
 
@@ -227,8 +253,10 @@ class _App:
     async def check_connection_async(self):
         return self.schema_ready
 
-    async def run_worker_async(self, **_options):
-        await asyncio.Event().wait()
+    def _worker(self, **options):
+        self.worker_options = options
+        self.worker_controller = _Worker()
+        return self.worker_controller
 
 
 _BACKEND = SimpleNamespace(
@@ -278,6 +306,99 @@ def _compiled(function, *, name="send_report", retries=3):
 
 
 class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cron_dispatches_private_idempotent_task_occurrences(self):
+        observed = []
+
+        async def send_report(value):
+            """Send one scheduled report."""
+
+            observed.append(value)
+
+        authored, compiled, application = _compiled(send_report)
+        declaration = Cron(
+            "0 9 * * 1-5", task=authored, arguments={"value": "private-report"}
+        )
+        schedule = CompiledCron(
+            name="harnest.demo.cron.daily_report",
+            source="cron/daily_report.py",
+            schedule=declaration.schedule,
+            timezone=declaration.timezone,
+            task=compiled,
+            arguments=declaration.arguments,
+        )
+        application = replace(application, crons=(schedule,))
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ), patch("harnest.runtime_task._AUDIT") as audit_logger:
+                await manager.start()
+                self.assertEqual(
+                    manager._app.periodic_schedules[0][:2],
+                    ("0 9 * * 1-5", schedule.name),
+                )
+                dispatcher = manager._native_crons[schedule.name]
+                await dispatcher.function(1_800_000_000)
+                await dispatcher.function(1_800_000_000)
+                target_jobs = [
+                    job
+                    for job in manager._app.job_manager.jobs.values()
+                    if job.task_name == compiled.name
+                ]
+                self.assertEqual(len(target_jobs), 1)
+                job = target_jobs[0]
+                self.assertEqual(set(job.task_kwargs), {"_harnest_payload_id"})
+                payload_id = job.task_kwargs["_harnest_payload_id"]
+                payload = manager._app.connector.payloads[payload_id]
+                self.assertEqual(payload["arguments"], {"value": "private-report"})
+                self.assertEqual(payload["trigger"], "cron")
+                await manager._app.tasks[compiled.name].function(
+                    _job_context(), payload_id
+                )
+            self.assertEqual(observed, ["private-report"])
+            audit = audit_logger.info
+            rendered = repr(audit.mock_calls)
+            self.assertNotIn("private-report", rendered)
+            self.assertIn("task.cron.enqueue", rendered)
+            self.assertIn("task.execute", rendered)
+            cron_call = next(
+                call
+                for call in audit.call_args_list
+                if call.args == ("task.cron.enqueue",)
+            )
+            self.assertEqual(cron_call.kwargs["trigger"], "cron")
+            self.assertEqual(cron_call.kwargs["outcome"], "committed")
+            self.assertEqual(cron_call.kwargs["schedule"], schedule.name)
+        finally:
+            await manager.close()
+
+    async def test_local_runtime_can_disable_periodic_registration(self):
+        async def send_report():
+            """Send one scheduled report."""
+
+        authored, compiled, application = _compiled(send_report)
+        schedule = CompiledCron(
+            name="harnest.demo.cron.daily_report",
+            source="cron/daily_report.py",
+            schedule="0 9 * * *",
+            timezone="UTC",
+            task=compiled,
+            arguments={},
+        )
+        manager = TaskRuntimeManager(
+            replace(application, crons=(schedule,)),
+            backend=_BACKEND,
+            enable_cron=False,
+        )
+        with patch.dict(
+            "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+        ):
+            await manager.start()
+            handle = await authored.defer()
+        self.assertEqual(manager._app.periodic_schedules, [])
+        self.assertEqual(await handle.status(), "todo")
+        await manager.close()
+
     async def test_defer_keeps_payload_out_of_native_job_and_restores_identity(self):
         observed = []
 
@@ -430,7 +551,7 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await manager.start()
                 handle = await authored.defer("private")
             with continuations.execution(run, request), self.assertRaisesRegex(
-                TaskUnavailableError, "@tool\(durable=True\)"
+                TaskUnavailableError, r"@tool\(durable=True\)"
             ):
                 await handle.result()
         finally:
@@ -667,11 +788,20 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
         ):
             await driver.start()
+            await asyncio.sleep(0)
         self.assertTrue(inner.started)
         self.assertTrue(manager._app.opened)
+        self.assertEqual(
+            manager._app.worker_options,
+            {
+                "install_signal_handlers": False,
+                "shutdown_graceful_timeout": 10,
+            },
+        )
         app = manager._app
         await driver.close()
         self.assertTrue(app.closed)
+        self.assertTrue(app.worker_controller.stopped)
         self.assertTrue(inner.closed)
 
     async def test_runtime_selection_wraps_only_applications_with_tasks(self):

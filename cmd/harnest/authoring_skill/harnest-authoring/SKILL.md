@@ -1,6 +1,6 @@
 ---
 name: harnest-authoring
-description: Build, modify, test, or review Harnest agents and source. Use for agent folders, harnest.* imports, libraries, ADK or LangGraph graphs, durable tools, queued tasks, runtime plugins, continuations, agent-plugins, extensions, MCP, static or dynamic skills, evals, compilation, serving, and Harnest source changes.
+description: Build, modify, test, review Harnest agents and source. Use for agent folders, harnest.* imports, libraries, ADK or LangGraph graphs, durable tools, queued/cron tasks, runtime plugins, continuations, agent-plugins, extensions, MCP, static or dynamic skills, evals, compilation, running, serving, and Harnest source changes.
 ---
 
 # Harnest authoring

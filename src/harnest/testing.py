@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import importlib
 import json
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -22,8 +23,10 @@ from .bundle import (
     compile_artifact,
     discover_evals,
 )
-from .runtime import create_fastapi_app, load_compiled_agent
-from .runtime_adk import _customer_facing_parts
+from .runtime import (
+    create_fastapi_app,
+    load_compiled_application,
+)
 from ._library import release_authored_library
 from .logging import get_logger
 
@@ -32,7 +35,6 @@ class AgentTestError(RuntimeError):
     """An authored test suite does not follow the Harnest convention."""
 
 
-_EVAL_TRAJECTORIES = frozenset({"business", "strict"})
 _EVAL_AUDIT = get_logger("eval.audit")
 
 
@@ -97,27 +99,9 @@ def _isolated_eval_logging() -> Iterator[None]:
 def _eval_output_filter_plugin() -> Any:
     """Build an eval-only ADK plugin without importing ADK during test discovery."""
 
-    from google.adk.plugins import BasePlugin
+    from .evaluation import customer_facing_eval_output_plugin
 
-    class CustomerFacingEvalOutputPlugin(BasePlugin):
-        def __init__(self) -> None:
-            super().__init__(name="_harnest_customer_facing_eval_output")
-
-        async def on_event_callback(
-            self, *, invocation_context: Any, event: Any
-        ) -> None:
-            del invocation_context
-            content = getattr(event, "content", None)
-            parts = getattr(content, "parts", None)
-            if parts is None:
-                return
-            visible_parts = list(_customer_facing_parts(parts))
-            if len(visible_parts) != len(parts):
-                # Mutating and returning None lets authored ADK plugins continue
-                # while ensuring the official evaluator never sees hidden parts.
-                content.parts = visible_parts
-
-    return CustomerFacingEvalOutputPlugin()
+    return customer_facing_eval_output_plugin()
 
 
 @contextmanager
@@ -223,7 +207,8 @@ class _HarnestPytestPlugin:
     def __init__(self, artifact: Path, *, include_smoke: bool) -> None:
         self.artifact = artifact
         self.include_smoke = include_smoke
-        self.compiled_agent = load_compiled_agent(artifact)
+        self.compiled_application = load_compiled_application(artifact)
+        self.compiled_agent = self.compiled_application.target
         source = artifact / "source"
         discovered = list(_discover_tools(source / "tools"))
         self.discovered_tools = MappingProxyType(
@@ -316,31 +301,18 @@ class _HarnestPytestPlugin:
 def _eval_config(suite: EvalSuite, trajectory: str) -> Any:
     """Apply a named trajectory policy without replacing authored thresholds."""
 
-    _require_eval_trajectory(trajectory)
-    from google.adk.evaluation.eval_config import (
-        get_evaluation_criteria_or_default,
-    )
+    from .evaluation import eval_config
 
-    config = get_evaluation_criteria_or_default(
-        str(suite.config) if suite.config is not None else None
-    )
-    criterion = config.criteria.get("tool_trajectory_avg_score")
-    if criterion is None:
-        return config
-    from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
-
-    threshold = criterion if isinstance(criterion, float) else criterion.threshold
-    match_type = "IN_ORDER" if trajectory == "business" else "EXACT"
-    config.criteria["tool_trajectory_avg_score"] = ToolTrajectoryCriterion(
-        threshold=threshold,
-        match_type=match_type,
-    )
-    return config
+    return eval_config(suite, trajectory)
 
 
 def _require_eval_trajectory(trajectory: str) -> None:
-    if trajectory not in _EVAL_TRAJECTORIES:
-        raise AgentTestError("eval trajectory must be business or strict")
+    from .evaluation import EvaluationError, require_eval_trajectory
+
+    try:
+        require_eval_trajectory(trajectory)
+    except EvaluationError as exc:
+        raise AgentTestError(str(exc)) from exc
 
 
 def _run_adk_evals(
@@ -348,49 +320,24 @@ def _run_adk_evals(
     suite: EvalSuite,
     *,
     trajectory: str = "business",
+    print_results: bool = True,
 ) -> int:
     """Run validated eval sets through ADK's official evaluator."""
 
-    try:
-        from google.adk.evaluation.agent_evaluator import AgentEvaluator
-        from google.adk.evaluation.eval_set import EvalSet
-    except ImportError as exc:  # pragma: no cover - declared ADK eval extra
-        raise AgentTestError(
-            "Google ADK evaluation dependencies are required for --evals"
-        ) from exc
-
+    AgentEvaluator, EvalSet = _eval_dependencies()
     config = _eval_config(suite, trajectory)
     module_name = f"{artifact.name}.agent"
 
     async def evaluate_all() -> None:
-        for path in suite.eval_sets:
-            eval_set = EvalSet.model_validate_json(path.read_text(encoding="utf-8"))
-            print(f"harnest eval [{trajectory}]: {path.name}")
-            _EVAL_AUDIT.info(
-                "eval.started", trigger="user", outcome="started", suite=path.name
-            )
-            try:
-                await AgentEvaluator.evaluate_eval_set(
-                    agent_module=module_name,
-                    eval_set=eval_set,
-                    eval_config=config,
-                    num_runs=1,
-                    print_detailed_results=True,
-                )
-            except BaseException:
-                _EVAL_AUDIT.info(
-                    "eval.finished",
-                    trigger="user",
-                    outcome="failed",
-                    suite=path.name,
-                )
-                raise
-            _EVAL_AUDIT.info(
-                "eval.finished",
-                trigger="user",
-                outcome="completed",
-                suite=path.name,
-            )
+        await _evaluate_eval_sets(
+            AgentEvaluator,
+            EvalSet,
+            module_name=module_name,
+            suite=suite,
+            config=config,
+            trajectory=trajectory,
+            print_results=print_results,
+        )
 
     import_root = str(artifact.parent)
     sys.path.insert(0, import_root)
@@ -415,14 +362,106 @@ def _run_adk_evals(
                 sys.modules.pop(name, None)
 
 
+def _run_langgraph_evals(
+    application: Any,
+    suite: EvalSuite,
+    *,
+    trajectory: str = "business",
+    print_results: bool = True,
+) -> int:
+    """Run LangGraph through the same ADK metric registry and eval-set runner."""
+
+    AgentEvaluator, EvalSet = _eval_dependencies()
+    config = _eval_config(suite, trajectory)
+    if config.live_model_config is not None:
+        raise AgentTestError(
+            "LangGraph --evals does not support ADK liveModelConfig; use text "
+            "conversation evals or authored smoke tests for bidirectional media"
+        )
+
+    async def evaluate_all() -> None:
+        from .eval_langgraph import langgraph_eval_agent_module
+
+        async with langgraph_eval_agent_module(application) as module_name:
+            await _evaluate_eval_sets(
+                AgentEvaluator,
+                EvalSet,
+                module_name=module_name,
+                suite=suite,
+                config=config,
+                trajectory=trajectory,
+                print_results=print_results,
+            )
+
+    with _isolated_eval_logging():
+        try:
+            asyncio.run(evaluate_all())
+        except AssertionError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    return 0
+
+
+def _eval_dependencies() -> tuple[Any, Any]:
+    """Load the single evaluator dependency used by both framework adapters."""
+
+    from .evaluation import EvaluationError, eval_dependencies
+
+    try:
+        return eval_dependencies()
+    except EvaluationError as exc:
+        raise AgentTestError(str(exc)) from exc
+
+
+async def _evaluate_eval_sets(
+    evaluator: Any,
+    eval_set_class: Any,
+    *,
+    module_name: str,
+    suite: EvalSuite,
+    config: Any,
+    trajectory: str,
+    print_results: bool = True,
+) -> None:
+    """Evaluate every validated suite with consistent output and audit events."""
+
+    for path in suite.eval_sets:
+        eval_set = eval_set_class.model_validate_json(path.read_text(encoding="utf-8"))
+        print(f"harnest eval [{trajectory}]: {path.name}")
+        _EVAL_AUDIT.info(
+            "eval.started", trigger="user", outcome="started", suite=path.name
+        )
+        try:
+            await evaluator.evaluate_eval_set(
+                agent_module=module_name,
+                eval_set=eval_set,
+                eval_config=config,
+                num_runs=1,
+                print_detailed_results=print_results,
+            )
+        except BaseException:
+            _EVAL_AUDIT.info(
+                "eval.finished",
+                trigger="user",
+                outcome="failed",
+                suite=path.name,
+            )
+            raise
+        _EVAL_AUDIT.info(
+            "eval.finished", trigger="user", outcome="completed", suite=path.name
+        )
+
+
 def run_agent_tests(
     source: str | Path,
     *,
     include_smoke: bool = False,
     include_evals: bool = False,
     eval_trajectory: str = "business",
+    no_output: bool = False,
     framework: str = "adk",
     mode: str = "managed",
+    cli_enabled: bool = False,
 ) -> int:
     """Compile an authored agent and run its convention-based pytest suites."""
 
@@ -435,31 +474,41 @@ def run_agent_tests(
     with tempfile.TemporaryDirectory(prefix="harnest-test-") as temp_directory:
         artifact = Path(temp_directory) / "compiled_agent"
         compile_artifact(
-            source_directory, artifact, framework=framework, mode=mode
+            source_directory,
+            artifact,
+            framework=framework,
+            mode=mode,
+            cli_enabled=cli_enabled,
         )
         try:
             selected = _selected_test_directories(artifact, include_smoke)
             authored = _authored_test_directories(selected)
             plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
-            test_status = _run_pytest(plugin, authored)
+            with _test_output(suppressed=no_output):
+                test_status = _run_pytest(plugin, authored)
             if test_status != 0 or not include_evals:
                 return test_status
 
-            if framework != "adk":
-                raise AgentTestError(
-                    "--evals currently supports ADK EvalSet files only; use authored "
-                    "pytest evaluations for LangGraph"
-                )
             suite = discover_evals(artifact / "source" / "agent.py")
             if not suite.eval_sets:
                 raise AgentTestError(
                     "--evals requires evals/ with at least one *.evalset.json"
                 )
-            return _run_adk_evals(
-                artifact,
-                suite,
-                trajectory=eval_trajectory,
-            )
+            if framework == "adk":
+                with _test_output(suppressed=no_output):
+                    return _run_adk_evals(
+                        artifact,
+                        suite,
+                        trajectory=eval_trajectory,
+                        print_results=not no_output,
+                    )
+            with _test_output(suppressed=no_output):
+                return _run_langgraph_evals(
+                    plugin.compiled_application,
+                    suite,
+                    trajectory=eval_trajectory,
+                    print_results=not no_output,
+                )
         finally:
             release_authored_library(artifact / "source")
 
@@ -486,6 +535,18 @@ def _authored_test_directories(selected: list[Path]) -> list[Path]:
         for path in selected
         if any(candidate.is_file() for candidate in path.glob("test_*.py"))
     ]
+
+
+@contextmanager
+def _test_output(*, suppressed: bool) -> Iterator[None]:
+    """Suppress authored test streams without changing execution or exit status."""
+
+    if not suppressed:
+        yield
+        return
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        with redirect_stdout(sink), redirect_stderr(sink):
+            yield
 
 
 def _run_pytest(plugin: Any, selected: list[Path]) -> int:

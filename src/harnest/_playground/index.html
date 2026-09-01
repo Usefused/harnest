@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
     <title>Harnest Playground</title>
-    <link rel="stylesheet" href="/_harnest/playground.css?v=7">
+    <link rel="stylesheet" href="/_harnest/playground.css?v=8">
   </head>
   <body>
     <div class="shell">
@@ -25,7 +25,12 @@
           </div>
         </section>
 
-        <section class="session-panel" aria-labelledby="session-heading">
+        <nav class="workspace-nav" aria-label="Workspace">
+          <button class="workspace-nav-item active" data-workspace="chat" type="button" aria-pressed="true"><span aria-hidden="true">⌁</span> Playground</button>
+          <button class="workspace-nav-item" data-workspace="evals" type="button" aria-pressed="false"><span aria-hidden="true">✓</span> Evals</button>
+        </nav>
+
+        <section class="session-panel chat-only" aria-labelledby="session-heading">
           <div class="section-heading">
             <span class="toolbar-label" id="session-heading">Session</span>
             <div class="session-actions">
@@ -91,10 +96,10 @@
 
       <header class="topbar">
         <div class="conversation-title">
-          <span class="eyebrow">Playground</span>
-          <h2>Conversation</h2>
+          <span id="workspace-eyebrow" class="eyebrow">Playground</span>
+          <h2 id="workspace-title">Conversation</h2>
         </div>
-        <section class="transport-toolbar" aria-labelledby="transport-heading">
+        <section class="transport-toolbar chat-only" aria-labelledby="transport-heading">
           <span class="toolbar-label" id="transport-heading">Transport</span>
           <div class="segmented" role="radiogroup" aria-label="Response transport" data-active="stream">
             <button class="transport active" data-transport="stream" role="radio" aria-checked="true" type="button">Stream</button>
@@ -106,7 +111,7 @@
           <span class="status-dot"></span>
           <span id="status-text">Connecting…</span>
         </div>
-        <button id="toggle-inspector" class="inspector-toggle" type="button" aria-controls="session-inspector" aria-expanded="false">State</button>
+        <button id="toggle-inspector" class="inspector-toggle chat-only" type="button" aria-controls="session-inspector" aria-expanded="false">State</button>
         <p id="transport-note" class="sr-only">SSE streams response events as they arrive.</p>
       </header>
 
@@ -114,21 +119,50 @@
 
         <div id="error-banner" class="error-banner" role="alert" hidden></div>
 
-        <section id="conversation" class="conversation" aria-live="polite">
-          <div id="empty-state" class="empty-state">
-            <div class="empty-mark">⌁</div>
-            <h3>Test the compiled agent</h3>
-            <p>Messages and tool activity stream here while application state stays visible alongside the conversation.</p>
+        <div id="chat-workspace" class="chat-workspace">
+          <section id="conversation" class="conversation" aria-live="polite">
+            <div id="empty-state" class="empty-state">
+              <div class="empty-mark">⌁</div>
+              <h3>Test the compiled agent</h3>
+              <p>Messages and tool activity stream here while application state stays visible alongside the conversation.</p>
+            </div>
+          </section>
+
+          <form id="composer" class="composer">
+            <label class="sr-only" for="message-input">Message</label>
+            <textarea id="message-input" rows="1" placeholder="Send a message to the agent…" required></textarea>
+            <button id="send-message" class="send-button" type="submit">
+              <span>Send</span><span aria-hidden="true">↑</span>
+            </button>
+          </form>
+        </div>
+
+        <section id="eval-workspace" class="eval-workspace" aria-labelledby="eval-heading" hidden>
+          <header class="eval-header">
+            <div>
+              <span class="eyebrow">Local evaluation</span>
+              <h2 id="eval-heading">Run authored eval suites</h2>
+              <p>Uses the same ADK metric registry for ADK and LangGraph. Results stay in this process.</p>
+            </div>
+            <button id="refresh-evals" class="secondary-button" type="button">Refresh suites</button>
+          </header>
+          <div id="eval-empty" class="eval-empty" hidden>
+            <div class="empty-mark">✓</div>
+            <h3>No eval suites found</h3>
+            <p>Add a validated <code>evals/*.evalset.json</code> file and reload the server.</p>
+          </div>
+          <div id="eval-content" class="eval-content">
+            <form id="eval-runner" class="eval-runner">
+              <label>Suite<select id="eval-suite" required></select></label>
+              <label>Tool trajectory<select id="eval-trajectory"><option value="business">Business · in order</option><option value="strict">Strict · exact</option></select></label>
+              <button id="run-eval" class="send-button eval-run-button" type="submit">Run eval</button>
+            </form>
+            <div id="eval-catalog-summary" class="eval-catalog-summary"></div>
+            <section id="eval-results" class="eval-results" aria-live="polite">
+              <div class="eval-results-empty"><strong>Choose a suite and run it</strong><p>Case scores, metric thresholds, responses, and tool trajectories will appear here.</p></div>
+            </section>
           </div>
         </section>
-
-        <form id="composer" class="composer">
-          <label class="sr-only" for="message-input">Message</label>
-          <textarea id="message-input" rows="1" placeholder="Send a message to the agent…" required></textarea>
-          <button id="send-message" class="send-button" type="submit">
-            <span>Send</span><span aria-hidden="true">↑</span>
-          </button>
-        </form>
       </main>
 
       <aside id="session-inspector" class="inspector">
@@ -206,6 +240,6 @@
         </section>
       </aside>
     </div>
-    <script src="/_harnest/playground.js?v=7" defer></script>
+    <script src="/_harnest/playground.js?v=8" defer></script>
   </body>
 </html>

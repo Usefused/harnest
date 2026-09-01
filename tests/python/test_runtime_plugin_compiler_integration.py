@@ -38,12 +38,13 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                     "dependencies": ["httpx>=0.28,<1"],
                 }
             ],
+            interfaces={"cli": False},
         )
 
         self.assertEqual(
             digest,
-            "sha256:60f624710da7d43330475fcd21951e7"
-            "4659f7107da9fa71b21a83a84ffd41b15",
+            "sha256:876d5e9f129cfc2e952acbfae50253a"
+            "382a3393f8235fc69e0a95035bfd98ea6",
         )
 
     def _write(self, path: Path, contents: str) -> None:

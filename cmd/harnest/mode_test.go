@@ -44,6 +44,7 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		"spec.framework.mode to advanced",
 		"Harnest still owns:",
 		"neutral HTTP/SSE/WebSocket",
+		"durable tasks/ execution and cron/ schedule discovery",
 		"You own in advanced mode:",
 		"native graph routing",
 		"portable model hooks are not auto-injected",

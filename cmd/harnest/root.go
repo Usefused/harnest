@@ -27,6 +27,8 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     lib/                 reusable Python helpers imported as harnest.lib.*
     models/              Pydantic contracts imported as harnest.models.*
     tools/               discovered Python tools
+    tasks/               durable Python tasks
+    cron/                UTC schedules targeting durable tasks
     plugins/             runtime plugins or manifest-less MCP+skill agent-plugins
     extensions/          portable lifecycle plus framework-specific integration
     subagents/           discovered Agent definitions
@@ -50,6 +52,7 @@ Typical workflow:
   harnest test my-agent --smoke --evals
   harnest test my-agent --evals --eval-trajectory strict
   harnest compile my-agent --output .harnest/my-agent
+  harnest run my-agent "Summarize today's activity"
   harnest serve my-agent
   harnest serve my-agent --reload
 
@@ -112,6 +115,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newInitCommand(),
 		app.newCompileCommand(),
 		app.newTestCommand(),
+		app.newRunCommand(),
 		app.newServeCommand(),
 		app.newDoctorCommand(),
 		app.newRuntimeCommand(),

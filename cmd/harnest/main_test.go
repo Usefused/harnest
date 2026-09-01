@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -61,7 +61,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
 	}
 	assertDirectories(t, target, []string{
-		"lib", "models", "tools", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
+		"lib", "models", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
@@ -71,6 +71,8 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"models/_README.md":      "from harnest.models.support import",
 		"extensions/storage.py":  "@lifecycle.storage.checkpoints",
 		"tools/_README.md":       "Add one @tool callable",
+		"tasks/_README.md":       "durable @task callable",
+		"cron/_README.md":        "UTC Cron declaration",
 		"plugins/_README.md":     "RuntimePlugin folders",
 		"extensions/_README.md":  "@lifecycle-decorated functions",
 		"tests/unit/_README.md":  "offline test_*.py",
@@ -109,6 +111,19 @@ func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
 		"from harnest.graph import START, Edge, Graph",
 		"root_agent = Graph(",
 		`history="session"`,
+	})
+}
+
+func TestInitLangGraphExampleIncludesPortableEvalSet(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "langgraph-eval-agent")
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "init", target, "--framework", "langgraph", "--example",
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFilesContain(t, target, map[string]string{
+		"evals/starter.evalset.json": "answers_greeting",
+		"evals/_README.md":           "shared *.evalset.json",
 	})
 }
 
@@ -262,6 +277,8 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"lib/_README.md":    "from harnest.lib.audit import record_change",
 		"models/_README.md": "from harnest.models.support import",
 		"tools/_README.md":  "Advanced mode owns framework wiring",
+		"tasks/_README.md":  "Harnest discovers tasks in both authoring modes",
+		"cron/_README.md":   "Harnest owns scheduling in both authoring modes",
 	})
 	assertOnlyPlaceholderResources(t, directory)
 }
@@ -404,15 +421,26 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 `)
 	_, _, err := executeForTest(
 		t, defaultSystem(), "--python", python, "test", target,
-		"--evals", "--eval-trajectory", "strict",
+		"--evals", "--eval-trajectory", "strict", "--no-output",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	arguments := mustReadTestFile(t, record)
 	assertContainsAll(t, "delegated eval arguments", string(arguments), []string{
-		"--evals\n--eval-trajectory\nstrict",
+		"--evals\n--eval-trajectory\nstrict\n--no-output",
 	})
+	_, _, err = executeForTest(
+		t, defaultSystem(), "--python", python, "test", target,
+		"--no-output",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments = mustReadTestFile(t, record)
+	if !strings.Contains(string(arguments), "--no-output") {
+		t.Fatalf("delegated test arguments are missing --no-output:\n%s", arguments)
+	}
 	_, _, err = executeForTest(
 		t, defaultSystem(), "--python", python, "test", target,
 		"--eval-trajectory", "approximate",
@@ -438,7 +466,7 @@ func TestServeRunsGeneratedLauncherWithSelectedPython(t *testing.T) {
 		t.Fatalf("got calls %q, want compile and serve", lines)
 	}
 	want := "CALL\t" + filepath.Join(artifact, "harnest-agent") +
-		"\t--host\t0.0.0.0\t--port\t9090\t--request-timeout\t30" +
+		"\tserve\t--host\t0.0.0.0\t--port\t9090\t--request-timeout\t30" +
 		"\t--max-concurrency\t4\t--allow-remote"
 	if lines[1] != want {
 		t.Fatalf("selected Python got %q, want only explicit override %q", lines[1], want)
@@ -456,7 +484,7 @@ func TestServeUsesCompiledServerDefaultsWithoutOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(mustReadTestFile(t, record))), "\n")
-	want := "CALL\t" + filepath.Join(artifact, "harnest-agent")
+	want := "CALL\t" + filepath.Join(artifact, "harnest-agent") + "\tserve"
 	if len(lines) != 2 || lines[1] != want {
 		t.Fatalf("serve overrode compiled server.yaml defaults: %q", lines)
 	}

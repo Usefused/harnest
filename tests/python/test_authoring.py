@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +43,7 @@ from harnest.testing import (
     _eval_config,
     _isolated_eval_logging,
     _run_adk_evals,
+    _run_langgraph_evals,
     run_agent_tests,
 )
 from _session_store_fixture import write_session_store
@@ -887,6 +888,7 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(persisted, first)
         self.assertEqual(first["entrypoint"], "agent:root_agent")
         self.assertEqual(first["sourceEntrypoint"], "agent:root_agent")
+        self.assertEqual(first["interfaces"], {"cli": False})
         self.assertTrue(first["digest"].startswith("sha256:"))
         self.assertEqual(module.root_agent.kwargs["name"], "root")
         self.assertFalse(
@@ -913,6 +915,29 @@ class AuthoringTests(unittest.TestCase):
             "harnest-agent",
             [record["path"] for record in first["files"]],
         )
+
+    def test_compile_artifact_binds_explicit_cli_interface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "authored"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "root_agent = Agent(name='root', model='gemini-test')\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+
+            with patch.dict(sys.modules, _fake_adk_modules()):
+                disabled = compile_artifact(root, workspace / "disabled")
+                enabled = compile_artifact(
+                    root,
+                    workspace / "enabled",
+                    cli_enabled=True,
+                )
+
+        self.assertEqual(disabled["interfaces"], {"cli": False})
+        self.assertEqual(enabled["interfaces"], {"cli": True})
+        self.assertNotEqual(disabled["digest"], enabled["digest"])
 
     def test_managed_adk_fastapi_hides_native_routes_and_keeps_openapi(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1281,11 +1306,28 @@ class AuthoringTests(unittest.TestCase):
             with patch.dict(sys.modules, _fake_adk_modules()):
                 with redirect_stdout(stdout):
                     exit_code = cli_main(
-                        ["compile", str(root), "--output", str(output)]
+                        [
+                            "compile",
+                            str(root),
+                            "--output",
+                            str(output),
+                            "--enable-cli",
+                        ]
                     )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(json.loads(stdout.getvalue())["name"], "root")
+        manifest = json.loads(stdout.getvalue())
+        self.assertEqual(manifest["name"], "root")
+        self.assertEqual(manifest["interfaces"], {"cli": True})
+
+    def test_test_cli_supports_no_output_for_every_test_lane(self):
+        with patch("harnest.cli.run_agent_tests", return_value=0) as runner:
+            default_status = cli_main(["test", ".", "--evals"])
+            quiet_status = cli_main(["test", ".", "--no-output"])
+
+        self.assertEqual((default_status, quiet_status), (0, 0))
+        self.assertFalse(runner.call_args_list[0].kwargs["no_output"])
+        self.assertTrue(runner.call_args_list[1].kwargs["no_output"])
 
     def test_authored_unit_test_runner_injects_agent_and_tools(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1394,8 +1436,81 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(suite.config.name, "test_config.json")
         self.assertEqual(
             eval_runner.call_args.kwargs,
-            {"trajectory": "business"},
+            {"trajectory": "business", "print_results": True},
         )
+
+    def test_langgraph_test_runner_uses_shared_eval_suite_after_unit_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            self._write(
+                root / "agent.py",
+                "from harnest.graph import START, Edge, Event, Graph\n\n"
+                "def respond(value):\n"
+                "    return Event(message='ok')\n\n"
+                "root_agent = Graph(\n"
+                "    name='root', nodes={'respond': respond},\n"
+                "    edges=(Edge(START, 'respond'),),\n"
+                ")\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(root / "tests" / "unit" / "_README.md", "Optional.\n")
+            self._write(
+                root / "evals" / "quality.evalset.json",
+                json.dumps({"eval_set_id": "quality", "eval_cases": []}),
+            )
+
+            with patch(
+                "harnest.testing._run_langgraph_evals", return_value=0
+            ) as eval_runner:
+                exit_code = run_agent_tests(
+                    root, include_evals=True, framework="langgraph"
+                )
+
+        self.assertEqual(exit_code, 0)
+        eval_runner.assert_called_once()
+        self.assertEqual(eval_runner.call_args.args[0].framework, "langgraph")
+        self.assertEqual(
+            [path.name for path in eval_runner.call_args.args[1].eval_sets],
+            ["quality.evalset.json"],
+        )
+        self.assertEqual(
+            eval_runner.call_args.kwargs,
+            {"trajectory": "business", "print_results": True},
+        )
+
+    def test_authored_test_runner_can_suppress_all_test_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n\n"
+                "root_agent = Agent(name='root', model='gemini-test')\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(
+                root / "tests" / "unit" / "test_no_output.py",
+                "def test_agent_compiles(agent):\n"
+                "    assert agent.name == 'root'\n",
+            )
+            self._write(
+                root / "evals" / "quality.evalset.json",
+                json.dumps({"eval_set_id": "quality", "eval_cases": []}),
+            )
+
+            with patch(
+                "harnest.testing._run_adk_evals", return_value=0
+            ) as eval_runner:
+                output = StringIO()
+                errors = StringIO()
+                with redirect_stdout(output), redirect_stderr(errors):
+                    exit_code = run_agent_tests(
+                        root, include_evals=True, no_output=True
+                    )
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(eval_runner.call_args.kwargs["print_results"])
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(errors.getvalue(), "")
 
     def test_named_eval_trajectories_override_only_tool_matching_policy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1426,9 +1541,52 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(business_criterion.threshold, 0.75)
         self.assertEqual(business.criteria["response_match_score"], 0.6)
 
+    def test_eval_config_preserves_every_adk_metric_and_custom_metric(self):
+        from google.adk.evaluation.eval_metrics import PrebuiltMetrics
+
+        # The test follows ADK's installed registry rather than creating a
+        # Harnest allowlist that would fall behind a compatible ADK release.
+        metric_names = {metric.value for metric in PrebuiltMetrics}
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "test_config.json"
+            self._write(
+                config,
+                json.dumps(
+                    {
+                        "criteria": {
+                            **{name: 0.5 for name in metric_names},
+                            "custom_quality": 0.75,
+                        },
+                        "customMetrics": {
+                            "custom_quality": {
+                                "codeConfig": {
+                                    "name": "harnest.lib.metrics.custom_quality"
+                                }
+                            }
+                        },
+                    }
+                ),
+            )
+
+            loaded = _eval_config(EvalSuite((), config), "business")
+
+        self.assertEqual(set(loaded.criteria), metric_names | {"custom_quality"})
+        self.assertEqual(
+            loaded.custom_metrics["custom_quality"].code_config.name,
+            "harnest.lib.metrics.custom_quality",
+        )
+
     def test_authored_test_runner_rejects_unknown_eval_trajectory(self):
         with self.assertRaisesRegex(AgentTestError, "business or strict"):
             run_agent_tests(".", eval_trajectory="approximate")
+
+    def test_langgraph_eval_rejects_adk_live_model_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "test_config.json"
+            self._write(config, json.dumps({"liveModelConfig": {}}))
+
+            with self.assertRaisesRegex(AgentTestError, "liveModelConfig"):
+                _run_langgraph_evals(object(), EvalSuite((), config))
 
     def test_adk_eval_filter_scores_only_customer_facing_parts(self):
         authored_plugin = object()
@@ -1524,6 +1682,113 @@ class AuthoringTests(unittest.TestCase):
             suite = discover_evals(artifact / "source" / "agent.py")
 
             status = _run_adk_evals(artifact, suite)
+
+        self.assertEqual(status, 0)
+
+    def test_langgraph_eval_executes_authored_custom_metric(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            self._write(
+                root / "agent.py",
+                "from harnest.graph import START, Edge, Event, Graph\n\n"
+                "def respond(value):\n"
+                "    return Event(message='official response')\n\n"
+                "root_agent = Graph(\n"
+                "    name='root', nodes={'respond': respond},\n"
+                "    edges=(Edge(START, 'respond'),),\n"
+                ")\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(root / "tests" / "unit" / "_README.md", "Optional.\n")
+            self._write(
+                root / "lib" / "eval_metrics.py",
+                "from google.adk.evaluation.eval_metrics import EvalStatus\n"
+                "from google.adk.evaluation.evaluator import (\n"
+                "    EvaluationResult, PerInvocationResult,\n"
+                ")\n\n"
+                "def response_present(metric, actual, expected, scenario):\n"
+                "    del metric, scenario\n"
+                "    details = [\n"
+                "        PerInvocationResult(\n"
+                "            actual_invocation=item,\n"
+                "            expected_invocation=(\n"
+                "                expected[index] if expected else None\n"
+                "            ),\n"
+                "            score=1.0, eval_status=EvalStatus.PASSED,\n"
+                "        )\n"
+                "        for index, item in enumerate(actual)\n"
+                "    ]\n"
+                "    return EvaluationResult(\n"
+                "        overall_score=1.0,\n"
+                "        overall_eval_status=EvalStatus.PASSED,\n"
+                "        per_invocation_results=details,\n"
+                "    )\n",
+            )
+            self._write(
+                root / "evals" / "portable.evalset.json",
+                json.dumps(
+                    {
+                        "eval_set_id": "portable",
+                        "eval_cases": [
+                            {
+                                "evalId": "langgraph-custom-metric",
+                                "conversation": [
+                                    {
+                                        "userContent": {
+                                            "role": "user",
+                                            "parts": [{"text": "answer"}],
+                                        },
+                                        "finalResponse": {
+                                            "role": "model",
+                                            "parts": [
+                                                {"text": "official response"}
+                                            ],
+                                        },
+                                    },
+                                    {
+                                        "userContent": {
+                                            "role": "user",
+                                            "parts": [{"text": "answer again"}],
+                                        },
+                                        "finalResponse": {
+                                            "role": "model",
+                                            "parts": [
+                                                {"text": "official response"}
+                                            ],
+                                        },
+                                    },
+                                ],
+                                "sessionInput": {
+                                    "appName": "root",
+                                    "userId": "eval-user",
+                                    "state": {},
+                                },
+                            }
+                        ],
+                    }
+                ),
+            )
+            self._write(
+                root / "evals" / "test_config.json",
+                json.dumps(
+                    {
+                        "criteria": {"custom_quality": 1.0},
+                        "customMetrics": {
+                            "custom_quality": {
+                                "codeConfig": {
+                                    "name": (
+                                        "harnest.lib.eval_metrics.response_present"
+                                    )
+                                }
+                            }
+                        },
+                    }
+                ),
+            )
+
+            status = run_agent_tests(
+                root, include_evals=True, framework="langgraph"
+            )
 
         self.assertEqual(status, 0)
 

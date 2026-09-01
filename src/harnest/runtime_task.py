@@ -22,7 +22,9 @@ from .context import (
     revoke_context,
 )
 from .context_session import invocation_session_context
+from .context_agent import LocalAgentRuntime, activate_context_agent
 from .continuation import ContinuationConflictError
+from .cron import CompiledCron
 from .credentials import _activate_credential_provider
 from .durable import current_native_durable_call
 from .external_continuation import (
@@ -58,12 +60,15 @@ _RESULT_CAPABILITY = "task.result"
 _RESULT_SCHEMA = "harnest.task.result.v1"
 _FAILED = "task_failed"
 _CANCELLED = "task_cancelled"
+_AUTOMATION_USER_ID = "_harnest_automation"
+_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 10
 _PAYLOAD_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS harnest_task_payloads (
     payload_id text PRIMARY KEY,
     task_name text NOT NULL,
     arguments jsonb NOT NULL,
     invocation jsonb,
+    trigger text NOT NULL DEFAULT 'agent',
     status text NOT NULL DEFAULT 'pending',
     result jsonb,
     failure_code text,
@@ -78,12 +83,17 @@ _PAYLOAD_MIGRATION_SQL = (
     "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS failure_code text",
     "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
     "completed_at timestamptz",
+    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
+    "trigger text NOT NULL DEFAULT 'agent'",
 )
 _INSERT_PAYLOAD_SQL = """
 INSERT INTO harnest_task_payloads(
-    payload_id, task_name, arguments, invocation, status
+    payload_id, task_name, arguments, invocation, trigger, status
 )
-VALUES (%(payload_id)s, %(task_name)s, %(arguments)s, %(invocation)s, 'pending')
+VALUES (
+    %(payload_id)s, %(task_name)s, %(arguments)s, %(invocation)s,
+    %(trigger)s, 'pending'
+)
 ON CONFLICT (payload_id) DO NOTHING
 RETURNING payload_id
 """
@@ -96,7 +106,7 @@ ORDER BY id
 LIMIT 2
 """
 _GET_PAYLOAD_SQL = """
-SELECT arguments, invocation, status, result, failure_code
+SELECT arguments, invocation, trigger, status, result, failure_code
 FROM harnest_task_payloads
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
 """
@@ -139,6 +149,8 @@ class TaskRuntimeManager:
         plugin_manager: Any | None = None,
         backend: Any | None = None,
         continuation_runtime: ExternalContinuationRuntime | None = None,
+        automation_user_id: str = _AUTOMATION_USER_ID,
+        enable_cron: bool = True,
     ) -> None:
         """Retain configuration without importing or connecting to Procrastinate."""
 
@@ -147,20 +159,39 @@ class TaskRuntimeManager:
             raise TypeError("task runtime requires compiled tasks")
         self._application = application
         self._tasks = tasks
+        self._crons = tuple(application.crons)
+        if any(not isinstance(item, CompiledCron) for item in self._crons):
+            raise TypeError("task runtime crons must be compiled schedules")
+        if not isinstance(enable_cron, bool):
+            raise TypeError("enable_cron must be a bool")
+        self._enable_cron = enable_cron
         self._plugin_manager = plugin_manager
         self._backend = backend
         self._continuation_runtime: ExternalContinuationRuntime | None = None
         self._invocation_continuations: Any | None = None
         self._application_continuations: Any | None = None
+        self._agent_driver: RuntimeDriver | None = None
+        self._automation_user_id = _automation_identity(automation_user_id)
         self._app: Any | None = None
         self._native: dict[int, Any] = {}
+        self._native_crons: dict[str, Any] = {}
         self._task_by_name = {item.name: item for item in tasks}
         self._worker: asyncio.Task[Any] | None = None
+        self._worker_controller: Any | None = None
         self._worker_failure: TaskRuntimeError | None = None
         self._lock = asyncio.Lock()
         self._state = "new"
         if continuation_runtime is not None:
             self.bind_continuations(continuation_runtime)
+
+    def bind_agent_driver(self, driver: RuntimeDriver) -> None:
+        """Bind the final pipeline so child sessions cannot bypass capabilities."""
+
+        if not isinstance(driver, RuntimeDriver):
+            raise TypeError("task agent driver must implement RuntimeDriver")
+        if self._agent_driver is not None and self._agent_driver is not driver:
+            raise RuntimeError("task agent driver is already bound")
+        self._agent_driver = driver
 
     @property
     def application(self) -> Any:
@@ -226,6 +257,8 @@ class TaskRuntimeManager:
         )
         self._app = backend.App(connector=connector)
         self._register_native_tasks()
+        if self._enable_cron:
+            self._register_native_crons()
         await self._app.open_async()
         await _ensure_procrastinate_schema(self._app)
         await self._app.connector.execute_query_async(query=_PAYLOAD_TABLE_SQL)
@@ -235,8 +268,16 @@ class TaskRuntimeManager:
             await self._app.connector.execute_query_async(query=query)
         for compiled in self._tasks:
             bind_task_runtime(compiled.authored, self)
+        options = {
+            "install_signal_handlers": False,
+            "shutdown_graceful_timeout": _WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+        }
+        # Procrastinate shields its internal worker loop from task cancellation.
+        # Retaining the pinned backend's worker lets the server lifespan request
+        # a real stop when startup later fails, such as on an HTTP bind collision.
+        self._worker_controller = self._app._worker(**options)
         self._worker = asyncio.create_task(
-            self._app.run_worker_async(install_signal_handlers=False),
+            self._worker_controller.run(),
             name=f"harnest-tasks-{self._application.name}",
         )
         self._worker.add_done_callback(self._worker_done)
@@ -266,6 +307,34 @@ class TaskRuntimeManager:
         execute.__doc__ = "Execute one compiler-owned opaque Harnest task payload."
         return execute
 
+    def _register_native_crons(self) -> None:
+        """Register periodic dispatchers before workers inspect their schedules."""
+
+        if self._app is None:  # pragma: no cover - caller owns construction
+            raise RuntimeError("task app is unavailable")
+        for compiled in self._crons:
+            execute = self._cron_executor(compiled)
+            native = self._app.task(
+                name=f"{compiled.name}.dispatch",
+                queue=compiled.task.queue,
+                retry=compiled.task.max_retries,
+            )(execute)
+            self._app.periodic(
+                cron=compiled.schedule,
+                periodic_id=compiled.name,
+            )(native)
+            self._native_crons[compiled.name] = native
+
+    def _cron_executor(self, compiled: CompiledCron) -> Any:
+        """Create a payload-free periodic entrypoint for one compiled schedule."""
+
+        async def execute(timestamp: int) -> None:
+            await self._enqueue_cron(compiled, timestamp)
+
+        execute.__name__ = f"{compiled.name.rsplit('.', 1)[-1]}_dispatch"
+        execute.__doc__ = "Enqueue one compiler-owned Harnest cron occurrence."
+        return execute
+
     async def defer(
         self,
         task_value: TaskCallable[Any],
@@ -285,15 +354,61 @@ class TaskRuntimeManager:
             idempotency_key = _native_idempotency_key(
                 self._application, compiled, arguments, snapshot
             )
+        return await self._defer_compiled(
+            compiled,
+            arguments,
+            snapshot,
+            trigger=trigger,
+            idempotency_key=idempotency_key,
+            schedule_in=schedule_in,
+        )
+
+    async def _enqueue_cron(self, cron: CompiledCron, timestamp: int) -> None:
+        """Turn one native periodic tick into an idempotent private task job."""
+
+        if (
+            not isinstance(timestamp, int)
+            or isinstance(timestamp, bool)
+            or timestamp < 0
+        ):
+            _cron_audit("enqueue", cron.name, "failed")
+            raise TaskRuntimeError("cron timestamp must be a non-negative integer")
+        try:
+            await self._defer_compiled(
+                cron.task,
+                safe_task_arguments(cron.arguments),
+                None,
+                trigger="cron",
+                idempotency_key=f"{cron.name}:{timestamp}",
+                schedule_in=None,
+            )
+        except BaseException:
+            _cron_audit("enqueue", cron.name, "failed")
+            raise
+        _cron_audit("enqueue", cron.name, "committed")
+
+    async def _defer_compiled(
+        self,
+        compiled: CompiledTask,
+        arguments: Mapping[str, Any],
+        snapshot: Mapping[str, Any] | None,
+        *,
+        trigger: str,
+        idempotency_key: str | None,
+        schedule_in: float | None,
+    ) -> TaskHandle:
+        """Commit a resolved task through the one private payload transaction."""
+
         queueing_lock = _queueing_lock(compiled.name, idempotency_key)
         payload_id = _payload_id(compiled.name, queueing_lock)
         try:
             job_id, committed_payload_id = await self._commit_job(
                 compiled,
-                task_value,
+                compiled.authored,
                 payload_id,
                 arguments,
                 snapshot,
+                trigger=trigger,
                 queueing_lock=queueing_lock,
                 schedule_in=schedule_in,
             )
@@ -327,6 +442,7 @@ class TaskRuntimeManager:
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
         *,
+        trigger: str,
         queueing_lock: str | None,
         schedule_in: float | None,
     ) -> tuple[int, str]:
@@ -336,7 +452,12 @@ class TaskRuntimeManager:
         # Sharing one transaction prevents jobs without payloads and vice versa.
         async with self._app.connector.pool.connection() as connection:
             inserted = await self._insert_payload(
-                compiled, payload_id, arguments, snapshot, connection=connection
+                compiled,
+                payload_id,
+                arguments,
+                snapshot,
+                trigger=trigger,
+                connection=connection,
             )
             if not inserted:
                 return (
@@ -497,10 +618,15 @@ class TaskRuntimeManager:
     ) -> None:
         """Restore safe invocation capabilities around one authored callable."""
 
-        arguments, snapshot = await self._get_payload(compiled, payload_id)
-        trigger = "agent"
+        arguments, snapshot, trigger = await self._get_payload(compiled, payload_id)
         try:
-            result = await self._call_authored(compiled, arguments, snapshot)
+            result = await self._call_authored(
+                compiled,
+                arguments,
+                snapshot,
+                payload_id=payload_id,
+                trigger=trigger,
+            )
         except asyncio.CancelledError:
             _audit("execute", trigger, "cancelled")
             raise
@@ -525,11 +651,16 @@ class TaskRuntimeManager:
         compiled: CompiledTask,
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
+        *,
+        payload_id: str,
+        trigger: str = "agent",
     ) -> Any:
         """Run inline or inside a reconstructed managed task invocation."""
 
+        agent_scope = self._agent_scope(snapshot, payload_id, trigger)
         if snapshot is None:
-            return await _resolve_task_call(compiled.function, arguments)
+            with agent_scope:
+                return await _resolve_task_call(compiled.function, arguments)
         active = self._agent_context(snapshot)
         session_store = self._session_store()
         try:
@@ -541,10 +672,37 @@ class TaskRuntimeManager:
                 invocation_id=active.invocation_id,
                 trigger="agent",
             ):
-                with activate_context(active), self._credential_scope():
+                with (
+                    activate_context(active),
+                    self._credential_scope(),
+                    agent_scope,
+                ):
                     return await _resolve_task_call(compiled.function, arguments)
         finally:
             revoke_context(active)
+
+    def _agent_scope(
+        self,
+        snapshot: Mapping[str, Any] | None,
+        payload_id: str,
+        trigger: str,
+    ) -> Any:
+        """Expose child invocation only when the final runtime owns this worker."""
+
+        if self._agent_driver is None:
+            return nullcontext()
+        user_id = (
+            self._automation_user_id if snapshot is None else snapshot["user_id"]
+        )
+        runtime = LocalAgentRuntime(
+            self._agent_driver,
+            user_id=user_id,
+            transport="task",
+            trigger=trigger,
+            identity_namespace=payload_id,
+            metadata=None if snapshot is None else snapshot["metadata"],
+        )
+        return activate_context_agent(runtime)
 
     def _agent_context(self, snapshot: Mapping[str, Any]) -> Any:
         """Reconstruct stable capabilities without copying secret credentials."""
@@ -593,6 +751,7 @@ class TaskRuntimeManager:
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
         *,
+        trigger: str,
         connection: Any,
     ) -> bool:
         """Store private content outside Procrastinate's argument-bearing logs."""
@@ -605,6 +764,7 @@ class TaskRuntimeManager:
                 task_name=compiled.name,
                 arguments=dict(arguments),
                 invocation=None if snapshot is None else dict(snapshot),
+                trigger=trigger,
             )
         except Exception as error:
             raise TaskRuntimeError(
@@ -616,7 +776,7 @@ class TaskRuntimeManager:
 
     async def _get_payload(
         self, compiled: CompiledTask, payload_id: str
-    ) -> tuple[dict[str, Any], Mapping[str, Any] | None]:
+    ) -> tuple[dict[str, Any], Mapping[str, Any] | None, str]:
         """Read one task-owned payload with its stable task-name predicate."""
 
         try:
@@ -627,11 +787,12 @@ class TaskRuntimeManager:
             )
             arguments = safe_task_arguments(row["arguments"])
             snapshot = _validated_snapshot(row.get("invocation"))
+            trigger = _validated_trigger(row.get("trigger", "agent"))
         except Exception as error:
             raise TaskRuntimeError(
                 f"task payload read failed with {type(error).__name__}"
             ) from None
-        return arguments, snapshot
+        return arguments, snapshot, trigger
 
     async def _read_outcome(self, handle: TaskHandle) -> tuple[str, Any]:
         """Read one task result through its payload and compiled-name predicates."""
@@ -774,11 +935,7 @@ class TaskRuntimeManager:
             if self._state == "closed":
                 return
             self._state = "closing"
-            worker = self._worker
-            self._worker = None
-            if worker is not None:
-                worker.cancel()
-                await _await_cancelled(worker)
+            failure = await _cleanup_failure(self._stop_worker)
             for compiled in self._tasks:
                 release_task_runtime(compiled.authored, self)
             app = self._app
@@ -787,7 +944,14 @@ class TaskRuntimeManager:
                 try:
                     await app.close_async()
                 except BaseException as error:
-                    failure = error
+                    if failure is None:
+                        failure = error
+                    else:
+                        add_exception_note(
+                            failure,
+                            "task connector cleanup also failed with "
+                            f"{type(error).__name__}",
+                        )
             self._state = "closed"
         if failure is not None:
             if isinstance(failure, asyncio.CancelledError):
@@ -800,11 +964,7 @@ class TaskRuntimeManager:
     async def _unwind_start(self) -> None:
         """Release every task binding and connector acquired before startup failed."""
 
-        worker = self._worker
-        self._worker = None
-        if worker is not None:
-            worker.cancel()
-            await _await_cancelled(worker)
+        await _cleanup_failure(self._stop_worker)
         for compiled in self._tasks:
             release_task_runtime(compiled.authored, self)
         app = self._app
@@ -814,6 +974,21 @@ class TaskRuntimeManager:
                 await app.close_async()
             except Exception:
                 return
+
+    async def _stop_worker(self) -> None:
+        """Stop the owned native loop before closing its PostgreSQL connector."""
+
+        worker = self._worker
+        controller = self._worker_controller
+        self._worker = None
+        self._worker_controller = None
+        if worker is None:
+            return
+        if controller is None:
+            worker.cancel()
+        else:
+            controller.stop()
+        await _await_cancelled(worker)
 
 
 class TaskRuntimeDriver(RuntimeDriver):
@@ -826,6 +1001,9 @@ class TaskRuntimeDriver(RuntimeDriver):
             raise TypeError("manager must be TaskRuntimeManager")
         self._driver = driver
         self._manager = manager
+        # Tasks must re-enter this outer wrapper so storage, plugins, context,
+        # credentials, lifecycle hooks, and checkpoints remain in force.
+        manager.bind_agent_driver(self)
         self._lock = asyncio.Lock()
         self._state = "new"
         continuations = getattr(driver, "external_continuations", None)
@@ -1014,6 +1192,14 @@ def _task_database_dsn(application: Any) -> str:
     )
 
 
+def _automation_identity(value: Any) -> str:
+    """Validate the non-secret owner used by scheduler-triggered task sessions."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("task automation_user_id must be non-empty text")
+    return value
+
+
 def _task_continuation_runtime(application: Any) -> ExternalContinuationRuntime | None:
     """Create shared continuation ownership when Harnest owns checkpoints."""
 
@@ -1069,6 +1255,14 @@ def _validated_snapshot(value: Any) -> Mapping[str, Any] | None:
     snapshot = dict(value)
     snapshot["metadata"] = safe_task_arguments(value["metadata"])
     return MappingProxyType(snapshot)
+
+
+def _validated_trigger(value: Any) -> str:
+    """Accept only bounded task origins persisted by this runtime."""
+
+    if value not in {"agent", "user", "cron"}:
+        raise ValueError("task payload trigger is invalid")
+    return value
 
 
 async def _resolve_task_call(
@@ -1217,6 +1411,20 @@ def _audit(operation: str, trigger: str, outcome: str) -> None:
         trigger=trigger,
         outcome=outcome,
         backend="procrastinate",
+    )
+
+
+def _cron_audit(operation: str, schedule: str, outcome: str) -> None:
+    """Write a payload-free cron mutation signal with stable schedule identity."""
+
+    event = f"task.cron.{operation}"
+    _AUDIT.info(
+        event,
+        operation=event,
+        trigger="cron",
+        outcome=outcome,
+        backend="procrastinate",
+        schedule=schedule,
     )
 
 

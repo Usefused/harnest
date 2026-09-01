@@ -91,8 +91,9 @@ edit. Before changing it:
    framework integration.
 4. Run unit tests, compilation, and explicitly authorized smoke/eval lanes.
 
-ADK eval execution is root-scoped: `harnest test --evals` does not select eval
-files below nested agent folders.
+Shared ADK/LangGraph eval execution is root-scoped: `harnest test --evals` does
+not select eval files below nested agent folders. Both lanes use ADK's EvalSet,
+EvalConfig, built-in metric registry, and custom metric function contract.
 
 ## Framework versions
 

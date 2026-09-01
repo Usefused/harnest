@@ -98,7 +98,7 @@ func (a *application) prepareReloadGeneration(
 		return reloadGeneration{}, err
 	}
 	artifact := filepath.Join(root, fmt.Sprintf("generation-%06d", number))
-	if err := a.compileForServe(command, python, bundle, artifact); err != nil {
+	if err := a.compileBundle(command, python, bundle, artifact, command.InOrStdin()); err != nil {
 		_ = os.RemoveAll(artifact)
 		return reloadGeneration{}, err
 	}

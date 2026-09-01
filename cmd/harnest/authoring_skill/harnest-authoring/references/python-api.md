@@ -525,6 +525,35 @@ Task execution reconstructs scoped agent identity and declared resources but
 never serializes credentials or a suspended Python frame. Keep payloads small,
 JSON-safe, and idempotent because workers may retry after failure.
 
+From a task, create a fresh persisted root-agent session with
+`session = await context.agent.create_session(state=..., key=...)`, then call
+`await session.invoke(input)` or stream with `session.stream(input)`. `key` is
+optional and makes child session and invocation identity stable across a task
+retry. A cron task uses Harnest's automation identity; a user-deferred task
+inherits the invoking user and public metadata. Durable external waits return a
+typed pending response. Human approvals and client tools fail closed because
+their continuations are process-local after the task returns.
+
+Schedule an existing task from root `cron/<name>.py`:
+
+```python
+from harnest import Cron
+from tasks.build_report import build_report
+
+
+daily_report = Cron(
+    "0 9 * * 1-5",
+    task=build_report,
+    arguments={"account_id": "acct_123"},
+)
+```
+
+The export must match the filename. Cron accepts a strict numeric five-column
+expression with wildcards, lists, ascending ranges, and steps; timezone is UTC.
+Static arguments are signature-checked and remain in Harnest's private payload
+store. Only long-lived serving owns schedules; a one-shot local invocation may
+execute tasks but does not activate cron.
+
 A manifest-less folder below `plugins/` is an **agent-plugin**, not a runtime
 plugin. It contains only MCP client modules plus progressive skills, requires
 at least one of each, and has no Python plugin object or lifecycle behavior.

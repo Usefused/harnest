@@ -107,6 +107,7 @@ class CompiledApplication:
     checkpoint_metadata: dict[str, str] | None = None
     context_values: Sequence[ContextValue] = ()
     tasks: Sequence[Any] = field(default=(), repr=False)
+    crons: Sequence[Any] = field(default=(), repr=False)
     plugins: Sequence[Any] = field(default=(), repr=False)
     harnest_version: str | None = None
     framework_distribution: str | None = None
@@ -152,6 +153,7 @@ class CompiledApplication:
         )
         object.__setattr__(self, "extensions", tuple(self.extensions))
         object.__setattr__(self, "tasks", _compiled_tasks(self.tasks))
+        object.__setattr__(self, "crons", _compiled_crons(self.crons, self.tasks))
         object.__setattr__(self, "plugins", _runtime_plugins(self.plugins))
         object.__setattr__(
             self, "checkpoint_metadata", dict(self.checkpoint_metadata or {})
@@ -284,6 +286,23 @@ def _compiled_tasks(values: Sequence[Any]) -> tuple[Any, ...]:
     names = tuple(item.name for item in normalized)
     if len(names) != len(set(names)):
         raise ValueError("compiled task names must be unique")
+    return normalized
+
+
+def _compiled_crons(values: Sequence[Any], tasks: Sequence[Any]) -> tuple[Any, ...]:
+    """Freeze compiler-created schedules and enforce target ownership."""
+
+    from .cron import CompiledCron
+
+    normalized = tuple(values)
+    if any(not isinstance(item, CompiledCron) for item in normalized):
+        raise TypeError("crons must contain CompiledCron values")
+    names = tuple(item.name for item in normalized)
+    if len(names) != len(set(names)):
+        raise ValueError("compiled cron names must be unique")
+    owned = {id(item) for item in tasks}
+    if any(id(item.task) not in owned for item in normalized):
+        raise ValueError("compiled cron targets must belong to application tasks")
     return normalized
 
 

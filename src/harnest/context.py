@@ -215,6 +215,16 @@ class _ContextAccess:
         return active._skill_registry.access(active)
 
     @property
+    def agent(self) -> Any:
+        """Return task-scoped access to the compiled root agent runtime."""
+
+        # A separate binding distinguishes durable task authority from ordinary
+        # invocation context, where recursive root calls are not implicitly safe.
+        from .context_agent import agent
+
+        return agent
+
+    @property
     def framework(self) -> str:
         return self.current().framework
 

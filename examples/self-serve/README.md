@@ -170,7 +170,7 @@ read deployment environment from `config.yaml` or provide the provisioner's
 secret resolution, resource enforcement, permissions, scaling, authentication,
 or TLS. The Make target exports the Ollama settings; export any optional MCP
 variables yourself. The authored Agent Card is served unchanged, including its
-deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent`; it reads
+deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent serve`; it reads
 the adjacent compiled `server.yaml` without flags. That file configures binding,
 timeout, concurrency, request size, and the playground. It does not inject auth,
 storage, or TLS. A non-loopback host requires `http.allowRemote: true`; still add

@@ -38,6 +38,7 @@ from .server_config import (
 )
 
 _MAX_CARD_BYTES = 4 * 1024 * 1024
+_COMPILED_MANIFEST_FILENAME = "harnest-manifest.json"
 _DIRECT_USER_ID = "_harnest_direct"
 
 
@@ -163,8 +164,9 @@ def _runtime_driver(
     adk_session_service: Any | None = None,
     langgraph_session_store: SessionStore | None = None,
     manage_credential_provider: bool = True,
+    enable_cron: bool = True,
 ) -> Any:
-    """Select a backend once, at the process boundary."""
+    """Select a backend once and retain schedule ownership at the host boundary."""
 
     continuations = _external_continuation_runtime(application)
     plugin_manager = _plugin_runtime_manager(
@@ -205,6 +207,7 @@ def _runtime_driver(
                 application,
                 plugin_manager=plugin_manager,
                 continuation_runtime=continuations,
+                enable_cron=enable_cron,
             ),
         )
     if continuations is not None:
@@ -416,7 +419,9 @@ async def _run_agent_message(
         except AgentRuntimeError:
             # Direct execution does not expose discovery metadata over HTTP.
             card = {}
-        driver = _runtime_driver(application, card=card)
+        # A one-shot invocation may execute tasks, but it must never compete
+        # with a long-lived server for periodic schedule ownership.
+        driver = _runtime_driver(application, card=card, enable_cron=False)
         session_id = uuid.uuid4().hex
         await driver.create_session(
             session_id=session_id, user_id=_DIRECT_USER_ID, state={}
@@ -786,13 +791,23 @@ def _build_fastapi_app(
             framework=application.framework,
             exporter_factories=application.telemetry_exporters,
         )
-        app = create_neutral_app(
-            _runtime_driver(
+        driver = _runtime_driver(
+            application,
+            card=card,
+            adk_session_service=adk_session_service,
+            langgraph_session_store=langgraph_session_store,
+        )
+        eval_service = None
+        if playground_enabled:
+            from .playground_eval import PlaygroundEvalService
+
+            eval_service = PlaygroundEvalService(
+                artifact,
                 application,
-                card=card,
-                adk_session_service=adk_session_service,
-                langgraph_session_store=langgraph_session_store,
-            ),
+                driver,
+            )
+        app = create_neutral_app(
+            driver,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
@@ -800,6 +815,7 @@ def _build_fastapi_app(
             http_routes=application.http_routes,
             lifecycle_extensions=application.extensions,
             playground_enabled=playground_enabled,
+            playground_eval_service=eval_service,
             authenticator=authenticator,
         )
     instrument_fastapi(app, telemetry)
@@ -896,7 +912,16 @@ def _build_native_adk_app(
 
         trace_store = PlaygroundTraceStore()
         driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
-        app.router.routes.extend(create_playground_router(trace_store).routes)
+        from .playground_eval import PlaygroundEvalService
+
+        eval_service = PlaygroundEvalService(
+            artifact,
+            application,
+            pipeline_driver,
+        )
+        app.router.routes.extend(
+            create_playground_router(trace_store, eval_service).routes
+        )
     neutral = create_neutral_router(
         driver,
         request_timeout=request_timeout,
@@ -1022,46 +1047,61 @@ def _release_application_plugins(application: Any) -> None:
     release_runtime_plugins(tuple(item.descriptor for item in plugins))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _runtime_parser() -> argparse.ArgumentParser:
+    """Build the generated launcher's explicit run/serve command surface."""
+
     parser = argparse.ArgumentParser(prog="harnest-agent")
     parser.add_argument("--artifact", type=Path, required=True, help=argparse.SUPPRESS)
-    parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--request-timeout", type=float, default=None)
-    parser.add_argument("--max-concurrency", type=int, default=None)
-    parser.add_argument(
+    commands = parser.add_subparsers(dest="command", required=True)
+    serve = commands.add_parser("serve", help="serve the compiled agent over HTTP")
+    serve.add_argument("--host", default=None)
+    serve.add_argument("--port", type=int, default=None)
+    serve.add_argument("--request-timeout", type=float, default=None)
+    serve.add_argument("--max-concurrency", type=int, default=None)
+    serve.add_argument(
         "--allow-remote",
         action="store_true",
         default=None,
         help="allow a non-loopback bind; this server has no built-in authentication",
     )
-    args = parser.parse_args(argv)
+    run = commands.add_parser("run", help="invoke the compiled agent in this process")
+    run.add_argument("--session", default=None)
+    run.add_argument("--output", choices=("text", "json", "ndjson"), default="text")
+    return parser
+
+
+def _load_server(args: Any) -> tuple[Any, Any]:
+    """Resolve authored server policy and construct its runtime application."""
+
+    server = load_server_config(args.artifact / SERVER_CONFIG_FILENAME)
+    server = server.with_overrides(
+        host=args.host,
+        port=args.port,
+        request_timeout_seconds=args.request_timeout,
+        max_concurrent_requests=args.max_concurrency,
+        allow_remote=args.allow_remote,
+    )
+    http = server.http
+    if not http.allow_remote and http.host not in {"127.0.0.1", "::1", "localhost"}:
+        raise ServerConfigError(
+            "non-loopback binds require http.allowRemote: true in server.yaml"
+        )
+    application = create_fastapi_app(
+        args.artifact,
+        bind_host=http.host,
+        request_timeout=http.request_timeout_seconds,
+        max_concurrency=http.max_concurrent_requests,
+        max_request_bytes=server.limits.max_request_bytes,
+        playground_enabled=server.playground.enabled,
+    )
+    return application, http
+
+
+def _serve_command(args: Any) -> int:
+    """Serve a compiled artifact after validating its network exposure policy."""
+
     try:
-        server = load_server_config(args.artifact / SERVER_CONFIG_FILENAME)
-        server = server.with_overrides(
-            host=args.host,
-            port=args.port,
-            request_timeout_seconds=args.request_timeout,
-            max_concurrent_requests=args.max_concurrency,
-            allow_remote=args.allow_remote,
-        )
-        http = server.http
-        if not http.allow_remote and http.host not in {
-            "127.0.0.1",
-            "::1",
-            "localhost",
-        }:
-            raise ServerConfigError(
-                "non-loopback binds require http.allowRemote: true in server.yaml"
-            )
-        app = create_fastapi_app(
-            args.artifact,
-            bind_host=http.host,
-            request_timeout=http.request_timeout_seconds,
-            max_concurrency=http.max_concurrent_requests,
-            max_request_bytes=server.limits.max_request_bytes,
-            playground_enabled=server.playground.enabled,
-        )
+        app, http = _load_server(args)
         import uvicorn
     except (
         AgentRuntimeError,
@@ -1085,6 +1125,157 @@ def main(argv: list[str] | None = None) -> int:
         access_log=False,
     )
     return 0
+
+
+def _read_local_message(stream: Any) -> str:
+    """Read a bounded prompt from stdin so it never appears in process arguments."""
+
+    value = stream.read(_MAX_CARD_BYTES + 1)
+    if len(value.encode("utf-8")) > _MAX_CARD_BYTES:
+        raise ValueError("local invocation input exceeds the 4 MiB limit")
+    if not value.strip():
+        raise ValueError("local invocation requires a non-empty message on stdin")
+    return value
+
+
+def _compiled_cli_enabled(artifact: str | Path) -> bool:
+    """Read the immutable CLI opt-in before importing any authored code."""
+
+    path = Path(artifact).resolve() / _COMPILED_MANIFEST_FILENAME
+    manifest = _read_compiled_manifest(path)
+    return _manifest_cli_enabled(manifest)
+
+
+def _read_compiled_manifest(path: Path) -> dict[str, Any]:
+    """Decode one bounded, unambiguous compiled manifest object."""
+
+    if path.is_symlink() or not path.is_file():
+        raise AgentRuntimeError(f"compiled artifact is missing {path.name}: {path}")
+    try:
+        if path.stat().st_size > _MAX_CARD_BYTES:
+            raise AgentRuntimeError("compiled manifest exceeds the 4 MiB limit")
+        manifest = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_manifest_keys,
+        )
+    except AgentRuntimeError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise AgentRuntimeError(f"invalid compiled manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise AgentRuntimeError("compiled manifest must contain a JSON object")
+    return manifest
+
+
+def _manifest_cli_enabled(manifest: dict[str, Any]) -> bool:
+    """Resolve the strict compiled CLI policy from the current manifest."""
+
+    interfaces = manifest.get("interfaces")
+    if not isinstance(interfaces, dict) or set(interfaces) != {"cli"}:
+        raise AgentRuntimeError("compiled manifest interfaces must contain only cli")
+    enabled = interfaces["cli"]
+    if not isinstance(enabled, bool):
+        raise AgentRuntimeError("compiled manifest interfaces.cli must be a boolean")
+    return enabled
+
+
+def _reject_duplicate_manifest_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous policy keys before using a compiled manifest."""
+
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        value[key] = item
+    return value
+
+
+async def _run_local_artifact(args: Any, message: str) -> None:
+    """Run one CLI turn while owning the compiled library and driver lifetimes."""
+
+    application = load_compiled_application(args.artifact)
+    try:
+        await _run_local_application(application, args, message)
+    finally:
+        release_authored_library(args.artifact.resolve() / "source")
+
+
+async def _run_local_application(application: Any, args: Any, message: str) -> None:
+    """Execute the shared local adapter with scheduling disabled for one-shot use."""
+
+    from .context_agent import LocalAgentRuntime
+    from .runtime_cli import run_local_cli
+    from .telemetry import configure_observability
+
+    _apply_observability_defaults(application.framework)
+    driver = None
+    telemetry = configure_observability(
+        application.name,
+        framework=application.framework,
+        exporter_factories=application.telemetry_exporters,
+    )
+    try:
+        try:
+            card = load_agent_card(args.artifact)
+        except AgentRuntimeError:
+            card = {}
+        driver = _runtime_driver(application, card=card, enable_cron=False)
+        runtime = LocalAgentRuntime(
+            driver,
+            user_id=_DIRECT_USER_ID,
+            transport="cli",
+            trigger="user",
+        )
+        await run_local_cli(
+            runtime,
+            message,
+            session_id=args.session,
+            output=args.output,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    finally:
+        if driver is None:
+            _release_application_plugins(application)
+        else:
+            await driver.close()
+        telemetry.force_flush()
+
+
+def _run_command(args: Any) -> int:
+    """Invoke a compiled artifact and map cancellation to the shell convention."""
+
+    try:
+        if not _compiled_cli_enabled(args.artifact):
+            raise AgentRuntimeError(
+                "CLI invocation is disabled; set spec.interfaces.cli: true "
+                "before compiling the agent"
+            )
+        message = _read_local_message(sys.stdin)
+        asyncio.run(_run_local_artifact(args, message))
+    except KeyboardInterrupt:
+        return 130
+    except (AgentRuntimeError, ImportError, OSError, TypeError, ValueError) as exc:
+        print(f"harnest-agent: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        # Provider exceptions can contain request content. The structured runtime
+        # log retains the exception type while terminal output stays payload-free.
+        print(
+            f"harnest-agent: local invocation failed with {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch one explicit generated-artifact command."""
+
+    args = _runtime_parser().parse_args(argv)
+    if args.command == "run":
+        return _run_command(args)
+    return _serve_command(args)
 
 
 if __name__ == "__main__":

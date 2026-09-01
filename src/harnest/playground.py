@@ -5,12 +5,15 @@ from __future__ import annotations
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 try:
     from starlette.requests import Request
 except ImportError:  # pragma: no cover - optional runtime dependency
     Request = Any  # type: ignore[misc,assignment]
 
 if TYPE_CHECKING:
+    from .playground_eval import PlaygroundEvalService
     from .playground_trace import PlaygroundTraceStore
 
 
@@ -26,7 +29,19 @@ _SECURITY_HEADERS = {
 }
 
 
-def create_playground_router(trace_store: PlaygroundTraceStore | None = None) -> Any:
+class _EvalRunRequest(BaseModel):
+    """Strict body for one local playground evaluation run."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    suite_id: str = Field(alias="suiteId", min_length=1)
+    trajectory: str = "business"
+
+
+def create_playground_router(
+    trace_store: PlaygroundTraceStore | None = None,
+    eval_service: PlaygroundEvalService | None = None,
+) -> Any:
     """Expose the same bundled UI for every Harnest runtime driver."""
 
     try:
@@ -83,6 +98,23 @@ def create_playground_router(trace_store: PlaygroundTraceStore | None = None) ->
             if trace is None:
                 raise HTTPException(status_code=404, detail="Trace not found")
             return trace
+
+    if eval_service is not None:
+
+        @router.get("/_harnest/evals", include_in_schema=False)
+        async def playground_evals() -> dict[str, Any]:
+            return eval_service.catalog()
+
+        @router.post("/_harnest/evals/run", include_in_schema=False)
+        async def playground_eval_run(request: _EvalRunRequest) -> dict[str, Any]:
+            from .evaluation import EvaluationError
+
+            try:
+                return await eval_service.run(request.suite_id, request.trajectory)
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Eval suite not found")
+            except (EvaluationError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return router
 

@@ -14,6 +14,8 @@ import (
 
 var managedResourceDirectories = []string{
 	"tools",
+	"tasks",
+	"cron",
 	"subagents",
 	"mcp",
 	"extensions",
@@ -152,6 +154,7 @@ func writeAdvancedModeAudit(
 	fmt.Fprintln(output, "Harnest still owns:")
 	fmt.Fprintln(output, "  - neutral HTTP/SSE/WebSocket serving and server.yaml policy")
 	fmt.Fprintln(output, "  - decorated authentication lifecycle and principal-scoped sessions")
+	fmt.Fprintln(output, "  - durable tasks/ execution and cron/ schedule discovery")
 	fmt.Fprintln(output, "  - approval and tracing context for explicitly decorated native capabilities")
 	fmt.Fprintln(output, "  - portable extension hooks around neutral invocations")
 	fmt.Fprintln(output, "You own in advanced mode:")

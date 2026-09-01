@@ -108,6 +108,7 @@ mode.
 
 ```bash
 harnest test support-agent
+harnest test support-agent --no-output
 harnest test support-agent --smoke
 harnest test support-agent --evals
 harnest test support-agent --evals --eval-trajectory strict
@@ -125,16 +126,24 @@ harnest test support-agent --smoke --evals
   model tokens, MCP services, time, and money. Use it only when authorized.
   Put real gateway/MCP handshakes here and assert tool behavior rather than a
   fixed number of adapter-created HTTP clients.
-- `--evals` runs validated eval assets after Python tests. ADK EvalSet JSON is
-  ADK-specific; LangGraph can use authored pytest evaluations. Only root
-  `evals/` assets are selected; nested eval files are not an executable lane.
-  ADK scoring receives visible response parts and tool trajectory, never parts
-  marked as hidden model thoughts.
+- `--evals` runs validated ADK EvalSet assets against either ADK or LangGraph
+  after Python tests. The optional `test_config.json` can select any installed
+  ADK metric, judge/user-simulator configuration, or `customMetrics` function.
+  Only root `evals/` assets are selected; nested eval files are not an executable
+  lane. ADK scoring receives visible response parts and tool trajectory, never
+  parts marked as hidden model thoughts. LangGraph scoring adapts neutral final
+  responses and tool events to the same evaluator and preserves multi-turn
+  sessions; use smoke tests for live bidirectional media or multimodal inputs.
+  This is a portable ADK-format lane, not a LangSmith dataset/experiment run.
+  Detailed metric results, including skipped and failed metrics, print by
+  default.
 - Eval trajectories default to `business`: required business calls must occur
   in order, while skill discovery and other extra calls are allowed. Use
   `--eval-trajectory strict` to require the exact authored call sequence.
 - Placeholder-only test folders are valid and report that no Python tests were
   authored; compilation and opted-in evals still run.
+- `--no-output` suppresses output from unit, smoke, and eval test execution
+  while preserving the command's exit status.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
   The smoke fixtures share one compiled server lifecycle and close its stores
@@ -145,16 +154,36 @@ harnest test support-agent --smoke --evals
 
 ## Compile and serve
 
+Enable local invocation in `config.yaml`:
+
+```yaml
+spec:
+  interfaces:
+    cli: true
+```
+
 ```bash
 harnest compile support-agent --output .harnest/support-agent
+harnest run support-agent "Summarize the open incidents"
+printf '%s\n' 'Continue' | harnest run support-agent --session incident-session
 harnest serve support-agent
 ```
+
+`harnest run` requires the explicit CLI interface, compiles ephemerally, and
+invokes the root agent inside the same runtime process without an HTTP endpoint.
+Positional input is passed to the generated launcher through stdin rather than
+process arguments. Use
+`--output text|json|ndjson`; `--session` opens an existing session owned by the
+local runtime identity. One-shot runs can execute queued tasks but do not claim
+cron schedules. Process-local approvals and client tools require a serving
+transport and fail closed in local mode.
 
 The compiled artifact contains its source, generated adapters, manifest, and a
 small `harnest-agent` launcher. It runs without the external provisioner:
 
 ```bash
-.harnest/support-agent/harnest-agent
+.harnest/support-agent/harnest-agent serve
+printf '%s\n' 'Hello' | .harnest/support-agent/harnest-agent run
 ```
 
 The launcher automatically reads adjacent `server.yaml`. Edit the authored file
@@ -181,10 +210,20 @@ development approvals. `/openapi.json`, `/docs`, and
 `/redoc` describe that surface in every mode. Only an advanced-mode ADK artifact
 additionally exposes ADK-native endpoints.
 
+During an active `/live` response, send `response.cancel` with the exact
+`responseId` returned by `response.created`. Harnest waits for managed
+framework/tool cleanup, returns `response.completed` with `status: cancelled`,
+and keeps the socket available for the next `response.create`.
+For SSE, abort or close the HTTP request instead; SSE has no client-to-server
+frame channel, and the closed stream cannot carry a terminal acknowledgement.
+
 Open `/` to test any compiled ADK or LangGraph agent in Harnest's neutral
 playground. Create or select a session, inspect state, choose JSON response, SSE
 streaming, or WebSocket live mode, approve or deny protected actions, and verify
 visible output plus tool activity.
+Select **Evals** to discover and run root `evals/*.evalset.json` suites locally,
+choose business or strict tool trajectories, and inspect case, metric, response,
+and tool-call evidence in the browser.
 The UI never calls framework-native endpoints. Bearer tokens stay in page memory
 for HTTP/SSE; authenticated browser WebSockets require a same-origin cookie.
 

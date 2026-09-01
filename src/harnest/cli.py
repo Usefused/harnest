@@ -56,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     compile_parser.add_argument(
         "--mode", choices=("managed", "advanced"), default="managed"
     )
+    compile_parser.add_argument(
+        "--enable-cli",
+        action="store_true",
+        help="allow the compiled artifact to invoke the agent from its launcher",
+    )
     test_parser = subparsers.add_parser(
         "test",
         help="compile an agent and run its pytest suites",
@@ -73,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
         "--mode", choices=("managed", "advanced"), default="managed"
     )
     test_parser.add_argument(
+        "--enable-cli",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    test_parser.add_argument(
         "--evals",
         action="store_true",
         help="run validated evals after Python tests pass",
@@ -82,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=("business", "strict"),
         default="business",
         help="tool trajectory policy for evals (default: business)",
+    )
+    test_parser.add_argument(
+        "--no-output",
+        action="store_true",
+        help="suppress output from unit, smoke, and eval tests",
     )
     upgrade_parser = subparsers.add_parser(
         "upgrade",
@@ -103,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 entrypoint=args.entrypoint,
                 framework=args.framework,
                 mode=args.mode,
+                cli_enabled=args.enable_cli,
             )
             print(json.dumps(manifest, sort_keys=True))
             return 0
@@ -112,8 +128,10 @@ def main(argv: list[str] | None = None) -> int:
                 include_smoke=args.smoke,
                 include_evals=args.evals,
                 eval_trajectory=args.eval_trajectory,
+                no_output=args.no_output,
                 framework=args.framework,
                 mode=args.mode,
+                cli_enabled=args.enable_cli,
             )
         if args.command == "upgrade":
             plan = plan_upgrade(args.agent)

@@ -38,12 +38,18 @@ type AgentConfigSpec struct {
 	Enabled     *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Entrypoint  string            `yaml:"entrypoint" json:"entrypoint"`
 	Framework   AgentFramework    `yaml:"framework" json:"framework"`
+	Interfaces  AgentInterfaces   `yaml:"interfaces,omitempty" json:"interfaces,omitempty"`
 	Runtime     PythonRuntime     `yaml:"runtime" json:"runtime"`
 	Resources   AgentResources    `yaml:"resources" json:"resources"`
 	Scaling     Scaling           `yaml:"scaling,omitempty" json:"scaling,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
 	Secrets     []SecretBinding   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	Permissions Permissions       `yaml:"permissions,omitempty" json:"permissions,omitempty"`
+}
+
+// AgentInterfaces contains explicit opt-ins for non-server invocation surfaces.
+type AgentInterfaces struct {
+	CLI bool `yaml:"cli,omitempty" json:"cli,omitempty"`
 }
 
 type AgentFramework struct {
@@ -167,12 +173,19 @@ type CompiledManifest struct {
 	SourceDirectory     string             `json:"sourceDirectory"`
 	HarnestVersion      string             `json:"harnestVersion"`
 	Framework           CompiledFramework  `json:"framework"`
+	Interfaces          CompiledInterfaces `json:"interfaces"`
 	Checkpoint          CompiledCheckpoint `json:"checkpoint"`
 	Plugins             []CompiledPlugin   `json:"plugins"`
 	Tasks               []CompiledTask     `json:"tasks"`
+	Crons               []CompiledCron     `json:"crons"`
 	RuntimeDependencies []string           `json:"runtimeDependencies"`
 	Digest              string             `json:"digest"`
 	Files               []CompiledFile     `json:"files"`
+}
+
+// CompiledInterfaces freezes authoring opt-ins into the standalone artifact.
+type CompiledInterfaces struct {
+	CLI bool `json:"cli"`
 }
 
 // CompiledTask records stable queue policy without executable or customer data.
@@ -181,6 +194,16 @@ type CompiledTask struct {
 	Source     string `json:"source"`
 	Queue      string `json:"queue"`
 	MaxRetries int    `json:"maxRetries"`
+}
+
+// CompiledCron records public schedule policy while static task arguments stay
+// inside compiled source and the persisted task runtime.
+type CompiledCron struct {
+	Name     string `json:"name"`
+	Source   string `json:"source"`
+	Schedule string `json:"schedule"`
+	Timezone string `json:"timezone"`
+	Task     string `json:"task"`
 }
 
 // CompiledPlugin records one plugin in resolved dependency order. Plugin code

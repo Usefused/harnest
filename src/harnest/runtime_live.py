@@ -10,9 +10,15 @@ import uuid
 
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
+from starlette.websockets import WebSocketDisconnect
 
 from .approval import ApprovalRun, InMemoryApprovalStore
-from .client_tool import ClientToolError, InMemoryClientToolStore
+from .client_tool import (
+    ClientToolError,
+    InMemoryClientToolStore,
+    PendingClientTool,
+)
+from .logging import get_logger
 from .runtime_continuation import (
     completed_payload,
     external_in_progress_payload,
@@ -31,12 +37,25 @@ from .runtime_sse import approval_payload, client_tool_payload, stream_frame
 from .server_config import format_byte_size
 
 
+_AUDIT = get_logger("live.audit")
+
+
+class LiveResponseCancelled(RuntimeError):
+    """Stop one active live response without closing its caller-owned socket."""
+
+
+class LiveProtocolError(RuntimeError):
+    """Reject a frame that cannot apply to the active live response."""
+
+
 @dataclass(slots=True)
 class LiveStreamState:
     """Retain sequence progress so mid-stream errors keep the wire contract."""
 
     events: list[RuntimeEvent] = field(default_factory=list)
     sequence: int = 1
+    pending_client_tool: PendingClientTool | None = field(default=None, repr=False)
+    client_tool_result_received: bool = field(default=False, repr=False)
 
 
 async def _consume_live_run(
@@ -44,6 +63,7 @@ async def _consume_live_run(
     run: ApprovalRun,
     state: LiveStreamState,
     *,
+    inbound_frames: asyncio.Queue[Any],
     client_tools: InMemoryClientToolStore,
     deadline: float,
     response_id: str,
@@ -82,25 +102,30 @@ async def _consume_live_run(
             )
             return None
         if kind == "client_tool":
-            await websocket.send_json(
-                client_tool_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=state.sequence,
-                    request_id=request_id,
+            state.pending_client_tool = value
+            state.client_tool_result_received = False
+            try:
+                await websocket.send_json(
+                    client_tool_payload(
+                        value,
+                        response_id=response_id,
+                        session_id=session_id,
+                        sequence=state.sequence,
+                        request_id=request_id,
+                    )
                 )
-            )
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise asyncio.TimeoutError
-            frame = await asyncio.wait_for(
-                websocket.receive_json(), timeout=remaining
-            )
-            output = _live_client_tool_result(frame, value.id)
-            await client_tools.submit(
-                value.id, user_id=value.user_id, output=output
-            )
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                output = await asyncio.wait_for(
+                    inbound_frames.get(), timeout=remaining
+                )
+                await client_tools.submit(
+                    value.id, user_id=value.user_id, output=output
+                )
+            finally:
+                state.pending_client_tool = None
+                state.client_tool_result_received = False
             state.sequence += 1
             continue
         if kind == "error":
@@ -168,6 +193,126 @@ def _live_client_tool_result(frame: Any, request_id: str) -> Any:
     return frame["output"]
 
 
+def _cancelled_payload(
+    *,
+    response_id: str,
+    session_id: str,
+    sequence: int,
+    metadata: Mapping[str, Any],
+    request_id: str | None,
+) -> dict[str, Any]:
+    """Return a terminal cancellation without claiming partial text was committed."""
+
+    payload: dict[str, Any] = {
+        "type": "response.completed",
+        "sequence": sequence,
+        "responseId": response_id,
+        "sessionId": session_id,
+        "status": "cancelled",
+        "outputText": "",
+        "output": [],
+        "metadata": dict(metadata),
+    }
+    if request_id is not None:
+        payload["requestId"] = request_id
+    return payload
+
+
+def _route_active_frame(
+    frame: Any,
+    *,
+    response_id: str,
+    state: LiveStreamState,
+    inbound_frames: asyncio.Queue[Any],
+) -> None:
+    """Route one active-response frame without allowing stale cancellation."""
+
+    if isinstance(frame, dict) and frame.get("type") == "response.cancel":
+        if (
+            set(frame) != {"type", "responseId"}
+            or frame.get("responseId") != response_id
+        ):
+            _audit_live_cancel("failed")
+            raise LiveProtocolError("Invalid response.cancel frame")
+        raise LiveResponseCancelled
+    pending = state.pending_client_tool
+    if pending is None:
+        raise LiveProtocolError(
+            "Only response.cancel is accepted while a live response is active"
+        )
+    if state.client_tool_result_received:
+        raise ClientToolError("client tool result was already submitted")
+    output = _live_client_tool_result(frame, pending.id)
+    # Reserve the single inbound slot before the consumer resumes so duplicate
+    # submissions cannot race validation and attach to a later client tool.
+    state.client_tool_result_received = True
+    inbound_frames.put_nowait(output)
+
+
+async def _settle_cancelled_task(task: asyncio.Task[Any]) -> None:
+    """Cancel and consume one transport-owned task without hiding its cleanup."""
+
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def _drive_live_response(
+    websocket: Any,
+    execution: asyncio.Task[None],
+    *,
+    response_id: str,
+    state: LiveStreamState,
+    inbound_frames: asyncio.Queue[Any],
+) -> None:
+    """Keep receiving control frames while one response owns the send stream."""
+
+    receive = asyncio.create_task(websocket.receive_json())
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {execution, receive}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if execution in done:
+                await execution
+                return
+            frame = receive.result()
+            _route_active_frame(
+                frame,
+                response_id=response_id,
+                state=state,
+                inbound_frames=inbound_frames,
+            )
+            receive = asyncio.create_task(websocket.receive_json())
+    finally:
+        await _settle_cancelled_task(receive)
+
+
+async def _cancel_live_execution(
+    store: InMemoryApprovalStore,
+    run: ApprovalRun,
+    execution: asyncio.Task[None],
+) -> None:
+    """Cancel both transport and framework tasks before acknowledging the user."""
+
+    store.cancel_run(run)
+    await _settle_cancelled_task(execution)
+    if run.task is not None:
+        await _settle_cancelled_task(run.task)
+
+
+def _audit_live_cancel(outcome: str) -> None:
+    """Record user cancellation without response, session, prompt, or output data."""
+
+    _AUDIT.info(
+        "live.response_cancel",
+        operation="response.cancel",
+        trigger="user",
+        outcome=outcome,
+        action="live_response",
+    )
+
+
 async def live_session(websocket: Any, response_session: Any) -> SessionRecord | None:
     """Authorize the first live frame and establish its caller-owned session."""
 
@@ -232,6 +377,52 @@ def _validated_live_input(value: Any, input_schema: Any) -> Any | None:
         return None
 
 
+async def _execute_live_response(
+    websocket: Any,
+    run: ApprovalRun,
+    state: LiveStreamState,
+    *,
+    inbound_frames: asyncio.Queue[Any],
+    semaphore: asyncio.Semaphore,
+    client_tools: InMemoryClientToolStore,
+    deadline: float,
+    response_id: str,
+    session_id: str,
+    request_id: str | None,
+    metadata: Mapping[str, Any],
+) -> None:
+    """Run and publish one response while the caller independently reads controls."""
+
+    async with semaphore:
+        run.activation.set()
+        result = await _consume_live_run(
+            websocket,
+            run,
+            state,
+            inbound_frames=inbound_frames,
+            client_tools=client_tools,
+            deadline=deadline,
+            response_id=response_id,
+            session_id=session_id,
+            request_id=request_id,
+        )
+        if result is None:
+            return
+    require_customer_facing_output(result.text, result.result)
+    await websocket.send_json(
+        completed_payload(
+            response_id=response_id,
+            session_id=session_id,
+            sequence=state.sequence,
+            events=state.events,
+            text=result.text,
+            metadata=metadata,
+            result=result.result,
+            request_id=request_id,
+        )
+    )
+
+
 async def serve_live_frame(
     websocket: Any,
     frame: Mapping[str, Any],
@@ -278,40 +469,52 @@ async def serve_live_frame(
         external_continuations=external_continuations,
     )
     deadline = asyncio.get_running_loop().time() + request_timeout
+    inbound_frames: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+    execution = asyncio.create_task(
+        _execute_live_response(
+            websocket,
+            approval_run,
+            state,
+            inbound_frames=inbound_frames,
+            semaphore=semaphore,
+            client_tools=client_tool_store,
+            deadline=deadline,
+            response_id=response_id,
+            session_id=session.id,
+            request_id=request_id,
+            metadata=metadata,
+        )
+    )
     try:
-        async with semaphore:
-            approval_run.activation.set()
-            result = await _consume_live_run(
-                websocket,
-                approval_run,
-                state,
-                client_tools=client_tool_store,
-                deadline=deadline,
-                response_id=response_id,
-                session_id=session.id,
-                request_id=request_id,
-            )
-            if result is None:
-                return
-        require_customer_facing_output(result.text, result.result)
+        await _drive_live_response(
+            websocket,
+            execution,
+            response_id=response_id,
+            state=state,
+            inbound_frames=inbound_frames,
+        )
+    except LiveResponseCancelled:
+        await _cancel_live_execution(approval_store, approval_run, execution)
+        _audit_live_cancel("committed")
         await websocket.send_json(
-            completed_payload(
+            _cancelled_payload(
                 response_id=response_id,
                 session_id=session.id,
                 sequence=state.sequence,
-                events=state.events,
-                text=result.text,
                 metadata=metadata,
-                result=result.result,
                 request_id=request_id,
             )
         )
     except asyncio.CancelledError:
-        approval_store.cancel_run(approval_run)
+        await _cancel_live_execution(approval_store, approval_run, execution)
+        raise
+    except WebSocketDisconnect:
+        await _cancel_live_execution(approval_store, approval_run, execution)
         raise
     except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            approval_store.cancel_run(approval_run)
+        # A terminal protocol or execution error cannot leave model/tool work
+        # detached from the socket that owns its response.
+        await _cancel_live_execution(approval_store, approval_run, execution)
         await websocket.send_json(
             {
                 "type": "error",

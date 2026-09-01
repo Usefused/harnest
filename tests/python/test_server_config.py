@@ -165,7 +165,7 @@ class ServerConfigTests(unittest.TestCase):
                 ):
                     validate_server_config_template(path)
 
-    def test_compiled_launcher_reads_adjacent_configuration_without_flags(self):
+    def test_serve_command_reads_adjacent_configuration_without_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory)
             (artifact / "server.yaml").write_text(
@@ -195,7 +195,7 @@ class ServerConfigTests(unittest.TestCase):
                 with patch.dict(os.environ, environment, clear=False), patch.dict(
                     sys.modules, {"uvicorn": uvicorn}
                 ):
-                    result = runtime_main(["--artifact", str(artifact)])
+                    result = runtime_main(["--artifact", str(artifact), "serve"])
 
             self.assertEqual(result, 0)
             self.assertEqual(captured["uvicorn"]["port"], 9091)
@@ -215,7 +215,7 @@ class ServerConfigTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=False), redirect_stderr(
                 stderr
             ):
-                result = runtime_main(["--artifact", str(artifact)])
+                result = runtime_main(["--artifact", str(artifact), "serve"])
 
         output = stderr.getvalue()
         self.assertEqual(result, 2)

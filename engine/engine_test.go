@@ -55,6 +55,29 @@ func TestDiscoverRejectsUnknownConfigFields(t *testing.T) {
 	}
 }
 
+func TestLoadBundleReadsExplicitCLIInterfaceOptIn(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "cli-agent", true)
+	file, err := os.OpenFile(filepath.Join(directory, "config.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("  interfaces:\n    cli: true\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bundle.Config.Spec.Interfaces.CLI {
+		t.Fatal("CLI interface opt-in was not loaded")
+	}
+}
+
 func TestDeployAllCallsDeployerForEachAgent(t *testing.T) {
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)
@@ -348,6 +371,25 @@ func TestLoadCompiledArtifactVerifiesManifestAndSource(t *testing.T) {
 	}
 }
 
+func TestCompiledArtifactRejectsCLIInterfaceMismatch(t *testing.T) {
+	source, directory := compiledServerArtifactFixture(t)
+	path := filepath.Join(directory, compiledManifestFilename)
+	manifest := readCompiledManifest(t, path)
+	manifest.Interfaces.CLI = !source.Config.Spec.Interfaces.CLI
+	manifest.Digest = compiledManifestDigest(
+		manifest.Files,
+		manifest.Interfaces,
+		manifest.Plugins,
+		manifest.Tasks,
+		manifest.Crons,
+		manifest.RuntimeDependencies,
+	)
+	writeCompiledManifest(t, path, manifest)
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "CLI interface") {
+		t.Fatalf("got error %v, want CLI interface mismatch", err)
+	}
+}
+
 func TestCompiledArtifactAllowsDistinctDNSDeploymentAndADKNames(t *testing.T) {
 	project := t.TempDir()
 	source, err := LoadBundle(writeAgent(t, project, "support-agent", true))
@@ -475,14 +517,14 @@ func TestCompiledArtifactValidatesResolvedPluginGraph(t *testing.T) {
 		{Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64), Capabilities: []string{"context.resources"}},
 		{Name: "workflow", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("b", 64), Requires: []string{"clock"}, Capabilities: []string{"lifecycle.tool"}},
 	}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Plugins, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err != nil {
 		t.Fatalf("valid plugin graph was rejected: %v", err)
 	}
 
 	manifest.Plugins[0].Requires = []string{"workflow"}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Plugins, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unresolved plugin") {
 		t.Fatalf("got error %v, want unresolved plugin rejection", err)
@@ -490,7 +532,7 @@ func TestCompiledArtifactValidatesResolvedPluginGraph(t *testing.T) {
 
 	manifest.Plugins[0].Requires = nil
 	manifest.Plugins[0].Version = "01.0.0"
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Plugins, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "semantic version") {
 		t.Fatalf("got error %v, want semantic version rejection", err)
@@ -505,7 +547,7 @@ func TestCompiledArtifactRejectsMutatedPluginProvenance(t *testing.T) {
 		Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64),
 		Capabilities: []string{"context.resources"},
 	}}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Plugins, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err != nil {
 		t.Fatalf("valid plugin provenance was rejected: %v", err)
@@ -537,7 +579,7 @@ func TestCompiledArtifactRejectsUnknownPluginCapability(t *testing.T) {
 		Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64),
 		Capabilities: []string{"system.root"},
 	}}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Plugins, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unknown capability") {
 		t.Fatalf("got error %v, want unknown plugin capability rejection", err)
@@ -551,9 +593,113 @@ func TestCompiledPluginDigestMatchesPythonCompilerContract(t *testing.T) {
 		Requires: []string{"core"}, Capabilities: []string{"context.resources", "lifecycle.tool"},
 		Dependencies: []string{"httpx>=0.28,<1"},
 	}}
-	want := "sha256:60f624710da7d43330475fcd21951e74659f7107da9fa71b21a83a84ffd41b15"
-	if got := compiledManifestDigest(files, plugins, nil, nil); got != want {
+	want := "sha256:876d5e9f129cfc2e952acbfae50253a382a3393f8235fc69e0a95035bfd98ea6"
+	if got := compiledManifestDigest(files, CompiledInterfaces{}, plugins, nil, nil, nil); got != want {
 		t.Fatalf("compiled manifest digest %q does not match Python contract %q", got, want)
+	}
+}
+
+func TestCompiledArtifactValidatesCronRecords(t *testing.T) {
+	source, directory := compiledCronArtifactFixture(t)
+	path := filepath.Join(directory, compiledManifestFilename)
+	baseline := readCompiledManifest(t, path)
+	if _, err := loadCompiledArtifact(directory, source); err != nil {
+		t.Fatalf("valid cron records were rejected: %v", err)
+	}
+
+	tests := map[string]struct {
+		mutate  func(*CompiledManifest)
+		message string
+	}{
+		"stable-name": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Name = "harnest.other.cron.alpha" },
+			message: "stable source name",
+		},
+		"stable-source": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Source = "cron/renamed.py" },
+			message: "stable source name",
+		},
+		"timezone": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Timezone = "Europe/London" },
+			message: "timezone must be UTC",
+		},
+		"schedule": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Schedule = "0 9 * *" },
+			message: "exactly five columns",
+		},
+		"task": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Task = "harnest.scheduler.tasks.missing" },
+			message: "unknown task",
+		},
+		"duplicate": {
+			mutate: func(manifest *CompiledManifest) {
+				manifest.Crons = append(manifest.Crons, manifest.Crons[1])
+			},
+			message: "duplicate cron",
+		},
+		"order": {
+			mutate: func(manifest *CompiledManifest) {
+				manifest.Crons[0], manifest.Crons[1] = manifest.Crons[1], manifest.Crons[0]
+			},
+			message: "strictly sorted",
+		},
+		"manifest-bound-source": {
+			mutate: func(manifest *CompiledManifest) {
+				manifest.Crons[0].Name = "harnest.scheduler.cron.absent"
+				manifest.Crons[0].Source = "cron/absent.py"
+			},
+			message: "source is not manifest-bound",
+		},
+	}
+	for name, testCase := range tests {
+		t.Run(name, func(t *testing.T) {
+			changed := baseline
+			changed.Crons = append([]CompiledCron(nil), baseline.Crons...)
+			testCase.mutate(&changed)
+			changed.Digest = compiledManifestDigest(
+				changed.Files, changed.Interfaces, changed.Plugins, changed.Tasks, changed.Crons, changed.RuntimeDependencies,
+			)
+			writeCompiledManifest(t, path, changed)
+			if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), testCase.message) {
+				t.Fatalf("got error %v, want %q", err, testCase.message)
+			}
+		})
+	}
+}
+
+func TestCompiledCronScheduleMatchesNumericFiveColumnContract(t *testing.T) {
+	for _, schedule := range []string{"0 9 * * *", "*/15 0,12 1-31/2 * 0-7"} {
+		if err := validateCompiledCronSchedule(schedule); err != nil {
+			t.Fatalf("valid schedule %q was rejected: %v", schedule, err)
+		}
+	}
+	for _, schedule := range []string{"", " 0 9 * * *", "0 9 * *", "60 9 * * *", "0 9 2-1 * *", "0 9 * * */0", "٠ 9 * * *"} {
+		if err := validateCompiledCronSchedule(schedule); err == nil {
+			t.Fatalf("invalid schedule %q was accepted", schedule)
+		}
+	}
+}
+
+func TestCompiledCronDigestMatchesPythonCompilerContract(t *testing.T) {
+	files := []CompiledFile{{Path: "agent.py", SHA256: strings.Repeat("a", 64), Size: 3}}
+	tasks := []CompiledTask{{
+		Name: "harnest.reporter.tasks.deliver", Source: "tasks/deliver.py",
+		Queue: "reports", MaxRetries: 2,
+	}}
+	crons := []CompiledCron{{
+		Name: "harnest.reporter.cron.daily_report", Source: "cron/daily_report.py",
+		Schedule: "0 9 * * *", Timezone: "UTC", Task: tasks[0].Name,
+	}}
+	want := "sha256:390bf45c1b27717ca3422763fbc64da981d344ffe29513f26727f6745be1e499"
+	if got := compiledManifestDigest(files, CompiledInterfaces{}, nil, tasks, crons, []string{procrastinateRuntimeRequirement}); got != want {
+		t.Fatalf("compiled cron digest %q does not match Python contract %q", got, want)
+	}
+}
+
+func TestDecodeCompiledManifestRejectsUnknownCronFields(t *testing.T) {
+	input := strings.NewReader(`{"crons":[{"name":"schedule","unknown":true}]}`)
+	if _, err := decodeCompiledManifest(input); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("got error %v, want unknown cron field rejection", err)
 	}
 }
 
@@ -596,6 +742,41 @@ func compiledServerArtifactFixture(t *testing.T) (Bundle, string) {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(directory, compiledManifestFilename), string(manifestJSON))
+	return source, directory
+}
+
+// compiledCronArtifactFixture creates an artifact whose schedules and task
+// sources are all covered by the same immutable manifest file set.
+func compiledCronArtifactFixture(t *testing.T) (Bundle, string) {
+	t.Helper()
+	root := writeAgent(t, t.TempDir(), "scheduler", true)
+	mustWrite(t, filepath.Join(root, "tasks", "deliver.py"), "def deliver():\n    return None\n")
+	mustWrite(t, filepath.Join(root, "cron", "alpha.py"), "alpha = object()\n")
+	mustWrite(t, filepath.Join(root, "cron", "daily_report.py"), "daily_report = object()\n")
+	source, err := LoadBundle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "artifact")
+	copyTree(t, source.Directory, filepath.Join(directory, "source"))
+	mustWrite(t, filepath.Join(directory, "__init__.py"), "from .agent import root_agent\n")
+	mustWrite(t, filepath.Join(directory, "agent.py"), "root_agent = object()\n")
+	mustWrite(t, filepath.Join(directory, compiledServerConfigFilename), "kind: Server\n")
+	manifest := compiledManifestForDirectory(t, directory, source)
+	task := CompiledTask{
+		Name: "harnest.scheduler.tasks.deliver", Source: "tasks/deliver.py",
+		Queue: "default", MaxRetries: 3,
+	}
+	manifest.Tasks = []CompiledTask{task}
+	manifest.Crons = []CompiledCron{
+		{Name: "harnest.scheduler.cron.alpha", Source: "cron/alpha.py", Schedule: "0 8 * * *", Timezone: "UTC", Task: task.Name},
+		{Name: "harnest.scheduler.cron.daily_report", Source: "cron/daily_report.py", Schedule: "0 9 * * *", Timezone: "UTC", Task: task.Name},
+	}
+	manifest.RuntimeDependencies = []string{procrastinateRuntimeRequirement}
+	manifest.Digest = compiledManifestDigest(
+		manifest.Files, manifest.Interfaces, manifest.Plugins, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies,
+	)
+	writeCompiledManifest(t, filepath.Join(directory, compiledManifestFilename), manifest)
 	return source, directory
 }
 
@@ -787,7 +968,8 @@ func compiledManifestForDirectory(t *testing.T, directory string, source Bundle)
 		Checkpoint: CompiledCheckpoint{
 			Owner: "harnest", Framework: "portable", Schema: "harnest-checkpoint/v1",
 		},
-		Digest: compiledManifestDigest(files, nil, nil, nil), Files: files,
+		Interfaces: CompiledInterfaces{CLI: source.Config.Spec.Interfaces.CLI},
+		Digest:     compiledManifestDigest(files, CompiledInterfaces{CLI: source.Config.Spec.Interfaces.CLI}, nil, nil, nil, nil), Files: files,
 	}
 }
 

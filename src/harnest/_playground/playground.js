@@ -49,6 +49,19 @@ const ui = {
   appearancePanel: document.querySelector("#appearance-panel"),
   themeTrigger: document.querySelector("#theme-trigger"),
   themeMenu: document.querySelector("#theme-menu"),
+  workspaceEyebrow: document.querySelector("#workspace-eyebrow"),
+  workspaceTitle: document.querySelector("#workspace-title"),
+  chatWorkspace: document.querySelector("#chat-workspace"),
+  evalWorkspace: document.querySelector("#eval-workspace"),
+  evalRunner: document.querySelector("#eval-runner"),
+  evalSuite: document.querySelector("#eval-suite"),
+  evalTrajectory: document.querySelector("#eval-trajectory"),
+  evalRun: document.querySelector("#run-eval"),
+  evalRefresh: document.querySelector("#refresh-evals"),
+  evalEmpty: document.querySelector("#eval-empty"),
+  evalContent: document.querySelector("#eval-content"),
+  evalCatalogSummary: document.querySelector("#eval-catalog-summary"),
+  evalResults: document.querySelector("#eval-results"),
 };
 
 const themeStorageKey = "harnest.playground.theme";
@@ -73,6 +86,8 @@ const runtime = {
   pendingToolCards: [],
   responseAssistantTurn: null,
   clientToolCards: new Map(),
+  workspace: "chat",
+  evalCatalog: null,
 };
 
 const transportNotes = {
@@ -95,6 +110,8 @@ const endpoints = {
   responses: "/responses",
   live: "/live",
   traces: "/_harnest/traces",
+  evals: "/_harnest/evals",
+  evalRun: "/_harnest/evals/run",
 };
 
 function requestHeaders() {
@@ -420,6 +437,219 @@ async function loadAgent() {
   ui.agentDescription.textContent = agent.description || "No description provided.";
   ui.agentFramework.textContent = agent.framework || "custom";
   ui.agentMode.textContent = agent.mode || "managed";
+}
+
+/** Switch between conversation and local evaluation without discarding either view. */
+async function selectWorkspace(name) {
+  runtime.workspace = name;
+  const evaluating = name === "evals";
+  document.body.classList.toggle("eval-mode", evaluating);
+  ui.chatWorkspace.hidden = evaluating;
+  ui.evalWorkspace.hidden = !evaluating;
+  ui.workspaceEyebrow.textContent = evaluating ? "Evaluation" : "Playground";
+  ui.workspaceTitle.textContent = evaluating ? "Evals" : "Conversation";
+  ui.inspector.classList.remove("open");
+  ui.inspectorToggle.setAttribute("aria-expanded", "false");
+  for (const button of document.querySelectorAll(".workspace-nav-item")) {
+    const active = button.dataset.workspace === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  if (evaluating && !runtime.evalCatalog) await loadEvals();
+}
+
+/** Refresh validated suites and the effective installed metric catalog. */
+async function loadEvals() {
+  const response = await api(endpoints.evals, { method: "GET" });
+  const catalog = await response.json();
+  runtime.evalCatalog = catalog;
+  renderEvalCatalog(catalog);
+}
+
+function renderEvalCatalog(catalog) {
+  const suites = catalog.suites || [];
+  ui.evalSuite.replaceChildren();
+  for (const suite of suites) {
+    const option = document.createElement("option");
+    option.value = suite.id;
+    option.textContent = `${suite.name} · ${suite.caseCount} case${suite.caseCount === 1 ? "" : "s"}`;
+    ui.evalSuite.append(option);
+  }
+  const empty = suites.length === 0;
+  ui.evalEmpty.hidden = !empty;
+  ui.evalContent.hidden = empty;
+  renderEvalCatalogSummary(catalog);
+}
+
+function renderEvalCatalogSummary(catalog) {
+  const suites = catalog.suites || [];
+  const cases = suites.reduce((total, suite) => total + suite.caseCount, 0);
+  const custom = (catalog.metrics || []).filter((metric) => metric.custom).length;
+  ui.evalCatalogSummary.replaceChildren(
+    evalStat("Suites", suites.length),
+    evalStat("Cases", cases),
+    evalStat("Configured metrics", `${(catalog.metrics || []).length}${custom ? ` · ${custom} custom` : ""}`),
+  );
+}
+
+function evalStat(label, value) {
+  const card = document.createElement("div");
+  card.className = "eval-stat";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const number = document.createElement("strong");
+  number.textContent = String(value);
+  card.append(caption, number);
+  return card;
+}
+
+async function runEval(event) {
+  event.preventDefault();
+  if (!ui.evalSuite.value) return;
+  clearError();
+  ui.evalRun.disabled = true;
+  ui.evalRun.textContent = "Running…";
+  setStatus("Running eval", "pending");
+  try {
+    const response = await api(endpoints.evalRun, {
+      method: "POST",
+      body: JSON.stringify({
+        suiteId: ui.evalSuite.value,
+        trajectory: ui.evalTrajectory.value,
+      }),
+    });
+    const result = await response.json();
+    renderEvalResult(result);
+    setStatus(result.status === "passed" ? "Eval passed" : "Eval failed", result.status === "passed" ? "ok" : "error");
+  } catch (error) {
+    showError(error);
+  } finally {
+    ui.evalRun.disabled = false;
+    ui.evalRun.textContent = "Run eval";
+  }
+}
+
+function renderEvalResult(result) {
+  ui.evalResults.replaceChildren(evalRunSummary(result));
+  if (result.failure) ui.evalResults.append(evalFailure(result.failure));
+  const metrics = document.createElement("div");
+  metrics.className = "eval-metrics";
+  for (const metric of result.metrics || []) metrics.append(evalMetric(metric));
+  if (metrics.childElementCount) ui.evalResults.append(metrics);
+  for (const item of result.cases || []) ui.evalResults.append(evalCase(item));
+}
+
+function evalRunSummary(result) {
+  const card = document.createElement("article");
+  card.className = "eval-summary-card";
+  card.dataset.status = result.status;
+  const title = document.createElement("div");
+  const heading = document.createElement("h3");
+  heading.textContent = result.status === "passed" ? "Evaluation passed" : "Evaluation failed";
+  const copy = document.createElement("p");
+  copy.textContent = `${result.suiteId} · ${result.trajectory} trajectory`;
+  title.append(heading, copy);
+  card.append(
+    title,
+    evalSummaryNumber("Passed", result.summary.passedCases),
+    evalSummaryNumber("Failed", result.summary.failedCases),
+    evalSummaryNumber("Duration", `${result.durationMs} ms`),
+  );
+  return card;
+}
+
+function evalSummaryNumber(label, value) {
+  const item = document.createElement("div");
+  item.className = "eval-summary-number";
+  const number = document.createElement("strong");
+  number.textContent = String(value);
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  item.append(number, caption);
+  return item;
+}
+
+function evalFailure(message) {
+  const block = document.createElement("div");
+  block.className = "eval-failure";
+  block.textContent = message;
+  return block;
+}
+
+function evalMetric(metric) {
+  const card = document.createElement("article");
+  card.className = "eval-metric";
+  const heading = document.createElement("div");
+  heading.className = "eval-metric-heading";
+  const name = document.createElement("strong");
+  name.textContent = metric.name;
+  heading.append(name, evalBadge(metric.status));
+  const score = document.createElement("p");
+  score.textContent = `score ${evalNumber(metric.score)} · threshold ${evalNumber(metric.threshold)}`;
+  card.append(heading, score);
+  return card;
+}
+
+function evalBadge(status) {
+  const badge = document.createElement("span");
+  badge.className = "eval-badge";
+  badge.dataset.status = status;
+  badge.textContent = status;
+  return badge;
+}
+
+function evalNumber(value) {
+  return typeof value === "number" ? value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "") : "—";
+}
+
+function evalCase(item) {
+  const disclosure = document.createElement("details");
+  disclosure.className = "eval-case";
+  disclosure.open = item.status === "failed";
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "eval-case-title";
+  const name = document.createElement("strong");
+  name.textContent = item.id;
+  const count = document.createElement("small");
+  count.textContent = `${item.results.length} metric invocation${item.results.length === 1 ? "" : "s"}`;
+  title.append(name, count);
+  summary.append(title, evalBadge(item.status));
+  const results = document.createElement("div");
+  results.className = "eval-case-results";
+  for (const invocation of item.results) results.append(evalInvocation(invocation));
+  disclosure.append(summary, results);
+  return disclosure;
+}
+
+function evalInvocation(invocation) {
+  const card = document.createElement("article");
+  card.className = "eval-invocation";
+  const heading = document.createElement("div");
+  heading.className = "eval-invocation-heading";
+  const title = document.createElement("strong");
+  title.textContent = `${invocation.metric} · ${evalNumber(invocation.score)} / ${evalNumber(invocation.threshold)}`;
+  heading.append(title, evalBadge(invocation.status));
+  const evidence = document.createElement("div");
+  evidence.className = "eval-evidence";
+  appendEvalEvidence(evidence, "Prompt", invocation.prompt);
+  appendEvalEvidence(evidence, "Expected response", invocation.expectedResponse);
+  appendEvalEvidence(evidence, "Actual response", invocation.actualResponse);
+  appendEvalEvidence(evidence, "Expected tools", invocation.expectedToolCalls);
+  appendEvalEvidence(evidence, "Actual tools", invocation.actualToolCalls);
+  card.append(heading, evidence);
+  return card;
+}
+
+function appendEvalEvidence(parent, label, value) {
+  if (!value) return;
+  const section = document.createElement("section");
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const content = document.createElement("pre");
+  content.textContent = value;
+  section.append(caption, content);
+  parent.append(section);
 }
 
 async function loadSessions(preferredId = runtime.sessionId) {
@@ -1317,6 +1547,11 @@ function bindEvents() {
     button.addEventListener("click", () => selectLogLevel(button));
   }
   ui.inspectorToggle.addEventListener("click", toggleInspector);
+  ui.evalRunner.addEventListener("submit", runEval);
+  ui.evalRefresh.addEventListener("click", () => runAction(loadEvals));
+  for (const button of document.querySelectorAll(".workspace-nav-item")) {
+    button.addEventListener("click", () => runAction(() => selectWorkspace(button.dataset.workspace)));
+  }
   ui.sessionTrigger.addEventListener("click", () => toggleSessionMenu());
   ui.sessionTrigger.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {

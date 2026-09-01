@@ -12,6 +12,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
@@ -29,6 +30,7 @@ from .compatibility import (
     FrameworkCompatibilityError,
     validate_framework_compatibility,
 )
+from .cron import CompiledCron, Cron
 from .backends import (
     AdvancedBackendValidationError,
     BackendDependencyError,
@@ -372,6 +374,7 @@ def _compile_advanced_application(
     skill_registry = _advanced_skill_registry(
         advanced.name, discovered_extensions.skill_sources
     )
+    tasks, crons = _discover_tasks_and_crons(anchor.parent, advanced.name)
     return CompiledApplication(
         name=advanced.name,
         framework=framework,
@@ -393,7 +396,8 @@ def _compile_advanced_application(
         checkpoint_metadata=checkpoint_metadata(discovered_extensions.checkpointer),
         context_values=discovered_extensions.context_values,
         skill_registry=skill_registry,
-        tasks=_discover_tasks(anchor.parent / "tasks", advanced.name),
+        tasks=tasks,
+        crons=crons,
         plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
@@ -498,6 +502,7 @@ def _compile_managed_application(
     except AdvancedBackendValidationError as exc:
         raise BundleConventionError(str(exc)) from exc
     application_name = getattr(target, "name", value.name)
+    tasks, crons = _discover_tasks_and_crons(anchor.parent, application_name)
     return CompiledApplication(
         name=application_name,
         framework=framework,
@@ -526,7 +531,8 @@ def _compile_managed_application(
         checkpoint_metadata=checkpoint_metadata(provider),
         context_values=discovered_extensions.context_values,
         skill_registry=SkillRegistry(skill_scopes),
-        tasks=_discover_tasks(anchor.parent / "tasks", application_name),
+        tasks=tasks,
+        crons=crons,
         plugins=activated_plugins,
         harnest_version=compatibility.harnest_version,
         framework_distribution=compatibility.distribution,
@@ -712,8 +718,12 @@ def compile_artifact(
     entrypoint: str = "agent:root_agent",
     framework: str = "adk",
     mode: str = "managed",
+    cli_enabled: bool = False,
 ) -> dict[str, Any]:
     """Validate an agent and atomically materialize its importable artifact."""
+
+    if not isinstance(cli_enabled, bool):
+        raise TypeError("cli_enabled must be a boolean")
 
     anchor = _resolve_compile_anchor(source, entrypoint)
     source_directory = anchor.parent
@@ -759,9 +769,9 @@ def compile_artifact(
             file_records = _artifact_file_records(staging)
             plugin_records = _compiled_plugin_records(built.plugins)
             task_records = _compiled_task_records(built.tasks)
-            runtime_dependencies = (
-                [_PROCRASTINATE_REQUIREMENT] if task_records else []
-            )
+            cron_records = _compiled_cron_records(built.crons)
+            runtime_dependencies = _runtime_dependencies(task_records, cron_records)
+            interfaces = {"cli": cli_enabled}
             manifest = {
                 "apiVersion": "harnest.dev/v1alpha1",
                 "kind": "CompiledAgent",
@@ -776,15 +786,19 @@ def compile_artifact(
                     "distribution": built.framework_distribution,
                     "version": built.framework_version,
                 },
+                "interfaces": interfaces,
                 "checkpoint": dict(built.checkpoint_metadata or {}),
                 "plugins": plugin_records,
                 "tasks": task_records,
+                "crons": cron_records,
                 "runtimeDependencies": runtime_dependencies,
                 "digest": _artifact_digest(
                     file_records,
                     plugin_records,
                     task_records,
+                    cron_records,
                     runtime_dependencies,
+                    interfaces=interfaces,
                 ),
                 "files": file_records,
             }
@@ -831,6 +845,29 @@ def _compiled_task_records(tasks: Sequence[CompiledTask]) -> list[dict[str, Any]
         }
         for item in tasks
     ]
+
+
+def _compiled_cron_records(crons: Sequence[CompiledCron]) -> list[dict[str, Any]]:
+    """Serialize schedules without exposing their private static arguments."""
+
+    return [
+        {
+            "name": item.name,
+            "source": item.source,
+            "schedule": item.schedule,
+            "timezone": item.timezone,
+            "task": item.task_name,
+        }
+        for item in crons
+    ]
+
+
+def _runtime_dependencies(
+    tasks: Sequence[dict[str, Any]], crons: Sequence[dict[str, Any]]
+) -> list[str]:
+    """Select the pinned queue backend only for authored durable work."""
+
+    return [_PROCRASTINATE_REQUIREMENT] if tasks or crons else []
 
 
 def _release_compiled_plugins(plugins: Sequence[ActivatedPlugin]) -> None:
@@ -892,7 +929,7 @@ def _write_artifact_loader(
         encoding="utf-8",
     )
     (directory / "__main__.py").write_text(
-        '"""Run this compiled agent with ``python <artifact>``."""\n\n'
+        '"""Run this compiled agent with ``python <artifact> serve|run``."""\n\n'
         "from pathlib import Path\n\n"
         "import sys\n\n"
         "from harnest.runtime import main\n\n"
@@ -943,9 +980,12 @@ def _artifact_digest(
     records: Sequence[dict[str, Any]],
     plugins: Sequence[dict[str, Any]] = (),
     tasks: Sequence[dict[str, Any]] = (),
+    crons: Sequence[dict[str, Any]] = (),
     runtime_dependencies: Sequence[str] = (),
+    *,
+    interfaces: Mapping[str, bool],
 ) -> str:
-    """Bind recorded files and plugin provenance into one artifact identity."""
+    """Bind files, capabilities, and explicit interface policy into one identity."""
 
     digest = hashlib.sha256()
     for record in records:
@@ -955,6 +995,11 @@ def _artifact_digest(
         digest.update(b"\0")
         digest.update(str(record["size"]).encode("ascii"))
         digest.update(b"\n")
+    _update_artifact_digest_field(
+        digest,
+        "interface.cli",
+        str(interfaces["cli"]).lower(),
+    )
     for plugin in plugins:
         # Plugin records live in the manifest rather than the file set, so bind
         # their canonical compiler output explicitly to prevent provenance drift.
@@ -986,6 +1031,16 @@ def _artifact_digest(
         _update_artifact_digest_field(
             digest, "task.max_retries", str(task_record["maxRetries"])
         )
+    for cron_record in crons:
+        _update_artifact_digest_field(digest, "cron.name", cron_record["name"])
+        _update_artifact_digest_field(digest, "cron.source", cron_record["source"])
+        _update_artifact_digest_field(
+            digest, "cron.schedule", cron_record["schedule"]
+        )
+        _update_artifact_digest_field(
+            digest, "cron.timezone", cron_record["timezone"]
+        )
+        _update_artifact_digest_field(digest, "cron.task", cron_record["task"])
     for requirement in runtime_dependencies:
         _update_artifact_digest_field(digest, "runtime.dependency", requirement)
     return f"sha256:{digest.hexdigest()}"
@@ -1548,16 +1603,10 @@ def _discover_folder_resources(
 
 
 def _validate_framework_evals(directory: Path, framework: str) -> None:
-    """Reject ADK-only eval assets instead of silently ignoring them in LangGraph."""
+    """Validate the shared eval-set contract before either backend is lowered."""
 
-    if framework == "adk":
+    if framework in {"adk", "langgraph"}:
         _discover_evals(directory)
-        return
-    if _has_public_entries(directory, kind="evals"):
-        raise BundleConventionError(
-            "evals/ uses ADK evaluation files and cannot be compiled by the "
-            "LangGraph backend"
-        )
 
 
 def _agent_subagents_for_framework(
@@ -1743,6 +1792,128 @@ def _discover_tasks(directory: Path, application_name: str) -> tuple[CompiledTas
             )
         )
     return tuple(tasks)
+
+
+def _discover_tasks_and_crons(
+    bundle_root: Path, application_name: str
+) -> tuple[tuple[CompiledTask, ...], tuple[CompiledCron, ...]]:
+    """Resolve tasks first so cron imports bind to compiler-owned callables."""
+
+    tasks = _discover_tasks(bundle_root / "tasks", application_name)
+    with _compiled_task_imports(bundle_root / "tasks", tasks):
+        crons = _discover_crons(
+            bundle_root / "cron", bundle_root, application_name, tasks
+        )
+    return tasks, crons
+
+
+def _discover_crons(
+    directory: Path,
+    bundle_root: Path,
+    application_name: str,
+    tasks: Sequence[CompiledTask],
+) -> tuple[CompiledCron, ...]:
+    """Load filename-matched schedules and resolve only discovered task targets."""
+
+    crons = []
+    for path in _resource_files(directory, kind="cron"):
+        export_name = path.stem
+        module, value = _load_export(path, export_name)
+        if not isinstance(value, Cron):
+            raise BundleExportError(
+                f"cron module {path} must export Cron {export_name!r}"
+            )
+        _reject_extra_exports(
+            module,
+            path,
+            export_name,
+            kind="cron",
+            predicate=lambda item: isinstance(item, Cron),
+        )
+        target = _resolve_cron_task(value.task, tasks, bundle_root)
+        crons.append(
+            CompiledCron(
+                name=f"harnest.{application_name}.cron.{export_name}",
+                source=f"cron/{path.name}",
+                schedule=value.schedule,
+                timezone=value.timezone,
+                task=target,
+                arguments=value.arguments,
+            )
+        )
+    return tuple(crons)
+
+
+def _resolve_cron_task(
+    value: Any, tasks: Sequence[CompiledTask], bundle_root: Path
+) -> CompiledTask:
+    """Match identity first and source provenance second across Python imports."""
+
+    exact = [item for item in tasks if item.authored is value]
+    if len(exact) == 1:
+        return exact[0]
+    definition = task_registration_for(value)
+    source = _callable_source(definition.function) if definition is not None else None
+    matches = [
+        item
+        for item in tasks
+        if source == (bundle_root / item.source).resolve()
+        and getattr(value, "__name__", None) == Path(item.source).stem
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    raise BundleExportError(
+        "cron task must reference exactly one callable exported from the root tasks/ "
+        "folder"
+    )
+
+
+def _callable_source(function: Any) -> Path | None:
+    """Resolve task provenance without trusting an authored module name."""
+
+    try:
+        source = inspect.getsourcefile(function)
+    except (TypeError, OSError):
+        return None
+    return None if source is None else Path(source).resolve()
+
+
+@contextmanager
+def _compiled_task_imports(
+    directory: Path, tasks: Sequence[CompiledTask]
+) -> Iterator[None]:
+    """Expose a bounded ``tasks.<name>`` namespace while loading cron files."""
+
+    if not tasks:
+        yield
+        return
+    previous = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tasks" or name.startswith("tasks.")
+    }
+    package = ModuleType("tasks")
+    package.__package__ = "tasks"
+    package.__path__ = [str(directory)]
+    package.__spec__ = ModuleSpec("tasks", loader=None, is_package=True)
+    sys.modules["tasks"] = package
+    for compiled in tasks:
+        export_name = Path(compiled.source).stem
+        module_name = f"tasks.{export_name}"
+        module = ModuleType(module_name)
+        module.__package__ = "tasks"
+        module.__file__ = str((directory / f"{export_name}.py").resolve())
+        setattr(module, export_name, compiled.authored)
+        setattr(package, export_name, module)
+        sys.modules[module_name] = module
+    try:
+        yield
+    finally:
+        # The namespace is compiler scaffolding, not a process-global user import.
+        for name in tuple(sys.modules):
+            if name == "tasks" or name.startswith("tasks."):
+                sys.modules.pop(name, None)
+        sys.modules.update(previous)
 
 
 def _discover_subagents(

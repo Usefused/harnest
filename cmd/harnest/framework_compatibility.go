@@ -22,6 +22,7 @@ var frameworkCompatibilityByName = map[string]frameworkCompatibility{
 	},
 	"langgraph": {
 		RuntimeRequirements: []string{
+			"google-adk[eval]>=2.8,<3",
 			"langgraph>=1.2,<2",
 			"langchain>=1.3,<2",
 			"langchain-litellm>=0.7,<1",
