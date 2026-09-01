@@ -23,6 +23,14 @@
   reusing immutable tool pipelines, and bypassing empty plugin-context work
   without changing result canonicalization.
 
+## [0.7.0](https://github.com/Usefused/harnest/compare/v0.6.0...v0.7.0) (2026-09-01)
+
+
+### Features
+
+* add development agent reload ([02e327c](https://github.com/Usefused/harnest/commit/02e327c02a1bed2645fde17b64f18cb68c2efe33))
+* harden skill and tool execution ([42ac7f9](https://github.com/Usefused/harnest/commit/42ac7f9189a434f3a7e0a079a2c9554994a1582e))
+
 ## [0.6.0](https://github.com/Usefused/harnest/compare/v0.5.0...v0.6.0) (2026-08-31)
 
 
