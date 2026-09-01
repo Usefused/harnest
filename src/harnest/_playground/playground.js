@@ -11,6 +11,9 @@ const ui = {
   sessionValue: document.querySelector("#session-value"),
   sessionValueDetail: document.querySelector("#session-value-detail"),
   sessionMenu: document.querySelector("#session-menu"),
+  sessionOptions: document.querySelector("#session-options"),
+  sessionSearch: document.querySelector("#session-search"),
+  sessionSearchEmpty: document.querySelector("#session-search-empty"),
   sessionState: document.querySelector("#session-state"),
   sessionStateEmpty: document.querySelector("#session-state-empty"),
   sessionId: document.querySelector("#session-id"),
@@ -65,6 +68,7 @@ const ui = {
 };
 
 const themeStorageKey = "harnest.playground.theme";
+const sessionQueryKey = "session";
 const supportedThemes = new Set(["dark", "light", "system"]);
 const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
@@ -652,26 +656,41 @@ function appendEvalEvidence(parent, label, value) {
   parent.append(section);
 }
 
-async function loadSessions(preferredId = runtime.sessionId) {
+async function loadSessions(preferredId = runtime.sessionId, restoreTranscript = true) {
   const response = await api(endpoints.sessions, { method: "GET" });
   const body = await response.json();
-  replaceSessionOptions(body.sessions || [], preferredId);
-  await loadSessionState();
+  const sessions = await includePreferredSession(body.sessions || [], preferredId);
+  replaceSessionOptions(sessions, preferredId);
+  syncSessionUrl(runtime.sessionId);
+  const selected = sessions.find((session) => session.id === runtime.sessionId);
+  const loads = [loadSessionState(selected)];
+  // Implicit creation already rendered the pending user turn; its new server
+  // transcript is empty until the invocation begins and must not erase it.
+  if (restoreTranscript) loads.push(loadSessionMessages());
+  await Promise.all(loads);
+}
+
+/** Include an exact owned session even when it is outside the bounded list. */
+async function includePreferredSession(sessions, preferredId) {
+  if (!preferredId || sessions.some((session) => session.id === preferredId)) return sessions;
+  const response = await api(`${endpoints.sessions}/${encodeURIComponent(preferredId)}`, { method: "GET" });
+  return [await response.json(), ...sessions];
 }
 
 function replaceSessionOptions(sessions, preferredId) {
   ui.sessionSelect.replaceChildren();
-  ui.sessionMenu.replaceChildren();
-  if (!sessions.length) addSessionOption("", "No session", "Create one to begin", 0);
-  sessions.forEach((session, index) => addSessionOption(session.id, `Session ${index + 1}`, compactSessionId(session.id), index));
+  ui.sessionOptions.replaceChildren();
+  if (!sessions.length) addSessionOption("", "No session", "Create one to begin");
+  sessions.forEach((session, index) => addSessionOption(session.id, `Session ${index + 1}`, compactSessionId(session.id)));
   const available = sessions.some((session) => session.id === preferredId);
   setActiveSession(available ? preferredId : (sessions[0]?.id || ""));
   ui.sessionSelect.value = runtime.sessionId;
   syncSessionPicker();
+  filterSessionOptions();
   ui.sessionId.textContent = runtime.sessionId || "Not created";
 }
 
-function addSessionOption(value, label, detail, index) {
+function addSessionOption(value, label, detail) {
   const option = document.createElement("option");
   option.value = value;
   option.textContent = label;
@@ -688,8 +707,8 @@ function addSessionOption(value, label, detail, index) {
   button.querySelector("strong").textContent = label;
   button.querySelector("small").textContent = detail;
   button.addEventListener("click", () => chooseSession(value));
-  button.addEventListener("keydown", (event) => moveSessionFocus(event, index));
-  ui.sessionMenu.append(button);
+  button.addEventListener("keydown", moveSessionFocus);
+  ui.sessionOptions.append(button);
 }
 
 function compactSessionId(sessionId) {
@@ -702,7 +721,7 @@ function syncSessionPicker() {
   const selected = ui.sessionSelect.selectedOptions[0];
   ui.sessionValue.textContent = selected?.textContent || "No session";
   ui.sessionValueDetail.textContent = selected?.dataset.detail || "Create one to begin";
-  for (const option of ui.sessionMenu.querySelectorAll(".session-option")) {
+  for (const option of ui.sessionOptions.querySelectorAll(".session-option")) {
     option.setAttribute("aria-selected", String(option.dataset.value === runtime.sessionId));
   }
 }
@@ -711,19 +730,26 @@ function toggleSessionMenu(force) {
   const open = force ?? ui.sessionMenu.hidden;
   ui.sessionMenu.hidden = !open;
   ui.sessionTrigger.setAttribute("aria-expanded", String(open));
-  if (open) ui.sessionMenu.querySelector('[aria-selected="true"]')?.focus();
+  if (open) {
+    ui.sessionSearch.focus();
+    return;
+  }
+  ui.sessionSearch.value = "";
+  filterSessionOptions();
 }
 
 function chooseSession(sessionId) {
   toggleSessionMenu(false);
   ui.sessionSelect.value = sessionId;
   syncSessionPicker();
-  changeSession(sessionId);
+  runAction(() => changeSession(sessionId));
   ui.sessionTrigger.focus();
 }
 
-function moveSessionFocus(event, index) {
-  const options = [...ui.sessionMenu.querySelectorAll(".session-option")];
+function moveSessionFocus(event) {
+  const options = [...ui.sessionOptions.querySelectorAll(".session-option:not([hidden])")];
+  if (!options.length) return;
+  const index = options.indexOf(event.currentTarget);
   let target = index;
   if (event.key === "ArrowDown") target = (index + 1) % options.length;
   else if (event.key === "ArrowUp") target = (index - 1 + options.length) % options.length;
@@ -733,6 +759,34 @@ function moveSessionFocus(event, index) {
   else return;
   event.preventDefault();
   options[target].focus();
+}
+
+/** Filter the bounded menu without fetching or retaining an unbounded catalog. */
+function filterSessionOptions() {
+  const query = ui.sessionSearch.value.trim().toLowerCase();
+  let visible = 0;
+  for (const option of ui.sessionOptions.querySelectorAll(".session-option")) {
+    option.hidden = Boolean(query) && !option.dataset.value.toLowerCase().includes(query);
+    if (!option.hidden) visible += 1;
+  }
+  ui.sessionSearchEmpty.hidden = visible > 0;
+}
+
+/** Resolve a full ID through the same ownership-scoped path used by deep links. */
+async function selectSearchedSession() {
+  const query = ui.sessionSearch.value.trim();
+  const visible = ui.sessionOptions.querySelector(".session-option:not([hidden])");
+  const sessionId = visible?.dataset.value || query;
+  if (!sessionId) return;
+  toggleSessionMenu(false);
+  closeLiveSocket();
+  if (visible) await changeSession(sessionId);
+  else {
+    await loadSessions(sessionId);
+    await loadTraces();
+  }
+  setStatus("Session selected", "ok");
+  ui.sessionTrigger.focus();
 }
 
 function closeSessionMenu() {
@@ -746,8 +800,9 @@ async function createSession(clearConversation = true) {
   const response = await api(endpoints.sessions, { method: "POST", body: "{}" });
   const session = await response.json();
   setActiveSession(session.id, clearConversation);
+  syncSessionUrl(session.id);
   closeLiveSocket();
-  await loadSessions(session.id);
+  await loadSessions(session.id, clearConversation);
   await loadTraces();
   setStatus("Session ready", "ok");
   return session.id;
@@ -758,16 +813,60 @@ async function ensureSession() {
   return runtime.sessionId || createSession(false);
 }
 
-async function loadSessionState() {
+async function loadSessionState(selected = null) {
   if (!runtime.sessionId) {
     renderSessionState({});
     ui.sessionId.textContent = "Not created";
     return;
   }
-  const response = await api(`${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}`, { method: "GET" });
-  const session = await response.json();
+  let session = selected;
+  if (!session) {
+    const response = await api(`${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}`, { method: "GET" });
+    session = await response.json();
+  }
   renderSessionState(session.state || {});
   ui.sessionId.textContent = session.id;
+}
+
+/** Restore the portable transcript owned by the selected session. */
+async function loadSessionMessages() {
+  if (!runtime.sessionId) return resetConversation();
+  const path = `${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}/messages`;
+  const response = await api(path, { method: "GET" });
+  const body = await response.json();
+  renderSessionMessages(body.messages || []);
+}
+
+function renderSessionMessages(messages) {
+  resetConversation();
+  for (const message of messages) renderSessionMessage(message);
+}
+
+function renderSessionMessage(message) {
+  const content = sessionMessageText(message.content);
+  if (!content) return;
+  if (message.role === "user") appendTurn("user", content);
+  else if (message.role === "assistant" || message.role === "system") appendTurn("assistant", content);
+  else appendResult(message.content);
+}
+
+function sessionMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return content == null ? "" : pretty(content);
+  const text = content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("");
+  return text || pretty(content);
+}
+
+function sessionIdFromLocation() {
+  return new URLSearchParams(window.location.search).get(sessionQueryKey)?.trim() || "";
+}
+
+/** Keep the selected session shareable without persisting identity or tokens. */
+function syncSessionUrl(sessionId) {
+  const url = new URL(window.location.href);
+  if (sessionId) url.searchParams.set(sessionQueryKey, sessionId);
+  else url.searchParams.delete(sessionQueryKey);
+  window.history.replaceState(window.history.state, "", url);
 }
 
 function renderSessionState(state) {
@@ -1563,7 +1662,14 @@ function bindEvents() {
     if (!ui.sessionPicker.contains(event.target)) toggleSessionMenu(false);
     if (!ui.appearancePanel.contains(event.target)) toggleThemeMenu(false);
   });
-  ui.sessionSelect.addEventListener("change", () => changeSession(ui.sessionSelect.value));
+  ui.sessionSelect.addEventListener("change", () => runAction(() => changeSession(ui.sessionSelect.value)));
+  ui.sessionSearch.addEventListener("input", filterSessionOptions);
+  ui.sessionSearch.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") return closeSessionMenu();
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    runAction(selectSearchedSession);
+  });
   for (const button of document.querySelectorAll(".transport")) {
     button.addEventListener("click", () => selectTransport(button));
   }
@@ -1603,11 +1709,12 @@ async function runAction(action) {
 
 async function changeSession(sessionId) {
   setActiveSession(sessionId);
+  syncSessionUrl(sessionId);
   runtime.selectedTraceId = "";
   ui.sessionSelect.value = sessionId;
   syncSessionPicker();
   closeLiveSocket();
-  await runAction(() => Promise.all([loadSessionState(), loadTraces()]));
+  await Promise.all([loadSessionState(), loadSessionMessages(), loadTraces()]);
   setStatus(sessionId ? "Session selected" : "No session", sessionId ? "ok" : "pending");
 }
 
@@ -1623,7 +1730,9 @@ async function initialize() {
   bindEvents();
   resizeComposer();
   try {
-    await Promise.all([loadAgent(), loadSessions()]);
+    const requestedSessionId = sessionIdFromLocation();
+    if (requestedSessionId) setActiveSession(requestedSessionId);
+    await Promise.all([loadAgent(), loadSessions(requestedSessionId)]);
     await loadTraces(true);
     setStatus(runtime.sessionId ? "Ready" : "No session", "ok");
   } catch (error) {

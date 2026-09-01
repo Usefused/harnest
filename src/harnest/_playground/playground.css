@@ -260,13 +260,16 @@ h1, h2, h3, p { margin-top: 0; }
   gap: 4px;
   max-height: min(280px, 50vh);
   padding: 6px;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--panel-glass-strong);
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   box-shadow: 0 22px 55px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(18px);
 }
+.session-search { flex: 0 0 auto; height: 36px; border-radius: 10px; font-size: 11px; }
+.session-options { display: grid; gap: 4px; min-height: 0; overflow-y: auto; }
+.session-search-empty { padding: 12px 9px; color: var(--muted); text-align: center; font-size: 10px; }
 .session-option {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

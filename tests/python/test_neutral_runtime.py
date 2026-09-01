@@ -653,6 +653,8 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertIn('id="session-state-empty"', page.text)
         self.assertIn('id="session-menu"', page.text)
+        self.assertIn('id="session-search"', page.text)
+        self.assertIn('id="session-options"', page.text)
         self.assertIn('id="trace-timeline"', page.text)
         self.assertIn('id="trace-tab"', page.text)
         self.assertIn('id="logs-tab"', page.text)
@@ -789,7 +791,26 @@ class NeutralRuntimeTests(unittest.TestCase):
             javascript,
         )
         self.assertIn(
+            "await loadSessions(session.id, clearConversation)",
+            javascript,
+        )
+        self.assertIn(
             "return runtime.sessionId || createSession(false)",
+            javascript,
+        )
+
+    def test_playground_restores_url_addressed_session_transcripts(self):
+        javascript = self.client.get("/_harnest/playground.js").text
+
+        self.assertIn('const sessionQueryKey = "session"', javascript)
+        self.assertIn("function sessionIdFromLocation()", javascript)
+        self.assertIn("window.history.replaceState", javascript)
+        self.assertIn("async function includePreferredSession", javascript)
+        self.assertIn("async function loadSessionMessages()", javascript)
+        self.assertIn("renderSessionMessages(body.messages || [])", javascript)
+        self.assertIn("async function selectSearchedSession()", javascript)
+        self.assertIn(
+            'ui.sessionSearch.addEventListener("input", filterSessionOptions)',
             javascript,
         )
 
