@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.10.0](https://github.com/Usefused/harnest/compare/v0.9.0...v0.10.0) (2026-09-01)
 
 ### Features
 
@@ -21,9 +21,6 @@
 
 * Include the task runtime in the `all` development extra so the documented
   full quality gate can exercise compiled tasks against PostgreSQL.
-
-## [0.10.0](https://github.com/Usefused/harnest/compare/v0.9.0...v0.10.0) (2026-09-01)
-
 
 ### Features
 
