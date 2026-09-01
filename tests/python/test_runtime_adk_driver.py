@@ -77,6 +77,47 @@ class DeterministicLlm(BaseLlm):
         )
 
 
+class UnknownArgumentLlm(BaseLlm):
+    """Issue one invalid call, then record Harnest's repair response."""
+
+    responses: ClassVar[list[dict[str, Any]]] = []
+
+    async def generate_content_async(self, llm_request, stream=False):
+        del stream
+        function_responses = [
+            part.function_response
+            for content in llm_request.contents
+            for part in content.parts
+            if part.function_response is not None
+        ]
+        if function_responses:
+            self.responses.append(dict(function_responses[-1].response))
+            yield LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text="invalid call rejected")],
+                )
+            )
+            return
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            id="call-invalid",
+                            name="search_threads",
+                            args={
+                                "limit": 1,
+                                "startedBefore": "private-value",
+                            },
+                        )
+                    )
+                ],
+            )
+        )
+
+
 class RecordingTurnLlm(BaseLlm):
     """Record root requests to verify turn-only history at the ADK boundary."""
 
@@ -336,6 +377,31 @@ def _application() -> CompiledApplication:
     )
 
 
+def _strict_tool_application(executions: list[int]) -> CompiledApplication:
+    """Build a managed ADK app whose model invents one undeclared filter."""
+
+    @tool
+    async def search_threads(limit: int = 50) -> dict[str, int]:
+        """Return a bounded newest-first page."""
+
+        executions.append(limit)
+        return {"limit": limit}
+
+    agent = LlmAgent(
+        name="strict_tools",
+        model=UnknownArgumentLlm(model="unknown-argument"),
+        instruction="Exercise strict tool inputs.",
+        tools=[search_threads],
+    )
+    return CompiledApplication(
+        name="strict_tools",
+        framework="adk",
+        mode="managed",
+        target=agent,
+        native_app=App(name="strict_tools", root_agent=agent),
+    )
+
+
 def _structured_application() -> CompiledApplication:
     """Build an ADK fixture with Harnest-owned structured output metadata."""
 
@@ -517,6 +583,26 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1", user_id="test-user"
             )
         )
+
+    async def test_managed_adk_rejects_unknown_arguments_in_a_complete_turn(self):
+        executions: list[int] = []
+        UnknownArgumentLlm.responses = []
+        driver = ADKRuntimeDriver(_strict_tool_application(executions))
+        try:
+            await driver.create_session(
+                session_id="strict-arguments",
+                user_id="test-user",
+                state={},
+            )
+            result = await driver.invoke(_request("strict-arguments"))
+        finally:
+            await driver.close()
+
+        self.assertEqual(result.text, "invalid call rejected")
+        self.assertEqual(executions, [])
+        error = UnknownArgumentLlm.responses[0]["error"]
+        self.assertIn("unknown input parameters: startedBefore", error)
+        self.assertNotIn("private-value", error)
 
     async def test_injected_adk_session_service_is_used_by_runner(self):
         service = InMemorySessionService()

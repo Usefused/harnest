@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import asyncio
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 import hashlib
 import json
 from pathlib import Path
@@ -24,6 +25,27 @@ _MAX_DESCRIPTION_CHARS = 1024
 _MAX_TEXT_RESOURCE_BYTES = 1024 * 1024
 _MAX_PAGE_SIZE = 100
 _FILESYSTEM_SOURCE = "filesystem"
+_SEARCH_WORD = re.compile(r"[a-z0-9]+")
+_MAX_SEARCH_TERMS = 32
+_MAX_SEARCH_WORD_CHARS = 64
+_SEARCH_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "find",
+        "for",
+        "get",
+        "how",
+        "in",
+        "of",
+        "on",
+        "the",
+        "to",
+        "use",
+        "with",
+    }
+)
 
 
 class SkillError(RuntimeError):
@@ -378,15 +400,11 @@ class FilesystemSkillSource(SkillSource):
         _require_skill_context(context)
         size = _page_size(limit)
         offset = _filesystem_cursor(cursor)
-        candidates = self.descriptors
-        if query:
-            needle = query.casefold()
-            candidates = tuple(
-                item
-                for item in candidates
-                if needle in item.name.casefold()
-                or needle in item.description.casefold()
-            )
+        candidates = (
+            _rank_skill_descriptors(self.descriptors, query)
+            if query
+            else self.descriptors
+        )
         items = candidates[offset : offset + size]
         next_offset = offset + len(items)
         next_cursor = str(next_offset) if next_offset < len(candidates) else None
@@ -496,7 +514,7 @@ class SkillScope:
         _optional_text(cursor, "skill page cursor", maximum=1024)
         if source is not None:
             page = await self._list_one(source, context, query, cursor, size)
-            return _catalog_page(((source, page),), size)
+            return _catalog_page(((source, page),), size, query=query)
         if cursor is not None:
             raise ValueError("a skill cursor requires an explicit source")
         pages = await asyncio.gather(
@@ -505,7 +523,9 @@ class SkillScope:
                 for name in self._sources
             )
         )
-        return _catalog_page(tuple(zip(self._sources, pages)), size)
+        return _catalog_page(
+            tuple(zip(self._sources, pages)), size, query=query
+        )
 
     async def load(
         self,
@@ -779,16 +799,29 @@ def create_skill_tools(scope: SkillScope) -> tuple[Any, ...]:
         cursor: str = "",
         limit: int = 50,
     ) -> str:
-        """List available skill names, descriptions, sources, IDs, and versions."""
+        """Discover the best available skill before acting.
+
+        Args:
+            source: Exact source from a prior result; leave empty to search all.
+            query: Short capability keywords, not a guessed skill identifier.
+            cursor: Opaque nextCursors value for this exact source.
+            limit: Maximum descriptors to return, from 1 through 100.
+
+        Results are ranked using source relevance plus deterministic fuzzy
+        matching over names and descriptions. Inspect those descriptions, then
+        call load_skill with the selected result's exact id, source, and version.
+        An initial query with no matches falls back to one bounded catalog page.
+        """
 
         active = _active_context()
-        page = await SkillAccess(scope, active).list(
+        payload = await _model_skill_catalog(
+            SkillAccess(scope, active),
             source=source or None,
             query=query or None,
             cursor=cursor or None,
             limit=limit,
         )
-        return json.dumps(page.as_dict())
+        return json.dumps(payload)
 
     @tool
     async def load_skill(
@@ -796,7 +829,13 @@ def create_skill_tools(scope: SkillScope) -> tuple[Any, ...]:
         source: str = "",
         version: str = "",
     ) -> str:
-        """Load the full instructions for one selected skill ID and version."""
+        """Load one selected skill's full instructions before using it.
+
+        Args:
+            name: Exact skill id returned by list_skills; never guess a name.
+            source: Exact source returned for that skill.
+            version: Exact returned version, or empty for the current version.
+        """
 
         active = _active_context()
         document = await SkillAccess(scope, active).load(
@@ -813,7 +852,14 @@ def create_skill_tools(scope: SkillScope) -> tuple[Any, ...]:
         source: str = "",
         version: str = "",
     ) -> str:
-        """Load one UTF-8 supporting file from a selected skill version."""
+        """Load a supporting file explicitly referenced by loaded instructions.
+
+        Args:
+            name: Exact loaded skill id.
+            path: Exact relative resource path named in the skill instructions.
+            source: Exact source returned by list_skills.
+            version: Loaded skill version; keep it stable for this invocation.
+        """
 
         active = _active_context()
         resource = await SkillAccess(scope, active).load_resource(
@@ -825,6 +871,36 @@ def create_skill_tools(scope: SkillScope) -> tuple[Any, ...]:
         return resource.content
 
     return list_skills, load_skill, load_skill_resource
+
+
+async def _model_skill_catalog(
+    access: SkillAccess,
+    *,
+    source: str | None,
+    query: str | None,
+    cursor: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    """Keep model discovery useful when a provider implements literal search."""
+
+    page = await access.list(
+        source=source, query=query, cursor=cursor, limit=limit
+    )
+    if not query or cursor is not None or page.items:
+        return page.as_dict()
+    # This is one bounded retry per source, not a per-skill lookup. Returning
+    # descriptors lets the model judge relevance without loading every body.
+    fallback = await access.list(
+        source=source, query=None, limit=_MAX_PAGE_SIZE
+    )
+    ranked = _rank_catalog_skills(fallback.items, query)
+    payload: dict[str, Any] = {
+        "skills": [item.as_dict() for item in ranked[:limit]],
+    }
+    payload["queryFallback"] = True
+    if fallback.truncated or len(ranked) > limit:
+        payload["truncated"] = True
+    return payload
 
 
 def scoped_skill_sources(
@@ -856,7 +932,10 @@ def _active_context() -> Any:
 
 
 def _catalog_page(
-    pages: Sequence[tuple[str, SkillPage]], limit: int
+    pages: Sequence[tuple[str, SkillPage]],
+    limit: int,
+    *,
+    query: str | None = None,
 ) -> SkillCatalogPage:
     """Merge bounded pages while retaining source-specific continuation cursors."""
 
@@ -865,6 +944,8 @@ def _catalog_page(
         for source, page in pages
         for descriptor in page.items
     )
+    if query:
+        all_items = _rank_catalog_skills(all_items, query)
     cursors = {
         source: page.next_cursor
         for source, page in pages
@@ -883,6 +964,104 @@ def _source_failure(source: str, operation: str, error: Exception) -> Exception:
     return SkillSourceExecutionError(
         f"skill source {source!r} {operation} failed with {type(error).__name__}"
     )
+
+
+def _rank_skill_descriptors(
+    descriptors: Sequence[SkillDescriptor], query: str
+) -> tuple[SkillDescriptor, ...]:
+    """Filter and rank local metadata with one deterministic lexical policy."""
+
+    scored = (
+        (_skill_query_score(item, query), index, item)
+        for index, item in enumerate(descriptors)
+    )
+    return tuple(
+        item
+        for score, _, item in sorted(scored, key=lambda value: (-value[0], value[1]))
+        if score > 0
+    )
+
+
+def _rank_catalog_skills(
+    items: Sequence[CatalogSkill], query: str
+) -> tuple[CatalogSkill, ...]:
+    """Rerank bounded source results while preserving authoritative candidates."""
+
+    scored = (
+        (_skill_query_score(item.descriptor, query), index, item)
+        for index, item in enumerate(items)
+    )
+    return tuple(
+        item
+        for _, _, item in sorted(scored, key=lambda value: (-value[0], value[1]))
+    )
+
+
+def _skill_query_score(descriptor: SkillDescriptor, query: str) -> int:
+    """Score phrases, exact words, inflections, and bounded typo similarity."""
+
+    needle = query.casefold().strip()
+    name = descriptor.name.casefold()
+    description = descriptor.description.casefold()
+    requested = _search_terms(needle)
+    available = _search_terms(f"{name} {description}")
+    phrase_score = _phrase_score(needle, name, description)
+    return phrase_score + sum(
+        _best_word_score(word, available) for word in requested
+    )
+
+
+def _phrase_score(needle: str, name: str, description: str) -> int:
+    """Prefer exact skill identities and complete phrases over loose word matches."""
+
+    if not needle:
+        return 0
+    if needle == name:
+        return 100
+    if needle in name:
+        return 60
+    return 40 if needle in description else 0
+
+
+def _best_word_score(word: str, candidates: Sequence[str]) -> int:
+    """Return only the strongest bounded lexical relationship for one query word."""
+
+    return max((_word_score(word, candidate) for candidate in candidates), default=0)
+
+
+def _word_score(left: str, right: str) -> int:
+    """Recognize exact terms, simple roots, and conservative spelling mistakes."""
+
+    if left == right:
+        return 30
+    if min(len(left), len(right)) >= 4 and _shares_word_root(left, right):
+        return 20
+    similarity = SequenceMatcher(None, left, right).ratio()
+    return round(similarity * 10) if similarity >= 0.75 else 0
+
+
+def _search_terms(value: str) -> frozenset[str]:
+    """Remove routing noise while retaining domain words from a skill query."""
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for word in _SEARCH_WORD.findall(value.casefold()):
+        normalized = word[:_MAX_SEARCH_WORD_CHARS]
+        if normalized in _SEARCH_STOP_WORDS or normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(normalized)
+        # Search is model-triggered, so cap comparison work independently of
+        # descriptor and query character limits.
+        if len(terms) == _MAX_SEARCH_TERMS:
+            break
+    return frozenset(terms)
+
+
+def _shares_word_root(left: str, right: str) -> bool:
+    """Handle simple inflections such as thread/threads without fuzzy guessing."""
+
+    return left.startswith(right) or right.startswith(left)
 
 
 def _filesystem_skill(directory: Path) -> _FilesystemSkill:

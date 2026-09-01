@@ -12,6 +12,34 @@ LANGGRAPH_AVAILABLE = importlib.util.find_spec("langgraph") is not None
 
 @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
 class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_managed_callable_rejects_unknown_arguments_before_filtering(self):
+        from langchain_core.messages import ToolMessage
+
+        from harnest.backends.langgraph import _langchain_tools
+
+        async def search_threads(limit: int = 50):
+            """Return a bounded thread page."""
+
+            return {"limit": limit}
+
+        native = _langchain_tools((search_threads,))[0]
+        rejected = await native.ainvoke(
+            {
+                "name": "search_threads",
+                "args": {"limit": 1, "startedBefore": "private-value"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        )
+        accepted = await native.ainvoke({"limit": 1})
+
+        self.assertIsInstance(rejected, ToolMessage)
+        self.assertEqual(rejected.status, "error")
+        self.assertIn("unknown input parameters: startedBefore", rejected.content)
+        self.assertIn("Allowed parameters: limit", rejected.content)
+        self.assertNotIn("private-value", rejected.content)
+        self.assertEqual(accepted, {"limit": 1})
+
     def test_pydantic_output_schema_is_passed_as_response_format(self):
         from pydantic import BaseModel
         from harnest.backends.langgraph import build_agent

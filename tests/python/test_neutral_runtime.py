@@ -583,6 +583,8 @@ class NeutralRuntimeTests(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("Harnest Playground", page.text)
+        self.assertIn('<span class="eyebrow">Playground</span>', page.text)
+        self.assertNotIn("Development playground", page.text)
         self.assertEqual(page.headers["cache-control"], "no-store")
         self.assertEqual(stylesheet.headers["cache-control"], "no-cache")
         self.assertEqual(javascript.headers["cache-control"], "no-cache")
@@ -683,7 +685,14 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn('.dataset.active = runtime.transport', javascript.text)
         self.assertIn("showTypingIndicator()", javascript.text)
         self.assertIn('label.textContent = "Thinking"', javascript.text)
-        self.assertIn("if (runtime.streamingBubble) clearTypingIndicator()", javascript.text)
+        self.assertIn(
+            "if (runtime.streamingBubble) {\n    clearTypingIndicator();",
+            javascript.text,
+        )
+        self.assertIn(
+            "frame.outputText && !runtime.responseAssistantTurn",
+            javascript.text,
+        )
         for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
             self.assertNotIn(native_endpoint, javascript.text)
         self.assertEqual(javascript.text.count("window.localStorage"), 2)
@@ -733,6 +742,59 @@ class NeutralRuntimeTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("ui.sessionStateEmpty.hidden = !empty", javascript)
+
+    def test_playground_new_session_resets_conversation_owned_state(self):
+        javascript = self.client.get("/_harnest/playground.js").text
+
+        self.assertIn("function resetConversation()", javascript)
+        self.assertIn(
+            "ui.conversation.replaceChildren(ui.emptyState)",
+            javascript,
+        )
+        self.assertIn("runtime.toolCards.clear()", javascript)
+        self.assertIn("runtime.clientToolCards.clear()", javascript)
+        self.assertIn(
+            "setActiveSession(session.id, clearConversation)",
+            javascript,
+        )
+        self.assertIn(
+            "return runtime.sessionId || createSession(false)",
+            javascript,
+        )
+
+    def test_playground_marks_unfinished_tools_failed_on_request_error(self):
+        javascript = self.client.get("/_harnest/playground.js").text
+        stylesheet = self.client.get("/_harnest/playground.css").text
+
+        self.assertIn("detail.open = false", javascript)
+        self.assertNotIn("detail.open = true", javascript)
+        self.assertIn("function failRunningTools()", javascript)
+        self.assertIn(
+            'if (card.detail.dataset.status !== "running") continue',
+            javascript,
+        )
+        self.assertIn('card.detail.dataset.status = "failed"', javascript)
+        self.assertIn('card.status.textContent = "Failed"', javascript)
+        self.assertIn("failRunningTools();", javascript)
+        self.assertIn('.tool-event[data-status="failed"]', stylesheet)
+
+    def test_playground_preserves_text_and_tool_call_timeline(self):
+        javascript = self.client.get("/_harnest/playground.js").text
+
+        self.assertIn("function beginToolBoundary()", javascript)
+        self.assertIn(
+            "beginToolBoundary();\n    appendToolCall",
+            javascript,
+        )
+        self.assertIn(
+            "placePendingTools(runtime.responseAssistantTurn)",
+            javascript,
+        )
+        self.assertIn("function placePendingTools(turn)", javascript)
+        self.assertNotIn(
+            "runtime.responseAssistantTurn = turn;\n    attachPendingTools(turn)",
+            javascript,
+        )
 
     def test_server_policy_controls_request_limit_and_playground(self):
         app = create_neutral_app(

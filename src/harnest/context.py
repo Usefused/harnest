@@ -368,9 +368,10 @@ def revoke_context(active: AgentContext) -> None:
     """Invalidate copied task contexts when their owning invocation finishes."""
 
     active._lifetime.active = False
-    from .plugin_runtime_context import revoke_plugin_bindings
+    if active._plugin_bindings:
+        from .plugin_runtime_context import revoke_plugin_bindings
 
-    revoke_plugin_bindings(active._plugin_bindings)
+        revoke_plugin_bindings(active._plugin_bindings)
 
 
 @contextmanager
@@ -380,6 +381,11 @@ def activate_context(active: AgentContext) -> Iterator[None]:
     active._require_active()
     token = _ACTIVE_CONTEXT.set(active)
     try:
+        if not active._plugin_bindings:
+            # An empty plugin registry cannot change singleton plugin context;
+            # avoiding another generator context manager keeps the core path lean.
+            yield
+            return
         from .plugin_runtime_context import activate_plugin_bindings
 
         with activate_plugin_bindings(active._plugin_bindings):

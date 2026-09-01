@@ -405,6 +405,7 @@ select:focus, input:focus, textarea:focus { border-color: rgba(184, 243, 74, 0.7
 .tool-heading small { color: var(--muted); font: 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .tool-status { padding: 4px 7px; color: var(--tool); background: rgba(136, 169, 255, 0.1); border-radius: 999px; font-size: 8px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .tool-event[data-status="completed"] .tool-status { color: var(--accent); background: var(--accent-soft); }
+.tool-event[data-status="failed"] .tool-status { color: #ff9b9b; background: rgba(255, 107, 107, 0.1); }
 .tool-sections { display: grid; gap: 1px; border-top: 1px solid var(--line-strong); }
 .tool-section { background: var(--panel-deep); }
 .tool-section-label { display: block; padding: 9px 13px 0; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }

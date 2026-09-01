@@ -2,6 +2,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
+from google.adk.tools import FunctionTool
+
 from harnest.context import (
     activate_context,
     context,
@@ -30,6 +32,35 @@ def _context():
 
 
 class ADKPortableToolLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_function_arguments_are_rejected_before_adk_filters_them(self):
+        async def search_threads(limit: int = 50):
+            """Return a bounded page of threads."""
+
+            return {"limit": limit}
+
+        setattr(search_threads, "__harnest_tool_lifecycle_wrapped__", True)
+        plugin = ADKPortableToolLifecyclePlugin(())
+        native = FunctionTool(search_threads)
+        active = _context()
+
+        with activate_context(active):
+            rejected = await plugin.before_tool_callback(
+                tool=native,
+                tool_args={"limit": 1, "startedBefore": "private-value"},
+                tool_context=SimpleNamespace(agent_name="root"),
+            )
+            accepted = await plugin.before_tool_callback(
+                tool=native,
+                tool_args={"limit": 1},
+                tool_context=SimpleNamespace(agent_name="root"),
+            )
+
+        revoke_context(active)
+        self.assertEqual(accepted, None)
+        self.assertIn("unknown input parameters: startedBefore", rejected["error"])
+        self.assertIn("Allowed parameters: limit", rejected["error"])
+        self.assertNotIn("private-value", rejected["error"])
+
     async def test_native_tool_is_intercepted_once_with_subagent_identity(self):
         seen = []
 

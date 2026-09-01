@@ -25,6 +25,7 @@ from ..model_lifecycle import propagate_litellm_lifecycles
 from ..model_hooks import bind_model_extension
 from ..mcp_context import _is_governed_mcp_operation
 from ..structured import provider_output_schema
+from ..tool_arguments import invalid_argument_error, unknown_argument_error
 from ..tool_lifecycle import wrap_lifecycle_tool
 
 
@@ -97,7 +98,7 @@ def _langchain_tools(values: Sequence[Any]) -> list[Any]:
     result = []
     for value in values:
         if isinstance(value, BaseTool):
-            result.append(_govern_langchain_base_tool(value))
+            result.append(_strict_langchain_tool(_govern_langchain_base_tool(value)))
         elif isinstance(value, Mapping):
             result.append(dict(value))
         elif callable(value):
@@ -106,12 +107,63 @@ def _langchain_tools(values: Sequence[Any]) -> list[Any]:
                 if is_durable_tool(value)
                 else value
             )
-            result.append(langchain_tool(runtime_value))
+            result.append(_strict_langchain_tool(langchain_tool(runtime_value)))
         else:
             raise TypeError(
                 "LangGraph tools must be callables, BaseTool instances, or mappings"
             )
     return result
+
+
+def _strict_langchain_tool(tool: Any) -> Any:
+    """Reject extra model arguments before LangChain can discard them."""
+
+    from pydantic import BaseModel, ConfigDict
+
+    schema = getattr(tool, "args_schema", None)
+    if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+        return tool
+    config = {**dict(schema.model_config), "extra": "forbid"}
+    strict_schema = type(
+        f"{schema.__name__}HarnestStrict",
+        (schema,),
+        {"model_config": ConfigDict(**config)},
+    )
+    allowed = frozenset(strict_schema.model_fields)
+    object.__setattr__(tool, "args_schema", strict_schema)
+    object.__setattr__(
+        tool,
+        "handle_validation_error",
+        _langchain_validation_error(str(tool.name), allowed),
+    )
+    return tool
+
+
+def _langchain_validation_error(tool_name: str, allowed: frozenset[str]) -> Any:
+    """Build one value-free repair message for LangChain validation failures."""
+
+    def message(error: Any) -> str:
+        unknown = _extra_validation_fields(error)
+        return (
+            unknown_argument_error(tool_name, unknown, allowed)
+            if unknown
+            else invalid_argument_error(tool_name, allowed)
+        )
+
+    return message
+
+
+def _extra_validation_fields(error: Any) -> tuple[str, ...]:
+    """Extract only rejected field names, never validation input values."""
+
+    entries = error.errors(include_input=False)
+    return tuple(
+        str(location[0])
+        for item in entries
+        if item.get("type") == "extra_forbidden"
+        and isinstance((location := item.get("loc")), tuple)
+        and location
+    )
 
 
 def _govern_langchain_base_tool(tool: Any) -> Any:

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Clear conversation-owned messages and tool state when the playground creates
+  or switches sessions, while preserving the first turn during implicit session
+  creation.
+* Preserve the playground's streamed chronology by rendering each assistant
+  segment around its tool calls, collapse tool details by default, mark
+  unfinished calls as failed when a request errors, and shorten the visible
+  heading to `Playground`.
+* Reject undeclared managed-tool arguments before ADK or LangGraph can silently
+  discard them, returning value-free repair guidance to the model.
+* Rank filesystem skills with deterministic fuzzy name and description matching,
+  preserve ranked dynamic-source candidates, and use one bounded catalog
+  fallback when a model query returns no skills.
+
+### Performance
+
+* Reduce the framework-neutral invocation overhead by indexing lifecycle hooks,
+  reusing immutable tool pipelines, and bypassing empty plugin-context work
+  without changing result canonicalization.
+
 ## [0.6.0](https://github.com/Usefused/harnest/compare/v0.5.0...v0.6.0) (2026-08-31)
 
 

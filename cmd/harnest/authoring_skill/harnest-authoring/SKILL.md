@@ -5,7 +5,7 @@ description: Build, modify, test, or review Harnest agents and source. Use for a
 
 # Harnest authoring
 
-Produce agents. Never edit `.harnest/`. Not a runtime skill.
+Produce agents. Never edit `.harnest/`.
 
 ## Modify safely
 
@@ -30,7 +30,9 @@ Produce agents. Never edit `.harnest/`. Not a runtime skill.
    `@client_tool` stubs run in callers, never the agent server. Decorate
    extension listeners with `@lifecycle.*`; tool/HTTP interceptors return
    `context.next(...)` or `context.finish(...)`. Keep helpers ignored. Put MCP
-   approval on remote tools. Invalid resources fail.
+   approval on remote tools. Describe each tool argument's semantic role;
+   expose pagination and ordering as typed arguments rather than prompt hints.
+   Invalid resources fail.
 7. Put agent dependencies in root `pyproject.toml`; runtime plugins may own a
    matching PEP 621 project but never add Harnest/framework packages. Put deployment settings in `config.yaml`,
    and standalone HTTP policy in `server.yaml`; use exact `${NAME}` references
@@ -53,8 +55,7 @@ Produce agents. Never edit `.harnest/`. Not a runtime skill.
 
 ## Finish with evidence
 
-Run focused tests, then `harnest test AGENT_DIR` and compile after structural
-changes. Evals default to business trajectories; use strict when exact tool
-calls matter. Use smoke only for authorized live calls. Report the
-framework/mode, checks, live calls, and remaining provider requirements. Treat
-compiler diagnostics as authoritative.
+Run focused tests, then `harnest test AGENT_DIR`; compile after structural
+changes. Use strict evals for exact tool calls and smoke only for authorized
+live calls. Report framework/mode, checks, live calls, and remaining
+requirements.

@@ -31,6 +31,18 @@ verification requirements.
   depends on the local reference. If the Mintlify checkout is unavailable, ask
   for its location instead of creating a second public guide here.
 
+## Changelog
+
+- Review every implementation change for release-note impact before handoff.
+- Add or update a concise entry under the single `## Unreleased` section in
+  `CHANGELOG.md` for externally observable features, fixes, compatibility or
+  configuration changes, and material performance, reliability, or security
+  improvements. Internal-only tests and refactors do not need an entry.
+- Keep `Unreleased` directly below the changelog title, update an existing note
+  instead of duplicating it, and never edit a published release section. The
+  Release Please workflow owns version headings and folds authored notes into
+  the next release.
+
 ## Skills
 
 - Keep every `SKILL.md` at 400 words or fewer, including YAML frontmatter.

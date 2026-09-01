@@ -145,7 +145,7 @@ function pretty(value) {
   return JSON.stringify(value, null, 2) ?? "null";
 }
 
-/** Add a chat turn and bind pending tool metadata to an assistant reply. */
+/** Add one visible chat turn without merging activity across tool boundaries. */
 function appendTurn(role, text = "") {
   ui.emptyState?.remove();
   const turn = document.createElement("article");
@@ -159,7 +159,6 @@ function appendTurn(role, text = "") {
   turn.append(label, bubble);
   if (role === "assistant" && text) {
     runtime.responseAssistantTurn = turn;
-    attachPendingTools(turn);
   }
   ui.conversation.append(turn);
   scrollConversation();
@@ -201,6 +200,19 @@ function clearTypingIndicator() {
   runtime.typingBubble = null;
 }
 
+/** Clear every visible and pending artifact owned by the previous session. */
+function resetConversation() {
+  clearTypingIndicator();
+  runtime.streamingBubble = null;
+  runtime.responseAssistantTurn = null;
+  runtime.toolCards.clear();
+  runtime.pendingToolCards = [];
+  runtime.clientToolCards.clear();
+  // Reuse the bundled empty state so a session switch restores the same
+  // accessible starting point shown on the first page load.
+  ui.conversation.replaceChildren(ui.emptyState);
+}
+
 function toolKey(name, callId) {
   return callId || name || `tool-${runtime.toolCards.size + 1}`;
 }
@@ -209,7 +221,7 @@ function createToolCard(name, callId) {
   const detail = document.createElement("details");
   detail.className = "tool-event";
   detail.dataset.status = "running";
-  detail.open = true;
+  detail.open = false;
   const summary = document.createElement("summary");
   const mark = document.createElement("span");
   mark.className = "tool-mark";
@@ -250,6 +262,7 @@ function appendToolCall(name, value, callId) {
   appendToolSection(card, "Arguments", value ?? {});
   runtime.toolCards.set(key, card);
   rememberPendingTool(card);
+  placePendingTools(runtime.responseAssistantTurn);
   scrollConversation();
 }
 
@@ -260,15 +273,34 @@ function appendToolResult(name, value, callId) {
   card.detail.dataset.status = "completed";
   card.status.textContent = "Completed";
   runtime.toolCards.set(key, card);
-  rememberPendingTool(card);
   scrollConversation();
+}
+
+/** Close only outstanding calls when a request terminates before a tool result. */
+function failRunningTools() {
+  for (const card of runtime.toolCards.values()) {
+    if (card.detail.dataset.status !== "running") continue;
+    card.detail.dataset.status = "failed";
+    card.status.textContent = "Failed";
+  }
 }
 
 function rememberPendingTool(card) {
   if (!runtime.pendingToolCards.includes(card)) runtime.pendingToolCards.push(card);
 }
 
-/** Move completed tool activity beneath the reply it contributed to. */
+/** Place a tool after the assistant segment that initiated it, when present. */
+function placePendingTools(turn) {
+  if (turn) {
+    attachPendingTools(turn);
+    return;
+  }
+  // Calls made before any visible text stay inline instead of moving behind a
+  // later response and misrepresenting when the model invoked them.
+  runtime.pendingToolCards = [];
+}
+
+/** Move tool activity beneath the assistant segment that preceded the call. */
 function attachPendingTools(turn) {
   if (!turn || !runtime.pendingToolCards.length) return;
   let tray = turn.querySelector(".turn-tools");
@@ -367,9 +399,6 @@ function renderOutput(items, fallback = "") {
   let displayedText = false;
   for (const item of items || []) displayedText = renderOutputItem(item) || displayedText;
   if (!displayedText && fallback) appendTurn("assistant", fallback);
-  // Adapters may report their canonical message before tool trace items. The
-  // completion boundary is the first point where either ordering is settled.
-  attachPendingTools(runtime.responseAssistantTurn);
 }
 
 function renderOutputItem(item) {
@@ -406,7 +435,7 @@ function replaceSessionOptions(sessions, preferredId) {
   if (!sessions.length) addSessionOption("", "No session", "Create one to begin", 0);
   sessions.forEach((session, index) => addSessionOption(session.id, `Session ${index + 1}`, compactSessionId(session.id), index));
   const available = sessions.some((session) => session.id === preferredId);
-  runtime.sessionId = available ? preferredId : (sessions[0]?.id || "");
+  setActiveSession(available ? preferredId : (sessions[0]?.id || ""));
   ui.sessionSelect.value = runtime.sessionId;
   syncSessionPicker();
   ui.sessionId.textContent = runtime.sessionId || "Not created";
@@ -481,19 +510,22 @@ function closeSessionMenu() {
   ui.sessionTrigger.focus();
 }
 
-async function createSession() {
+/** Create a session, preserving a just-submitted turn for implicit creation. */
+async function createSession(clearConversation = true) {
   setStatus("Creating session…");
   const response = await api(endpoints.sessions, { method: "POST", body: "{}" });
   const session = await response.json();
-  runtime.sessionId = session.id;
+  setActiveSession(session.id, clearConversation);
   closeLiveSocket();
   await loadSessions(session.id);
+  await loadTraces();
   setStatus("Session ready", "ok");
   return session.id;
 }
 
 async function ensureSession() {
-  return runtime.sessionId || createSession();
+  // startRequest has already rendered the user's turn at this point.
+  return runtime.sessionId || createSession(false);
 }
 
 async function loadSessionState() {
@@ -1015,7 +1047,7 @@ function handleStreamFrame(frame) {
   if (frame.type === "response.created") beginStreamingOutput();
   if (frame.type === "response.text.delta") appendStreamingText(frame.delta || "");
   if (frame.type === "response.tool_call") {
-    clearTypingIndicator();
+    beginToolBoundary();
     appendToolCall(frame.name, frame.arguments, frame.id);
     if (runtime.busy) showTypingIndicator();
   }
@@ -1030,6 +1062,12 @@ function handleStreamFrame(frame) {
   if (frame.type === "error") throw new Error(frame.error || "Agent stream failed");
 }
 
+/** End the current text segment before rendering its tool activity. */
+function beginToolBoundary() {
+  clearTypingIndicator();
+  runtime.streamingBubble = null;
+}
+
 function beginStreamingOutput() {
   runtime.streamingBubble = null;
   runtime.responseAssistantTurn = null;
@@ -1039,7 +1077,6 @@ function beginStreamingOutput() {
 function appendStreamingText(delta) {
   if (!runtime.streamingBubble) runtime.streamingBubble = takeTypingBubble() || appendTurn("assistant");
   runtime.responseAssistantTurn = runtime.streamingBubble.closest(".turn");
-  attachPendingTools(runtime.responseAssistantTurn);
   runtime.streamingBubble.textContent += delta;
   scrollConversation();
 }
@@ -1052,16 +1089,15 @@ function finishStreamingOutput(frame) {
   }
   // Tool transitions can create a fresh processing bubble after visible text;
   // completion must remove that indicator without duplicating the text bubble.
-  if (runtime.streamingBubble) clearTypingIndicator();
-  if (!runtime.streamingBubble && frame.outputText) {
+  if (runtime.streamingBubble) {
+    clearTypingIndicator();
+  } else if (frame.outputText && !runtime.responseAssistantTurn) {
     const bubble = takeTypingBubble() || appendTurn("assistant");
     runtime.responseAssistantTurn = bubble.closest(".turn");
-    attachPendingTools(runtime.responseAssistantTurn);
     bubble.textContent = frame.outputText;
-  } else if (!frame.outputText) {
+  } else {
     clearTypingIndicator();
   }
-  attachPendingTools(runtime.responseAssistantTurn);
   const graphOutputs = (frame.output || []).filter((item) => item.type === "output");
   for (const output of graphOutputs) appendResult(output.value);
   if (frame.result !== undefined && !graphOutputs.length) appendResult(frame.result);
@@ -1184,6 +1220,9 @@ function finishFailedRequest(error) {
   ui.send.disabled = false;
   clearTypingIndicator();
   stopTracePolling();
+  // A transport-level failure has no response.tool_result frame to close the
+  // active card, but it is still a terminal outcome for every outstanding call.
+  failRunningTools();
   loadTraces(true);
   showError(error);
 }
@@ -1328,13 +1367,20 @@ async function runAction(action) {
 }
 
 async function changeSession(sessionId) {
-  runtime.sessionId = sessionId;
+  setActiveSession(sessionId);
   runtime.selectedTraceId = "";
   ui.sessionSelect.value = sessionId;
   syncSessionPicker();
   closeLiveSocket();
   await runAction(() => Promise.all([loadSessionState(), loadTraces()]));
   setStatus(sessionId ? "Session selected" : "No session", sessionId ? "ok" : "pending");
+}
+
+/** Select a session and reset client state only when ownership changes. */
+function setActiveSession(sessionId, clearConversation = true) {
+  const changed = runtime.sessionId !== sessionId;
+  runtime.sessionId = sessionId;
+  if (changed && clearConversation) resetConversation();
 }
 
 async function initialize() {

@@ -83,6 +83,9 @@ class PluginInvocationBinding:
     plugin_context: Any = field(repr=False)
 
 
+_EMPTY_PLUGIN_BINDINGS: Mapping[str, PluginInvocationBinding] = MappingProxyType({})
+
+
 class PluginContextAccess:
     """Resolve one plugin context without making installed names enumerable."""
 
@@ -129,6 +132,8 @@ def bind_plugin_bindings(
 ) -> tuple[tuple[Any, Any], ...]:
     """Return task-owned tokens for framework adapters with split callbacks."""
 
+    if not bindings:
+        return ()
     from .plugins import Plugin
 
     tokens: list[tuple[Any, Any]] = []
@@ -148,6 +153,8 @@ def bind_plugin_bindings(
 def reset_plugin_bindings(tokens: Sequence[tuple[Any, Any]]) -> None:
     """Reset tokens in the same task which opened the split activation."""
 
+    if not tokens:
+        return
     from .plugins import Plugin
 
     for plugin, token in reversed(tokens):
@@ -159,6 +166,8 @@ def revoke_plugin_bindings(
 ) -> None:
     """Invalidate retained views, including bindings copied into child tasks."""
 
+    if not bindings:
+        return
     from .plugins import PluginContext
 
     for binding in bindings.values():
@@ -172,6 +181,8 @@ def validate_plugin_bindings(
 
     if not isinstance(bindings, Mapping):
         raise TypeError("plugin bindings must be a mapping")
+    if not bindings:
+        return _EMPTY_PLUGIN_BINDINGS
     normalized = dict(bindings)
     for name, binding in normalized.items():
         _require_text(name, "plugin name")

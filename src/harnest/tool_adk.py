@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -11,6 +11,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from .context import activate_context, context, derive_agent_context
 from .lifecycle import LifecycleListener
 from .mcp_context import _is_governed_mcp_operation
+from .tool_arguments import callable_argument_names, unknown_argument_error
 from .tool_lifecycle import (
     ToolCallRequest,
     ToolLifecycleContext,
@@ -30,6 +31,14 @@ class ADKPortableToolLifecyclePlugin(BasePlugin):
     ) -> Any:
         """Transform or finish one native call before transport execution."""
 
+        argument_error = unknown_argument_error(
+            _tool_name(tool), tool_args, _declared_argument_names(tool)
+        )
+        if argument_error is not None:
+            # ADK filters kwargs before invoking FunctionTool callables. Returning
+            # an error here keeps an invented parameter visible to the model so it
+            # can repair the call instead of mistaking an ignored filter for success.
+            return {"error": argument_error}
         if _already_governed(tool):
             return None
         request = ToolCallRequest(_tool_name(tool), (), tool_args)
@@ -151,6 +160,45 @@ def _tool_name(tool: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("ADK tool name must be a non-empty string")
     return value
+
+
+def _declared_argument_names(tool: Any) -> frozenset[str] | None:
+    """Read callable or declaration inputs while preserving open native tools."""
+
+    function = getattr(tool, "func", None)
+    if callable(function):
+        return callable_argument_names(
+            function, ignored=getattr(tool, "_ignore_params", ())
+        )
+    declaration_factory = getattr(tool, "_get_declaration", None)
+    if not callable(declaration_factory):
+        return None
+    declaration = declaration_factory()
+    return _declaration_argument_names(declaration)
+
+
+def _declaration_argument_names(declaration: Any) -> frozenset[str] | None:
+    """Read declared native-tool properties while respecting an explicit open map."""
+
+    if declaration is None:
+        return None
+    json_schema = getattr(declaration, "parameters_json_schema", None)
+    if isinstance(json_schema, Mapping):
+        additional = json_schema.get("additionalProperties")
+        if additional is True or isinstance(additional, Mapping):
+            return None
+        properties = json_schema.get("properties", {})
+        return _property_names(properties)
+    properties = getattr(getattr(declaration, "parameters", None), "properties", None)
+    return _property_names(properties)
+
+
+def _property_names(properties: Any) -> frozenset[str] | None:
+    """Normalize one ADK schema property mapping without inspecting its values."""
+
+    if not isinstance(properties, Mapping):
+        return None
+    return frozenset(str(name) for name in properties)
 
 
 __all__ = ["ADKPortableToolLifecyclePlugin", "adk_tool_lifecycle_plugin"]

@@ -126,12 +126,18 @@ class SkillSourceTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with activate_context(active):
                     page = await context.skills.list()
+                    natural_match = await context.skills.list(
+                        query="find guidance for local workflows"
+                    )
                     document = await context.skills.load("local-guide")
                     resource = await context.skills.load_resource(
                         "local-guide", "references.md"
                     )
                 descriptor = page.items[0].descriptor
                 self.assertEqual(descriptor.name, "local-guide")
+                self.assertEqual(
+                    natural_match.items[0].descriptor.name, "local-guide"
+                )
                 self.assertTrue(descriptor.version.startswith("sha256:"))
                 self.assertIn("Follow the local workflow.", document.instructions)
                 self.assertEqual(resource.content, "Reference content.\n")
@@ -142,6 +148,34 @@ class SkillSourceTests(unittest.IsolatedAsyncioTestCase):
                         SkillValidationError, "changed after compilation"
                     ):
                         await context.skills.load("local-guide")
+            finally:
+                revoke_context(active)
+
+    async def test_filesystem_source_fuzzy_ranks_skill_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "skills"
+            paths = []
+            for name, description in (
+                ("contract-design", "Design executable workflow contracts."),
+                ("thread-analysis", "Analyze live workflow threads and failures."),
+            ):
+                path = root / name
+                path.mkdir(parents=True)
+                (path / "SKILL.md").write_text(
+                    f"---\nname: {name}\ndescription: {description}\n---\n",
+                    encoding="utf-8",
+                )
+                paths.append(path)
+            source = FilesystemSkillSource(tuple(paths))
+            scope = scoped_skill_sources({}, source)
+            active = self._context(SkillRegistry({"root": scope}))
+            try:
+                with activate_context(active):
+                    page = await context.skills.list(query="thred analysys")
+                self.assertEqual(
+                    [item.descriptor.id for item in page.items],
+                    ["thread-analysis"],
+                )
             finally:
                 revoke_context(active)
 
@@ -214,6 +248,40 @@ class SkillSourceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["skills"][0]["source"], "wex")
             self.assertEqual(payload["skills"][0]["id"], "website-42")
             self.assertEqual(loaded, direct.instructions)
+        finally:
+            revoke_context(active)
+
+    async def test_model_skill_search_falls_back_from_literal_provider_queries(self):
+        class LiteralSource(_DynamicSource):
+            def __init__(self):
+                super().__init__()
+                self.queries = []
+
+            async def list(self, skill_context, *, query=None, **kwargs):
+                self.queries.append(query)
+                page = await super().list(
+                    skill_context, query=query, **kwargs
+                )
+                return SkillPage(()) if query else page
+
+        source = LiteralSource()
+        scope = SkillScope({"wex": source})
+        active = self._context(SkillRegistry({"root": scope}))
+        tools = {value.__name__: value for value in create_skill_tools(scope)}
+        try:
+            with activate_context(active):
+                payload = json.loads(
+                    await tools["list_skills"](
+                        query="find the website automation skill"
+                    )
+                )
+            self.assertEqual(
+                source.queries,
+                ["find the website automation skill", None],
+            )
+            self.assertTrue(payload["queryFallback"])
+            self.assertEqual(payload["skills"][0]["id"], "website-42")
+            self.assertIn("nextCursors", tools["list_skills"].__doc__)
         finally:
             revoke_context(active)
 

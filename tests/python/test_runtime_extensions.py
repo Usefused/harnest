@@ -3,6 +3,7 @@ import unittest
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from typing import AsyncIterator, Mapping, Sequence
+from unittest.mock import patch
 
 from harnest.lifecycle import LifecycleListener
 from harnest.context import (
@@ -159,6 +160,39 @@ def listener(phase, callback, *, name="hook", order=0, context_name=None):
 
 
 class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plain_invocation_canonicalizes_without_empty_plugin_work(self):
+        """Keep empty capability optimization behind the same result contract."""
+
+        driver = FakeDriver()
+        original = InvocationResult(
+            text="stale",
+            events=tuple(driver._events()),
+            result="stale",
+            session_id="session-1",
+            metadata={},
+        )
+
+        async def invoke(_request):
+            return original
+
+        driver.invoke = invoke  # type: ignore[method-assign]
+        wrapped = ExtensionRuntimeDriver(driver, [])
+        with (
+            patch(
+                "harnest.plugin_runtime_context.activate_plugin_bindings",
+                side_effect=AssertionError("empty plugins must not bind"),
+            ),
+            patch(
+                "harnest.plugin_runtime_context.revoke_plugin_bindings",
+                side_effect=AssertionError("empty plugins must not revoke"),
+            ),
+        ):
+            result = await wrapped.invoke(request())
+
+        self.assertEqual(result.text, "hello")
+        self.assertEqual(result.events, tuple(driver._events()))
+        self.assertEqual(result.result, 3)
+
     async def test_context_skills_receives_the_compiled_runtime_registry(self):
         """Make lifecycle hooks and framework tools share one invocation scope."""
 

@@ -247,6 +247,11 @@ tests, evals, and standalone serving. This boundary allows reuse without turning
 the authored root into an installable package or coupling independently
 discovered resource modules to each other.
 
+Managed ADK and LangGraph validate model-generated tool arguments against the
+declared callable schema before native framework coercion. Unknown names return
+value-free repair guidance instead of reaching the function or being silently
+discarded. Advanced opaque framework tools retain their native validation.
+
 Each MCP module is ordinary Python and may read `os.environ`, call a credential
 provider, or construct headers dynamically inside `client()`. Missing required
 configuration fails compilation instead of silently removing a capability.
@@ -347,7 +352,11 @@ but its catalog, documents, and resources are queried only inside a managed
 invocation. A source receives revocable agent, verified user and non-secret claim,
 session, credential, storage, and resource access through `SkillContext`; it must
 apply authorization, search, ordering, and pagination before returning a bounded
-`SkillPage`.
+`SkillPage`. Harnest applies deterministic fuzzy lexical ranking to filesystem
+skills and reranks bounded model-visible descriptors across sources. A dynamic
+source remains free to use datastore-native full-text or vector search. When an
+initial model-tool query returns no descriptors, Harnest performs one bounded
+unfiltered fallback and ranks metadata without loading skill bodies.
 
 Exactly zero or one root `@lifecycle.output_policy` factory selects public
 intermediate model messages. Its default `OutputPolicy()` suppresses subagent

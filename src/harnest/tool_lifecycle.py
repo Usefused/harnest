@@ -172,7 +172,16 @@ _ACTIVE_TOOL_PIPELINE: ContextVar[ToolLifecyclePipeline | None] = ContextVar(
 def tool_lifecycle_scope(listeners: Sequence[LifecycleListener]):
     """Bind root lifecycle policy so nested managed tool calls inherit it."""
 
-    pipeline = ToolLifecyclePipeline(listeners)
+    with _tool_lifecycle_pipeline_scope(ToolLifecyclePipeline(listeners)):
+        yield
+
+
+@contextmanager
+def _tool_lifecycle_pipeline_scope(pipeline: ToolLifecyclePipeline):
+    """Bind one prevalidated pipeline for repeated runtime invocations."""
+
+    if not isinstance(pipeline, ToolLifecyclePipeline):
+        raise TypeError("tool lifecycle pipeline must be ToolLifecyclePipeline")
     token = _ACTIVE_TOOL_PIPELINE.set(pipeline)
     try:
         yield

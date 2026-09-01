@@ -139,7 +139,12 @@ def lookup_ticket(ticket_id: str) -> str:
 
 Place this in `tools/lookup_ticket.py`; the callable and file stem must match.
 A tool needs a docstring or `@tool(description="...")`. The decorator keeps the
-function directly callable for unit tests.
+function directly callable for unit tests. Describe each parameter's semantic
+role in the docstring, especially when two arguments share a type or differ only
+as a key/value pair. Expose supported filters, pagination, and ordering as typed
+parameters or a separate typed tool; never rely on instructions that encourage
+the model to invent undeclared arguments. Managed ADK rejects unknown tool
+arguments before its native adapter can discard them.
 
 Use `@tool(output_schema=ResultModel)` to accept a mapping or model instance and
 validate it as that Pydantic type. A direct `-> ResultModel` return annotation

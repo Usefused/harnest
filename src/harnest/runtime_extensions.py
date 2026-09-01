@@ -42,7 +42,7 @@ from .runtime_auth import (
 from .model_hooks import model_invocation_scope
 from .session import SessionStore
 from .skills import SkillRegistry
-from .tool_lifecycle import tool_lifecycle_scope
+from .tool_lifecycle import ToolLifecyclePipeline, _tool_lifecycle_pipeline_scope
 
 
 class ExtensionTransformError(TypeError):
@@ -88,6 +88,17 @@ def _runtime_extensions(
     if any(not isinstance(item, LifecycleListener) for item in normalized):
         raise TypeError("extensions must contain only LifecycleListener values")
     return normalized
+
+
+def _extensions_by_phase(
+    values: Sequence[LifecycleListener],
+) -> dict[str, tuple[LifecycleListener, ...]]:
+    """Index immutable listeners once so invocation dispatch does not rescan them."""
+
+    grouped: dict[str, list[LifecycleListener]] = {}
+    for listener in values:
+        grouped.setdefault(listener.phase, []).append(listener)
+    return {phase: tuple(listeners) for phase, listeners in grouped.items()}
 
 
 def _validate_runtime_owners(
@@ -277,6 +288,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         )
         self._driver = driver
         self._extensions = normalized
+        self._extensions_by_phase = _extensions_by_phase(normalized)
+        self._tool_lifecycle_pipeline = ToolLifecyclePipeline(normalized)
         self._context_values = values
         self._asset_stores = dict(asset_stores or {})
         self._custom_stores = dict(custom_stores or {})
@@ -302,7 +315,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         return self._extensions
 
     def _listeners(self, phase: str) -> tuple[LifecycleListener, ...]:
-        return tuple(item for item in self._extensions if item.phase == phase)
+        return self._extensions_by_phase.get(phase, ())
 
     async def start(self) -> None:
         """Eagerly enter credentials and resources for an application lifespan."""
@@ -529,7 +542,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             )
             with (
                 model_invocation_scope(lifecycle_context),
-                tool_lifecycle_scope(self._extensions),
+                _tool_lifecycle_pipeline_scope(self._tool_lifecycle_pipeline),
             ):
                 result = (
                     short
@@ -540,14 +553,19 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 raise ExtensionTransformError(
                     "wrapped runtime driver returned a non-InvocationResult value"
                 )
-            events: list[RuntimeEvent] = []
-            for event in result.events:
-                transformed_event = await self._event(lifecycle_context, event)
-                if transformed_event is not DROP_EVENT:
-                    events.append(transformed_event)
-            return await self._after(
-                lifecycle_context, _result_with_events(result, events)
-            )
+            event_listeners = self._listeners("on_event")
+            if event_listeners:
+                events: list[RuntimeEvent] = []
+                for event in result.events:
+                    transformed_event = await self._event(lifecycle_context, event)
+                    if transformed_event is not DROP_EVENT:
+                        events.append(transformed_event)
+            else:
+                # Canonicalization remains part of the wrapper contract even
+                # when no event policy needs per-event asynchronous dispatch.
+                events = list(result.events)
+            current = _result_with_events(result, events)
+            return await self._after(lifecycle_context, current)
         except Exception as error:
             await self._notify_error(lifecycle_context, error)
             raise
@@ -673,7 +691,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             activate_context(agent_context),
             self._credential_scope(),
             model_invocation_scope(lifecycle_context),
-            tool_lifecycle_scope(self._extensions),
+            _tool_lifecycle_pipeline_scope(self._tool_lifecycle_pipeline),
         ):
             try:
                 event = await anext(iterator)
