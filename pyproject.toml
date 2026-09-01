@@ -30,6 +30,7 @@ dependencies = [
 quality = ["build>=1,<2", "hatchling>=1.25,<2", "radon>=6,<7"]
 postgres = ["asyncpg>=0.30,<1"]
 redis = ["redis>=6,<8"]
+tasks = ["procrastinate==3.9.0"]
 adk = [
   "google-adk[eval,extensions,mcp]>=2.8,<3",
   "asyncpg>=0.30,<1",
@@ -51,6 +52,7 @@ all = [
   "langchain-litellm>=0.7,<1",
   "langchain-mcp-adapters>=0.3,<1",
   "asyncpg>=0.30,<1",
+  "procrastinate==3.9.0",
   "redis>=6,<8",
 ]
 

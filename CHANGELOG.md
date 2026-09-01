@@ -17,6 +17,11 @@
 * Preserve A2A Agent Card icons, extensions, security schemes and requirements,
   and JWS signatures through strict bundle loading and compilation.
 
+### Fixes
+
+* Include the task runtime in the `all` development extra so the documented
+  full quality gate can exercise compiled tasks against PostgreSQL.
+
 ## [0.9.0](https://github.com/Usefused/harnest/compare/v0.8.0...v0.9.0) (2026-09-01)
 
 

@@ -327,6 +327,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertTrue(any(value.startswith("asyncpg") for value in requirements))
             self.assertTrue(any(value.startswith("redis") for value in requirements))
 
+    def test_all_extra_includes_the_task_runtime(self):
+        """Keep the documented development install capable of live task tests."""
+
+        extras = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["optional-dependencies"]
+
+        # Compiled bundles remain feature-selective, while `all` must include
+        # every backend exercised by the repository's complete quality gate.
+        self.assertEqual(extras["tasks"], ["procrastinate==3.9.0"])
+        self.assertIn("procrastinate==3.9.0", extras["all"])
+
     def test_installer_replaces_a_writable_legacy_python_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
