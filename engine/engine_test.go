@@ -78,6 +78,46 @@ func TestLoadBundleReadsExplicitCLIInterfaceOptIn(t *testing.T) {
 	}
 }
 
+func TestLoadBundlePreservesA2ASecurityAndSignatureFields(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "secure-agent", true)
+	file, err := os.OpenFile(filepath.Join(directory, "agent-card.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString(`iconUrl: https://example.com/icon.png
+securitySchemes:
+  bearer:
+    httpAuthSecurityScheme:
+      scheme: bearer
+securityRequirements:
+  - schemes:
+      bearer:
+        list: []
+signatures:
+  - protected: header
+    signature: value
+`)
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	bundle, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Card.IconURL == "" || bundle.Card.SecuritySchemes["bearer"] == nil {
+		t.Fatalf("A2A discovery fields were not preserved: %#v", bundle.Card)
+	}
+	if len(bundle.Card.SecurityRequirements) != 1 || len(bundle.Card.Signatures) != 1 {
+		t.Fatalf("A2A security requirements or signatures were lost: %#v", bundle.Card)
+	}
+}
+
 func TestDeployAllCallsDeployerForEachAgent(t *testing.T) {
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)

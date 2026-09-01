@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add bidirectional A2A 1.0 support: authored HTTP+JSON and JSON-RPC bindings
+  now expose direct messages, streamed and asynchronous tasks, scoped task
+  lookup/listing, cancellation, subscriptions, and approval continuations. Add
+  a lazy outbound client plus `RemoteAgent` graph/tool adapters with explicit
+  streaming, polling, credential, timeout, and network-authority policy. A2A
+  task snapshots now use the configured Harnest Memory, PostgreSQL, or Redis
+  store. With a durable store, `@task` waits recover, reconcile, subscribe, and
+  cancel through the same owner-scoped run, continuation, and Procrastinate
+  task state across process restarts and replicas, and cancellation responses
+  retain their terminal state after the A2A event queue has drained.
+* Preserve A2A Agent Card icons, extensions, security schemes and requirements,
+  and JWS signatures through strict bundle loading and compilation.
+
 ## [0.9.0](https://github.com/Usefused/harnest/compare/v0.8.0...v0.9.0) (2026-09-01)
 
 

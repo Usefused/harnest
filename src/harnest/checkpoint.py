@@ -33,6 +33,84 @@ class CheckpointConflictError(CheckpointError):
     """A compare-and-swap or run exclusivity condition failed."""
 
 
+class A2ATaskConflictError(CheckpointError):
+    """An A2A task mutation conflicts with its durable ownership."""
+
+
+class A2ATaskCursorError(CheckpointError):
+    """An A2A list cursor does not identify a task in the selected scope."""
+
+
+@dataclass(frozen=True, slots=True)
+class A2ATaskRecord:
+    """Transport-neutral durable snapshot of one protobuf A2A task."""
+
+    application_id: str
+    user_id: str
+    task_id: str
+    context_id: str
+    status: int
+    payload: bytes
+    status_timestamp: str | None = None
+    created_at: str = field(default_factory=lambda: _timestamp())
+    updated_at: str = field(default_factory=lambda: _timestamp())
+
+    def __post_init__(self) -> None:
+        """Reject malformed index projections before storing opaque payloads."""
+
+        _require_fields(
+            self.application_id, self.user_id, self.task_id, self.context_id
+        )
+        if type(self.status) is not int or self.status < 0:
+            raise ValueError("A2A task status must be a non-negative integer")
+        if not isinstance(self.payload, bytes):
+            raise TypeError("A2A task payload must be bytes")
+        _parse_optional_timestamp(self.status_timestamp)
+        _parse_optional_timestamp(self.created_at)
+        _parse_optional_timestamp(self.updated_at)
+
+
+@dataclass(frozen=True, slots=True)
+class A2ATaskPage:
+    """One bounded durable task page plus its pre-pagination total."""
+
+    records: tuple[A2ATaskRecord, ...]
+    total_size: int
+
+    def __post_init__(self) -> None:
+        """Keep page accounting explicit at every storage boundary."""
+
+        if type(self.total_size) is not int or self.total_size < 0:
+            raise ValueError("A2A task total_size must be non-negative")
+
+
+@runtime_checkable
+class A2ATaskPersistence(Protocol):
+    """Optional indexed A2A persistence implemented by built-in stores."""
+
+    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord: ...
+
+    async def get_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> A2ATaskRecord | None: ...
+
+    async def list_a2a_tasks(
+        self,
+        *,
+        application_id: str,
+        user_id: str,
+        context_id: str | None = None,
+        status: int | None = None,
+        status_timestamp_after: str | None = None,
+        cursor_task_id: str | None = None,
+        limit: int = 51,
+    ) -> A2ATaskPage: ...
+
+    async def delete_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PendingAction:
     """Portable description of a durable wait without customer payloads."""
@@ -226,6 +304,9 @@ class _MemoryState:
     continuation_external_keys: dict[tuple[str, str, str], str] = field(
         default_factory=dict
     )
+    a2a_tasks: dict[tuple[str, str, str], A2ATaskRecord] = field(
+        default_factory=dict
+    )
 
 
 class MemoryStore(HarnestStore, InMemorySessionStore):
@@ -245,6 +326,95 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         if self._closed:
             raise RuntimeError("checkpoint store is closed")
         await InMemorySessionStore.start(self)
+
+    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord:
+        """Upsert one owner-scoped snapshot without allowing context reassignment."""
+
+        key = _a2a_task_key(record)
+        try:
+            async with self._lock:
+                current = self._state.a2a_tasks.get(key)
+                if current is not None and current.context_id != record.context_id:
+                    raise A2ATaskConflictError(
+                        "A2A task context cannot change after creation"
+                    )
+                stored = replace(
+                    record,
+                    created_at=(
+                        record.created_at if current is None else current.created_at
+                    ),
+                    updated_at=_timestamp(),
+                )
+                self._state.a2a_tasks[key] = stored
+        except Exception:
+            _audit_a2a_task("saved", "failed", "memory")
+            raise
+        _audit_a2a_task("saved", "committed", "memory")
+        return stored
+
+    async def get_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> A2ATaskRecord | None:
+        """Read one snapshot only through its complete ownership key."""
+
+        _require_fields(application_id, user_id, task_id)
+        async with self._lock:
+            return self._state.a2a_tasks.get(
+                (application_id, user_id, task_id)
+            )
+
+    async def list_a2a_tasks(
+        self,
+        *,
+        application_id: str,
+        user_id: str,
+        context_id: str | None = None,
+        status: int | None = None,
+        status_timestamp_after: str | None = None,
+        cursor_task_id: str | None = None,
+        limit: int = 51,
+    ) -> A2ATaskPage:
+        """Return a stable inclusive-cursor page for the process-local backend."""
+
+        _require_a2a_list_options(
+            application_id,
+            user_id,
+            context_id,
+            status,
+            status_timestamp_after,
+            cursor_task_id,
+            limit,
+        )
+        async with self._lock:
+            records = tuple(self._state.a2a_tasks.values())
+        selected = _select_a2a_tasks(
+            records,
+            application_id=application_id,
+            user_id=user_id,
+            context_id=context_id,
+            status=status,
+            status_timestamp_after=status_timestamp_after,
+        )
+        start = _a2a_cursor_offset(selected, cursor_task_id)
+        return A2ATaskPage(selected[start : start + limit], len(selected))
+
+    async def delete_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> bool:
+        """Delete exactly one owner-scoped A2A snapshot."""
+
+        _require_fields(application_id, user_id, task_id)
+        try:
+            async with self._lock:
+                removed = self._state.a2a_tasks.pop(
+                    (application_id, user_id, task_id), None
+                )
+        except Exception:
+            _audit_a2a_task("deleted", "failed", "memory")
+            raise
+        if removed is not None:
+            _audit_a2a_task("deleted", "committed", "memory")
+        return removed is not None
 
     async def begin_run(
         self,
@@ -500,6 +670,28 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
             record = self._state.continuations.get(continuation_id)
             return record if record is not None and record.scope == scope else None
 
+    async def get_provider_continuation(
+        self, *, scope: RunScope, provider: str, continuation_id: str
+    ) -> Any | None:
+        """Return an exact continuation together with its provider external ID."""
+
+        from .continuation import ProviderPendingContinuation
+
+        _require_fields(provider, continuation_id)
+        async with self._lock:
+            record = self._state.continuations.get(continuation_id)
+            external_id = self._state.continuation_external_ids.get(
+                continuation_id
+            )
+            if (
+                record is None
+                or external_id is None
+                or record.scope != scope
+                or record.provider != provider
+            ):
+                return None
+            return ProviderPendingContinuation(record, external_id)
+
     async def get_continuation_by_external_id(
         self, *, application_id: str, provider: str, external_id: str
     ) -> Any | None:
@@ -598,6 +790,63 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
             audit_continuation("resolved", "failed", "memory")
             raise
         audit_continuation("resolved", "committed", "memory")
+        return updated
+
+    async def cancel_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+        failure: Any,
+    ) -> Any:
+        """Fail one pending continuation and cancel its exact waiting run."""
+
+        from .continuation import (
+            ContinuationConflictError,
+            ContinuationFailure,
+            audit_continuation,
+        )
+
+        if not isinstance(failure, ContinuationFailure):
+            audit_continuation("cancelled", "failed", "memory")
+            raise TypeError("continuation cancellation failure is invalid")
+
+        try:
+            async with self._lock:
+                record = self._state.continuations.get(continuation_id)
+                run = _owned_run(self._state.runs.get(scope.run_id), scope)
+                if not _valid_continuation_cancel(
+                    record,
+                    run,
+                    provider,
+                    continuation_id,
+                    expected_revision,
+                ):
+                    raise ContinuationConflictError(
+                        "continuation cancellation changed"
+                    )
+                updated = replace(
+                    record,
+                    status="failed",
+                    failure=failure,
+                    revision=record.revision + 1,
+                    updated_at=_timestamp(),
+                )
+                self._state.continuations[continuation_id] = updated
+                self._state.runs[run.run_id] = replace(
+                    run,
+                    status="cancelled",
+                    pending_action=None,
+                    revision=run.revision + 1,
+                    updated_at=_timestamp(),
+                )
+                self._state.active.pop(_run_key(run), None)
+        except Exception:
+            audit_continuation("cancelled", "failed", "memory")
+            raise
+        audit_continuation("cancelled", "committed", "memory")
         return updated
 
     async def claim_continuation(
@@ -924,6 +1173,28 @@ def _valid_continuation_claim(
     )
 
 
+def _valid_continuation_cancel(
+    record: Any,
+    run: RunRecord | None,
+    provider: str,
+    continuation_id: str,
+    expected_revision: int,
+) -> bool:
+    """Require a pending provider wait and its run to name one cancellation."""
+
+    if record is None or run is None:
+        return False
+    pending_id = getattr(run.pending_action, "action_id", None)
+    return (
+        record.scope == run.scope
+        and record.provider == provider
+        and record.status == "pending"
+        and record.revision == expected_revision
+        and run.status == "waiting"
+        and pending_id == continuation_id
+    )
+
+
 def _require_owned_run(record: RunRecord | None, scope: RunScope) -> RunRecord:
     """Reject missing and foreign runs with the same non-disclosing error."""
 
@@ -966,6 +1237,134 @@ def _require_fields(*values: str) -> None:
         raise ValueError("checkpoint run identifiers must be non-empty strings")
 
 
+def _require_a2a_list_options(
+    application_id: str,
+    user_id: str,
+    context_id: str | None,
+    status: int | None,
+    status_timestamp_after: str | None,
+    cursor_task_id: str | None,
+    limit: int,
+) -> None:
+    """Validate indexed list options consistently across every backend."""
+
+    _require_fields(application_id, user_id)
+    for value in (context_id, cursor_task_id):
+        if value is not None:
+            _require_fields(value)
+    if status is not None and (type(status) is not int or status < 0):
+        raise ValueError("A2A task status filter must be non-negative")
+    _parse_optional_timestamp(status_timestamp_after)
+    if type(limit) is not int or limit < 1:
+        raise ValueError("A2A task list limit must be positive")
+
+
+def _select_a2a_tasks(
+    records: Sequence[A2ATaskRecord],
+    *,
+    application_id: str,
+    user_id: str,
+    context_id: str | None,
+    status: int | None,
+    status_timestamp_after: str | None,
+) -> tuple[A2ATaskRecord, ...]:
+    """Apply the reference filtering and stable A2A ordering in memory."""
+
+    after = _parse_optional_timestamp(status_timestamp_after)
+    selected = (
+        record
+        for record in records
+        if _matches_a2a_task(
+            record,
+            application_id=application_id,
+            user_id=user_id,
+            context_id=context_id,
+            status=status,
+            after=after,
+        )
+    )
+    return tuple(sorted(selected, key=_a2a_sort_key, reverse=True))
+
+
+def _matches_a2a_task(
+    record: A2ATaskRecord,
+    *,
+    application_id: str,
+    user_id: str,
+    context_id: str | None,
+    status: int | None,
+    after: datetime | None,
+) -> bool:
+    """Keep optional task predicates separate from ordering and pagination."""
+
+    if record.application_id != application_id or record.user_id != user_id:
+        return False
+    if context_id is not None and record.context_id != context_id:
+        return False
+    if status is not None and record.status != status:
+        return False
+    timestamp = _parse_optional_timestamp(record.status_timestamp)
+    return after is None or (timestamp is not None and timestamp >= after)
+
+
+def _a2a_sort_key(record: A2ATaskRecord) -> tuple[bool, datetime, str]:
+    """Sort missing status timestamps last and use task ID as the stable tie."""
+
+    timestamp = _parse_optional_timestamp(record.status_timestamp)
+    return (
+        timestamp is not None,
+        timestamp or datetime.min.replace(tzinfo=timezone.utc),
+        record.task_id,
+    )
+
+
+def _a2a_cursor_offset(
+    records: Sequence[A2ATaskRecord], cursor_task_id: str | None
+) -> int:
+    """Resolve the SDK's inclusive lookahead cursor within the selected set."""
+
+    if cursor_task_id is None:
+        return 0
+    for index, record in enumerate(records):
+        if record.task_id == cursor_task_id:
+            return index
+    raise A2ATaskCursorError("A2A task cursor is not valid for this list")
+
+
+def _a2a_task_key(record: A2ATaskRecord) -> tuple[str, str, str]:
+    """Return the complete task identity, including its compiled application."""
+
+    return record.application_id, record.user_id, record.task_id
+
+
+def _parse_optional_timestamp(value: str | None) -> datetime | None:
+    """Parse one UTC timestamp without accepting ambiguous naive values."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("A2A task timestamp must be a non-empty ISO timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("A2A task timestamp must be valid ISO-8601") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("A2A task timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _audit_a2a_task(operation: str, outcome: str, backend: str) -> None:
+    """Audit durable task mutations without logging owner IDs or protobuf data."""
+
+    _AUDIT.info(
+        f"a2a.task_{operation}",
+        operation=f"a2a.task_{operation}",
+        trigger="agent",
+        outcome=outcome,
+        backend=backend,
+    )
+
+
 def _audit(record: RunRecord, operation: str, outcome: str) -> None:
     """Emit mutation identity while excluding checkpoint and customer payloads."""
 
@@ -986,6 +1385,11 @@ def _timestamp() -> str:
 
 
 __all__ = [
+    "A2ATaskConflictError",
+    "A2ATaskCursorError",
+    "A2ATaskPage",
+    "A2ATaskPersistence",
+    "A2ATaskRecord",
     "ADKStore",
     "CheckpointConflictError",
     "CheckpointError",

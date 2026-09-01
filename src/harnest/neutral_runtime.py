@@ -203,6 +203,7 @@ def create_neutral_router(
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
     asset_stores: Mapping[str, AssetStore] | None = None,
+    a2a_task_store: Any | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
     """Create the one Harnest router shared by every runtime backend."""
@@ -831,6 +832,14 @@ def create_neutral_router(
     # Factories capture an unbound invoker during compilation. Bind only after
     # the final wrapped driver and shared continuation stores are available.
     mount_http_route_extensions(router, http_routes, invoke_from_http_route)
+    from .runtime_a2a import mount_a2a_routes
+
+    mount_a2a_routes(
+        router,
+        driver=driver,
+        coordinator=coordinator,
+        task_store=a2a_task_store,
+    )
     return router
 
 
@@ -845,6 +854,7 @@ def create_neutral_app(
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
+    a2a_task_store: Any | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
     lifecycle_extensions: Sequence[Any] = (),
     playground_eval_service: Any | None = None,
@@ -900,6 +910,7 @@ def create_neutral_app(
             approval_store=approval_store,
             client_tool_store=client_tool_store,
             asset_store=asset_store,
+            a2a_task_store=a2a_task_store,
             http_routes=http_routes,
         )
     )

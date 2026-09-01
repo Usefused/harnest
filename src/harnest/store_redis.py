@@ -18,6 +18,10 @@ from typing import Any, Literal
 from . import store_redis_scripts as scripts
 from ._json import json_value
 from .checkpoint import (
+    A2ATaskConflictError,
+    A2ATaskCursorError,
+    A2ATaskPage,
+    A2ATaskRecord,
     CheckpointConflictError,
     CheckpointRecord,
     CheckpointWrite,
@@ -27,6 +31,7 @@ from .checkpoint import (
     RunScope,
     RunStatus,
     _require_checkpoint_scope,
+    _require_a2a_list_options,
     _require_fields,
     _validate_same_run,
     _validate_transition,
@@ -47,9 +52,11 @@ from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, _require_list_options
 
 
-_SCHEMA_VERSION = "3"
-_MIGRATABLE_SCHEMA_VERSIONS = frozenset({"1", "2"})
+_SCHEMA_VERSION = "4"
+_MIGRATABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
 _AUDIT = get_logger("store.audit")
+_A2A_MISSING_TIMESTAMP_SCORE = -62_135_596_800_000_000
+_A2A_MUTATION_RETRIES = 8
 
 
 class RedisStore(HarnestStore):
@@ -175,6 +182,165 @@ class RedisStore(HarnestStore):
         # MGET keeps this set-based even when a user owns many sessions.
         values = await client.mget(keys)
         return tuple(_session_load(raw) for raw in values if raw is not None)
+
+    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord:
+        """Atomically update one A2A record and all of its query indexes."""
+
+        try:
+            for _attempt in range(_A2A_MUTATION_RETRIES):
+                stored = await self._put_a2a_task_once(record)
+                if stored is not None:
+                    _audit("a2a.task_saved", "agent", "committed", "redis")
+                    return stored
+        except Exception:
+            _audit("a2a.task_saved", "agent", "failed", "redis")
+            raise
+        _audit("a2a.task_saved", "agent", "failed", "redis")
+        raise A2ATaskConflictError("A2A task changed during persistence")
+
+    async def get_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> A2ATaskRecord | None:
+        """Read one task through its digested application and owner key."""
+
+        _require_fields(application_id, user_id, task_id)
+        raw = await self._require_client().get(
+            self._a2a_task_key(application_id, user_id, task_id)
+        )
+        return None if raw is None else _a2a_task_load(raw)
+
+    async def list_a2a_tasks(
+        self,
+        *,
+        application_id: str,
+        user_id: str,
+        context_id: str | None = None,
+        status: int | None = None,
+        status_timestamp_after: str | None = None,
+        cursor_task_id: str | None = None,
+        limit: int = 51,
+    ) -> A2ATaskPage:
+        """Use one prefiltered sorted index and one batched record read."""
+
+        _require_a2a_list_options(
+            application_id,
+            user_id,
+            context_id,
+            status,
+            status_timestamp_after,
+            cursor_task_id,
+            limit,
+        )
+        index = self._a2a_task_index(
+            application_id, user_id, context_id=context_id, status=status
+        )
+        minimum = _a2a_minimum_score(status_timestamp_after)
+        client = self._require_client()
+        offset = await _redis_a2a_cursor_offset(
+            client, index, cursor_task_id, minimum
+        )
+        total = await client.zcount(index, minimum, "+inf")
+        task_ids = await client.zrevrangebyscore(
+            index, "+inf", minimum, start=offset, num=limit
+        )
+        records = await self._load_a2a_task_page(
+            application_id, user_id, task_ids
+        )
+        return A2ATaskPage(records, int(total))
+
+    async def delete_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> bool:
+        """Delete a record and every selected-list index with optimistic CAS."""
+
+        _require_fields(application_id, user_id, task_id)
+        try:
+            for _attempt in range(_A2A_MUTATION_RETRIES):
+                deleted = await self._delete_a2a_task_once(
+                    application_id, user_id, task_id
+                )
+                if deleted is not None:
+                    if deleted:
+                        _audit(
+                            "a2a.task_deleted", "user", "committed", "redis"
+                        )
+                    return deleted
+        except Exception:
+            _audit("a2a.task_deleted", "user", "failed", "redis")
+            raise
+        _audit("a2a.task_deleted", "user", "failed", "redis")
+        raise A2ATaskConflictError("A2A task changed during deletion")
+
+    async def _put_a2a_task_once(
+        self, record: A2ATaskRecord
+    ) -> A2ATaskRecord | None:
+        """Attempt one index-safe compare-and-swap for an A2A snapshot."""
+
+        client = self._require_client()
+        record_key = self._a2a_task_key(
+            record.application_id, record.user_id, record.task_id
+        )
+        current_raw = await client.get(record_key)
+        current = None if current_raw is None else _a2a_task_load(current_raw)
+        if current is not None and current.context_id != record.context_id:
+            raise A2ATaskConflictError(
+                "A2A task context cannot change after creation"
+            )
+        stored = replace(
+            record,
+            created_at=record.created_at if current is None else current.created_at,
+            updated_at=_timestamp(),
+        )
+        old = stored if current is None else current
+        keys = self._a2a_mutation_keys(stored, old)
+        result = await self._eval(
+            scripts.PUT_A2A_TASK,
+            keys,
+            (
+                "" if current_raw is None else _text(current_raw),
+                _a2a_task_dump(stored),
+                stored.task_id,
+                _a2a_score(stored.status_timestamp),
+            ),
+        )
+        return stored if _text(result) == "ok" else None
+
+    async def _delete_a2a_task_once(
+        self, application_id: str, user_id: str, task_id: str
+    ) -> bool | None:
+        """Attempt one record-matched delete so recreated tasks are preserved."""
+
+        client = self._require_client()
+        record_key = self._a2a_task_key(application_id, user_id, task_id)
+        current_raw = await client.get(record_key)
+        if current_raw is None:
+            return False
+        current = _a2a_task_load(current_raw)
+        keys = self._a2a_mutation_keys(current, current)
+        result = _text(
+            await self._eval(
+                scripts.DELETE_A2A_TASK,
+                keys,
+                (_text(current_raw), task_id),
+            )
+        )
+        return None if result == "conflict" else result == "deleted"
+
+    async def _load_a2a_task_page(
+        self, application_id: str, user_id: str, task_ids: Sequence[Any]
+    ) -> tuple[A2ATaskRecord, ...]:
+        """Load an indexed page in one MGET and reject broken index references."""
+
+        if not task_ids:
+            return ()
+        keys = [
+            self._a2a_task_key(application_id, user_id, _text(task_id))
+            for task_id in task_ids
+        ]
+        values = await self._require_client().mget(keys)
+        if any(raw is None for raw in values):
+            raise RuntimeError("A2A task index references a missing record")
+        return tuple(_a2a_task_load(raw) for raw in values)
 
     async def update(
         self,
@@ -503,6 +669,30 @@ class RedisStore(HarnestStore):
         run = _run_load(run_raw)
         return record if record.scope == scope and run.scope == scope else None
 
+    async def get_provider_continuation(
+        self, *, scope: RunScope, provider: str, continuation_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Load an exact provider envelope only while its owned run exists."""
+
+        _require_fields(provider, continuation_id)
+        raw, run_raw = await self._require_client().mget(
+            (
+                self._continuation_key(continuation_id),
+                self._run_key(scope.run_id),
+            )
+        )
+        if raw is None or run_raw is None:
+            return None
+        pending = _continuation_load(raw)
+        run = _run_load(run_raw)
+        if (
+            pending.record.scope != scope
+            or run.scope != scope
+            or pending.record.provider != provider
+        ):
+            return None
+        return pending
+
     async def get_continuation_by_external_id(
         self, *, application_id: str, provider: str, external_id: str
     ) -> ProviderPendingContinuation | None:
@@ -641,6 +831,52 @@ class RedisStore(HarnestStore):
             raise
         audit_continuation("claimed", "committed", "redis")
         return claimed.record
+
+    async def cancel_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+        failure: ContinuationFailure,
+    ) -> ContinuationRecord:
+        """Cancel one exact waiting run and fail its continuation in one script."""
+
+        if not isinstance(failure, ContinuationFailure):
+            audit_continuation("cancelled", "failed", "redis")
+            raise TypeError("continuation cancellation failure is invalid")
+        keys = (
+            self._continuation_key(continuation_id),
+            self._run_key(scope.run_id),
+            self._continuation_pending_key(scope.application_id, provider),
+            self._active_key(
+                scope.application_id, scope.user_id, scope.session_id
+            ),
+        )
+        arguments = (
+            continuation_id,
+            scope.application_id,
+            scope.user_id,
+            scope.session_id,
+            scope.run_id,
+            provider,
+            expected_revision,
+            _failure_dump(failure),
+            _timestamp(),
+            self._checkpoint_ttl,
+        )
+        try:
+            cancelled = _continuation_result(
+                await self._eval(
+                    scripts.CANCEL_CONTINUATION, keys, arguments
+                )
+            )
+        except Exception:
+            audit_continuation("cancelled", "failed", "redis")
+            raise
+        audit_continuation("cancelled", "committed", "redis")
+        return cancelled.record
 
     async def arm_continuation(
         self,
@@ -857,6 +1093,76 @@ class RedisStore(HarnestStore):
     def _active_key(self, application: str, user: str, session: str) -> str:
         return self._key("active", _digest(application, user, session))
 
+    def _a2a_task_key(
+        self, application_id: str, user_id: str, task_id: str
+    ) -> str:
+        """Keep application, owner, and public task identity out of Redis keys."""
+
+        return self._key(
+            "a2a-task",
+            _digest(application_id),
+            _digest(user_id),
+            _digest(task_id),
+        )
+
+    def _a2a_task_index(
+        self,
+        application_id: str,
+        user_id: str,
+        *,
+        context_id: str | None = None,
+        status: int | None = None,
+    ) -> str:
+        """Select the prefiltered sorted index for one A2A query shape."""
+
+        base = (
+            "a2a-tasks",
+            _digest(application_id),
+            _digest(user_id),
+        )
+        if context_id is not None and status is not None:
+            return self._key(
+                *base, "context-status", _digest(context_id), str(status)
+            )
+        if context_id is not None:
+            return self._key(*base, "context", _digest(context_id))
+        if status is not None:
+            return self._key(*base, "status", str(status))
+        return self._key(*base, "all")
+
+    def _a2a_mutation_keys(
+        self, record: A2ATaskRecord, old: A2ATaskRecord
+    ) -> tuple[str, ...]:
+        """Supply every old and new index key to the cluster-safe Lua mutation."""
+
+        application_id, user_id = record.application_id, record.user_id
+        return (
+            self._a2a_task_key(application_id, user_id, record.task_id),
+            self._a2a_task_index(application_id, user_id),
+            self._a2a_task_index(
+                application_id, user_id, context_id=record.context_id
+            ),
+            self._a2a_task_index(
+                application_id, user_id, status=record.status
+            ),
+            self._a2a_task_index(
+                application_id,
+                user_id,
+                context_id=record.context_id,
+                status=record.status,
+            ),
+            self._a2a_task_index(
+                application_id, user_id, context_id=old.context_id
+            ),
+            self._a2a_task_index(application_id, user_id, status=old.status),
+            self._a2a_task_index(
+                application_id,
+                user_id,
+                context_id=old.context_id,
+                status=old.status,
+            ),
+        )
+
     def _checkpoint_key(
         self, run_id: str, namespace: str, checkpoint_id: str
     ) -> str:
@@ -996,6 +1302,55 @@ def _session_load(value: Any) -> SessionRecord:
     return SessionRecord(**data)
 
 
+def _a2a_task_dump(value: A2ATaskRecord) -> str:
+    """Encode the exact protobuf bytes while keeping projections queryable."""
+
+    data = asdict(value)
+    data["payload"] = base64.b64encode(value.payload).decode("ascii")
+    return _json_dump(data)
+
+
+def _a2a_task_load(value: Any) -> A2ATaskRecord:
+    """Reject corrupt protobuf encoding before returning durable task state."""
+
+    data = _json_load(value)
+    data["payload"] = base64.b64decode(data["payload"], validate=True)
+    return A2ATaskRecord(**data)
+
+
+def _a2a_score(value: str | None) -> int:
+    """Project UTC timestamps to Redis' microsecond sorted-set score."""
+
+    if value is None:
+        return _A2A_MISSING_TIMESTAMP_SCORE
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return int(parsed.astimezone(timezone.utc).timestamp() * 1_000_000)
+
+
+def _a2a_minimum_score(value: str | None) -> int | str:
+    """Translate the inclusive timestamp filter to a Redis score bound."""
+
+    return "-inf" if value is None else _a2a_score(value)
+
+
+async def _redis_a2a_cursor_offset(
+    client: Any,
+    index: str,
+    cursor_task_id: str | None,
+    minimum: int | str,
+) -> int:
+    """Resolve an inclusive cursor rank and validate its timestamp filter."""
+
+    if cursor_task_id is None:
+        return 0
+    rank = await client.zrevrank(index, cursor_task_id)
+    score = await client.zscore(index, cursor_task_id)
+    below_minimum = minimum != "-inf" and score is not None and score < minimum
+    if rank is None or score is None or below_minimum:
+        raise A2ATaskCursorError("A2A task cursor is not valid for this list")
+    return int(rank)
+
+
 def _run_dump(value: RunRecord) -> str:
     return _json_dump(asdict(value))
 
@@ -1032,6 +1387,12 @@ def _continuation_load(value: Any) -> ProviderPendingContinuation:
         failure=None if failure is None else ContinuationFailure(**failure),
     )
     return ProviderPendingContinuation(record, envelope["external_id"])
+
+
+def _failure_dump(value: ContinuationFailure) -> str:
+    """Serialize only the bounded continuation failure classification."""
+
+    return _json_dump({"code": value.code, "retryable": value.retryable})
 
 
 def _checkpoint_dump(value: CheckpointRecord) -> str:

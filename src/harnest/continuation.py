@@ -134,6 +134,14 @@ class ContinuationStore(Protocol):
         self, *, application_id: str, provider: str, external_id: str
     ) -> ProviderPendingContinuation | None: ...
 
+    async def get_provider_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+    ) -> ProviderPendingContinuation | None: ...
+
     async def list_pending_continuations(
         self,
         *,
@@ -170,6 +178,16 @@ class ContinuationStore(Protocol):
         provider: str,
         continuation_id: str,
         expected_revision: int,
+    ) -> ContinuationRecord: ...
+
+    async def cancel_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+        failure: ContinuationFailure,
     ) -> ContinuationRecord: ...
 
 
@@ -243,6 +261,17 @@ class ContinuationProvider:
 
         return await self._store.get_continuation(
             scope=self._scope(user_id, session_id, run_id),
+            continuation_id=continuation_id,
+        )
+
+    async def get_pending(
+        self, *, user_id: str, session_id: str, run_id: str, continuation_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Read provider-private identity through complete run ownership."""
+
+        return await self._store.get_provider_continuation(
+            scope=self._scope(user_id, session_id, run_id),
+            provider=self._provider,
             continuation_id=continuation_id,
         )
 
@@ -337,6 +366,25 @@ class ContinuationProvider:
             provider=self._provider,
             continuation_id=record.continuation_id,
             expected_revision=record.revision,
+        )
+
+    async def cancel(
+        self, record: ContinuationRecord, failure: ContinuationFailure
+    ) -> ContinuationRecord:
+        """Cancel one exact provider wait without dispatching a framework resume."""
+
+        if record.application_id != self._application_id:
+            raise ContinuationConflictError("continuation application changed")
+        if record.provider != self._provider:
+            raise ContinuationConflictError("continuation provider changed")
+        if not isinstance(failure, ContinuationFailure):
+            raise ContinuationValidationError("failure must be ContinuationFailure")
+        return await self._store.cancel_continuation(
+            scope=record.scope,
+            provider=self._provider,
+            continuation_id=record.continuation_id,
+            expected_revision=record.revision,
+            failure=failure,
         )
 
     async def _resolve(

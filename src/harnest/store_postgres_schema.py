@@ -1,6 +1,6 @@
 """PostgreSQL schema owned by the built-in Harnest store."""
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SCHEMA_LOCK = 489_867_841_435_466_307
 
 SCHEMA_SQL = """
@@ -20,6 +20,37 @@ CREATE TABLE IF NOT EXISTS harnest_sessions (
 );
 ALTER TABLE harnest_sessions
 ADD COLUMN IF NOT EXISTS application_data jsonb NOT NULL DEFAULT '{}'::jsonb;
+CREATE TABLE IF NOT EXISTS harnest_a2a_tasks (
+    application_id text NOT NULL,
+    user_id text NOT NULL,
+    task_id text NOT NULL,
+    context_id text NOT NULL,
+    status smallint NOT NULL,
+    status_timestamp timestamptz,
+    payload bytea NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (application_id, user_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS harnest_a2a_tasks_by_owner
+ON harnest_a2a_tasks (
+    application_id, user_id, status_timestamp DESC NULLS LAST, task_id DESC
+);
+CREATE INDEX IF NOT EXISTS harnest_a2a_tasks_by_context
+ON harnest_a2a_tasks (
+    application_id, user_id, context_id,
+    status_timestamp DESC NULLS LAST, task_id DESC
+);
+CREATE INDEX IF NOT EXISTS harnest_a2a_tasks_by_status
+ON harnest_a2a_tasks (
+    application_id, user_id, status,
+    status_timestamp DESC NULLS LAST, task_id DESC
+);
+CREATE INDEX IF NOT EXISTS harnest_a2a_tasks_by_context_status
+ON harnest_a2a_tasks (
+    application_id, user_id, context_id, status,
+    status_timestamp DESC NULLS LAST, task_id DESC
+);
 CREATE TABLE IF NOT EXISTS harnest_runs (
     run_id text PRIMARY KEY,
     application_id text NOT NULL,
@@ -97,7 +128,7 @@ CREATE INDEX IF NOT EXISTS harnest_pending_continuations
 ON harnest_continuations (application_id, provider, continuation_id)
 WHERE status='pending';
 INSERT INTO harnest_schema_migrations(component, version)
-VALUES ('store', 4)
+VALUES ('store', 5)
 ON CONFLICT (component) DO UPDATE
 SET version=EXCLUDED.version, applied_at=now()
 WHERE harnest_schema_migrations.version < EXCLUDED.version;

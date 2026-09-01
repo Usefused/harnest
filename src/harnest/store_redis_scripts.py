@@ -31,6 +31,28 @@ redis.call('ZREM', KEYS[2], ARGV[1])
 return 1
 """
 
+PUT_A2A_TASK = """
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '' then
+  if current then return 'conflict' end
+elseif current ~= ARGV[1] then
+  return 'conflict'
+end
+redis.call('SET', KEYS[1], ARGV[2])
+for index=3,8 do redis.call('ZREM', KEYS[index], ARGV[3]) end
+for index=2,5 do redis.call('ZADD', KEYS[index], ARGV[4], ARGV[3]) end
+return 'ok'
+"""
+
+DELETE_A2A_TASK = """
+local current = redis.call('GET', KEYS[1])
+if not current then return 'missing' end
+if current ~= ARGV[1] then return 'conflict' end
+redis.call('DEL', KEYS[1])
+for index=2,8 do redis.call('ZREM', KEYS[index], ARGV[2]) end
+return 'deleted'
+"""
+
 LEASE_REPLACE = """
 if redis.call('GET', KEYS[2]) ~= ARGV[1] then return false end
 if redis.call('EXISTS', KEYS[1]) == 0 then return false end
@@ -227,6 +249,44 @@ redis.call('SET', KEYS[2], cjson.encode(run))
 if tonumber(ARGV[8]) > 0 then
   redis.call('EXPIRE', KEYS[1], ARGV[8])
   redis.call('EXPIRE', KEYS[2], ARGV[8])
+end
+return {'ok', encoded}
+"""
+
+CANCEL_CONTINUATION = """
+local continuation_raw = redis.call('GET', KEYS[1])
+local run_raw = redis.call('GET', KEYS[2])
+if not continuation_raw or not run_raw then return {'missing'} end
+local envelope = cjson.decode(continuation_raw)
+local record = envelope['record']
+local run = cjson.decode(run_raw)
+local action = run['pending_action']
+if record['continuation_id'] ~= ARGV[1]
+   or record['application_id'] ~= ARGV[2] or record['user_id'] ~= ARGV[3]
+   or record['session_id'] ~= ARGV[4] or record['run_id'] ~= ARGV[5]
+   or record['provider'] ~= ARGV[6] or record['revision'] ~= tonumber(ARGV[7])
+   or record['status'] ~= 'pending' or run['status'] ~= 'waiting'
+   or run['application_id'] ~= ARGV[2] or run['user_id'] ~= ARGV[3]
+   or run['session_id'] ~= ARGV[4] or run['run_id'] ~= ARGV[5]
+   or not action or action['action_id'] ~= record['continuation_id'] then
+  return {'conflict'}
+end
+record['status'] = 'failed'
+record['failure'] = cjson.decode(ARGV[8])
+record['revision'] = record['revision'] + 1
+record['updated_at'] = ARGV[9]
+run['status'] = 'cancelled'
+run['pending_action'] = cjson.decode('null')
+run['revision'] = run['revision'] + 1
+run['updated_at'] = ARGV[9]
+local encoded = cjson.encode(envelope)
+redis.call('SET', KEYS[1], encoded)
+redis.call('SET', KEYS[2], cjson.encode(run))
+redis.call('ZREM', KEYS[3], ARGV[1])
+if redis.call('GET', KEYS[4]) == ARGV[5] then redis.call('DEL', KEYS[4]) end
+if tonumber(ARGV[10]) > 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[10])
+  redis.call('EXPIRE', KEYS[2], ARGV[10])
 end
 return {'ok', encoded}
 """

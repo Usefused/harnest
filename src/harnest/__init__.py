@@ -1,6 +1,14 @@
 """Public authoring API for Harnest agents."""
 
 from .agent import Agent, AgentDefinition, instruction_file
+from .a2a import (
+    A2AClient,
+    A2AClientError,
+    A2AResult,
+    A2AUpdate,
+    RemoteAgent,
+    RemoteAgentError,
+)
 from .application import CompiledApplication
 from .bundle import (
     BundleConventionError,
@@ -112,6 +120,10 @@ __all__ = [
     "AgentResponse",
     "AgentContext",
     "AgentSource",
+    "A2AClient",
+    "A2AClientError",
+    "A2AResult",
+    "A2AUpdate",
     "ADKStore",
     "AssetStorage",
     "AssetURLStorage",
@@ -190,6 +202,8 @@ __all__ = [
     "PostgresStore",
     "ProviderPendingContinuation",
     "RedisStore",
+    "RemoteAgent",
+    "RemoteAgentError",
     "DROP_EVENT",
     "Finish",
     "LifecycleContext",

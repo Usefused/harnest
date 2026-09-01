@@ -23,7 +23,10 @@ from .context import (
 )
 from .context_session import invocation_session_context
 from .context_agent import LocalAgentRuntime, activate_context_agent
-from .continuation import ContinuationConflictError
+from .continuation import (
+    ContinuationConflictError,
+    ProviderPendingContinuation,
+)
 from .cron import CompiledCron
 from .credentials import _activate_credential_provider
 from .durable import current_native_durable_call
@@ -110,6 +113,11 @@ SELECT arguments, invocation, trigger, status, result, failure_code
 FROM harnest_task_payloads
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
 """
+_GET_PAYLOAD_OUTCOME_SQL = """
+SELECT task_name, status, result, failure_code
+FROM harnest_task_payloads
+WHERE payload_id=%(payload_id)s
+"""
 _COMPLETE_PAYLOAD_SQL = """
 UPDATE harnest_task_payloads
 SET status='completed', result=%(result)s, failure_code=NULL,
@@ -125,6 +133,30 @@ SET status='failed', result=NULL, failure_code=%(failure_code)s,
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
   AND status='pending'
 RETURNING payload_id
+"""
+_CANCEL_PAYLOAD_JOB_SQL = """
+WITH target AS (
+    SELECT payload.payload_id, payload.task_name, job.id
+    FROM harnest_task_payloads AS payload
+    JOIN procrastinate_jobs AS job
+      ON job.task_name=payload.task_name
+     AND job.args->>'_harnest_payload_id'=payload.payload_id
+    WHERE payload.payload_id=%(payload_id)s
+      AND payload.status='pending'
+      AND job.status IN ('todo', 'doing')
+    FOR UPDATE OF payload, job
+), cancelled AS (
+    SELECT target.*,
+           procrastinate_cancel_job_v1(target.id, true, false) AS cancelled_id
+    FROM target
+)
+UPDATE harnest_task_payloads AS payload SET
+    status='failed', result=NULL, failure_code='task_cancelled',
+    arguments='{}'::jsonb, invocation=NULL, completed_at=now()
+FROM cancelled
+WHERE payload.payload_id=cancelled.payload_id
+  AND cancelled.cancelled_id=cancelled.id
+RETURNING payload.payload_id, cancelled.task_name, cancelled.id
 """
 _DELETE_PAYLOAD_SQL = """
 DELETE FROM harnest_task_payloads WHERE payload_id=%(payload_id)s
@@ -209,6 +241,8 @@ class TaskRuntimeManager:
             and self._continuation_runtime is not runtime
         ):
             raise RuntimeError("task continuation runtime is already bound")
+        if self._continuation_runtime is runtime:
+            return
         self._continuation_runtime = runtime
         self._invocation_continuations = runtime.invocation_port(
             _CONTINUATION_PROVIDER
@@ -218,6 +252,9 @@ class TaskRuntimeManager:
         )
         self._application_continuations.register_schema(
             _RESULT_SCHEMA, _validate_continuation_result
+        )
+        runtime.register_cancel_handler(
+            _CONTINUATION_PROVIDER, self._cancel_provider_wait
         )
 
     async def start(self) -> None:
@@ -612,6 +649,117 @@ class TaskRuntimeManager:
             )
             await self._publish_outcome(handle._payload_id, outcome)
         return bool(cancelled)
+
+    async def _cancel_provider_wait(
+        self, pending: ProviderPendingContinuation
+    ) -> bool:
+        """Stop one awaited native task before cancelling its durable run."""
+
+        record = pending.record
+        valid = (
+            record.provider == _CONTINUATION_PROVIDER
+            and record.capability == _RESULT_CAPABILITY
+            and record.schema_id == _RESULT_SCHEMA
+            and record.status == "pending"
+        )
+        if not valid or self._application_continuations is None:
+            return False
+        stopped = await self._cancel_payload_job(pending.external_id)
+        if not stopped:
+            return False
+        try:
+            await self._application_continuations.cancel(record, _CANCELLED)
+        except Exception as error:
+            # The native transaction already made cancellation durable. Startup
+            # reconciliation will converge a callback race or store outage.
+            _audit("cancel", "agent", "failed")
+            raise TaskRuntimeError(
+                "durable task cancellation failed with "
+                f"{type(error).__name__}"
+            ) from None
+        _audit("cancel", "agent", "committed")
+        return True
+
+    async def _cancel_payload_job(self, payload_id: str) -> bool:
+        """Atomically stop native execution and erase its private task payload."""
+
+        self._require_ready()
+        try:
+            rows = await self._app.connector.execute_query_all_async(
+                query=_CANCEL_PAYLOAD_JOB_SQL,
+                payload_id=payload_id,
+            )
+        except Exception as error:
+            raise TaskRuntimeError(
+                f"task cancellation failed with {type(error).__name__}"
+            ) from None
+        if len(rows) > 1:
+            raise TaskRuntimeError("task cancellation matched multiple native jobs")
+        if rows:
+            return True
+        # A retry after the queue transaction committed must still be able to
+        # finish the separate checkpoint-store cancellation step.
+        outcome = await self._read_provider_outcome(payload_id)
+        return outcome == ("failed", _CANCELLED)
+
+    async def reconcile_continuations(self) -> None:
+        """Converge retained task outcomes after callbacks or replicas restart."""
+
+        port = self._application_continuations
+        if port is None:
+            return
+        after: str | None = None
+        while True:
+            try:
+                pending = tuple(await port.list_pending(after=after, limit=100))
+            except Exception:
+                _audit("result.reconcile", "agent", "failed")
+                return
+            for item in pending:
+                await self._reconcile_continuation(item)
+            if len(pending) < 100:
+                return
+            after = pending[-1].record.continuation_id
+
+    async def _reconcile_continuation(
+        self, pending: ProviderPendingContinuation
+    ) -> None:
+        """Publish one retained terminal row through its exact provider wait."""
+
+        try:
+            outcome = await self._read_provider_outcome(pending.external_id)
+            if outcome is None or outcome[0] == "pending":
+                return
+            if outcome == ("failed", _CANCELLED):
+                await self._application_continuations.cancel(
+                    pending.record, _CANCELLED
+                )
+            else:
+                await self._publish_outcome(pending.external_id, outcome)
+        except (ContinuationConflictError, KeyError):
+            # Another replica won the same provider/run compare-and-swap.
+            return
+        except Exception:
+            _audit("result.reconcile", "agent", "failed")
+
+    async def _read_provider_outcome(
+        self, payload_id: str
+    ) -> tuple[str, Any] | None:
+        """Read a provider-indexed outcome without requiring an in-memory handle."""
+
+        try:
+            row = await self._app.connector.execute_query_one_async(
+                query=_GET_PAYLOAD_OUTCOME_SQL,
+                payload_id=payload_id,
+            )
+        except Exception as error:
+            # Connector implementations use lookup failures for an absent row.
+            if _is_no_result(self._backend, error):
+                return None
+            raise TaskRuntimeError(
+                f"task result read failed with {type(error).__name__}"
+            ) from None
+        return _validated_outcome(row)
 
     async def _execute(
         self, compiled: CompiledTask, payload_id: str, job_context: Any
@@ -1036,6 +1184,10 @@ class TaskRuntimeDriver(RuntimeDriver):
                 if callable(starter):
                     await starter()
                 await self._manager.start()
+                # Reconciliation may resume through this outer driver, so mark
+                # it started before provider callbacks re-enter the pipeline.
+                self._state = "started"
+                await self._manager.reconcile_continuations()
             except BaseException as failure:
                 self._state = "failed"
                 cleanup = await _cleanup_failure(self._driver.close)
@@ -1046,7 +1198,20 @@ class TaskRuntimeDriver(RuntimeDriver):
                         f"{type(cleanup).__name__}"
                     )
                 raise
-            self._state = "started"
+
+    async def cancel_durable_task(
+        self, *, response_id: str, user_id: str, session_id: str
+    ) -> bool:
+        """Cancel one awaited task through shared continuation ownership."""
+
+        await self.start()
+        if self.external_continuations is None:
+            return False
+        return await self.external_continuations.cancel_task_wait(
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
 
     async def create_session(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
@@ -1320,6 +1485,15 @@ def _validated_outcome(row: Mapping[str, Any]) -> tuple[str, Any]:
     if status != "failed" or failure not in {_FAILED, _CANCELLED}:
         raise TaskRuntimeError("persisted task result state is invalid")
     return "failed", failure
+
+
+def _is_no_result(backend: Any, error: BaseException) -> bool:
+    """Recognize an absent connector row without importing the lazy backend."""
+
+    no_result = getattr(getattr(backend, "exceptions", None), "NoResult", None)
+    return isinstance(error, LookupError) or (
+        isinstance(no_result, type) and isinstance(error, no_result)
+    )
 
 
 def _task_result(outcome: tuple[str, Any]) -> Any:

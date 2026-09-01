@@ -12,9 +12,36 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: harnest
+          POSTGRES_PASSWORD: harnest
+          POSTGRES_DB: harnest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U harnest -d harnest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
+    env:
+      HARNEST_TEST_POSTGRES_DSN: postgresql://harnest:harnest@127.0.0.1:5432/harnest
+      HARNEST_TEST_POSTGRES_URL: postgresql://harnest:harnest@127.0.0.1:5432/harnest
+      HARNEST_TEST_REDIS_URL: redis://127.0.0.1:6379/0
     steps:
       - name: Check out repository
         uses: actions/checkout@v6

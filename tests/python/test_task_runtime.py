@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from harnest.application import CompiledApplication
 from harnest.approval import ApprovalRun
-from harnest.checkpoint import MemoryStore
+from harnest.checkpoint import MemoryStore, RunScope
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.cron import CompiledCron, Cron
 from harnest.durable import (
@@ -130,6 +130,8 @@ class _Connector:
 
     async def execute_query_all_async(self, query, **values):
         payload = self.payloads.get(values["payload_id"])
+        if "procrastinate_cancel_job_v1" in query:
+            return self._cancel_payload(values["payload_id"], payload)
         if (
             payload is None
             or payload["task_name"] != values["task_name"]
@@ -154,9 +156,34 @@ class _Connector:
             )
         return [{"payload_id": values["payload_id"]}]
 
+    def _cancel_payload(self, payload_id, payload):
+        """Model the native function and private-row transaction together."""
+
+        if payload is None or payload["status"] != "pending":
+            return []
+        jobs = [
+            job
+            for job in self.app.job_manager.jobs.values()
+            if job.task_name == payload["task_name"]
+            and job.task_kwargs.get("_harnest_payload_id") == payload_id
+            and job.status in {"todo", "doing"}
+        ]
+        if len(jobs) != 1:
+            return []
+        jobs[0].status = "cancelled"
+        payload.update(
+            status="failed",
+            result=None,
+            failure_code="task_cancelled",
+            arguments={},
+            invocation=None,
+        )
+        return [{"payload_id": payload_id}]
+
     async def execute_query_one_async(self, query, **values):
         payload = self.payloads[values["payload_id"]]
-        if payload["task_name"] != values["task_name"]:
+        task_name = values.get("task_name")
+        if task_name is not None and payload["task_name"] != task_name:
             raise LookupError
         return payload
 
@@ -559,7 +586,7 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await continuations.close()
             await store.close()
 
-    async def test_worker_completion_resolves_registered_native_wait(self):
+    async def test_worker_completion_reconciles_after_callback_outage(self):
         async def send_report(value):
             """Send one report."""
 
@@ -619,7 +646,17 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     await handle.result()
                 native = manager._app.tasks[compiled.name]
+                port = manager._application_continuations
+                manager._application_continuations = None
                 await native.function(_job_context(), handle._payload_id)
+                before = await continuations.provider("harnest.task").lookup(
+                    handle._payload_id
+                )
+                self.assertIsNotNone(before)
+                assert before is not None
+                self.assertEqual(before.record.status, "pending")
+                manager._application_continuations = port
+                await manager.reconcile_continuations()
             pending = await continuations.provider("harnest.task").lookup(
                 handle._payload_id
             )
@@ -632,6 +669,96 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             revoke_context(active)
+            await manager.close()
+            await continuations.close()
+            await store.close()
+
+    async def test_transport_cancellation_stops_awaited_task_and_durable_run(self):
+        async def send_report(value):
+            """Return one deferred report."""
+
+            return value
+
+        authored, _compiled_task, application = _compiled(send_report)
+        store = MemoryStore()
+        await store.start()
+        continuations = ExternalContinuationRuntime(store, application_id="demo")
+        manager = TaskRuntimeManager(
+            application,
+            backend=_BACKEND,
+            continuation_runtime=continuations,
+        )
+        request = InvocationRequest(
+            input="report",
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="inv-cancel",
+            metadata={},
+            state_delta={},
+        )
+        run = ApprovalRun(
+            id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            call_id=request.invocation_id,
+        )
+        artifact = ResumeArtifact("adk", "native-cancel", "call-cancel", "report")
+        try:
+            await store.begin_run(
+                application_id="demo",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.invocation_id,
+                framework="adk",
+            )
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                await manager.start()
+                handle = await authored.defer("private")
+                with (
+                    continuations.execution(run, request),
+                    native_durable_call(artifact),
+                    self.assertRaises(NativeDurableSuspended),
+                ):
+                    await handle.result()
+                await continuations.arm(
+                    response_id=request.invocation_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                )
+                self.assertFalse(
+                    await continuations.cancel_task_wait(
+                        response_id=request.invocation_id,
+                        user_id="another-user",
+                        session_id=request.session_id,
+                    )
+                )
+                self.assertEqual(
+                    manager._app.job_manager.jobs[int(handle.id)].status, "todo"
+                )
+                cancelled = await continuations.cancel_task_wait(
+                    response_id=request.invocation_id,
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                )
+            self.assertTrue(cancelled)
+            self.assertEqual(
+                manager._app.job_manager.jobs[int(handle.id)].status, "cancelled"
+            )
+            self.assertEqual(
+                manager._app.connector.payloads[handle._payload_id]["failure_code"],
+                "task_cancelled",
+            )
+            durable = await store.get_run(
+                scope=RunScope(
+                    "demo", request.user_id, request.session_id, request.invocation_id
+                )
+            )
+            self.assertIsNotNone(durable)
+            assert durable is not None
+            self.assertEqual(durable.status, "cancelled")
+        finally:
             await manager.close()
             await continuations.close()
             await store.close()
@@ -784,6 +911,15 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
         inner = _Driver()
         manager = TaskRuntimeManager(application, backend=_BACKEND)
         driver = TaskRuntimeDriver(inner, manager)
+        reconciliation_states = []
+
+        async def reconcile_after_start():
+            """Re-enter startup as a callback-driven resume would."""
+
+            reconciliation_states.append(driver._state)
+            await driver.start()
+
+        manager.reconcile_continuations = reconcile_after_start
         with patch.dict(
             "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
         ):
@@ -791,6 +927,7 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertTrue(inner.started)
         self.assertTrue(manager._app.opened)
+        self.assertEqual(reconciliation_states, ["started"])
         self.assertEqual(
             manager._app.worker_options,
             {

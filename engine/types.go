@@ -106,16 +106,20 @@ type FilesystemPermissions struct {
 // AgentCard follows the required core of A2A Agent Card 1.0. YAML is used as
 // the authoring format; deployers can serialize the same value as JSON.
 type AgentCard struct {
-	Name                string            `yaml:"name" json:"name"`
-	Description         string            `yaml:"description" json:"description"`
-	Version             string            `yaml:"version" json:"version"`
-	Provider            *AgentProvider    `yaml:"provider,omitempty" json:"provider,omitempty"`
-	DocumentationURL    string            `yaml:"documentationUrl,omitempty" json:"documentationUrl,omitempty"`
-	SupportedInterfaces []AgentInterface  `yaml:"supportedInterfaces" json:"supportedInterfaces"`
-	Capabilities        AgentCapabilities `yaml:"capabilities" json:"capabilities"`
-	DefaultInputModes   []string          `yaml:"defaultInputModes" json:"defaultInputModes"`
-	DefaultOutputModes  []string          `yaml:"defaultOutputModes" json:"defaultOutputModes"`
-	Skills              []AgentSkill      `yaml:"skills" json:"skills"`
+	Name                 string               `yaml:"name" json:"name"`
+	Description          string               `yaml:"description" json:"description"`
+	Version              string               `yaml:"version" json:"version"`
+	IconURL              string               `yaml:"iconUrl,omitempty" json:"iconUrl,omitempty"`
+	Provider             *AgentProvider       `yaml:"provider,omitempty" json:"provider,omitempty"`
+	DocumentationURL     string               `yaml:"documentationUrl,omitempty" json:"documentationUrl,omitempty"`
+	SupportedInterfaces  []AgentInterface     `yaml:"supportedInterfaces" json:"supportedInterfaces"`
+	Capabilities         AgentCapabilities    `yaml:"capabilities" json:"capabilities"`
+	SecuritySchemes      map[string]any       `yaml:"securitySchemes,omitempty" json:"securitySchemes,omitempty"`
+	SecurityRequirements []map[string]any     `yaml:"securityRequirements,omitempty" json:"securityRequirements,omitempty"`
+	DefaultInputModes    []string             `yaml:"defaultInputModes" json:"defaultInputModes"`
+	DefaultOutputModes   []string             `yaml:"defaultOutputModes" json:"defaultOutputModes"`
+	Skills               []AgentSkill         `yaml:"skills" json:"skills"`
+	Signatures           []AgentCardSignature `yaml:"signatures,omitempty" json:"signatures,omitempty"`
 }
 
 type AgentProvider struct {
@@ -130,9 +134,23 @@ type AgentInterface struct {
 }
 
 type AgentCapabilities struct {
-	Streaming         bool `yaml:"streaming,omitempty" json:"streaming,omitempty"`
-	PushNotifications bool `yaml:"pushNotifications,omitempty" json:"pushNotifications,omitempty"`
-	ExtendedAgentCard bool `yaml:"extendedAgentCard,omitempty" json:"extendedAgentCard,omitempty"`
+	Streaming         bool             `yaml:"streaming,omitempty" json:"streaming,omitempty"`
+	PushNotifications bool             `yaml:"pushNotifications,omitempty" json:"pushNotifications,omitempty"`
+	ExtendedAgentCard bool             `yaml:"extendedAgentCard,omitempty" json:"extendedAgentCard,omitempty"`
+	Extensions        []AgentExtension `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+}
+
+type AgentExtension struct {
+	URI         string         `yaml:"uri" json:"uri"`
+	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Required    bool           `yaml:"required,omitempty" json:"required,omitempty"`
+	Params      map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+}
+
+type AgentCardSignature struct {
+	Protected string         `yaml:"protected" json:"protected"`
+	Signature string         `yaml:"signature" json:"signature"`
+	Header    map[string]any `yaml:"header,omitempty" json:"header,omitempty"`
 }
 
 type AgentSkill struct {

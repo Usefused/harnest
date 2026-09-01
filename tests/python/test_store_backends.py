@@ -7,6 +7,9 @@ import unittest
 from unittest.mock import patch
 
 from harnest.checkpoint import (
+    A2ATaskCursorError,
+    A2ATaskPersistence,
+    A2ATaskRecord,
     CheckpointConflictError,
     CheckpointRecord,
     CheckpointStore,
@@ -15,12 +18,14 @@ from harnest.checkpoint import (
     RunScope,
 )
 from harnest.continuation import (
+    ContinuationFailure,
     ContinuationRecord,
     ContinuationStore,
 )
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
 from harnest.store_redis import _checkpoint_dump, _continuation_dump, _run_dump
+from harnest.store_redis import _a2a_task_dump
 
 
 class _Transaction(AbstractAsyncContextManager):
@@ -59,19 +64,21 @@ class _PostgresConnection:
         self.executed = []
         self.fetched = []
         self.rows = []
-        self.schema_version = 4
+        self.schema_version = 5
 
     def transaction(self):
         return _Transaction()
 
     async def execute(self, query, *arguments):
         self.executed.append((query, arguments))
-        if "VALUES ('store', 4)" in query:
-            self.schema_version = 4
+        if "VALUES ('store', 5)" in query:
+            self.schema_version = 5
         return "INSERT 0 1"
 
     async def fetchval(self, query, *arguments):
         self.fetched.append((query, arguments))
+        if "count(*)" in query:
+            return len(self.rows)
         return self.schema_version
 
     async def fetch(self, query, *arguments):
@@ -114,6 +121,7 @@ class _RedisClient:
         self.multi_values = []
         self.mget_calls = 0
         self.zrangebylex_calls = []
+        self.zsets = {}
 
     async def set(self, key, value, **options):
         if options.get("nx") and key in self.values:
@@ -139,10 +147,68 @@ class _RedisClient:
     async def mget(self, keys):
         self.mget_calls += 1
         self.last_mget_keys = list(keys)
-        return list(self.multi_values)
+        if self.multi_values:
+            return list(self.multi_values)
+        return [self.values.get(key) for key in keys]
+
+    async def zcount(self, key, minimum, maximum):
+        del maximum
+        floor = float("-inf") if minimum == "-inf" else float(minimum)
+        return sum(score >= floor for score in self.zsets.get(key, {}).values())
+
+    async def zrevrank(self, key, member):
+        members = self._ordered_members(key)
+        target = member.encode() if isinstance(members[0] if members else None, bytes) else member
+        return members.index(target) if target in members else None
+
+    async def zscore(self, key, member):
+        values = self.zsets.get(key, {})
+        return values.get(member, values.get(str(member)))
+
+    async def zrevrangebyscore(
+        self, key, maximum, minimum, *, start, num
+    ):
+        del maximum
+        floor = float("-inf") if minimum == "-inf" else float(minimum)
+        values = self.zsets.get(key, {})
+        selected = [
+            member
+            for member in self._ordered_members(key)
+            if values[member] >= floor
+        ]
+        return selected[start : start + num]
+
+    def _ordered_members(self, key):
+        return [
+            member
+            for member, _score in sorted(
+                self.zsets.get(key, {}).items(),
+                key=lambda item: (item[1], item[0]),
+                reverse=True,
+            )
+        ]
 
     async def eval(self, script, key_count, *values):
         self.evals.append((script, key_count, values))
+        keys, arguments = values[:key_count], values[key_count:]
+        if "for index=3,8" in script:
+            current = self.values.get(keys[0])
+            expected = arguments[0] or None
+            if current != expected:
+                return b"conflict"
+            self.values[keys[0]] = arguments[1]
+            for key in keys[2:]:
+                self.zsets.setdefault(key, {}).pop(arguments[2], None)
+            for key in keys[1:5]:
+                self.zsets.setdefault(key, {})[arguments[2]] = float(arguments[3])
+            return b"ok"
+        if "return 'deleted'" in script:
+            if self.values.get(keys[0]) != arguments[0]:
+                return b"conflict"
+            self.values.pop(keys[0], None)
+            for key in keys[1:]:
+                self.zsets.setdefault(key, {}).pop(arguments[1], None)
+            return b"deleted"
         if "current_revision" in script:
             raw = values[key_count + 1]
             return [b"ok", raw]
@@ -213,6 +279,33 @@ def _continuation(continuation_id="continuation-1"):
     )
 
 
+def _a2a_task(task_id="task-1", *, status=2, timestamp=None):
+    return A2ATaskRecord(
+        application_id="support",
+        user_id="u-1",
+        task_id=task_id,
+        context_id="context-1",
+        status=status,
+        status_timestamp=timestamp,
+        payload=f"protobuf:{task_id}".encode(),
+    )
+
+
+def _a2a_row(task_id="task-1", *, status=2, timestamp=None):
+    now = datetime.now(timezone.utc)
+    return {
+        "application_id": "support",
+        "user_id": "u-1",
+        "task_id": task_id,
+        "context_id": "context-1",
+        "status": status,
+        "status_timestamp": timestamp,
+        "payload": f"protobuf:{task_id}".encode(),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
 def _scope():
     return RunScope("support", "u-1", "s-1", "run-1")
 
@@ -242,6 +335,7 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(store, SessionStore)
         self.assertIsInstance(store, CheckpointStore)
         self.assertIsInstance(store, ContinuationStore)
+        self.assertIsInstance(store, A2ATaskPersistence)
         await store.start()
         session = await store.create(session_id="s-1", user_id="u-1", state={})
         self.assertEqual(session.id, "s-1")
@@ -259,6 +353,88 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.status, "running")
         await store.close()
 
+    async def test_memory_a2a_tasks_are_owner_scoped_and_stably_paginated(self):
+        store = MemoryStore()
+        newer = "2026-09-01T12:00:01+00:00"
+        older = "2026-09-01T12:00:00+00:00"
+        await store.put_a2a_task(_a2a_task("b", timestamp=older))
+        await store.put_a2a_task(_a2a_task("a", timestamp=newer))
+        await store.put_a2a_task(_a2a_task("c", timestamp=newer))
+        await store.put_a2a_task(
+            A2ATaskRecord(
+                "support",
+                "other-user",
+                "foreign",
+                "context-1",
+                2,
+                b"foreign",
+                newer,
+            )
+        )
+
+        first = await store.list_a2a_tasks(
+            application_id="support", user_id="u-1", limit=2
+        )
+        second = await store.list_a2a_tasks(
+            application_id="support",
+            user_id="u-1",
+            cursor_task_id="a",
+            limit=2,
+        )
+
+        self.assertEqual([item.task_id for item in first.records], ["c", "a"])
+        self.assertEqual([item.task_id for item in second.records], ["a", "b"])
+        self.assertEqual(first.total_size, 3)
+        self.assertIsNone(
+            await store.get_a2a_task(
+                application_id="support", user_id="u-1", task_id="foreign"
+            )
+        )
+        with self.assertRaises(A2ATaskCursorError):
+            await store.list_a2a_tasks(
+                application_id="support",
+                user_id="u-1",
+                cursor_task_id="foreign",
+            )
+
+    async def test_memory_continuation_cancel_is_atomic_with_waiting_run(self):
+        store = MemoryStore()
+        await store.begin_run(
+            application_id="support",
+            user_id="u-1",
+            session_id="s-1",
+            run_id="run-1",
+            framework="langgraph",
+        )
+        continuation = _continuation()
+        await store.suspend_continuation(
+            record=continuation, external_id="job-1"
+        )
+
+        provider = await store.get_provider_continuation(
+            scope=_scope(), provider="hatchet", continuation_id="continuation-1"
+        )
+        with self.assertRaises(TypeError):
+            await store.cancel_continuation(
+                scope=_scope(),
+                provider="hatchet",
+                continuation_id="continuation-1",
+                expected_revision=0,
+                failure="task_cancelled",
+            )
+        cancelled = await store.cancel_continuation(
+            scope=_scope(),
+            provider="hatchet",
+            continuation_id="continuation-1",
+            expected_revision=0,
+            failure=ContinuationFailure("task_cancelled"),
+        )
+
+        self.assertEqual(provider.external_id, "job-1")
+        self.assertEqual(cancelled.status, "failed")
+        self.assertEqual(cancelled.failure.code, "task_cancelled")
+        self.assertEqual((await store.get_run(scope=_scope())).status, "cancelled")
+
     async def test_production_stores_implement_both_contracts(self):
         postgres = PostgresStore("postgres://example", _pool=_Pool(_PostgresConnection()))
         redis = RedisStore("redis://example", _client=_RedisClient())
@@ -266,6 +442,7 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(store, SessionStore)
             self.assertIsInstance(store, CheckpointStore)
             self.assertIsInstance(store, ContinuationStore)
+            self.assertIsInstance(store, A2ATaskPersistence)
 
 
 class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -294,6 +471,8 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("harnest_schema_migrations", statements)
         self.assertIn("harnest_one_active_run", statements)
         self.assertIn("application_data", statements)
+        self.assertIn("harnest_a2a_tasks", statements)
+        self.assertIn("harnest_a2a_tasks_by_context_status", statements)
         self.assertIn("harnest_continuations", statements)
         self.assertIn("harnest_pending_continuations", statements)
 
@@ -304,9 +483,37 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         await store.start()
 
-        self.assertEqual(connection.schema_version, 4)
+        self.assertEqual(connection.schema_version, 5)
         statements = "\n".join(query for query, _ in connection.executed)
         self.assertIn("CREATE TABLE IF NOT EXISTS harnest_continuations", statements)
+
+    async def test_a2a_list_pushes_filters_order_cursor_and_limit_to_sql(self):
+        connection = _PostgresConnection()
+        connection.rows = [
+            _a2a_row("task-2", timestamp=datetime.now(timezone.utc))
+        ]
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        page = await store.list_a2a_tasks(
+            application_id="support",
+            user_id="u-1",
+            context_id="context-1",
+            status=2,
+            status_timestamp_after="2026-09-01T00:00:00+00:00",
+            limit=6,
+        )
+
+        self.assertEqual(page.total_size, 1)
+        self.assertEqual(page.records[0].task_id, "task-2")
+        query, arguments = connection.fetched[-1]
+        self.assertIn("context_id=$3", query)
+        self.assertIn("status=$4", query)
+        self.assertIn("status_timestamp >= $5", query)
+        self.assertIn("ORDER BY status_timestamp DESC NULLS LAST", query)
+        self.assertIn("LIMIT $8", query)
+        self.assertEqual(arguments[-1], 6)
 
     async def test_session_list_filters_and_orders_in_postgres(self):
         connection = _PostgresConnection()
@@ -385,6 +592,40 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("LIMIT $4", query)
         self.assertEqual(arguments, ("support", "hatchet", "a", 5))
 
+    async def test_continuation_cancel_scopes_and_transitions_in_one_query(self):
+        connection = _PostgresConnection()
+        connection.rows = [_continuation_row()]
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        cancelled = await store.cancel_continuation(
+            scope=_scope(),
+            provider="hatchet",
+            continuation_id="continuation-1",
+            expected_revision=0,
+            failure=ContinuationFailure("task_cancelled"),
+        )
+
+        self.assertEqual(cancelled.continuation_id, "continuation-1")
+        query, arguments = connection.fetched[-1]
+        self.assertIn("run.application_id=$3", query)
+        self.assertIn("status='cancelled'", query)
+        self.assertIn("continuation.status='pending'", query)
+        self.assertEqual(json.loads(arguments[-1])["code"], "task_cancelled")
+        self.assertEqual(
+            arguments[:7],
+            (
+                "continuation-1",
+                "run-1",
+                "support",
+                "u-1",
+                "s-1",
+                "hatchet",
+                0,
+            ),
+        )
+
     async def test_checkpoint_put_rejects_stale_revision_before_write(self):
         connection = _PostgresCheckpointConnection(current_revision=3)
         store = PostgresStore(
@@ -434,7 +675,7 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
 
         schema_keys = [key for key in client.values if key.endswith(":schema")]
         self.assertEqual(len(schema_keys), 1)
-        self.assertEqual(client.values[schema_keys[0]], "3")
+        self.assertEqual(client.values[schema_keys[0]], "4")
 
     async def test_start_migrates_additive_schema_version_one(self):
         client = _RedisClient()
@@ -443,7 +684,46 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
 
         await store.start()
 
-        self.assertEqual(client.values[store._key("schema")], "3")
+        self.assertEqual(client.values[store._key("schema")], "4")
+
+    async def test_a2a_indexes_support_filtered_page_and_status_change(self):
+        client = _RedisClient()
+        store = RedisStore("redis://example", _client=client)
+        older = "2026-09-01T12:00:00+00:00"
+        newer = "2026-09-01T12:00:01+00:00"
+        await store.put_a2a_task(_a2a_task("a", timestamp=older))
+        await store.put_a2a_task(_a2a_task("b", timestamp=newer))
+
+        page = await store.list_a2a_tasks(
+            application_id="support",
+            user_id="u-1",
+            context_id="context-1",
+            status=2,
+            limit=1,
+        )
+        await store.put_a2a_task(_a2a_task("b", status=3, timestamp=newer))
+        working = await store.list_a2a_tasks(
+            application_id="support", user_id="u-1", status=2
+        )
+        completed = await store.list_a2a_tasks(
+            application_id="support", user_id="u-1", status=3
+        )
+
+        self.assertEqual([item.task_id for item in page.records], ["b"])
+        self.assertEqual(page.total_size, 2)
+        self.assertEqual([item.task_id for item in working.records], ["a"])
+        self.assertEqual([item.task_id for item in completed.records], ["b"])
+        self.assertEqual(client.mget_calls, 3)
+        self.assertTrue(
+            await store.delete_a2a_task(
+                application_id="support", user_id="u-1", task_id="b"
+            )
+        )
+        self.assertIsNone(
+            await store.get_a2a_task(
+                application_id="support", user_id="u-1", task_id="b"
+            )
+        )
 
     def test_atomic_keys_share_one_redis_cluster_slot(self):
         store = RedisStore("redis://example")

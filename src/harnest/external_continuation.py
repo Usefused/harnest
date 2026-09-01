@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -173,6 +173,17 @@ class ApplicationContinuationPort:
             error_code=error_code,
         )
 
+    async def cancel(
+        self, record: ContinuationRecord, error_code: str
+    ) -> ContinuationRecord:
+        """Cancel one provider wait and its run without resuming agent code."""
+
+        return await self._runtime.cancel_wait(
+            provider=self._provider,
+            record=record,
+            error_code=error_code,
+        )
+
     async def list_pending(
         self, *, after: str | None = None, limit: int = 100
     ) -> Sequence[ProviderPendingContinuation]:
@@ -213,6 +224,9 @@ class ExternalContinuationRuntime:
         self._tombstone_seconds = tombstone_seconds
         self._providers: dict[str, ContinuationProvider] = {}
         self._validators: dict[tuple[str, str], ContinuationValidator] = {}
+        self._cancel_handlers: dict[
+            str, Callable[[ProviderPendingContinuation], Awaitable[bool]]
+        ] = {}
         self._responses: OrderedDict[str, _ResponseState] = OrderedDict()
         self._response_lock = Lock()
         self._driver: Any | None = None
@@ -239,6 +253,21 @@ class ExternalContinuationRuntime:
         if existing is not None and existing is not validate:
             raise RuntimeError("continuation schema validator is already registered")
         self._validators[key] = validate
+
+    def register_cancel_handler(
+        self,
+        provider: str,
+        handler: Callable[[ProviderPendingContinuation], Awaitable[bool]],
+    ) -> None:
+        """Bind one provider-owned cancellation hook for transport task APIs."""
+
+        if not callable(handler):
+            raise TypeError("continuation cancel handler must be callable")
+        existing = self._cancel_handlers.get(provider)
+        if existing is not None and existing is not handler:
+            raise RuntimeError("continuation cancel handler is already registered")
+        self.provider(provider)
+        self._cancel_handlers[provider] = handler
 
     def provider(self, name: str) -> ContinuationProvider:
         """Return one cached facade whose provider identity cannot be replaced."""
@@ -401,6 +430,57 @@ class ExternalContinuationRuntime:
             failure=failure,
         )
         return await self._resume_if_ready(provider, resolved)
+
+    async def cancel_wait(
+        self,
+        *,
+        provider: str,
+        record: ContinuationRecord,
+        error_code: str,
+    ) -> ContinuationRecord:
+        """Commit provider cancellation without replaying the durable tool."""
+
+        self._require_open()
+        failure = ContinuationFailure(error_code)
+        return await self.provider(provider).cancel(record, failure)
+
+    async def cancel_task_wait(
+        self, *, response_id: str, user_id: str, session_id: str
+    ) -> bool:
+        """Cancel an exact durable wait only through its registered provider."""
+
+        self._require_open()
+        scope = RunScope(self._application_id, user_id, session_id, response_id)
+        get_run = getattr(self._store, "get_run", None)
+        if not callable(get_run):
+            return False
+        run = await get_run(scope=scope)
+        pending_action = None if run is None else run.pending_action
+        if (
+            run is None
+            or run.status != "waiting"
+            or pending_action is None
+            or pending_action.type != "external_continuation"
+        ):
+            return False
+        record = await self._store.get_continuation(
+            scope=scope,
+            continuation_id=pending_action.action_id,
+        )
+        if record is None:
+            return False
+        handler = self._cancel_handlers.get(record.provider)
+        if handler is None:
+            return False
+        pending = await self.provider(record.provider).get_pending(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=response_id,
+            continuation_id=record.continuation_id,
+        )
+        if pending is None:
+            return False
+        return await handler(pending)
 
     async def arm(
         self, *, response_id: str, user_id: str, session_id: str
@@ -618,6 +698,7 @@ class ExternalContinuationRuntime:
         if self._closed:
             return
         self._closed = True
+        self._cancel_handlers.clear()
         with self._response_lock:
             self._responses.clear()
 

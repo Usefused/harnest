@@ -194,6 +194,27 @@ def _active_authenticated_principal() -> AuthPrincipal | None:
     return binding.principal
 
 
+@contextmanager
+def _activate_task_principal(principal: AuthPrincipal) -> Iterator[None]:
+    """Grant one explicitly requested background task its own authority lifetime.
+
+    HTTP middleware revokes copied request bindings when a response completes.
+    Protocols such as A2A can deliberately return a Task before execution ends,
+    so that execution needs a separate binding whose lifetime is owned by the
+    task rather than accidentally inherited from the request.
+    """
+
+    if not isinstance(principal, AuthPrincipal):
+        raise TypeError("task principal must be AuthPrincipal")
+    lifetime = _PrincipalLifetime()
+    token = _ACTIVE_PRINCIPAL.set(_PrincipalBinding(principal, lifetime))
+    try:
+        yield
+    finally:
+        lifetime.active = False
+        _ACTIVE_PRINCIPAL.reset(token)
+
+
 def _requires_authentication(scope: Mapping[str, Any]) -> bool:
     return scope.get("type") in {"http", "websocket"} and scope.get("path") not in _PUBLIC_PATHS
 

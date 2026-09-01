@@ -262,6 +262,24 @@ def _external_continuation_runtime(application: Any) -> Any | None:
     return ExternalContinuationRuntime(store, application_id=application.name)
 
 
+def _a2a_task_store(application: Any) -> Any | None:
+    """Use the application checkpointer for A2A snapshots when it supports them."""
+
+    from .checkpoint import A2ATaskPersistence
+
+    persistence = application.runtime_capabilities.checkpointer
+    if not isinstance(persistence, A2ATaskPersistence):
+        return None
+    from .runtime_a2a_store import HarnestA2ATaskStore
+
+    # The adapter adds protocol serialization only; lifecycle and connections
+    # remain owned by the already-registered Harnest storage resource.
+    return HarnestA2ATaskStore(
+        persistence,
+        application_id=application.name,
+    )
+
+
 def _adk_runtime_driver(
     application: Any,
     *,
@@ -817,6 +835,7 @@ def _build_fastapi_app(
             playground_enabled=playground_enabled,
             playground_eval_service=eval_service,
             authenticator=authenticator,
+            a2a_task_store=_a2a_task_store(application),
         )
     instrument_fastapi(app, telemetry)
     _attach_library_lifecycle(app, Path(artifact).resolve() / "source")
@@ -929,6 +948,7 @@ def _build_native_adk_app(
         max_request_bytes=max_request_bytes,
         asset_store=application.asset_store,
         asset_stores=application.asset_stores,
+        a2a_task_store=_a2a_task_store(application),
         http_routes=application.http_routes,
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.

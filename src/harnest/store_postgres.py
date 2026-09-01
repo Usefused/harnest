@@ -13,6 +13,10 @@ from typing import Any, Literal
 
 from ._json import json_value
 from .checkpoint import (
+    A2ATaskConflictError,
+    A2ATaskCursorError,
+    A2ATaskPage,
+    A2ATaskRecord,
     CheckpointConflictError,
     CheckpointRecord,
     CheckpointWrite,
@@ -22,6 +26,7 @@ from .checkpoint import (
     RunScope,
     RunStatus,
     _require_checkpoint_scope,
+    _require_a2a_list_options,
     _require_fields,
     _validate_same_run,
     _validate_transition,
@@ -44,6 +49,39 @@ from .store_postgres_schema import SCHEMA_LOCK, SCHEMA_SQL, SCHEMA_VERSION
 
 
 _AUDIT = get_logger("store.audit")
+_A2A_FILTER = """
+application_id=$1 AND user_id=$2
+AND ($3::text IS NULL OR context_id=$3)
+AND ($4::smallint IS NULL OR status=$4)
+AND ($5::timestamptz IS NULL OR status_timestamp >= $5)
+"""
+_A2A_COUNT_QUERY = f"SELECT count(*) FROM harnest_a2a_tasks WHERE {_A2A_FILTER}"
+_A2A_CURSOR_QUERY = f"""
+SELECT status_timestamp FROM harnest_a2a_tasks
+WHERE {_A2A_FILTER} AND task_id=$6
+"""
+_A2A_LIST_QUERY = f"""
+SELECT * FROM harnest_a2a_tasks
+WHERE {_A2A_FILTER}
+AND (
+    $7::text IS NULL
+    OR (
+        $6::timestamptz IS NOT NULL
+        AND (
+            status_timestamp < $6
+            OR status_timestamp IS NULL
+            OR (status_timestamp=$6 AND task_id <= $7)
+        )
+    )
+    OR (
+        $6::timestamptz IS NULL
+        AND status_timestamp IS NULL
+        AND task_id <= $7
+    )
+)
+ORDER BY status_timestamp DESC NULLS LAST, task_id DESC
+LIMIT $8
+"""
 
 
 class PostgresStore(HarnestStore):
@@ -150,6 +188,125 @@ class PostgresStore(HarnestStore):
                 limit,
             )
         return tuple(_session_from_row(row) for row in rows)
+
+    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord:
+        """Upsert an owner-scoped protobuf snapshot with immutable context."""
+
+        query = """
+        INSERT INTO harnest_a2a_tasks(
+            application_id, user_id, task_id, context_id, status,
+            status_timestamp, payload, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6::timestamptz,$7,$8::timestamptz,now())
+        ON CONFLICT (application_id, user_id, task_id) DO UPDATE SET
+            status=EXCLUDED.status,
+            status_timestamp=EXCLUDED.status_timestamp,
+            payload=EXCLUDED.payload,
+            updated_at=now()
+        WHERE harnest_a2a_tasks.context_id=EXCLUDED.context_id
+        RETURNING *
+        """
+        arguments = _a2a_task_values(record)
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(query, *arguments)
+        except Exception:
+            _audit("a2a.task_saved", "agent", "failed", "postgres")
+            raise
+        if row is None:
+            _audit("a2a.task_saved", "agent", "failed", "postgres")
+            raise A2ATaskConflictError(
+                "A2A task context cannot change after creation"
+            )
+        _audit("a2a.task_saved", "agent", "committed", "postgres")
+        return _a2a_task_from_row(row)
+
+    async def get_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> A2ATaskRecord | None:
+        """Read one A2A task using its complete application and owner scope."""
+
+        _require_fields(application_id, user_id, task_id)
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT * FROM harnest_a2a_tasks
+                WHERE application_id=$1 AND user_id=$2 AND task_id=$3
+                """,
+                application_id,
+                user_id,
+                task_id,
+            )
+        return None if row is None else _a2a_task_from_row(row)
+
+    async def list_a2a_tasks(
+        self,
+        *,
+        application_id: str,
+        user_id: str,
+        context_id: str | None = None,
+        status: int | None = None,
+        status_timestamp_after: str | None = None,
+        cursor_task_id: str | None = None,
+        limit: int = 51,
+    ) -> A2ATaskPage:
+        """Apply A2A filters, ordering, and keyset pagination in PostgreSQL."""
+
+        _require_a2a_list_options(
+            application_id,
+            user_id,
+            context_id,
+            status,
+            status_timestamp_after,
+            cursor_task_id,
+            limit,
+        )
+        arguments = _a2a_list_values(
+            application_id,
+            user_id,
+            context_id,
+            status,
+            status_timestamp_after,
+        )
+        async with self._connection() as connection:
+            cursor_timestamp = await _postgres_a2a_cursor(
+                connection, arguments, cursor_task_id
+            )
+            total = await connection.fetchval(_A2A_COUNT_QUERY, *arguments)
+            rows = await connection.fetch(
+                _A2A_LIST_QUERY,
+                *arguments,
+                cursor_timestamp,
+                cursor_task_id,
+                limit,
+            )
+        return A2ATaskPage(
+            tuple(_a2a_task_from_row(row) for row in rows), int(total)
+        )
+
+    async def delete_a2a_task(
+        self, *, application_id: str, user_id: str, task_id: str
+    ) -> bool:
+        """Delete one exact A2A owner record without revealing foreign tasks."""
+
+        _require_fields(application_id, user_id, task_id)
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(
+                    """
+                    DELETE FROM harnest_a2a_tasks
+                    WHERE application_id=$1 AND user_id=$2 AND task_id=$3
+                    RETURNING task_id
+                    """,
+                    application_id,
+                    user_id,
+                    task_id,
+                )
+        except Exception:
+            _audit("a2a.task_deleted", "user", "failed", "postgres")
+            raise
+        if row is not None:
+            _audit("a2a.task_deleted", "user", "committed", "postgres")
+        return row is not None
 
     async def update(
         self,
@@ -561,6 +718,29 @@ class PostgresStore(HarnestStore):
             )
         return None if row is None else _continuation_from_row(row)
 
+    async def get_provider_continuation(
+        self, *, scope: RunScope, provider: str, continuation_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Load one exact provider wait and its private external identity."""
+
+        _require_fields(provider, continuation_id)
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT * FROM harnest_continuations
+                WHERE continuation_id=$1 AND run_id=$2 AND application_id=$3
+                  AND user_id=$4 AND session_id=$5 AND provider=$6
+                """,
+                continuation_id,
+                *_scope_values(scope),
+                provider,
+            )
+        if row is None:
+            return None
+        return ProviderPendingContinuation(
+            _continuation_from_row(row), row["external_id"]
+        )
+
     async def get_continuation_by_external_id(
         self, *, application_id: str, provider: str, external_id: str
     ) -> ProviderPendingContinuation | None:
@@ -711,6 +891,66 @@ class PostgresStore(HarnestStore):
             audit_continuation("claimed", "failed", "postgres")
             raise ContinuationConflictError("continuation claim changed")
         audit_continuation("claimed", "committed", "postgres")
+        return _continuation_from_row(row)
+
+    async def cancel_continuation(
+        self,
+        *,
+        scope: RunScope,
+        provider: str,
+        continuation_id: str,
+        expected_revision: int,
+        failure: ContinuationFailure,
+    ) -> ContinuationRecord:
+        """Fail a pending continuation and cancel its waiting run atomically."""
+
+        if not isinstance(failure, ContinuationFailure):
+            audit_continuation("cancelled", "failed", "postgres")
+            raise TypeError("continuation cancellation failure is invalid")
+        query = """
+        WITH target AS (
+            SELECT continuation.* FROM harnest_continuations AS continuation
+            JOIN harnest_runs AS run USING (run_id)
+            WHERE continuation.continuation_id=$1
+              AND continuation.run_id=$2 AND continuation.application_id=$3
+              AND continuation.user_id=$4 AND continuation.session_id=$5
+              AND continuation.provider=$6 AND continuation.revision=$7
+              AND continuation.status='pending' AND run.status='waiting'
+              AND run.application_id=$3 AND run.user_id=$4
+              AND run.session_id=$5
+              AND run.pending_action->>'action_id'=$1
+            FOR UPDATE OF continuation, run
+        ), cancelled AS (
+            UPDATE harnest_runs AS run SET
+                status='cancelled', pending_action=NULL,
+                revision=run.revision + 1, updated_at=now()
+            FROM target WHERE run.run_id=target.run_id
+            RETURNING run.run_id
+        )
+        UPDATE harnest_continuations AS continuation SET
+            status='failed', failure=$8::jsonb,
+            revision=continuation.revision + 1, updated_at=now()
+        FROM target JOIN cancelled USING (run_id)
+        WHERE continuation.continuation_id=target.continuation_id
+        RETURNING continuation.*
+        """
+        arguments = (
+            continuation_id,
+            *_scope_values(scope),
+            provider,
+            expected_revision,
+            _failure_dump(failure),
+        )
+        try:
+            async with self._connection() as connection:
+                row = await connection.fetchrow(query, *arguments)
+        except Exception:
+            audit_continuation("cancelled", "failed", "postgres")
+            raise
+        if row is None:
+            audit_continuation("cancelled", "failed", "postgres")
+            raise ContinuationConflictError("continuation cancellation changed")
+        audit_continuation("cancelled", "committed", "postgres")
         return _continuation_from_row(row)
 
     async def arm_continuation(
@@ -972,6 +1212,73 @@ def _session_from_row(row: Mapping[str, Any]) -> SessionRecord:
     )
 
 
+def _a2a_task_from_row(row: Mapping[str, Any]) -> A2ATaskRecord:
+    """Restore an opaque A2A task and its datastore query projections."""
+
+    timestamp = row.get("status_timestamp")
+    return A2ATaskRecord(
+        application_id=row["application_id"],
+        user_id=row["user_id"],
+        task_id=row["task_id"],
+        context_id=row["context_id"],
+        status=int(row["status"]),
+        status_timestamp=None if timestamp is None else _iso(timestamp),
+        payload=bytes(row["payload"]),
+        created_at=_iso(row["created_at"]),
+        updated_at=_iso(row["updated_at"]),
+    )
+
+
+def _a2a_task_values(value: A2ATaskRecord) -> tuple[Any, ...]:
+    """Preserve the positional contract for the durable task upsert."""
+
+    return (
+        value.application_id,
+        value.user_id,
+        value.task_id,
+        value.context_id,
+        value.status,
+        _parse_optional_postgres_timestamp(value.status_timestamp),
+        value.payload,
+        _parse_timestamp(value.created_at),
+    )
+
+
+def _a2a_list_values(
+    application_id: str,
+    user_id: str,
+    context_id: str | None,
+    status: int | None,
+    status_timestamp_after: str | None,
+) -> tuple[Any, ...]:
+    """Convert only timestamp data before binding the shared list predicates."""
+
+    return (
+        application_id,
+        user_id,
+        context_id,
+        status,
+        _parse_optional_postgres_timestamp(status_timestamp_after),
+    )
+
+
+async def _postgres_a2a_cursor(
+    connection: Any,
+    arguments: tuple[Any, ...],
+    cursor_task_id: str | None,
+) -> datetime | None:
+    """Resolve and validate an inclusive cursor within the selected task set."""
+
+    if cursor_task_id is None:
+        return None
+    row = await connection.fetchrow(
+        _A2A_CURSOR_QUERY, *arguments, cursor_task_id
+    )
+    if row is None:
+        raise A2ATaskCursorError("A2A task cursor is not valid for this list")
+    return row["status_timestamp"]
+
+
 def _run_from_row(row: Mapping[str, Any]) -> RunRecord:
     """Restore the typed pending action at the database serialization boundary."""
 
@@ -1182,12 +1489,18 @@ def _parse_timestamp(value: str) -> datetime:
     """Decode portable ISO timestamps at the asyncpg type boundary."""
 
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint created_at must be an ISO timestamp") from exc
     if parsed.tzinfo is None:
         raise ValueError("checkpoint created_at must include a timezone")
     return parsed
+
+
+def _parse_optional_postgres_timestamp(value: str | None) -> datetime | None:
+    """Keep nullable A2A status timestamps distinct from creation timestamps."""
+
+    return None if value is None else _parse_timestamp(value)
 
 
 def _lock_key(user_id: str, session_id: str) -> int:
