@@ -22,6 +22,18 @@
 * Include the task runtime in the `all` development extra so the documented
   full quality gate can exercise compiled tasks against PostgreSQL.
 
+## [0.10.0](https://github.com/Usefused/harnest/compare/v0.9.0...v0.10.0) (2026-09-01)
+
+
+### Features
+
+* **a2a:** add durable task support ([626e044](https://github.com/Usefused/harnest/commit/626e044b44c4ad96e3d1058da72692b3121bc7e6))
+
+
+### Fixes
+
+* **ci:** install compiled task runtime ([645429f](https://github.com/Usefused/harnest/commit/645429f768733627a4a7e1cbc63a97c7e480dd57))
+
 ## [0.9.0](https://github.com/Usefused/harnest/compare/v0.8.0...v0.9.0) (2026-09-01)
 
 
