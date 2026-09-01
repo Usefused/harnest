@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.8.0](https://github.com/Usefused/harnest/compare/v0.7.0...v0.8.0) (2026-09-01)
 
 ### Features
 
@@ -20,6 +20,10 @@
 
 * Let live WebSocket clients cancel the active response by ID, await framework
   cleanup, receive a terminal `cancelled` response, and reuse the same socket.
+
+### Features
+
+* expand agent runtime workflows ([801c755](https://github.com/Usefused/harnest/commit/801c7553848b001259c5b93825a5f73583c5ebdd))
 
 ## [0.7.0](https://github.com/Usefused/harnest/compare/v0.6.0...v0.7.0) (2026-09-01)
 
