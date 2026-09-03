@@ -51,6 +51,14 @@
   complete identifiers on expansion, and wrap large tool results on desktop
   and mobile.
 
+## [0.11.0](https://github.com/Usefused/harnest/compare/v0.10.1...v0.11.0) (2026-09-03)
+
+
+### Features
+
+* add tool-invoked sandbox capabilities and authoring examples ([508f55b](https://github.com/Usefused/harnest/commit/508f55bd69d198bb64a231837ef7c8ef6118d672))
+* improve evaluation results and model transport configuration ([117471a](https://github.com/Usefused/harnest/commit/117471a3428790ffdd7979ff799cc3596c68d9e1))
+
 ## [0.10.1](https://github.com/Usefused/harnest/compare/v0.10.0...v0.10.1) (2026-09-01)
 
 ### Fixes
