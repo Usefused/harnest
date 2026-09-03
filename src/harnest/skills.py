@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from .tool import tool
+from .authoring_errors import authoring_guidance
 
 
 _SOURCE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
@@ -1100,7 +1101,12 @@ def _validate_filesystem_directory(directory: Path) -> None:
     manifest = directory / "SKILL.md"
     if manifest.is_symlink() or not manifest.is_file():
         raise SkillValidationError(
-            f"filesystem skill must contain uppercase SKILL.md: {directory}"
+            authoring_guidance(
+                f"filesystem skill must contain uppercase SKILL.md: {directory}",
+                expected="each skill folder contains a real file named exactly SKILL.md, not a link to another file",
+                fix=f"Create {manifest} with the skill's metadata and instructions. "
+                "If the existing file is named skill.md, rename it to uppercase SKILL.md.",
+            )
         )
     for path in directory.rglob("*"):
         if path.is_symlink():

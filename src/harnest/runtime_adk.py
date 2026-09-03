@@ -1875,7 +1875,7 @@ def _build_adk_runner(
     in_memory_runner: Any,
     runner: Any,
 ) -> Any:
-    """Select the ADK runner that owns the configured session service."""
+    """Preserve native ephemeral artifacts when selecting a session-aware runner."""
 
     if session_service is None and credential_service is None:
         return in_memory_runner(
@@ -1891,11 +1891,17 @@ def _build_adk_runner(
 
         session_service = InMemorySessionService()
     _validate_session_service(session_service)
+    from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+
+    # ADK's code-result processor requires an artifact service even without
+    # output files. Match InMemoryRunner's native default when custom session
+    # or credential services require Runner; this is not Harnest asset storage.
     return runner(
         app=application.native_app,
         app_name=application.native_app.name,
         session_service=session_service,
         credential_service=credential_service,
+        artifact_service=InMemoryArtifactService(),
     )
 
 

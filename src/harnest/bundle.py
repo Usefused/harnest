@@ -12,12 +12,14 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import wraps
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 from .agent import AgentDefinition, _AdvancedAgentDefinition
+from .authoring_errors import authoring_guidance, folder_entry_error, inactive_entry_hint
 from .application import CompiledApplication
 from .checkpoint import (
     ADKStore,
@@ -66,6 +68,10 @@ from .runtime_plugins import (
     validate_runtime_plugin_dependencies,
 )
 from .sandbox import Sandbox
+from .sandbox_catalog import (
+    SandboxCatalogError, current_sandbox_catalog, independent_sandbox_catalog, resolve_sandbox_assignments,
+    sandbox_catalog_scope,
+)
 from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
 from .skills import (
     FilesystemSkillSource,
@@ -185,7 +191,7 @@ class _DiscoveredResources:
     tools: tuple[Callable[..., Any], ...]
     subagents: tuple[AgentDefinition | _AdvancedAgentDefinition, ...]
     mcp: tuple[MCPClient, ...]
-    sandbox: Sandbox | None
+    sandboxes: Mapping[str, Sandbox]
     skill_directories: tuple[Path, ...]
 
 
@@ -252,7 +258,7 @@ def compile_application(
     export_name = entrypoint.partition(":")[2]
     activated_plugins: tuple[ActivatedPlugin, ...] = ()
     try:
-        with _bundle_library(anchor.parent):
+        with _bundle_library(anchor.parent), independent_sandbox_catalog():
             # Plugins share the agent interpreter and may import application
             # helpers, so the authored namespace must exist before plugin.py.
             activated_plugins = _activate_bundle_runtime_plugins(runtime_plugins)
@@ -471,6 +477,7 @@ def _compile_managed_application(
             skill_sources=discovered_extensions.skill_sources,
             skill_scopes=skill_scopes,
         )
+        sandbox_definition = definition
         target = backend.lower_managed(
             definition,
             native_extensions=native_extensions,
@@ -485,6 +492,7 @@ def _compile_managed_application(
             skill_sources=discovered_extensions.skill_sources,
             skill_scopes=skill_scopes,
         )
+        sandbox_definition = graph
         target = backend.lower_managed(
             graph,
             native_extensions=native_extensions,
@@ -503,6 +511,10 @@ def _compile_managed_application(
         raise BundleConventionError(str(exc)) from exc
     application_name = getattr(target, "name", value.name)
     tasks, crons = _discover_tasks_and_crons(anchor.parent, application_name)
+    from .context_sandboxes import SandboxRegistry
+
+    # Named sandboxes are runtime capabilities, not additions to model schemas.
+    sandbox_registry = SandboxRegistry.from_definition(sandbox_definition, framework)
     return CompiledApplication(
         name=application_name,
         framework=framework,
@@ -531,6 +543,7 @@ def _compile_managed_application(
         checkpoint_metadata=checkpoint_metadata(provider),
         context_values=discovered_extensions.context_values,
         skill_registry=SkillRegistry(skill_scopes),
+        sandbox_registry=sandbox_registry,
         tasks=tasks,
         crons=crons,
         plugins=activated_plugins,
@@ -1095,7 +1108,7 @@ def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
     if not isinstance(root, AgentDefinition):
         raise TypeError("bundle_agent root must be an AgentDefinition")
     validated_anchor = _validate_anchor(anchor)
-    with _bundle_library(validated_anchor.parent):
+    with _bundle_library(validated_anchor.parent), independent_sandbox_catalog():
         definition = _compose_definition(validated_anchor, root)
         return definition.build()
 
@@ -1259,6 +1272,20 @@ def _graph_string_references(graph: Graph) -> set[str]:
     return references
 
 
+def _with_sandbox_catalog(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Establish the registry before recursively composing agents or graph nodes."""
+    @wraps(function)
+    def compose(anchor: Path, *args: Any, **kwargs: Any) -> Any:
+        """Restore compiler scope even when declaration loading or assignment fails."""
+        try:
+            with sandbox_catalog_scope(anchor.parent, _discover_sandboxes):
+                return function(anchor, *args, **kwargs)
+        except SandboxCatalogError as error:
+            raise BundleConventionError(str(error)) from None
+    return compose
+
+
+@_with_sandbox_catalog
 def _resolve_graph_resources(
     anchor: Path,
     graph: Graph,
@@ -1358,9 +1385,9 @@ def _reject_unconsumed_graph_capabilities(
         detail = "MCP clients"
     elif resources.skill_directories:
         detail = "skills"
-    elif resources.sandbox is not None:
-        detail = "sandbox configuration"
     else:
+        # Registry entries are definitions, not enabled capabilities. A graph
+        # may deliberately leave some or all sandbox declarations unassigned.
         return
     raise BundleConventionError(
         f"graph {graph_name!r} has {detail} but no Agent node in the root graph "
@@ -1417,6 +1444,7 @@ def _resolve_graph_node(
     return value
 
 
+@_with_sandbox_catalog
 def _compose_definition(
     anchor: Path,
     root: AgentDefinition,
@@ -1477,7 +1505,7 @@ def _compose_definition(
         skill_sources=skill_sources,
         skill_scopes=skill_scopes,
     )
-    sandbox = _resolve_sandbox(root.sandbox, resources.sandbox, framework)
+    sandbox = _resolve_sandbox(root.sandbox, framework)
     return replace(
         root,
         instruction=instruction,
@@ -1485,6 +1513,7 @@ def _compose_definition(
         subagents=subagents,
         mcp=mcp,
         sandbox=sandbox,
+        _sandbox_bindings=resolve_sandbox_assignments(root.name, root.sandboxes),
     )
 
 
@@ -1584,7 +1613,7 @@ def _discover_folder_resources(
             for plugin, clients in runtime_plugin_mcp
         ),
     )
-    sandbox = _discover_sandbox(bundle_root / "sandbox")
+    sandboxes = current_sandbox_catalog()
     skill_directories = _merge_skill_directories(
         _bundle_skill_directories(bundle_root, plugins),
         *(
@@ -1597,7 +1626,7 @@ def _discover_folder_resources(
         tools=tools,
         subagents=subagents,
         mcp=mcp,
-        sandbox=sandbox,
+        sandboxes=sandboxes,
         skill_directories=skill_directories,
     )
 
@@ -1687,17 +1716,14 @@ def _register_skill_scope(
 
 
 def _resolve_sandbox(
-    explicit: Sandbox | None, discovered: Sandbox | None, framework: str
+    explicit: Sandbox | None, framework: str
 ) -> Sandbox | None:
-    if explicit is not None and discovered is not None:
-        raise BundleDuplicateError(
-            "sandbox is configured explicitly and in sandbox/sandbox.py"
-        )
-    resolved = explicit if explicit is not None else discovered
-    if framework == "langgraph" and resolved is not None:
+    """Preserve explicit single-executor compatibility without auto-granting catalog entries."""
+    resolved = explicit
+    if framework == "langgraph" and resolved is not None and not isinstance(resolved, Sandbox):
         raise BundleConventionError(
-            "sandbox/ currently requires the ADK backend; expose sandboxed "
-            "execution as a graph tool for LangGraph"
+            "LangGraph sandbox configuration must be a portable Sandbox; "
+            "native ADK executors cannot be attached directly"
         )
     return resolved
 
@@ -1950,6 +1976,7 @@ def _discover_subagents(
 
 
 def _subagent_entry(path: Path) -> tuple[str, Path, bool] | None:
+    """Classify a subagent entry and explain how to repair misplaced files."""
     if path.is_symlink():
         raise BundleConventionError(f"subagent resource cannot be a symlink: {path}")
     if _is_ignored(path):
@@ -1957,8 +1984,9 @@ def _subagent_entry(path: Path) -> tuple[str, Path, bool] | None:
     if path.is_file():
         if path.suffix != ".py":
             raise BundleConventionError(
-                f"unexpected file in subagents directory: {path}; "
-                "use a public .py resource or prefix helper files with _"
+                folder_entry_error(
+                    f"unexpected file in subagents directory: {path}", path, kind="subagents"
+                )
             )
         _validate_resource_name(path.stem, path)
         return path.stem, path, False
@@ -1978,7 +2006,11 @@ def _nested_subagent_entry(path: Path) -> tuple[str, Path, bool]:
         )
     if not nested_anchor.is_file():
         raise BundleConventionError(
-            f"nested subagent directory must contain agent.py: {path}"
+            authoring_guidance(
+                f"nested subagent directory must contain agent.py: {path}",
+                expected="each active subagent folder has its own agent.py entry file",
+                fix=f"Create {nested_anchor} and define the subagent there. " + inactive_entry_hint(path),
+            )
         )
     return path.name, nested_anchor, True
 
@@ -2118,7 +2150,10 @@ def _compose_explicit_subagent_skills(
         skill_sources=skill_sources,
         skill_scopes=skill_scopes,
     )
-    return replace(value, tools=tools, subagents=children)
+    return replace(
+        value, tools=tools, subagents=children,
+        _sandbox_bindings=resolve_sandbox_assignments(value.name, value.sandboxes),
+    )
 
 
 def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]:
@@ -2324,27 +2359,38 @@ def _agent_scope(capability_scope: str, name: str) -> str:
     return f"agent__{name}"
 
 
-def _discover_sandbox(directory: Path) -> Sandbox | None:
+def _discover_sandboxes(directory: Path) -> Mapping[str, Sandbox]:
+    """Discover filename-matched declarations without constructing or granting providers."""
+    from .sandbox_assignments import validate_sandbox_name
+
     files = _resource_files(directory, kind="sandbox")
-    if not files:
-        return None
-    if len(files) != 1 or files[0].name != "sandbox.py":
-        rendered = ", ".join(path.name for path in files)
-        raise BundleConventionError(
-            "sandbox directory must contain only sandbox.py; "
-            f"found: {rendered}"
-        )
-    path = files[0]
-    module, value = _load_export(path, "sandbox")
+    declarations = {}
+    for path in files:
+        try:
+            validate_sandbox_name(path.stem)
+        except ValueError as error:
+            raise BundleConventionError(f"invalid sandbox name at {path}: {error}") from None
+        declarations[path.stem] = _load_sandbox_declaration(path)
+    return declarations
+
+
+def _load_sandbox_declaration(path: Path) -> Sandbox:
+    """Validate one named declaration and explain how to repair a wrong export."""
+    name = path.stem
+    module, value = _load_export(path, name)
     if not isinstance(value, Sandbox):
         raise BundleExportError(
-            f"sandbox module {path} must export Sandbox 'sandbox'; "
-            f"got {type(value).__name__}"
+            authoring_guidance(
+                f"sandbox module {path} must export Sandbox {name!r}; got {type(value).__name__}",
+                expected=f"a variable named {name} whose value is a Harnest Sandbox declaration",
+                fix=f"Import Sandbox from harnest.sandbox, then assign {name} = Sandbox.container(image='python:3.12-slim') "
+                f"or {name} = Sandbox.provider(your_factory). Add {name!r} to the sandboxes=[...] list of each agent allowed to use it.",
+            )
         )
     _reject_extra_exports(
         module,
         path,
-        "sandbox",
+        name,
         kind="sandbox",
         predicate=lambda item: isinstance(item, Sandbox),
     )
@@ -2383,6 +2429,7 @@ def _merge_skill_directories(
 
 
 def _skill_directories(directory: Path) -> tuple[Path, ...]:
+    """Discover skill folders and explain misplaced top-level files."""
     if directory.is_symlink():
         raise BundleConventionError(f"skills directory cannot be a symlink: {directory}")
     if not directory.exists():
@@ -2398,14 +2445,14 @@ def _skill_directories(directory: Path) -> tuple[Path, ...]:
             continue
         if not path.is_dir():
             raise BundleConventionError(
-                f"unexpected resource in skills directory: {path}; "
-                "each public entry must be a skill directory"
+                folder_entry_error(f"unexpected resource in skills directory: {path}", path, kind="skills")
             )
         skill_directories.append(path)
     return tuple(skill_directories)
 
 
 def _discover_evals(directory: Path) -> EvalSuite:
+    """Load evaluation files with actionable guidance for incomplete suites."""
     if directory.is_symlink():
         raise BundleConventionError(f"evals directory cannot be a symlink: {directory}")
     if not directory.exists():
@@ -2426,7 +2473,12 @@ def _discover_evals(directory: Path) -> EvalSuite:
     if not eval_paths:
         if config_path is not None:
             raise BundleConventionError(
-                f"evals directory must contain at least one *.evalset.json: {directory}"
+                authoring_guidance(
+                    f"evals directory must contain at least one *.evalset.json: {directory}",
+                    expected="test_config.json configures an existing evaluation set; it is not a set of test cases",
+                    fix="Add an evaluation set such as quality.evalset.json. If evaluations are not ready, "
+                    "rename test_config.json to _test_config.json to leave it out of discovery.",
+                )
             )
         return EvalSuite(())
     _validate_eval_files(eval_paths, config_path)
@@ -2434,21 +2486,26 @@ def _discover_evals(directory: Path) -> EvalSuite:
 
 
 def _eval_file_kind(path: Path) -> str:
+    """Classify evaluation inputs without mistaking notes or nested folders for cases."""
     if path.is_symlink():
         raise BundleConventionError(f"eval resource cannot be a symlink: {path}")
     if _is_ignored(path):
         return "ignored"
     if not path.is_file():
         raise BundleConventionError(
-            f"unexpected resource in evals directory: {path}; "
-            "evals must use a flat file layout"
+            folder_entry_error(
+                f"unexpected resource in evals directory: {path}; evals must use a flat file layout",
+                path, kind="evals",
+            )
         )
     if path.name == "test_config.json":
         return "config"
     if path.name.endswith(".evalset.json"):
         return "eval"
     raise BundleConventionError(
-        f"unexpected eval file {path}; expected *.evalset.json or test_config.json"
+        folder_entry_error(
+            f"unexpected eval file {path}; expected *.evalset.json or test_config.json", path, kind="evals"
+        )
     )
 
 
@@ -2524,6 +2581,7 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _resource_files(directory: Path, *, kind: str) -> tuple[Path, ...]:
+    """Validate feature files consistently without silently skipping authoring mistakes."""
     if directory.is_symlink():
         raise BundleConventionError(
             f"{kind} directory cannot be a symlink: {directory}"
@@ -2541,8 +2599,7 @@ def _resource_files(directory: Path, *, kind: str) -> tuple[Path, ...]:
             continue
         if not path.is_file() or path.suffix != ".py":
             raise BundleConventionError(
-                f"unexpected resource in {kind} directory: {path}; "
-                "use a public .py resource or prefix helper files with _"
+                folder_entry_error(f"unexpected resource in {kind} directory: {path}", path, kind=kind)
             )
         _validate_resource_name(path.stem, path)
         files.append(path)
@@ -2558,18 +2615,32 @@ def _is_ignored(path: Path) -> bool:
 
 
 def _validate_resource_name(name: str, path: Path) -> None:
+    """Explain the Python naming rule used to connect files to their declarations."""
     if not name.isidentifier():
         raise BundleConventionError(
-            f"resource name must be a valid Python identifier: {path}"
+            authoring_guidance(
+                f"resource name must be a valid Python identifier: {path}",
+                expected="a name Python can use for a function or variable, without spaces or hyphens and not starting with a digit",
+                fix="Use a name such as search_customer.py (or search_customer for a folder), "
+                "and update the matching function or variable name inside. " + inactive_entry_hint(path),
+            )
         )
 
 
 def _load_export(path: Path, export_name: str) -> tuple[ModuleType, Any]:
+    """Explain a missing export as a missing named Python function or variable."""
     module = _load_module(path)
     if not hasattr(module, export_name):
         raise BundleExportError(
-            f"resource module {path} must export {export_name!r} "
-            "(the file or directory name)"
+            authoring_guidance(
+                f"resource module {path} must export {export_name!r}",
+                expected=f"this file defines a top-level function or variable named {export_name!r}; "
+                "this is what 'export' means here",
+                fix=f"Name the intended declaration {export_name!r}, not just the file. "
+                "For example, tools/search.py defines a tool named search; "
+                "MCP files define client(), and sandbox/research.py defines research. "
+                "Put reusable helper code in lib/ instead of a feature folder.",
+            )
         )
     return module, getattr(module, export_name)
 
@@ -2582,6 +2653,7 @@ def _reject_extra_exports(
     kind: str,
     predicate: Callable[[Any], bool],
 ) -> None:
+    """Reject competing declarations and explain how to split or hide helpers."""
     extras = sorted(
         name
         for name, value in vars(module).items()
@@ -2590,8 +2662,13 @@ def _reject_extra_exports(
     if extras:
         rendered = ", ".join(repr(name) for name in extras)
         raise BundleExportError(
-            f"resource module {path} exports additional {kind} resources: {rendered}; "
-            "use one public resource per file"
+            authoring_guidance(
+                f"resource module {path} exports additional {kind} resources: {rendered}; use one public resource per file",
+                expected=f"only the intended {kind} declaration named {expected_name!r} is discovered from this file",
+                fix="Move additional active declarations to their own supported files or folders. "
+                "If an additional name is only an imported helper or alias, give that Python name an _ prefix "
+                "(for example, _helper). Each sandbox file defines one Sandbox; agents explicitly assign the names they may use.",
+            )
         )
 
 

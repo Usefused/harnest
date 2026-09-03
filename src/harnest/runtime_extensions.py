@@ -273,6 +273,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         asset_stores: Mapping[str, Any] | None = None,
         custom_stores: Mapping[str, Any] | None = None,
         skill_registry: SkillRegistry | None = None,
+        sandbox_registry: Any | None = None,
         session_store: SessionStore | None = None,
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
@@ -294,6 +295,11 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self._asset_stores = dict(asset_stores or {})
         self._custom_stores = dict(custom_stores or {})
         self._skill_registry = skill_registry or SkillRegistry()
+        from .context_sandboxes import SandboxRegistry
+
+        self._sandbox_registry = SandboxRegistry() if sandbox_registry is None else sandbox_registry
+        if not isinstance(self._sandbox_registry, SandboxRegistry):
+            raise TypeError("sandbox_registry must be SandboxRegistry")
         if not isinstance(self._skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be SkillRegistry")
         self._session_store = session_store
@@ -638,6 +644,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             asset_stores=self._asset_stores,
             custom_stores=self._custom_stores,
             skill_registry=self._skill_registry,
+            sandbox_registry=self._sandbox_registry,
             plugin_bindings=(
                 None if self._plugin_bindings is None else self._plugin_bindings()
             ),
@@ -731,6 +738,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             provider_started = self._credential_provider_started
             self._credential_provider_started = False
         failure = await _cleanup_failure(self._driver.close)
+        cleanup = await _cleanup_failure(self._sandbox_registry.aclose)
+        failure = _merge_cleanup_failure(failure, cleanup, label="sandbox provider")
         if stack is not None:
             cleanup = await _cleanup_failure(stack.aclose)
             failure = _merge_cleanup_failure(

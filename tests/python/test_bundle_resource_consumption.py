@@ -34,6 +34,9 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         )
 
     def _write_scoped_graph(self, root: Path, *, sandbox: bool) -> None:
+        """Give graph agents explicit independent sandbox grants when requested."""
+        root_grants = ["root_work"] if sandbox else []
+        child_grants = ["local_work"] if sandbox else []
         write_session_store(root)
         self._write(
             root / "agent.py",
@@ -42,7 +45,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             "root_agent = Graph(\n"
             "    name='root',\n"
             "    nodes={\n"
-            "        'inline': Agent(name='inline', model='test/model'),\n"
+            f"        'inline': Agent(name='inline', model='test/model', sandboxes={root_grants!r}),\n"
             "        'researcher': 'researcher',\n"
             "    },\n"
             "    edges=(Edge(START, 'inline'), Edge(START, 'researcher')),\n"
@@ -73,7 +76,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write(
             nested / "agent.py",
             "from harnest.agent import Agent\n"
-            "researcher = Agent(name='researcher', model='test/model')\n",
+            f"researcher = Agent(name='researcher', model='test/model', sandboxes={child_grants!r})\n",
         )
         self._write(nested / "instructions.md", "Research privately.\n")
         self._write(
@@ -97,14 +100,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         )
         if sandbox:
             self._write(
-                root / "sandbox" / "sandbox.py",
+                root / "sandbox" / "root_work.py",
                 "from harnest.sandbox import Sandbox\n"
-                "sandbox = Sandbox.provider(lambda: None, name='root-sandbox')\n",
+                "root_work = Sandbox.provider(lambda: None, name='root-sandbox')\n",
             )
             self._write(
-                nested / "sandbox" / "sandbox.py",
+                nested / "sandbox" / "local_work.py",
                 "from harnest.sandbox import Sandbox\n"
-                "sandbox = Sandbox.provider(lambda: None, name='local-sandbox')\n",
+                "local_work = Sandbox.provider(lambda: None, name='local-sandbox')\n",
             )
 
     def _compile_with_real_backend(self, root: Path, framework: str):
@@ -213,8 +216,11 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             [client.capability_id for client in researcher.mcp],
             ["agent__researcher__mcp__local_mcp"],
         )
-        self.assertEqual(inline.sandbox.backend, "root-sandbox")
-        self.assertEqual(researcher.sandbox.backend, "local-sandbox")
+        self.assertEqual(tuple(inline._sandbox_bindings), ("root_work",))
+        self.assertEqual(tuple(researcher._sandbox_bindings), ("local_work",))
+        self.assertEqual(inline._sandbox_bindings["root_work"].backend, "root-sandbox")
+        self.assertEqual(researcher._sandbox_bindings["local_work"].backend, "local-sandbox")
+        self.assertEqual(dict(researcher.subagents[0]._sandbox_bindings), {})
         self.assertEqual([child.name for child in researcher.subagents], ["critic"])
 
     def test_langgraph_graph_preserves_nested_folder_resource_scope(self):
@@ -338,11 +344,6 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             "skills/root_skill/SKILL.md": (
                 "# Root skill\n",
                 "skills but no Agent node in the root graph",
-            ),
-            "sandbox/sandbox.py": (
-                "from harnest.sandbox import Sandbox\n"
-                "sandbox = Sandbox.provider(lambda: None, name='root')\n",
-                "sandbox configuration but no Agent node in the root graph",
             ),
         }
         for relative, (source, expected) in cases.items():
@@ -484,7 +485,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                         framework="langgraph",
                     )
 
-    def test_callable_graph_rejects_unconsumed_tools_mcp_skills_and_sandbox(self):
+    def test_callable_graph_rejects_unconsumed_tools_mcp_and_skills(self):
         cases = {
             "tools/lookup.py": (
                 "from harnest.tool import tool\n"
@@ -503,11 +504,6 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             "skills/research/SKILL.md": (
                 "---\nname: research\ndescription: Research carefully.\n---\n\n# Research\n",
                 "has skills but no Agent node",
-            ),
-            "sandbox/sandbox.py": (
-                "from harnest.sandbox import Sandbox\n"
-                "sandbox = Sandbox.container(image='python:3.12')\n",
-                "has sandbox configuration but no Agent node",
             ),
         }
         for relative, (source, expected) in cases.items():

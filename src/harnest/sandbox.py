@@ -1,36 +1,43 @@
-"""Provider-neutral sandbox definitions for ADK code execution."""
+"""Portable isolated Python execution, lowered through native framework adapters."""
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
+
+from .sandbox_runtime import SandboxExecutionError, validate_backend
+from .sandbox_types import (
+    SandboxBackend, SandboxContext, SandboxFile, SandboxRequest, SandboxResult,
+    freeze_sandbox_metadata, validate_timeout,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class Sandbox:
-    """Lazily construct an ADK code executor from a sandbox backend.
+    """Declare one lazy sandbox usable by managed ADK and LangGraph agents.
 
     A sandbox is a code-execution boundary, not a policy label. The backend
-    returned by ``factory`` must be an ADK ``BaseCodeExecutor`` and owns the
-    actual isolation guarantees. Keeping construction lazy lets compilation
-    validate an agent without contacting Docker or a remote sandbox service.
+    returned by ``factory`` implements ``SandboxBackend.execute`` and owns the
+    actual isolation guarantees. Legacy ADK executors remain ADK-only providers.
+    Compilation never connects to Docker or a remote sandbox service.
     """
 
     factory: Callable[[], Any] = field(repr=False)
     backend: str = "custom"
     timeout_seconds: int | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    _executor_options: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
+        """Validate immutable authoring configuration without invoking a provider."""
         if not callable(self.factory):
             raise TypeError("sandbox factory must be callable")
         if not isinstance(self.backend, str) or not self.backend.strip():
             raise ValueError("sandbox backend name is required")
         object.__setattr__(self, "backend", self.backend.strip())
-        if self.timeout_seconds is not None and (
-            not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0
-        ):
-            raise ValueError("sandbox timeout_seconds must be positive")
+        validate_timeout(self.timeout_seconds)
+        object.__setattr__(self, "metadata", freeze_sandbox_metadata(self.metadata))
+        object.__setattr__(self, "_executor_options", freeze_sandbox_metadata(self._executor_options))
 
     @classmethod
     def provider(
@@ -39,13 +46,19 @@ class Sandbox:
         *,
         name: str = "custom",
         timeout_seconds: int | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> "Sandbox":
-        """Use an installed provider package that returns an ADK executor."""
+        """Configure a portable provider; native ADK factories remain compatible.
+
+        Provider-specific SDK settings belong in the factory. JSON metadata is
+        forwarded unchanged to each request, never exposed as model arguments.
+        """
 
         return cls(
             factory=factory,
             backend=name,
             timeout_seconds=timeout_seconds,
+            metadata={} if metadata is None else metadata,
         )
 
     @classmethod
@@ -58,114 +71,60 @@ class Sandbox:
         network: bool = False,
         timeout_seconds: int = 300,
         options: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        max_output_bytes: int = 1_048_576,
     ) -> "Sandbox":
-        """Use ADK's hardened Docker-backed code executor.
+        """Use ADK's native Docker executor through either framework adapter.
 
         Either ``image`` or ``docker_path`` is required. Networking is denied
-        by default. The optional backend dependency belongs in the agent's
-        requirements file: ``google-adk[extensions]``.
+        by default. Harnest does not add per-session filesystem isolation or
+        CPU/memory limits; native provider behavior owns those guarantees.
+        Harnest supplies the native executor dependency. A host-side guard
+        enforces deadlines and bounds combined stdout/stderr before buffering;
+        successful calls stop processes but retain files; aborted executions
+        discard their container before subsequent reuse.
         """
 
-        _validate_container_options(
-            image, docker_path, base_url, network, timeout_seconds
+        from .sandbox_container import create_container_backend
+
+        # Pure configuration is validated now; the backend starts Docker only
+        # inside execute(), so compile/test inspection remains infrastructure-free.
+        provider = create_container_backend(
+            image=image, docker_path=docker_path, base_url=base_url,
+            network=network, timeout_seconds=timeout_seconds, options=options,
+            max_output_bytes=max_output_bytes,
         )
-        extra = dict(options or {})
-        reserved = {
-            "image",
-            "docker_path",
-            "base_url",
-            "network_enabled",
-            "timeout_seconds",
-        } & extra.keys()
-        if reserved:
-            rendered = ", ".join(sorted(reserved))
-            raise ValueError(f"container sandbox options repeat reserved fields: {rendered}")
 
         def build_container() -> Any:
-            try:
-                from google.adk.code_executors import ContainerCodeExecutor
-            except ImportError as exc:  # pragma: no cover - optional dependency
-                raise RuntimeError(
-                    "container sandbox requires google-adk[extensions] and Docker"
-                ) from exc
-            return ContainerCodeExecutor(
-                image=image,
-                docker_path=docker_path,
-                base_url=base_url,
-                network_enabled=network,
-                timeout_seconds=timeout_seconds,
-                **extra,
-            )
+            """Give each native adapter its own lazily initialized provider."""
+            return provider.new_backend()
 
         return cls(
             factory=build_container,
             backend="container",
             timeout_seconds=timeout_seconds,
+            metadata={} if metadata is None else metadata,
+            _executor_options={} if options is None else options,
         )
 
     def to_adk_executor(self) -> Any:
-        """Return an ADK executor that creates the backend on first execution."""
+        """Use ADK's code_executor interface and native code/result event loop."""
+        from .sandbox_adapters import adk_executor
 
-        try:
-            from google.adk.code_executors import BaseCodeExecutor
-            from pydantic import PrivateAttr
-        except ImportError as exc:  # pragma: no cover - runtime dependency
-            raise RuntimeError("sandbox support requires Google ADK") from exc
+        return adk_executor(self)
 
-        definition = self
+    def to_langchain_tool(self) -> Any:
+        """Use LangGraph's native tool loop with a lazy, typed execution tool."""
+        from .sandbox_adapters import langchain_tool
 
-        class LazySandboxExecutor(BaseCodeExecutor):
-            _delegate: Any = PrivateAttr(default=None)
-            _lock: Any = PrivateAttr(default_factory=threading.Lock)
-
-            def execute_code(
-                self,
-                invocation_context: Any,
-                code_execution_input: Any,
-            ) -> Any:
-                if self._delegate is None:
-                    with self._lock:
-                        if self._delegate is None:
-                            self._delegate = definition.build()
-                return self._delegate.execute_code(
-                    invocation_context,
-                    code_execution_input,
-                )
-
-        return LazySandboxExecutor(timeout_seconds=self.timeout_seconds)
+        return langchain_tool(self)
 
     def build(self) -> Any:
-        """Construct and validate the configured ADK code executor."""
-
-        try:
-            from google.adk.code_executors import BaseCodeExecutor
-        except ImportError as exc:  # pragma: no cover - runtime dependency
-            raise RuntimeError("sandbox support requires Google ADK") from exc
-        executor = self.factory()
-        if not isinstance(executor, BaseCodeExecutor):
-            raise TypeError(
-                f"sandbox backend {self.backend!r} returned "
-                f"{type(executor).__name__}, expected ADK BaseCodeExecutor"
-            )
-        return executor
+        """Construct and validate a provider only when explicitly requested."""
+        return validate_backend(self.factory())
 
 
-__all__ = ["Sandbox"]
-
-
-def _validate_container_options(
-    image: str | None,
-    docker_path: str | None,
-    base_url: str | None,
-    network: bool,
-    timeout_seconds: int,
-) -> None:
-    if bool(image) == bool(docker_path):
-        raise ValueError("container sandbox requires exactly one of image or docker_path")
-    for name, value in (("image", image), ("docker_path", docker_path), ("base_url", base_url)):
-        if value is not None and not value.strip():
-            raise ValueError(f"container sandbox {name} must not be blank")
-    if not isinstance(network, bool):
-        raise TypeError("container sandbox network must be a boolean")
-    if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
-        raise ValueError("container sandbox timeout_seconds must be positive")
+__all__ = [
+    "Sandbox", "SandboxBackend", "SandboxContext", "SandboxExecutionError",
+    "SandboxFile", "SandboxRequest", "SandboxResult",
+]

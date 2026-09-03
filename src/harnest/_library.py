@@ -11,6 +11,8 @@ from threading import RLock
 from types import ModuleType
 from typing import Iterator
 
+from .authoring_errors import authoring_guidance, inactive_entry_hint
+
 _IGNORED_DIRECTORIES = {"__pycache__"}
 _lock = RLock()
 
@@ -165,8 +167,11 @@ def _validate_namespace_file(path: Path, binding: _AuthoredNamespace) -> int:
         if path.name.startswith("_"):
             return 0
         raise LibraryConventionError(
-            f"unexpected file in {binding.label}: {path}; use Python modules or "
-            "prefix documentation placeholders with _"
+            authoring_guidance(
+                f"unexpected file in {binding.label}: {path}",
+                expected=f"{binding.directory}/ holds reusable Python (.py) code, not active documents or data files",
+                fix="Move data files to an appropriate location for your application. " + inactive_entry_hint(path),
+            )
         )
     if path.stem != "__init__":
         _require_identifier(path.stem, path, binding)
@@ -216,7 +221,12 @@ def _require_identifier(
 
     if not name.isidentifier():
         raise LibraryConventionError(
-            f"{binding.label} module names must be valid Python identifiers: {path}"
+            authoring_guidance(
+                f"{binding.label} module names must be valid Python identifiers: {path}",
+                expected="Python file and folder names without spaces or hyphens and not starting with a digit",
+                fix="Rename this entry using a name such as customer_helpers.py (or customer_helpers for a folder), "
+                "then update any Python imports that use the old name.",
+            )
         )
 
 

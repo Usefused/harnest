@@ -56,7 +56,7 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `extensions/credentials.py` | Optional root `@lifecycle.credential_provider` factory returning one private `CredentialProvider`; never publish it with `@context`. |
 | `extensions/telemetry.py` | Optional repeatable root `@lifecycle.telemetry_exporter` factories, one uniquely named trace/log destination per factory; factories run only at runtime. |
 | `extensions/**/*.py` | Other arbitrary public root modules; explicit `@lifecycle.*` listeners and `@context` providers are discovered. Multiple listeners may share an invocation phase. |
-| `sandbox/sandbox.py` | Exports one `Sandbox` as `sandbox`; managed ADK only. |
+| `sandbox/<name>.py` | Exports a framework-neutral `Sandbox` variable matching `<name>`; each agent explicitly assigns allowed names with `sandboxes=[...]` for authored tools to access through `context.sandboxes`. No automatic model tools. Root names are available to same-project subagents; child-local names cannot duplicate ancestors. |
 | `skills/<skill>/SKILL.md` | Progressive internal instructions. Frontmatter `name` matches `<skill>`; references, assets, and scripts may live below it. |
 | root `evals/<id>.evalset.json` | ADK `EvalSet` whose ID matches the filename. Optional root `evals/test_config.json` configures evaluation. |
 | `tests/unit/test_*.py` | Offline authored tests. |
@@ -149,8 +149,9 @@ application-owned helpers rather than packaging the application as a plugin.
 
 - Missing, empty, ignored-only folders are skipped.
 - Default `harnest init` fills optional folders with ignored `_README.md`
-  guides; `--example`
-  is the explicit working-sample scaffold.
+  guides. In managed mode, `--example` adds ignored `_example.py` templates
+  only to folders without default code, plus ignored native-format skill,
+  plugin, and eval samples. Existing agent and storage code remain unchanged.
 - Once a public resource exists, the full convention is strict.
 - Resource discovery is deterministic by path name.
 - Duplicate tool, MCP configuration, subagent, or skill identities fail. MCP

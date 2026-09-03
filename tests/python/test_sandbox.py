@@ -26,13 +26,14 @@ class SandboxTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
 
-    def _root(self, directory: str) -> Path:
+    def _root(self, directory: str, assignments=()) -> Path:
+        """Author explicit per-agent grants instead of relying on folder presence."""
         root = Path(directory)
         write_session_store(root)
         self._write(
             root / "agent.py",
             "from harnest.agent import Agent\n"
-            "root_agent = Agent(name='root', model='test/model')\n",
+            f"root_agent = Agent(name='root', model='test/model', sandboxes={list(assignments)!r})\n",
         )
         self._write(root / "instructions.md", "Use isolated execution when needed.\n")
         return root
@@ -58,10 +59,11 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(calls, ["built"])
 
         invalid = Sandbox.provider(lambda: object(), name="invalid")
-        with self.assertRaisesRegex(TypeError, "expected ADK BaseCodeExecutor"):
+        with self.assertRaisesRegex(TypeError, "SandboxBackend or ADK BaseCodeExecutor"):
             invalid.build()
 
     def test_container_contract_is_secure_by_default(self):
+        """Retain explicit native network/deadline policy without starting Docker."""
         sandbox = Sandbox.container(image="example/sandbox:latest")
         self.assertEqual(sandbox.backend, "container")
         self.assertEqual(sandbox.timeout_seconds, 300)
@@ -71,8 +73,20 @@ class SandboxTests(unittest.TestCase):
             Sandbox.container(image="one", docker_path="Dockerfile")
         with self.assertRaisesRegex(TypeError, "network must be a boolean"):
             Sandbox.container(image="one", network="yes")
-        with self.assertRaisesRegex(ValueError, "repeat reserved fields"):
+        with self.assertRaisesRegex(ValueError, "unsupported container sandbox options"):
             Sandbox.container(image="one", options={"network_enabled": True})
+
+    def test_native_parsing_options_reach_adk_adapter(self):
+        """ADK reads retry and delimiter settings from the adapter itself."""
+        definition = Sandbox.container(
+            image="example/python", options={
+                "error_retry_attempts": 3,
+                "code_block_delimiters": [("<python>", "</python>")],
+            },
+        )
+        executor = definition.to_adk_executor()
+        self.assertEqual(executor.error_retry_attempts, 3)
+        self.assertEqual(executor.code_block_delimiters, [("<python>", "</python>")])
 
     def test_filesystem_sandbox_is_discovered_and_empty_folder_is_optional(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,12 +100,15 @@ class SandboxTests(unittest.TestCase):
                 "sandbox = Sandbox.provider(lambda: None, name='test-provider')\n",
             )
             definition = self._definition(root)
-            self.assertIsInstance(definition.sandbox, Sandbox)
-            self.assertEqual(definition.sandbox.backend, "test-provider")
+            self.assertIsNone(definition.sandbox)
+            self.assertEqual(dict(definition._sandbox_bindings), {})
+            self._write(root / "agent.py", "from harnest import Agent\nroot_agent = Agent(name='root', model='test/model', sandboxes=['sandbox'])\n")
+            definition = self._definition(root)
+            self.assertEqual(definition._sandbox_bindings["sandbox"].backend, "test-provider")
 
     def test_compiling_agent_does_not_start_sandbox_backend(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = self._root(directory)
+            root = self._root(directory, ["sandbox"])
             self._write(
                 root / "sandbox" / "sandbox.py",
                 "from harnest.sandbox import Sandbox\n"
@@ -103,7 +120,8 @@ class SandboxTests(unittest.TestCase):
             )
             compiled = compile_agent(root)
 
-        self.assertEqual(compiled.code_executor.timeout_seconds, 5)
+        self.assertIsNone(compiled.code_executor)
+        self.assertNotIn("harnest_sandbox_sandbox", [tool.name for tool in compiled.tools])
 
     def test_sandbox_exports_and_duplicates_are_strict(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -113,8 +131,7 @@ class SandboxTests(unittest.TestCase):
                 "from harnest.sandbox import Sandbox\n"
                 "wrong = Sandbox.provider(lambda: None)\n",
             )
-            with self.assertRaisesRegex(BundleConventionError, "only sandbox.py"):
-                self._definition(root)
+            self.assertEqual(dict(self._definition(root)._sandbox_bindings), {})
 
         with tempfile.TemporaryDirectory() as directory:
             root = self._root(directory)
@@ -143,8 +160,9 @@ class SandboxTests(unittest.TestCase):
                 "from harnest.sandbox import Sandbox\n"
                 "sandbox = Sandbox.provider(lambda: None)\n",
             )
-            with self.assertRaisesRegex(BundleDuplicateError, "configured explicitly"):
-                self._definition(root)
+            definition = self._definition(root)
+            self.assertIsInstance(definition.sandbox, Sandbox)
+            self.assertEqual(dict(definition._sandbox_bindings), {})
 
 
 if __name__ == "__main__":

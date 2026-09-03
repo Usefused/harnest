@@ -27,6 +27,11 @@ from ..mcp_context import _is_governed_mcp_operation
 from ..structured import provider_output_schema
 from ..tool_arguments import invalid_argument_error, unknown_argument_error
 from ..tool_lifecycle import wrap_lifecycle_tool
+from ..sandbox import Sandbox
+from ..sandbox_adapters import SANDBOX_TOOL_NAME
+from ..sandbox_assignments import (
+    assigned_sandboxes, reject_sandbox_tool_collisions,
+)
 
 
 def _langgraph_types():
@@ -302,8 +307,6 @@ def _build_ready_agent(
             "LangGraph agent definitions cannot implicitly attach ADK subagents; "
             "place them explicitly in a Graph"
         )
-    if definition.sandbox is not None:
-        raise ValueError("ADK sandbox executors are not supported by LangGraph")
     if definition.generate_content_config is not None:
         raise ValueError(
             "ADK generate_content_config is not supported by LangGraph models"
@@ -321,7 +324,7 @@ def _build_ready_agent(
     model = _resolve_langchain_model(definition.model)
     kwargs = {
         "model": model,
-        "tools": _langchain_tools((*definition.tools, *tools)),
+        "tools": _agent_tools(definition, tools),
         "system_prompt": definition.instruction,
         "name": definition.name,
         "middleware": [
@@ -350,6 +353,21 @@ def _build_ready_agent(
         consume_value=consume_value,
     )
     return propagate_litellm_lifecycles(model, target)
+
+
+def _agent_tools(definition: AgentDefinition, discovered: Sequence[Any]) -> list[Any]:
+    """Attach a scoped sandbox through native tools without shadowing capabilities."""
+    tools = _langchain_tools((*definition.tools, *discovered))
+    assigned_sandboxes(definition)
+    if definition.sandbox is None:
+        return tools
+    if not isinstance(definition.sandbox, Sandbox):
+        raise TypeError("LangGraph requires a portable Sandbox, not a native ADK executor")
+    # Check after MCP materialization as well as at compile time: a remote tool
+    # must never replace or silently steal the sandbox's execution authority.
+    reject_sandbox_tool_collisions(tools, (SANDBOX_TOOL_NAME,))
+    tools.extend(_langchain_tools((definition.sandbox.to_langchain_tool(),)))
+    return tools
 
 
 def _langgraph_agent_scope_middleware(agent_name: str) -> Any:
@@ -642,7 +660,7 @@ def _normalize_result(result: Any) -> dict[str, Any]:
 
 
 def _callable_node(action: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap sync and async portable nodes with identical state projection."""
+    """Project node state without inheriting a same-named agent's grants."""
 
     if _is_async_callable(action):
 
@@ -671,7 +689,9 @@ def _callable_node(action: Callable[..., Any]) -> Callable[..., Any]:
             return _normalize_result(result)
 
     invoke.__name__ = getattr(action, "__name__", type(action).__name__)
-    return invoke
+    from ..sandbox_graph_scope import deny_graph_callable
+
+    return deny_graph_callable(invoke)
 
 
 def _route_values_match(expected: Any, actual: Any) -> bool:
@@ -725,6 +745,8 @@ def _lower_node(
 ) -> Any:
     """Lower one portable or explicitly native value into a graph node."""
 
+    from ..sandbox_graph_scope import deny_langgraph_node
+
     if isinstance(value, AgentDefinition):
         if value.mcp:
             raise RuntimeError("managed MCP graph was lowered before materialization")
@@ -739,7 +761,7 @@ def _lower_node(
     if isinstance(value, _AdvancedAgentDefinition):
         return _advanced_graph_node(value, Pregel)
     if isinstance(value, Pregel):
-        return passthrough_native(value)
+        return deny_langgraph_node(passthrough_native(value))
     if isinstance(value, Join):
         return lambda _state: {}
     if callable(value):
@@ -766,7 +788,9 @@ def _advanced_graph_node(value: _AdvancedAgentDefinition, Pregel: type[Any]) -> 
     # Validate at composition time so malformed native graphs fail compilation,
     # before a deployed request can enter an incomplete execution topology.
     value.target.validate()
-    return passthrough_native(value.target)
+    from ..sandbox_graph_scope import deny_langgraph_node
+
+    return deny_langgraph_node(passthrough_native(value.target))
 
 
 def _graph_contains_agent(graph: Graph) -> bool:

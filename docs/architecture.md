@@ -228,7 +228,7 @@ marked root-only:
 | `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `client()` factory using the same rule. |
 | `plugins/<name>/skills/<skill>/SKILL.md` (root-only) | Plugin-owned progressive skills. |
 | `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
-| `sandbox/sandbox.py` | One optional ADK-only `Sandbox` defining the agent's lazy code-execution backend. |
+| `sandbox/<name>.py` | One matching framework-neutral `Sandbox` variable per file; each agent explicitly grants authored-tool access with `sandboxes=[...]`, then tools call `context.sandboxes["<name>"].execute(code)` or `aexecute(code)`. No automatic model tool is added. Discovery alone grants no access. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
 | `evals/<id>.evalset.json` (root test lane) | A test-only ADK `EvalSet`, executable against ADK or LangGraph, whose `eval_set_id` matches its filename. |
 | `tests/unit/test_*.py` | Offline agent/tool tests run by `harnest test`. |
@@ -409,7 +409,8 @@ tracing, and server boundaries. Explicitly decorated native capabilities inherit
 that invocation context whether the advanced component is the root, an ADK
 subagent, or a LangGraph node; Harnest does not inspect opaque native targets to
 discover capabilities automatically. Managed
-LangGraph also rejects ADK sandbox executors, `output_key`,
+LangGraph also rejects native ADK-only sandbox executors (portable `Sandbox`
+providers are supported), `output_key`,
 `generate_content_config`, and implicit subagent delegation rather than
 silently ignoring them.
 

@@ -25,7 +25,7 @@ root_agent = Graph(
 ```
 
 `Agent` is an alias of `AgentDefinition`. Common fields are `name`, `model`,
-`instruction`, `description`, `tools`, `subagents`, `mcp`, `sandbox`,
+`instruction`, `description`, `tools`, `subagents`, `mcp`, `sandbox`, `sandboxes`,
 `input_schema`, `output_schema`, `output_key`, `generate_content_config`, and
 `history`. `input_schema` and `output_schema` accept Pydantic `BaseModel`
 classes. The input model validates `input` consistently for JSON, SSE, and
@@ -671,8 +671,46 @@ exporters also receive Harnest telemetry produced during subagent execution;
 nested agents cannot register competing destinations.
 
 `harnest.sandbox.Sandbox.container(...)` and `Sandbox.provider(...)` define lazy
-ADK code executors. A sandbox is an execution boundary, not merely a policy
-flag; provider packages and Docker requirements belong in `pyproject.toml`.
+framework-neutral executors. Define `sandbox/<name>.py` with a matching variable
+and explicitly assign `Agent(sandboxes=["<name>"])` on every allowed agent.
+Names are 1–47 ASCII identifier characters. Named assignments do not expose
+model tools. Inside an authored tool, import `context` from `harnest` and call
+`context.sandboxes["<name>"].execute(code, input_files=())` or await `aexecute`
+with the same arguments. Both return `SandboxResult`; check `stderr` and choose
+which stdout, files, or safe metadata fields to return to the model. The tool's
+surrounding Python still executes on the agent server.
+Root catalog names are available to all same-project agents, including flat,
+nested, graph, and code-defined subagents; permissions are never inherited.
+Child catalogs may add local names but cannot duplicate ancestor names.
+No assignments means no named sandbox access, even with a populated folder.
+Access requires a managed invocation: unassigned names raise
+`ContextResourceError`; wrong/revoked invocation handles raise
+`ContextUnavailableError`. Backend failures raise sanitized
+`SandboxExecutionError`; provider stderr stays in `SandboxResult`.
+Explicit legacy `Agent(sandbox=...)` remains supported and cannot be combined
+with `sandboxes`. It uses ADK's native `code_executor` loop or LangGraph's
+`harnest_execute_python` tool. `sandbox/sandbox.py` is a named declaration
+requiring `sandboxes=["sandbox"]`, not an automatic assignment.
+Portable providers implement `SandboxBackend.execute(SandboxRequest)` and
+return `SandboxResult`; native ADK executor providers remain ADK-only.
+Provider SDK settings belong in the factory; JSON `metadata` is forwarded in
+requests, and result metadata is preserved for both frameworks. Authored tools
+control model-visible output: return only needed, safe metadata fields. Legacy
+model execution adapters expose result metadata to model and execution history.
+Harnest supplies the native container dependency; Docker is required only on
+execution. Declare third-party provider packages in `pyproject.toml`.
+Implement `close()` or async `aclose()` for provider-owned resources. Application
+shutdown closes constructed providers; wrappers must forward cleanup to their
+owned backends. Unused providers are never constructed just for shutdown.
+Harnest does not add per-session filesystem isolation or CPU/memory limits.
+The built-in container provider enforces a host-side deadline including queue
+waiting, cancellation-aware admission, and combined stdout/stderr bounded by
+`max_output_bytes` (default 1 MiB). Aborted executions discard their container
+and files. Successful calls stop processes and restart the same filesystem on
+the next call. A replacement cannot start until cleanup is confirmed. Image
+preparation and initial Docker startup use SDK transport timeouts, with admission
+rechecked when they return. Revoked
+managed context fails closed; custom SDK termination remains provider-owned.
 
 ## Production runtime resources
 

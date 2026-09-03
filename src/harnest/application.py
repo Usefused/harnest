@@ -11,6 +11,7 @@ from .agent import _AdvancedAgentDefinition
 from .assets import AssetStore
 from .checkpoint import ADKStore, CheckpointAuthority
 from .context import ContextValue
+from .context_sandboxes import SandboxRegistry
 from .credentials import CredentialProvider
 from .http_routes import HTTPRouteExtension
 from .lifecycle import LifecycleListener
@@ -40,6 +41,7 @@ class RuntimeCapabilities:
     context_values: Sequence[ContextValue] = ()
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
+    sandbox_registry: SandboxRegistry = field(default_factory=SandboxRegistry, repr=False)
     storage_registry: StorageRegistry = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -80,6 +82,8 @@ class RuntimeCapabilities:
         )
         if not isinstance(self.skill_registry, SkillRegistry):
             raise TypeError("skill_registry must be SkillRegistry")
+        if not isinstance(self.sandbox_registry, SandboxRegistry):
+            raise TypeError("sandbox_registry must be SandboxRegistry")
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,7 @@ class CompiledApplication:
     framework_version: str | None = None
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
+    sandbox_registry: SandboxRegistry = field(default_factory=SandboxRegistry, repr=False)
     runtime_capabilities: RuntimeCapabilities = field(
         init=False, repr=False, compare=False
     )
@@ -143,6 +148,7 @@ class CompiledApplication:
             telemetry_exporters=self.telemetry_exporters,
             context_values=self.context_values,
             skill_registry=self.skill_registry,
+            sandbox_registry=self.sandbox_registry,
         )
         object.__setattr__(self, "runtime_capabilities", capabilities)
         _publish_compatibility_attributes(self, capabilities)
@@ -186,6 +192,7 @@ def _publish_compatibility_attributes(
         "telemetry_exporters",
         "context_values",
         "skill_registry",
+        "sandbox_registry",
     ):
         object.__setattr__(application, name, getattr(capabilities, name))
 

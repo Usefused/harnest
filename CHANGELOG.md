@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Support framework-neutral sandbox providers on managed ADK and LangGraph,
+  with multiple named `sandbox/<name>.py` declarations explicitly assigned through
+  each agent's `sandboxes` allowlist and called from authored tools through
+  `context.sandboxes`, with provider request/result metadata and lazy Docker
+  execution. Assignments do not expose automatic model tools. Folder discovery never grants access;
+  subagents declare their own permissions. Preserve explicit legacy
+  `Agent(sandbox=...)` and native ADK provider compatibility;
+  isolation and CPU/memory limits remain provider-owned.
+* Fill guide-only managed project folders with opt-in code samples when using
+  `harnest init --example` on ADK or LangGraph. Samples remain ignored until
+  renamed, including native-format skill, plugin, and eval examples; preserve
+  the default agent and storage code without adding redundant examples.
+
+### Fixes
+
+* Explain feature-folder authoring errors in plain language, including the
+  expected layout, missing Python declarations, and concrete steps to repair
+  misplaced files or keep unused examples out of discovery.
+* Harden container sandbox execution with host-side deadlines, bounded streaming
+  stdout/stderr (1 MiB by default, configurable with `max_output_bytes`),
+  cancellation-aware admission, and failed-start cleanup. Reject revoked
+  invocation contexts instead of falling back to anonymous execution; discard
+  aborted containers before reuse. Stop detached processes between successful
+  calls while preserving files, without adding session isolation or CPU/memory limits.
+* Continue ADK sandbox model turns after successful code execution when the
+  provider returns `STOP`, preserving genuine empty-response failures and
+  native retry behavior instead of ending without a final answer.
+
 ## [0.10.1](https://github.com/Usefused/harnest/compare/v0.10.0...v0.10.1) (2026-09-01)
 
 ### Fixes

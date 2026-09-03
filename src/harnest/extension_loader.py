@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 import uuid
 
 from .assets import AssetStore
+from .authoring_errors import authoring_guidance, inactive_entry_hint
 from .checkpoint import (
     ADKStore,
     CheckpointAuthority,
@@ -522,6 +523,7 @@ def _partition_listeners(
 
 
 def _extension_files(root: Path) -> tuple[Path, ...]:
+    """Explain extension layout and Python naming mistakes before importing files."""
     files: list[Path] = []
     for path in sorted(root.rglob("*"), key=lambda value: value.as_posix()):
         if path.is_symlink():
@@ -532,12 +534,20 @@ def _extension_files(root: Path) -> tuple[Path, ...]:
         if path.is_dir():
             if not path.name.isidentifier():
                 raise ExtensionDiscoveryError(
-                    f"extension directory must be a Python identifier: {path}"
+                    authoring_guidance(
+                        f"extension directory must be a Python identifier: {path}",
+                        expected="extension folder names without spaces or hyphens and not starting with a digit",
+                        fix="Use a name such as request_hooks, and update imports that use the old name. " + inactive_entry_hint(path),
+                    )
                 )
             continue
         if not path.is_file() or path.suffix != ".py" or not path.stem.isidentifier():
             raise ExtensionDiscoveryError(
-                f"public extension resources must be Python files: {path}"
+                authoring_guidance(
+                    f"public extension resources must be Python files: {path}",
+                    expected="extensions/ holds Python (.py) files with lifecycle hooks or resource-provider declarations",
+                    fix="Use a Python filename such as storage.py, without spaces or hyphens. " + inactive_entry_hint(path),
+                )
             )
         files.append(path)
     return tuple(files)

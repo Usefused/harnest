@@ -12,7 +12,7 @@ func TestFrameworkRequirementsAreReleaseOwned(t *testing.T) {
 		"adk": "google-adk[eval,extensions,mcp]>=2.8,<3\n" +
 			"asyncpg>=0.30,<1\n" +
 			"redis>=6,<8\n",
-		"langgraph": "google-adk[eval]>=2.8,<3\n" +
+		"langgraph": "google-adk[eval,extensions]>=2.8,<3\n" +
 			"langgraph>=1.2,<2\n" +
 			"langchain>=1.3,<2\n" +
 			"langchain-litellm>=0.7,<1\n" +

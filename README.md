@@ -56,9 +56,9 @@ harnest init support-agent --framework adk
 harnest init support-agent --framework langgraph
 ```
 
-The default scaffold is a small, runnable managed agent. To include working
-examples of graphs, tools, plugins, skills, extensions, evals, and tests, add
-`--example`:
+The default scaffold is a small, runnable managed agent. Add `--example` for
+ignored code samples in folders that otherwise contain only guides. Existing
+agent and storage code stays unchanged; rename a sample to opt into a feature:
 
 ```bash
 harnest init support-agent --framework adk --example

@@ -7,6 +7,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel
@@ -67,6 +68,8 @@ class AgentDefinition:
     output_schema: PydanticModel | None = None
     generate_content_config: Mapping[str, Any] | Any | None = None
     history: Literal["session", "turn"] = "session"
+    sandboxes: Sequence[str] = field(default_factory=tuple)
+    _sandbox_bindings: Mapping[str, Sandbox] = field(default_factory=dict, repr=False)
 
     @classmethod
     def advanced(
@@ -91,9 +94,11 @@ class AgentDefinition:
         )
 
     def __post_init__(self) -> None:
+        """Validate declarations and snapshot sandbox grants before lowering."""
         self._validate_identity()
         self._validate_history()
         self._validate_resources()
+        self._validate_sandboxes()
         validate_output_schema(self.input_schema, field_name="agent input_schema")
         validate_output_schema(self.output_schema, field_name="agent output_schema")
         if self.output_schema is not None:
@@ -131,11 +136,32 @@ class AgentDefinition:
             if isinstance(value, (str, bytes)):
                 raise TypeError(f"agent {field_name} must be a sequence, not a string")
 
+    def _validate_sandboxes(self) -> None:
+        """Keep named grants immutable and separate from the legacy executor path."""
+        from .sandbox_assignments import validate_sandbox_name
+
+        if isinstance(self.sandboxes, (str, bytes)) or not isinstance(self.sandboxes, Sequence):
+            raise TypeError("agent sandboxes must be a sequence of names, such as ['research']")
+        names = tuple(self.sandboxes)
+        for name in names:
+            validate_sandbox_name(name)
+        if len(names) != len(set(names)):
+            raise ValueError("agent sandboxes must not contain duplicate names")
+        if self.sandbox is not None and names:
+            raise ValueError("use either agent sandbox= or sandboxes=[...], not both")
+        if not isinstance(self._sandbox_bindings, Mapping):
+            raise TypeError("resolved sandbox bindings must be a mapping")
+        if any(not isinstance(value, Sandbox) for value in self._sandbox_bindings.values()):
+            raise TypeError("resolved sandbox bindings must contain Sandbox definitions")
+        object.__setattr__(self, "sandboxes", names)
+        object.__setattr__(self, "_sandbox_bindings", MappingProxyType(dict(self._sandbox_bindings)))
+
     def build(self) -> Any:
         """Build the underlying ADK agent.
 
         ADK is imported lazily so config generation and validation do not need
-        model/runtime dependencies loaded.
+        model/runtime dependencies loaded. Sandbox agents retain native flows
+        with a scoped consumed-code continuation compatibility adapter.
         """
 
         if self.instruction is None:
@@ -152,7 +178,15 @@ class AgentDefinition:
             ) from exc
 
         kwargs = self._build_kwargs()
-        built = LlmAgent(**kwargs)
+        from .sandbox_adk import sandbox_agent_type
+
+        # Scope ADK's consumed-code STOP compatibility to sandbox agents;
+        # ordinary agents and advanced native instances retain their own flow.
+        native_type = sandbox_agent_type(LlmAgent) if self.sandbox is not None else LlmAgent
+        from .agent_scope_adk import managed_adk_agent_type
+
+        native_type = managed_adk_agent_type(native_type)
+        built = native_type(**kwargs)
         propagate_litellm_lifecycles(kwargs["model"], built)
         propagate_mcp_lifecycles(kwargs["tools"], built)
         for child in kwargs["sub_agents"]:
@@ -168,6 +202,11 @@ class AgentDefinition:
             *(_adk_runtime_tool(tool) for tool in self.tools),
             *(client.to_adk_toolset() for client in self.mcp),
         ]
+        from .sandbox_assignments import assigned_sandboxes
+
+        # Named declarations are capabilities for authored tools, never an
+        # implicit model-facing execute-code tool or native code executor.
+        assigned_sandboxes(self)
         kwargs: dict[str, Any] = {
             "name": self.name,
             "model": resolve_model(self.model),
@@ -293,8 +332,10 @@ def _build_adk_subagent(value: Any) -> Any:
 
     if isinstance(value, AgentDefinition):
         return value.build()
+    from .agent_scope_adk import scope_native_adk_agent
+
     if not isinstance(value, _AdvancedAgentDefinition):
-        return value
+        return scope_native_adk_agent(value)
     # Input and output adapters transform Harnest's root transport boundary;
     # applying them inside a parent would silently change the component contract.
     if value.input_adapter is not None or value.output_adapter is not None:
@@ -325,7 +366,7 @@ def _build_adk_subagent(value: Any) -> Any:
             "embedded Agent.advanced subagent name must match its native ADK "
             f"agent name {target.name!r}; got {value.name!r}"
         )
-    return target
+    return scope_native_adk_agent(target)
 
 
 # A short alias reads naturally in agent.py: Agent(...).build().

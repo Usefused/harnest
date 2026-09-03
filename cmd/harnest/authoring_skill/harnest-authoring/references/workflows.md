@@ -34,8 +34,11 @@ harnest doctor
 starter material; treat `.harnest/` as disposable build output. By default,
 optional folders contain ignored `_README.md` routing guides, except for the
 ignored resource guides, and the root is one simple agent. Add
-`--example` only when the user wants working graph, tool, agent-plugin, skill,
-extension, eval, and test samples. Select
+`--example` for ignored code samples in otherwise guide-only managed folders.
+The default agent and storage code stay unchanged. Copy or rename a sample to
+its documented public filename to activate it; preserve required exports and
+dependent resources. Skills, plugins, and evals use ignored native-format
+examples rather than Python placeholders. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
 

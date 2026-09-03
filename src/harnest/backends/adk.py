@@ -10,6 +10,7 @@ from harnest.agent import AgentDefinition, _AdvancedAgentDefinition
 from harnest.graph import START, Event, Graph, GraphContext, Join, call_graph_node
 from harnest.model_lifecycle import propagate_litellm_lifecycles
 from harnest.mcp_lifecycle import propagate_mcp_lifecycles
+from harnest.sandbox_graph_scope import deny_adk_node
 
 
 def _adk_route(route: Any) -> Any:
@@ -135,12 +136,12 @@ def _lower_graph(graph: Graph, *, active: set[int]) -> Any:
                 propagate_litellm_lifecycles(built_agent, native)
                 propagate_mcp_lifecycles(built_agent, native)
             elif callable(value):
-                native = adk_node(
+                native = deny_adk_node(adk_node(
                     _callable_adapter(value, name=name),
                     name=name,
-                )
+                ))
             elif isinstance(value, BaseNode):
-                native = adk_node(value, name=name)
+                native = deny_adk_node(adk_node(value, name=name))
             else:
                 raise TypeError(
                     f"graph node {name!r} expected AgentDefinition, Agent.advanced, "

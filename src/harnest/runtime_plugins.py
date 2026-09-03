@@ -12,6 +12,8 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from .authoring_errors import folder_entry_error
+
 from .source_tree import ignored_source_path
 from ._runtime_plugin_project import (
     RuntimePluginProject,
@@ -215,7 +217,7 @@ def _plugin_directories(root: Path) -> tuple[Path, ...]:
             continue
         if not path.is_dir():
             raise RuntimePluginConventionError(
-                f"unexpected resource in plugins directory: {path}"
+                folder_entry_error(f"unexpected resource in plugins directory: {path}", path, kind="plugins")
             )
         directories.append(path)
     return tuple(directories)

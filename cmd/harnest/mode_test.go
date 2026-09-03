@@ -7,12 +7,23 @@ import (
 	"testing"
 )
 
+// TestAdvancedModeCheckReportsMigrationWithoutChangingFiles activates selected
+// templates explicitly so ignored samples never masquerade as migration work.
 func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "managed-agent")
 	if err := createExampleScaffoldForMode(
 		target, "managed-agent", "adk", "managed",
 	); err != nil {
 		t.Fatal(err)
+	}
+	for source, destination := range map[string]string{
+		"tools/_example.py":      "tools/echo.py",
+		"skills/_example":        "skills/getting-started",
+		"plugins/_example_agent": "plugins/starter",
+	} {
+		if err := os.Rename(filepath.Join(target, source), filepath.Join(target, destination)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(
 		filepath.Join(target, "lib", "shared.py"),

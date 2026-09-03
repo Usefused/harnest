@@ -113,7 +113,7 @@ func pluginRuntimeProject(
 ) ([]string, string, bool, error) {
 	pluginDirectory := filepath.Join(directory, entry.Name())
 	if !entry.IsDir() {
-		return nil, "", false, fmt.Errorf("runtime plugin path must be a directory: %s", pluginDirectory)
+		return nil, "", false, fmt.Errorf("runtime plugin path must be a directory: %s\n\nWhat Harnest expects: one subfolder per plugin, not loose files in plugins/.\nHow to fix: put an active plugin in its own folder. If %q is only a note, backup, or unused example, rename it to %q or move it outside plugins/. Names starting with _ are left out of automatic discovery", pluginDirectory, entry.Name(), "_"+entry.Name())
 	}
 	manifest := filepath.Join(pluginDirectory, "plugin.yaml")
 	found, err := regularDependencyPathExists(manifest, "runtime plugin manifest")
@@ -152,7 +152,7 @@ func hasAuthoredTasks(root string) (bool, error) {
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() || filepath.Ext(name) != ".py" {
-			return false, fmt.Errorf("unexpected resource in tasks directory: %s", filepath.Join(directory, name))
+			return false, fmt.Errorf("unexpected resource in tasks directory: %s\n\nWhat Harnest expects: real Python (.py) files directly inside tasks/, with one declared task per file; links and subfolders are not supported.\nHow to fix: put each task in its own .py file. Move notes, backups, and unused examples outside tasks/ or give them an _ prefix, such as _notes.md. A link must be replaced by a real file, not just renamed", filepath.Join(directory, name))
 		}
 		return true, nil
 	}

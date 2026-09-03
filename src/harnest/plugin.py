@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .authoring_errors import authoring_guidance, folder_entry_error, inactive_entry_hint
+
 
 _PLUGIN_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$")
 _IGNORED_NAMES = {"__pycache__", ".DS_Store"}
@@ -88,8 +90,7 @@ def _discover_agent_plugin(directory: Path) -> PluginResources | None:
         return None
     if not directory.is_dir():
         raise PluginConventionError(
-            f"unexpected resource in plugins directory: {directory}; "
-            "each public entry must be a plugin directory"
+            folder_entry_error(f"unexpected resource in plugins directory: {directory}", directory, kind="plugins")
         )
     if not _PLUGIN_NAME.fullmatch(directory.name):
         raise PluginConventionError(
@@ -135,6 +136,7 @@ def _is_runtime_plugin(directory: Path) -> bool:
 
 
 def _validate_plugin_entries(directory: Path) -> None:
+    """Explain the capability-plugin layout without confusing it with runtime plugins."""
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise PluginConventionError(f"plugin resource cannot be a symlink: {path}")
@@ -142,12 +144,17 @@ def _validate_plugin_entries(directory: Path) -> None:
             continue
         if path.name not in {"mcp", "skills"} or not path.is_dir():
             raise PluginConventionError(
-                f"unexpected resource in plugin directory: {path}; "
-                "plugins may contain only mcp/ and skills/"
+                authoring_guidance(
+                    f"unexpected resource in plugin directory: {path}; plugins may contain only mcp/ and skills/",
+                    expected="a plugin without plugin.yaml groups MCP clients in mcp/ and skills in skills/",
+                    fix="Move client Python files into mcp/ and each skill into its own folder under skills/. "
+                    "If you intended a runtime plugin, configure its plugin.yaml manifest instead. " + inactive_entry_hint(path),
+                )
             )
 
 
 def _discover_mcp_sources(directory: Path) -> tuple[Path, ...]:
+    """Find plugin clients while explaining Python file and name requirements."""
     _require_optional_directory(directory, kind="plugin mcp")
     if not directory.exists():
         return ()
@@ -162,13 +169,18 @@ def _discover_mcp_sources(directory: Path) -> tuple[Path, ...]:
             continue
         if not path.is_file() or path.suffix != ".py" or not path.stem.isidentifier():
             raise PluginConventionError(
-                f"plugin MCP client must be a public Python module: {path}"
+                authoring_guidance(
+                    f"plugin MCP client must be a public Python module: {path}",
+                    expected="a .py file with a Python-compatible name, defining client() that returns MCPClient",
+                    fix="Use a filename such as search.py, without spaces or hyphens. " + inactive_entry_hint(path),
+                )
             )
         sources.append(path)
     return tuple(sources)
 
 
 def _discover_skill_directories(directory: Path) -> tuple[Path, ...]:
+    """Find plugin skills and describe missing folders or instruction files."""
     _require_optional_directory(directory, kind="plugin skills")
     if not directory.exists():
         return ()
@@ -183,7 +195,7 @@ def _discover_skill_directories(directory: Path) -> tuple[Path, ...]:
             continue
         if not path.is_dir():
             raise PluginConventionError(
-                f"plugin skill must be a directory containing SKILL.md: {path}"
+                folder_entry_error(f"plugin skill must be a directory containing SKILL.md: {path}", path, kind="skills")
             )
         manifest = path / "SKILL.md"
         if manifest.is_symlink():
@@ -192,7 +204,11 @@ def _discover_skill_directories(directory: Path) -> tuple[Path, ...]:
             )
         if not manifest.is_file():
             raise PluginConventionError(
-                f"plugin skill directory must contain uppercase SKILL.md: {path}"
+                authoring_guidance(
+                    f"plugin skill directory must contain uppercase SKILL.md: {path}",
+                    expected="each skill folder contains its instructions in a file named exactly SKILL.md",
+                    fix=f"Create {manifest}, or rename an existing skill.md to SKILL.md. " + inactive_entry_hint(path),
+                )
             )
         _reject_tree_symlinks(path, kind="plugin skill")
         skills.append(path)

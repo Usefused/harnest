@@ -29,8 +29,9 @@ named-resource collisions fail rather than being resolved by load order.
 - ADK folder-based agents may recursively discover child subagents. A nested
   LangGraph `Agent` definition cannot consume a discovered sibling
   `subagents/` folder today; model the flow explicitly in the root graph.
-- ADK-specific `sandbox`, `output_key`, and `generate_content_config` settings
-  are not portable to LangGraph.
+- Named `sandboxes` assignments and neutral `Sandbox` providers work on both
+  frameworks. Native ADK executor providers, `output_key`, and
+  `generate_content_config` remain ADK-specific.
 
 Use a portable graph when the same authored topology should work across both
 frameworks. Use callable nodes and `Event(route=...)` for deterministic routing;

@@ -70,6 +70,7 @@ class AgentContext:
     _asset_stores: Mapping[str, Any] = field(repr=False)
     _custom_stores: Mapping[str, Any] = field(repr=False)
     _skill_registry: Any = field(repr=False)
+    _sandbox_registry: Any = field(repr=False)
     _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
     _plugin_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
@@ -109,6 +110,14 @@ _ACTIVE_CONTEXT: ContextVar[AgentContext | None] = ContextVar(
 )
 
 
+def optional_active_context() -> AgentContext | None:
+    """Allow genuinely unmanaged calls without accepting revoked managed authority."""
+    active = _ACTIVE_CONTEXT.get()
+    if active is not None:
+        active._require_active()
+    return active
+
+
 class _ContextAccess:
     """Decorate providers and access the context active in the current task."""
 
@@ -134,7 +143,7 @@ class _ContextAccess:
     def current(self) -> AgentContext:
         """Return the active invocation or fail outside managed execution."""
 
-        active = _ACTIVE_CONTEXT.get()
+        active = optional_active_context()
         if active is None:
             raise ContextUnavailableError(
                 "Harnest context is available only during a managed invocation"
@@ -215,6 +224,12 @@ class _ContextAccess:
         return active._skill_registry.access(active)
 
     @property
+    def sandboxes(self) -> Any:
+        """Return only sandbox grants assigned to the currently executing agent."""
+        active = self.current()
+        return active._sandbox_registry.access(active)
+
+    @property
     def agent(self) -> Any:
         """Return task-scoped access to the compiled root agent runtime."""
 
@@ -280,6 +295,7 @@ def create_agent_context(
     asset_stores: Mapping[str, Any] | None = None,
     custom_stores: Mapping[str, Any] | None = None,
     skill_registry: Any | None = None,
+    sandbox_registry: Any | None = None,
     plugin_bindings: Mapping[str, Any] | None = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
@@ -297,6 +313,11 @@ def create_agent_context(
     skills = SkillRegistry() if skill_registry is None else skill_registry
     if not isinstance(skills, SkillRegistry):
         raise TypeError("agent context skill_registry must be SkillRegistry")
+    from .context_sandboxes import SandboxRegistry
+
+    sandboxes = SandboxRegistry() if sandbox_registry is None else sandbox_registry
+    if not isinstance(sandboxes, SandboxRegistry):
+        raise TypeError("agent context sandbox_registry must be SandboxRegistry")
     return AgentContext(
         framework=framework,
         agent_name=agent_name,
@@ -310,6 +331,7 @@ def create_agent_context(
         _asset_stores=MappingProxyType(dict(asset_stores or {})),
         _custom_stores=MappingProxyType(dict(custom_stores or {})),
         _skill_registry=skills,
+        _sandbox_registry=sandboxes,
         _skill_pins={},
         _plugin_bindings=plugins,
         _lifetime=_ContextLifetime(),
@@ -335,6 +357,7 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _asset_stores=active._asset_stores,
         _custom_stores=active._custom_stores,
         _skill_registry=active._skill_registry,
+        _sandbox_registry=active._sandbox_registry,
         _skill_pins=active._skill_pins,
         _plugin_bindings=active._plugin_bindings,
         _lifetime=active._lifetime,

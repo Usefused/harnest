@@ -47,7 +47,7 @@ def checkpointer():
 _FRAMEWORK_DEPENDENCIES = {
     "adk": ("google-adk[eval,extensions,mcp]>=2.8,<3",),
     "langgraph": (
-        "google-adk[eval]>=2.8,<3",
+        "google-adk[eval,extensions]>=2.8,<3",
         "langgraph>=1.2,<2",
         "langchain>=1.3,<2",
         "langchain-litellm>=0.7,<1",

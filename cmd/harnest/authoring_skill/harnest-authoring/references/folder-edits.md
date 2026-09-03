@@ -45,7 +45,7 @@ and extended examples into that skill's linked `references/` files.
 | Add session, checkpoint, asset, or custom storage | Root `extensions/**/*.py` | Use distributed `@lifecycle.storage.sessions`, `.checkpoints`, `.assets("name")`, or `.custom("name")` factories; shared factories may stack these decorators. |
 | Export traces or logs directly to one or more destinations | Root `extensions/telemetry.py` | Add one repeatable `@lifecycle.telemetry_exporter` runtime factory per destination; return `TelemetryExporter` with `traces`, `logs`, or both. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
-| Add code execution isolation | Owning `sandbox/sandbox.py` | Managed ADK only; export `sandbox` and declare provider dependencies. |
+| Add sandboxed code execution | `sandbox/<name>.py`, each allowed agent's declaration, and its business tool | Export a matching `Sandbox` variable; assign `Agent(sandboxes=["<name>"])`; call `context.sandboxes["<name>"].execute(code)` or async `aexecute` from an authored tool. No model tool is added automatically. Root names are available to same-project subagents, but access is never inherited. Declare third-party provider dependencies. Harnest adds no per-session filesystem isolation or CPU/memory limits. |
 | Add offline behavior coverage | Root `tests/unit/test_*.py` | Use compiler fixtures; do not manually import the compiled agent. |
 | Add authorized live coverage | Root `tests/smoke/test_*.py` | Keep external calls behind the smoke lane. |
 | Add ADK evaluations | Root `evals/` | Keep executable evals at root; expected responses contain visible output only. |

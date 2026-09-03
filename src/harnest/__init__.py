@@ -92,7 +92,10 @@ from .telemetry import TelemetryExporter, TelemetryExporterError
 from .lifecycle import DROP_EVENT, Finish, LifecycleContext, Next, lifecycle
 from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
 from .logging import Logger, get_logger
-from .sandbox import Sandbox
+from .sandbox import (
+    Sandbox, SandboxBackend, SandboxContext, SandboxExecutionError,
+    SandboxFile, SandboxRequest, SandboxResult,
+)
 from .skills import (
     FilesystemSkillSource,
     SkillCatalogPage,
@@ -220,6 +223,12 @@ __all__ = [
     "ResponseRequest",
     "FrameworkMetadata",
     "Sandbox",
+    "SandboxBackend",
+    "SandboxContext",
+    "SandboxExecutionError",
+    "SandboxFile",
+    "SandboxRequest",
+    "SandboxResult",
     "START",
     "StructuredOutputError",
     "Stored",

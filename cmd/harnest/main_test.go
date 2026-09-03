@@ -89,41 +89,53 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	assertOnlyPlaceholderResources(t, target)
 }
 
-func TestInitExampleCreatesFullWorkingScaffold(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "example-agent")
-	if _, _, err := executeForTest(
-		t, defaultSystem(), "init", target, "--example",
-	); err != nil {
-		t.Fatal(err)
+// TestInitExampleFillsOnlyPlaceholderFolders checks the same inert profile on
+// both managed backends without replacing the code already shipped by default.
+func TestInitExampleFillsOnlyPlaceholderFolders(t *testing.T) {
+	for _, framework := range []string{"adk", "langgraph"} {
+		t.Run(framework, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "example-agent")
+			if _, _, err := executeForTest(t, defaultSystem(), "init", target,
+				"--framework", framework, "--example"); err != nil {
+				t.Fatal(err)
+			}
+			assertManagedFolderExamples(t, target)
+			assertOnlyPlaceholderResources(t, target)
+			defaults := scaffoldFilesForMode("example-agent", framework, "managed", false)
+			for _, path := range []string{"agent.py", "config.yaml", "server.yaml", "agent-card.yaml",
+				"instructions.md", "pyproject.toml", "harnest.lock", "extensions/storage.py"} {
+				if actual := string(mustReadTestFile(t, filepath.Join(target, path))); actual != defaults[path] {
+					t.Fatalf("--example replaced existing default content in %s", path)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(target, "extensions", "_example.py")); !os.IsNotExist(err) {
+				t.Fatalf("extensions already has default code and needs no extra sample: %v", err)
+			}
+		})
 	}
-	assertFilesContain(t, target, map[string]string{
-		"tools/echo.py":                                    "from harnest.tool import tool",
-		"skills/getting-started/SKILL.md":                  "name: getting-started",
-		"extensions/starter.py":                            "@lifecycle.after_invoke",
-		"extensions/storage.py":                            "return MemoryStore()",
-		"plugins/starter/mcp/starter.py":                   "from harnest.mcp import MCPClient",
-		"plugins/starter/skills/starter-guidance/SKILL.md": "name: starter-guidance",
-		"evals/starter.evalset.json":                       "answers_greeting",
-		"tests/unit/test_agent.py":                         "tools[\"echo\"]",
-	})
-	agentSource := mustReadTestFile(t, filepath.Join(target, "agent.py"))
-	assertContainsAll(t, "example agent.py", string(agentSource), []string{
-		"from harnest.graph import START, Edge, Graph",
-		"root_agent = Graph(",
-		`history="session"`,
-	})
 }
 
-func TestInitLangGraphExampleIncludesPortableEvalSet(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "langgraph-eval-agent")
-	if _, _, err := executeForTest(
-		t, defaultSystem(), "init", target, "--framework", "langgraph", "--example",
-	); err != nil {
-		t.Fatal(err)
-	}
+// assertManagedFolderExamples requires usable source in every guide-only folder
+// and preserves native formats where the compiler does not consume Python.
+func assertManagedFolderExamples(t *testing.T, target string) {
+	t.Helper()
 	assertFilesContain(t, target, map[string]string{
-		"evals/starter.evalset.json": "answers_greeting",
-		"evals/_README.md":           "shared *.evalset.json",
+		"lib/_example.py":                       "def normalize(",
+		"models/_example.py":                    "class Message(BaseModel)",
+		"tools/_example.py":                     "from harnest.tool import tool",
+		"tasks/_example.py":                     "@task(queue=",
+		"cron/_example.py":                      "daily_report = Cron(",
+		"subagents/_example.py":                 "helper = Agent(",
+		"mcp/_example.py":                       "def client():",
+		"plugins/_example/plugin.py":            "class StarterPlugin(Plugin)",
+		"plugins/_example/plugin.yaml":          "name: starter_runtime",
+		"plugins/_example_agent/mcp/starter.py": "from harnest.mcp import MCPClient",
+		"plugins/_example_agent/skills/starter-guidance/SKILL.md": "name: starter-guidance",
+		"skills/_example/SKILL.md":                                "name: getting-started",
+		"sandbox/_example.py":                                     "network=False",
+		"evals/_example.evalset.json":                             "answers_greeting",
+		"tests/unit/_example.py":                                  "tools[\"echo\"]",
+		"tests/smoke/_example.py":                                 "def test_health(client)",
 	})
 }
 
