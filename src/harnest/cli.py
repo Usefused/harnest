@@ -35,6 +35,8 @@ def load_orchestrator(path: Path) -> Orchestrator:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse one Harnest command and translate expected failures to exit codes."""
+
     parser = argparse.ArgumentParser(prog="harnest")
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan_parser = subparsers.add_parser("plan", help="export a Python orchestrator as JSON")
@@ -98,6 +100,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="suppress output from unit, smoke, and eval tests",
     )
+    test_parser.add_argument(
+        "--eval-output",
+        type=Path,
+        help="write the complete structured eval result to this JSON file",
+    )
     upgrade_parser = subparsers.add_parser(
         "upgrade",
         help="plan or apply an existing agent repository migration",
@@ -129,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_evals=args.evals,
                 eval_trajectory=args.eval_trajectory,
                 no_output=args.no_output,
+                eval_output=args.eval_output,
                 framework=args.framework,
                 mode=args.mode,
                 cli_enabled=args.enable_cli,

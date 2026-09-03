@@ -114,6 +114,7 @@ harnest test support-agent
 harnest test support-agent --no-output
 harnest test support-agent --smoke
 harnest test support-agent --evals
+harnest test support-agent --evals --eval-output eval-result.json
 harnest test support-agent --evals --eval-trajectory strict
 harnest test support-agent --smoke --evals
 ```
@@ -138,15 +139,19 @@ harnest test support-agent --smoke --evals
   responses and tool events to the same evaluator and preserves multi-turn
   sessions; use smoke tests for live bidirectional media or multimodal inputs.
   This is a portable ADK-format lane, not a LangSmith dataset/experiment run.
-  Detailed metric results, including skipped and failed metrics, print by
-  default.
+  A complete structured JSON `EvalRunResult` prints by default. It contains full
+  cases, actual and expected invocations, overall and per-invocation metrics
+  including rubric details, and session details. `--eval-output FILE`
+  atomically writes that same payload to the selected file. Harnest keeps no
+  implicit result history, so retain the file as a CI artifact when needed.
 - Eval trajectories default to `business`: required business calls must occur
   in order, while skill discovery and other extra calls are allowed. Use
   `--eval-trajectory strict` to require the exact authored call sequence.
 - Placeholder-only test folders are valid and report that no Python tests were
   authored; compilation and opted-in evals still run.
-- `--no-output` suppresses output from unit, smoke, and eval test execution
-  while preserving the command's exit status.
+- `--no-output` suppresses terminal output from unit, smoke, and eval test
+  execution while preserving the command's exit status. An explicitly selected
+  `--eval-output` file is still written.
 - Test modules do not import Harnest or manually load artifacts. Compiler-owned
   fixtures provide `agent`, `tools`, and, for smoke tests, `client` and `smoke`.
   The smoke fixtures share one compiled server lifecycle and close its stores

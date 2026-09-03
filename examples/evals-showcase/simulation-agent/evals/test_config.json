@@ -1,0 +1,16 @@
+{
+  "criteria": {
+    "per_turn_user_simulator_quality_v1": {
+      "threshold": 0.8,
+      "stopSignal": "</finished>",
+      "judgeModelOptions": {
+        "numSamples": 1
+      }
+    }
+  },
+  "userSimulatorConfig": {
+    "type": "llm_backed",
+    "maxAllowedInvocations": 4,
+    "includeFunctionCalls": true
+  }
+}

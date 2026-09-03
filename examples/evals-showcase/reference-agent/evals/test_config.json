@@ -1,0 +1,75 @@
+{
+  "criteria": {
+    "tool_trajectory_avg_score": {
+      "threshold": 1.0,
+      "matchType": "IN_ORDER"
+    },
+    "response_evaluation_score": 3.0,
+    "response_match_score": 0.5,
+    "safety_v1": 0.8,
+    "final_response_match_v2": {
+      "threshold": 0.8,
+      "judgeModelOptions": {
+        "numSamples": 1
+      }
+    },
+    "rubric_based_final_response_quality_v1": {
+      "threshold": 1.0,
+      "judgeModelOptions": {
+        "numSamples": 1
+      },
+      "rubrics": [
+        {
+          "rubricId": "grounded_city_answer",
+          "rubricContent": {
+            "textProperty": "The final response names Paris and accurately states that it is the capital of France."
+          }
+        }
+      ]
+    },
+    "hallucinations_v1": {
+      "threshold": 1.0,
+      "evaluateIntermediateNlResponses": false
+    },
+    "rubric_based_tool_use_quality_v1": {
+      "threshold": 1.0,
+      "judgeModelOptions": {
+        "numSamples": 1
+      },
+      "rubrics": [
+        {
+          "rubricId": "verify_before_answering",
+          "rubricContent": {
+            "textProperty": "The agent calls get_city_fact with city Paris when the user requests verification, and does not call it for the follow-up."
+          }
+        }
+      ]
+    },
+    "multi_turn_task_success_v1": 0.8,
+    "multi_turn_trajectory_quality_v1": 0.8,
+    "multi_turn_tool_use_quality_v1": 0.8,
+    "rubric_based_multi_turn_trajectory_quality_v1": {
+      "threshold": 1.0,
+      "judgeModelOptions": {
+        "numSamples": 1
+      },
+      "rubrics": [
+        {
+          "rubricId": "efficient_two_turn_path",
+          "rubricContent": {
+            "textProperty": "Across the conversation, the agent verifies the fact once, answers both requests, and avoids redundant tool calls."
+          }
+        }
+      ]
+    },
+    "verified_capital_present": 1.0
+  },
+  "customMetrics": {
+    "verified_capital_present": {
+      "description": "Both Paris and France appear in every final response.",
+      "codeConfig": {
+        "name": "harnest.lib.eval_metrics.verified_capital_present"
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 import importlib
 import json
 import logging
@@ -29,6 +30,11 @@ from .runtime import (
 )
 from ._library import release_authored_library
 from .logging import get_logger
+from .eval_model_transport import (
+    close_owned_eval_model_transports,
+    eval_model_transports,
+    restore_eval_model_names,
+)
 
 
 class AgentTestError(RuntimeError):
@@ -36,6 +42,205 @@ class AgentTestError(RuntimeError):
 
 
 _EVAL_AUDIT = get_logger("eval.audit")
+_EVAL_APP_NAME = "harnest_eval"
+_EVAL_RESULT_API_VERSION = "harnest.dev/v1alpha1"
+
+
+class _EvalResultCollector:
+    """Collect complete ADK case results for one Harnest eval command."""
+
+    def __init__(self, *, framework: str, trajectory: str) -> None:
+        self._framework = framework
+        self._trajectory = trajectory
+        self._results: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def register_eval_set(self, *, app_name: str, eval_set_id: str) -> None:
+        """Retain an authored suite even when it contains no evaluable cases."""
+
+        self._results.setdefault(
+            (app_name, eval_set_id),
+            {
+                "appName": app_name,
+                "evalSetId": eval_set_id,
+                "status": "not_evaluated",
+                "evalCaseResults": [],
+            },
+        )
+
+    def save_eval_set_result(
+        self,
+        app_name: str,
+        eval_set_id: str,
+        eval_case_results: list[Any],
+    ) -> None:
+        """Retain one suite in deterministic order through ADK's manager hook."""
+
+        # ADK supplies the logical application owner separately from the suite;
+        # retain it so consumers do not need to infer result provenance.
+        cases = [
+            _eval_case_result_payload(result)
+            for result in sorted(eval_case_results, key=lambda item: item.eval_id)
+        ]
+        self._results[(app_name, eval_set_id)] = {
+            "appName": app_name,
+            "evalSetId": eval_set_id,
+            "status": _aggregate_eval_status(
+                case["finalEvalStatus"] for case in cases
+            ),
+            "evalCaseResults": cases,
+        }
+
+    def payload(self, *, status: str) -> dict[str, Any]:
+        """Build the stable command-level envelope around collected ADK results."""
+
+        suites = sorted(self._results.values(), key=lambda item: item["evalSetId"])
+        cases = [case for suite in suites for case in suite["evalCaseResults"]]
+        # Infrastructure failures and scored failures must dominate partial
+        # data; only a nominally successful run derives its verdict from cases.
+        result_status = (
+            _aggregate_eval_status(suite["status"] for suite in suites)
+            if status == "passed"
+            else status
+        )
+        return {
+            "apiVersion": _EVAL_RESULT_API_VERSION,
+            "kind": "EvalRunResult",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "framework": self._framework,
+            "trajectory": self._trajectory,
+            "status": result_status,
+            "summary": {
+                "suiteCount": len(suites),
+                "caseCount": len(cases),
+                "passedCases": sum(
+                    case["finalEvalStatus"] == "passed" for case in cases
+                ),
+                "failedCases": sum(
+                    case["finalEvalStatus"] == "failed" for case in cases
+                ),
+                "notEvaluatedCases": sum(
+                    case["finalEvalStatus"] == "not_evaluated" for case in cases
+                ),
+            },
+            "evalSetResults": suites,
+        }
+
+
+def _aggregate_eval_status(statuses: Iterator[str]) -> str:
+    """Reduce case statuses without treating missing evaluation as success."""
+
+    values = tuple(statuses)
+    # A failed case dominates a mixed suite because the command must remain
+    # suitable as a CI quality gate.
+    if any(value == "failed" for value in values):
+        return "failed"
+    # Empty and partially evaluated suites must not be reported as passing.
+    if values and all(value == "passed" for value in values):
+        return "passed"
+    return "not_evaluated"
+
+
+def _status_name(value: Any) -> str:
+    """Expose ADK enum statuses as stable lowercase names instead of ordinals."""
+
+    name = getattr(value, "name", None)
+    return str(name).lower() if name is not None else str(value).lower()
+
+
+def _model_json(value: Any) -> Any:
+    """Serialize one ADK model with aliases and provider-safe JSON coercion."""
+
+    if value is None:
+        return None
+    return restore_eval_model_names(json.loads(value.model_dump_json(by_alias=True)))
+
+
+def _metric_result_payload(result: Any) -> dict[str, Any]:
+    """Serialize a metric result while retaining rubric scores and criteria."""
+
+    payload = _model_json(result)
+    payload["evalStatus"] = _status_name(result.eval_status)
+    return payload
+
+
+def _eval_case_result_payload(result: Any) -> dict[str, Any]:
+    """Preserve a complete ADK case result with readable enum statuses."""
+
+    payload = _model_json(result)
+    payload["finalEvalStatus"] = _status_name(result.final_eval_status)
+    payload["overallEvalMetricResults"] = [
+        _metric_result_payload(metric)
+        for metric in result.overall_eval_metric_results
+    ]
+    invocations = []
+    for invocation in result.eval_metric_result_per_invocation:
+        invocation_payload = _model_json(invocation)
+        invocation_payload["evalMetricResults"] = [
+            _metric_result_payload(metric)
+            for metric in invocation.eval_metric_results
+        ]
+        invocations.append(invocation_payload)
+    payload["evalMetricResultPerInvocation"] = invocations
+    return payload
+
+
+def _write_eval_result(path: Path, payload: Mapping[str, Any]) -> None:
+    """Atomically replace the explicitly selected JSON result file."""
+
+    destination = path.expanduser().resolve()
+    if destination.exists() and destination.is_dir():
+        raise AgentTestError(f"eval output path is a directory: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        # A unique file in the destination directory prevents concurrent runs
+        # from clobbering each other and keeps the final replace atomic.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except OSError as exc:
+        raise AgentTestError(
+            f"could not write eval output {destination}: {exc}"
+        ) from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _publish_eval_result(
+    collector: _EvalResultCollector,
+    *,
+    status: str,
+    print_results: bool,
+    result_output: Path | None,
+    error: Exception | None = None,
+) -> None:
+    """Print and optionally persist the same complete eval result payload."""
+
+    payload = collector.payload(status=status)
+    if error is not None:
+        # Provider exceptions can echo API keys, headers, prompts, or payloads.
+        # Retain only stable type-level diagnostics in the durable result.
+        payload["error"] = {
+            "type": type(error).__name__,
+            "message": "evaluation infrastructure failed",
+        }
+    # Persist first so a broken output stream cannot discard an explicitly
+    # requested result artifact after evaluation has already completed.
+    if result_output is not None:
+        _write_eval_result(result_output, payload)
+    if print_results:
+        print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def _stdlib_loggers() -> list[logging.Logger]:
@@ -321,33 +526,68 @@ def _run_adk_evals(
     *,
     trajectory: str = "business",
     print_results: bool = True,
+    result_output: Path | None = None,
 ) -> int:
     """Run validated eval sets through ADK's official evaluator."""
 
     AgentEvaluator, EvalSet = _eval_dependencies()
     config = _eval_config(suite, trajectory)
     module_name = f"{artifact.name}.agent"
+    collector = _EvalResultCollector(framework="adk", trajectory=trajectory)
 
     async def evaluate_all() -> None:
-        await _evaluate_eval_sets(
-            AgentEvaluator,
-            EvalSet,
-            module_name=module_name,
-            suite=suite,
-            config=config,
-            trajectory=trajectory,
-            print_results=print_results,
-        )
+        """Keep borrowed clients and their owner in the same evaluation loop."""
+
+        target = getattr(sys.modules.get(module_name), "root_agent", None)
+        try:
+            with eval_model_transports(target, config) as prepared:
+                await _evaluate_eval_sets(
+                    AgentEvaluator,
+                    EvalSet,
+                    module_name=module_name,
+                    suite=suite,
+                    config=prepared,
+                    trajectory=trajectory,
+                    print_results=print_results,
+                    result_collector=collector,
+                )
+        finally:
+            # This imported agent belongs to the CLI run, unlike a playground's
+            # server-owned agent. Close after every judge and simulator finishes.
+            await close_owned_eval_model_transports(target, primary_error=sys.exc_info()[1])
 
     import_root = str(artifact.parent)
     sys.path.insert(0, import_root)
     try:
-        with _isolated_eval_logging(), _adk_eval_output_filter(module_name):
-            try:
+        try:
+            with _isolated_eval_logging(), _adk_eval_output_filter(module_name):
                 asyncio.run(evaluate_all())
-            except AssertionError as exc:
-                print(str(exc), file=sys.stderr)
-                return 1
+        except AssertionError as exc:
+            print(str(exc), file=sys.stderr)
+            _publish_eval_result(
+                collector,
+                status="failed",
+                print_results=print_results,
+                result_output=result_output,
+            )
+            return 1
+        except Exception as exc:
+            # Preserve any suites completed before an infrastructure failure so
+            # CI can distinguish an execution error from a scored eval failure.
+            _publish_eval_result(
+                collector,
+                status="error",
+                print_results=print_results,
+                result_output=result_output,
+                error=exc,
+            )
+            raise
+        _publish_eval_result(
+            collector,
+            status="passed",
+            print_results=print_results,
+            result_output=result_output,
+        )
         return 0
     finally:
         if sys.path and sys.path[0] == import_root:
@@ -368,11 +608,13 @@ def _run_langgraph_evals(
     *,
     trajectory: str = "business",
     print_results: bool = True,
+    result_output: Path | None = None,
 ) -> int:
     """Run LangGraph through the same ADK metric registry and eval-set runner."""
 
     AgentEvaluator, EvalSet = _eval_dependencies()
     config = _eval_config(suite, trajectory)
+    collector = _EvalResultCollector(framework="langgraph", trajectory=trajectory)
     if config.live_model_config is not None:
         raise AgentTestError(
             "LangGraph --evals does not support ADK liveModelConfig; use text "
@@ -380,25 +622,52 @@ def _run_langgraph_evals(
         )
 
     async def evaluate_all() -> None:
+        """Borrow graph transports until the owning evaluation driver exits."""
+
         from .eval_langgraph import langgraph_eval_agent_module
 
         async with langgraph_eval_agent_module(application) as module_name:
-            await _evaluate_eval_sets(
-                AgentEvaluator,
-                EvalSet,
-                module_name=module_name,
-                suite=suite,
-                config=config,
-                trajectory=trajectory,
-                print_results=print_results,
-            )
+            with eval_model_transports(application.target, config) as prepared:
+                await _evaluate_eval_sets(
+                    AgentEvaluator,
+                    EvalSet,
+                    module_name=module_name,
+                    suite=suite,
+                    config=prepared,
+                    trajectory=trajectory,
+                    print_results=print_results,
+                    result_collector=collector,
+                )
 
     with _isolated_eval_logging():
         try:
             asyncio.run(evaluate_all())
         except AssertionError as exc:
             print(str(exc), file=sys.stderr)
+            _publish_eval_result(
+                collector,
+                status="failed",
+                print_results=print_results,
+                result_output=result_output,
+            )
             return 1
+        except Exception as exc:
+            # Preserve partial framework-neutral results on adapter or provider
+            # errors while allowing the CLI to report the original exception.
+            _publish_eval_result(
+                collector,
+                status="error",
+                print_results=print_results,
+                result_output=result_output,
+                error=exc,
+            )
+            raise
+    _publish_eval_result(
+        collector,
+        status="passed",
+        print_results=print_results,
+        result_output=result_output,
+    )
     return 0
 
 
@@ -422,11 +691,20 @@ async def _evaluate_eval_sets(
     config: Any,
     trajectory: str,
     print_results: bool = True,
+    result_collector: _EvalResultCollector | None = None,
 ) -> None:
     """Evaluate every validated suite with consistent output and audit events."""
 
+    scored_failures: list[str] = []
     for path in suite.eval_sets:
         eval_set = eval_set_class.model_validate_json(path.read_text(encoding="utf-8"))
+        if result_collector is not None:
+            # ADK skips its persistence callback for an empty EvalSet, so
+            # register the authored suite before evaluation to keep it visible.
+            result_collector.register_eval_set(
+                app_name=_EVAL_APP_NAME,
+                eval_set_id=eval_set.eval_set_id,
+            )
         print(f"harnest eval [{trajectory}]: {path.name}")
         _EVAL_AUDIT.info(
             "eval.started", trigger="user", outcome="started", suite=path.name
@@ -438,7 +716,19 @@ async def _evaluate_eval_sets(
                 eval_config=config,
                 num_runs=1,
                 print_detailed_results=print_results,
+                app_name=_EVAL_APP_NAME if result_collector is not None else None,
+                eval_set_results_manager=result_collector,
             )
+        except AssertionError as exc:
+            _EVAL_AUDIT.info(
+                "eval.finished",
+                trigger="user",
+                outcome="failed",
+                suite=path.name,
+            )
+            # Scored failures are expected quality-gate outcomes. Continue so
+            # the returned run result covers every independently authored suite.
+            scored_failures.append(str(exc))
         except BaseException:
             _EVAL_AUDIT.info(
                 "eval.finished",
@@ -447,9 +737,12 @@ async def _evaluate_eval_sets(
                 suite=path.name,
             )
             raise
-        _EVAL_AUDIT.info(
-            "eval.finished", trigger="user", outcome="completed", suite=path.name
-        )
+        else:
+            _EVAL_AUDIT.info(
+                "eval.finished", trigger="user", outcome="completed", suite=path.name
+            )
+    if scored_failures:
+        raise AssertionError("\n\n".join(scored_failures))
 
 
 def run_agent_tests(
@@ -459,6 +752,7 @@ def run_agent_tests(
     include_evals: bool = False,
     eval_trajectory: str = "business",
     no_output: bool = False,
+    eval_output: Path | None = None,
     framework: str = "adk",
     mode: str = "managed",
     cli_enabled: bool = False,
@@ -466,6 +760,10 @@ def run_agent_tests(
     """Compile an authored agent and run its convention-based pytest suites."""
 
     _require_eval_trajectory(eval_trajectory)
+    # Reject a dead output target before compiling so direct Python callers get
+    # the same contract as the public Go command.
+    if eval_output is not None and not include_evals:
+        raise AgentTestError("--eval-output requires --evals")
     source_directory = Path(source)
     if source_directory.is_file():
         source_directory = source_directory.parent
@@ -501,6 +799,7 @@ def run_agent_tests(
                         suite,
                         trajectory=eval_trajectory,
                         print_results=not no_output,
+                        result_output=eval_output,
                     )
             with _test_output(suppressed=no_output):
                 return _run_langgraph_evals(
@@ -508,6 +807,7 @@ def run_agent_tests(
                     suite,
                     trajectory=eval_trajectory,
                     print_results=not no_output,
+                    result_output=eval_output,
                 )
         finally:
             release_authored_library(artifact / "source")

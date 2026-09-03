@@ -303,9 +303,10 @@ spec:
   scaling:
     minReplicas: 0
     maxReplicas: 1
+  # Supply OPENAI_API_KEY through the command environment or deployment secrets.
   environment:
-    LITELLM_MODEL: ollama_chat/qwen3.5:cloud
-    LITELLM_API_BASE: http://127.0.0.1:11434
+    OPENAI_MODEL: gpt-4.1-mini
+    OPENAI_BASE_URL: https://api.openai.com/v1
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
 `, name, title, framework),
@@ -344,8 +345,6 @@ skills:
     tags: [assistant]
 `, title),
 		"agent.py": fmt.Sprintf(`
-import os
-
 from harnest.agent import Agent
 from harnest.graph import START, Edge, Graph
 from harnest.model import LiteLLMModel
@@ -357,12 +356,7 @@ root_agent = Graph(
     nodes={
         "respond": Agent(
             name="responder",
-            model=LiteLLMModel(
-                model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-                api_base=os.getenv(
-                    "LITELLM_API_BASE", "http://127.0.0.1:11434"
-                ),
-            ),
+            model=LiteLLMModel.from_openai_environment(),
             instruction="Answer clearly and use available tools when they help.",
             history="session",
         ),
@@ -582,13 +576,11 @@ description: Apply the agent's core instructions when answering a general reques
     assert agent.name == %q
 `, adkIdentifier)
 		if framework == "adk" {
-			files["agent.py"] = fmt.Sprintf(`import os
-
-from google.adk.agents import LlmAgent
+			files["agent.py"] = fmt.Sprintf(`from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import ResumabilityConfig
-from google.adk.models.lite_llm import LiteLlm
 from harnest.agent import Agent
+from harnest.model import LiteLLMModel
 
 
 # Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
@@ -600,22 +592,17 @@ root_agent = Agent.advanced(
         resumability_config=ResumabilityConfig(is_resumable=True),
         root_agent=LlmAgent(
             name=%q,
-            model=LiteLlm(
-                model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-                api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
-            ),
+            model=LiteLLMModel.from_openai_environment().build(),
             instruction="You are a clear and helpful assistant.",
         ),
     )
 )
 `, adkIdentifier, adkIdentifier, adkIdentifier)
 		} else {
-			files["agent.py"] = fmt.Sprintf(`import os
-
-from langchain.agents import create_agent
-from langchain_litellm import ChatLiteLLM
+			files["agent.py"] = fmt.Sprintf(`from langchain.agents import create_agent
 from harnest.agent import Agent
 from harnest.lib.storage import store
+from harnest.model import LiteLLMModel
 
 
 # Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
@@ -623,10 +610,7 @@ from harnest.lib.storage import store
 root_agent = Agent.advanced(
     name=%q,
     target=create_agent(
-        model=ChatLiteLLM(
-            model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-            api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
-        ),
+        model=LiteLLMModel.from_openai_environment().build_langgraph(),
         tools=[],
         system_prompt="You are a clear and helpful assistant.",
         name=%q,
@@ -722,20 +706,17 @@ package = false
 `, strconv.Quote(name))
 }
 
+// minimalManagedAgentSource keeps model environment policy in the shared
+// connector used by both runtime frameworks and evaluation models.
 func minimalManagedAgentSource(agentName string) string {
-	return fmt.Sprintf(`import os
-
-from harnest.agent import Agent
+	return fmt.Sprintf(`from harnest.agent import Agent
 from harnest.model import LiteLLMModel
 
 
 root_agent = Agent(
     name=%q,
     history="session",
-    model=LiteLLMModel(
-        model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-        api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
-    ),
+    model=LiteLLMModel.from_openai_environment(),
 )
 `, agentName)
 }

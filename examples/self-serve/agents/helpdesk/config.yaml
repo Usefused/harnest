@@ -26,16 +26,18 @@ spec:
     maxReplicas: 5
   environment:
     LOG_LEVEL: INFO
-    LITELLM_MODEL: ollama_chat/qwen3.5:cloud
-    LITELLM_API_BASE: http://127.0.0.1:11434
+    OPENAI_MODEL: gpt-4.1-mini
+    OPENAI_BASE_URL: https://api.openai.com/v1
     KNOWLEDGE_MCP_URL: https://mcp.example.com/support
   secrets:
+    - environmentVariable: OPENAI_API_KEY
+      secretRef: projects/example/secrets/openai-api-key/latest
     - environmentVariable: KNOWLEDGE_MCP_TOKEN
       secretRef: projects/example/secrets/knowledge-mcp-token/latest
   permissions:
     network:
       outbound:
-        - 127.0.0.1:11434
+        - api.openai.com:443
         - mcp.example.com:443
     filesystem:
       readOnly:

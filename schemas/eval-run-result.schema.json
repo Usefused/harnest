@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/eval-run-result.schema.json",
+  "title": "Harnest eval run result",
+  "description": "Versioned JSON emitted after Harnest evaluates an authored agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "createdAt",
+    "framework",
+    "trajectory",
+    "status",
+    "summary",
+    "evalSetResults"
+  ],
+  "properties": {
+    "apiVersion": { "const": "harnest.dev/v1alpha1" },
+    "kind": { "const": "EvalRunResult" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "framework": { "enum": ["adk", "langgraph"] },
+    "trajectory": { "enum": ["business", "strict"] },
+    "status": { "$ref": "#/$defs/runStatus" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "evalSetResults": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evalSetResult" }
+    },
+    "error": { "$ref": "#/$defs/error" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "error" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["error"] }
+    }
+  ],
+  "$defs": {
+    "runStatus": {
+      "enum": ["passed", "failed", "not_evaluated", "error"]
+    },
+    "evalStatus": {
+      "enum": ["passed", "failed", "not_evaluated"]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suiteCount",
+        "caseCount",
+        "passedCases",
+        "failedCases",
+        "notEvaluatedCases"
+      ],
+      "properties": {
+        "suiteCount": { "type": "integer", "minimum": 0 },
+        "caseCount": { "type": "integer", "minimum": 0 },
+        "passedCases": { "type": "integer", "minimum": 0 },
+        "failedCases": { "type": "integer", "minimum": 0 },
+        "notEvaluatedCases": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "evalSetResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appName", "evalSetId", "status", "evalCaseResults"],
+      "properties": {
+        "appName": { "type": "string", "minLength": 1 },
+        "evalSetId": { "type": "string" },
+        "status": { "$ref": "#/$defs/evalStatus" },
+        "evalCaseResults": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evalCaseResult" }
+        }
+      }
+    },
+    "evalCaseResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "evalSetId",
+        "evalId",
+        "finalEvalStatus",
+        "overallEvalMetricResults",
+        "evalMetricResultPerInvocation",
+        "sessionId",
+        "sessionDetails",
+        "userId"
+      ],
+      "properties": {
+        "evalSetFile": { "type": ["string", "null"] },
+        "evalSetId": { "type": "string" },
+        "evalId": { "type": "string" },
+        "finalEvalStatus": { "$ref": "#/$defs/evalStatus" },
+        "evalMetricResults": { "type": ["array", "null"] },
+        "overallEvalMetricResults": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metricResult" }
+        },
+        "evalMetricResultPerInvocation": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/invocationResult" }
+        },
+        "sessionId": { "type": "string" },
+        "sessionDetails": { "type": ["object", "null"] },
+        "userId": { "type": ["string", "null"] }
+      }
+    },
+    "invocationResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["actualInvocation", "expectedInvocation", "evalMetricResults"],
+      "properties": {
+        "actualInvocation": { "type": "object" },
+        "expectedInvocation": { "type": ["object", "null"] },
+        "evalMetricResults": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/metricResult" }
+        }
+      }
+    },
+    "metricResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["metricName", "evalStatus", "details"],
+      "properties": {
+        "metricName": { "type": "string", "minLength": 1 },
+        "evalStatus": { "$ref": "#/$defs/evalStatus" },
+        "details": { "type": "object" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

@@ -40,20 +40,20 @@ tree's existing development environment. The installed CLI instead runs
 agent environment, and locks declared dependencies before compile, test, or
 serve. URLs and secret references remain deployment placeholders.
 
-## Live local run with Ollama
+## Live local run
 
-The helpdesk agent and its technical subagent both construct the provider-neutral
-`LiteLLMModel` from `LITELLM_MODEL`, whose value defaults to
-`ollama_chat/qwen3.5:cloud`. LiteLLM connects to the local Ollama daemon at
-the URL in `LITELLM_API_BASE`, and the daemon authenticates onward to Ollama
-Cloud. Neither setting is a secret, so both are declared under
-`spec.environment` in `config.yaml`.
+The helpdesk agent and its technical subagent use
+`LiteLLMModel.from_openai_environment()`. They share `OPENAI_MODEL`,
+`OPENAI_BASE_URL`, and `OPENAI_API_KEY` with evaluation judges and simulators.
+The checked-in non-secret configuration selects `gpt-4.1-mini` at
+`https://api.openai.com/v1`. Export `OPENAI_API_KEY` from your shell or CI secret
+store; Harnest does not load `.env` files. The `spec.secrets` entry is an
+illustrative deployment mapping and is not resolved by local commands.
 
-Install [Ollama](https://ollama.com), start it (`ollama serve` when it is not
-already managed by the desktop app), sign in once with `ollama signin`, then run
-from the repository root:
+From the repository root:
 
 ```bash
+export OPENAI_API_KEY="..."
 make example-install
 make live-run
 ```
@@ -61,16 +61,19 @@ make live-run
 This installs Harnest from the working tree, including its ADK and LiteLLM
 runtime dependencies, compiles the flat source folder into
 `.harnest/helpdesk`, and starts the ADK interactive CLI against that generated
-artifact. Requests go to
-`http://127.0.0.1:11434`; Ollama transparently runs `qwen3.5:cloud` using the
-signed-in account. The local Python process does not consume `config.yaml`, so
-the Make target exports the same model and base-URL values explicitly. Override
-them with `LITELLM_MODEL` or `LITELLM_API_BASE`; for example,
-`ollama_chat/qwen3.5:9b` uses a locally installed model instead of Ollama Cloud.
+artifact. The Make target exports model and endpoint settings for direct
+launcher use. For an OpenAI-compatible Ollama endpoint, use
+`OPENAI_MODEL=openai/qwen3.5:9b` and
+`OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, with that model installed locally.
+Use `OPENAI_API_KEY` for any endpoint credential; do not introduce an
+`OLLAMA_API_KEY`. Update the same non-secret values in `config.yaml` for
+`harnest test`, `run`, and `serve`, because `spec.environment` overrides matching
+shell values. See the canonical
+[model credential process](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials).
 
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition
-and call `triage_request` directly; it does not invoke Ollama.
+and call `triage_request` directly; it does not invoke a model.
 
 Run `make example-smoke` (or the retained `make live-test` alias) for the
 explicit live acceptance check. The `smoke` fixture sends only benign synthetic
@@ -82,13 +85,13 @@ Run `make example-eval` to execute the offline unit suite and then every
 validated checked-in ADK eval set. Harnest automatically applies
 `evals/test_config.json`; the example's in-order tool-trajectory criterion
 allows extra skill-loading calls but requires the expected `triage_request`
-call. Like `live-run`, evals use Ollama Cloud and require a running, signed-in
-daemon. `make example-all` selects unit tests, live smoke tests, and evals in one
+call. Like `live-run`, evals require the configured model endpoint and its
+credentials. `make example-all` selects unit tests, live smoke tests, and evals in one
 command; Python tests must pass before eval execution begins.
 
 The remote knowledge MCP connection is optional. Without
 `KNOWLEDGE_MCP_TOKEN`, the example uses only its local triage tool and subagent,
-which keeps this path credential-free.
+which avoids an additional MCP credential requirement.
 
 The test modules themselves import no Harnest package. `agent` exposes the
 compiled ADK root, `tools` maps local tool names to callables, and smoke-only
@@ -168,7 +171,7 @@ The artifact runs through the synchronized agent interpreter selected by
 The standalone server does not
 read deployment environment from `config.yaml` or provide the provisioner's
 secret resolution, resource enforcement, permissions, scaling, authentication,
-or TLS. The Make target exports the Ollama settings; export any optional MCP
+or TLS. The Make target exports the model settings; export any optional MCP
 variables yourself. The authored Agent Card is served unchanged, including its
 deployment URL. For direct use, run `.harnest/helpdesk/harnest-agent serve`; it reads
 the adjacent compiled `server.yaml` without flags. That file configures binding,

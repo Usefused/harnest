@@ -830,6 +830,27 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn("failRunningTools();", javascript)
         self.assertIn('.tool-event[data-status="failed"]', stylesheet)
 
+    def test_playground_wraps_tool_payloads_and_expands_long_identifiers(self):
+        javascript = self.client.get("/_harnest/playground.js").text
+        stylesheet = self.client.get("/_harnest/playground.css").text
+
+        self.assertIn("identifier.title = identifier.textContent", javascript)
+        self.assertIn(
+            ".tool-heading small { overflow: hidden", stylesheet
+        )
+        self.assertIn("text-overflow: ellipsis", stylesheet)
+        self.assertIn(
+            ".tool-event[open] .tool-heading small { overflow: visible; "
+            "overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }",
+            stylesheet,
+        )
+        self.assertIn("overflow: visible; overflow-wrap: anywhere", stylesheet)
+        self.assertIn("white-space: pre-wrap", stylesheet)
+        self.assertIn(
+            ".turn-tools, .turn-tools[open] { width: 100%; max-width: 100%; }",
+            stylesheet,
+        )
+
     def test_playground_preserves_text_and_tool_call_timeline(self):
         javascript = self.client.get("/_harnest/playground.js").text
 

@@ -1,0 +1,12 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Server
+http:
+  host: 127.0.0.1
+  port: 8080
+  allowRemote: false
+  requestTimeoutSeconds: 300
+  maxConcurrentRequests: 4
+limits:
+  maxRequestBytes: 1MiB
+playground:
+  enabled: true

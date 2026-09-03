@@ -21,6 +21,7 @@ from .evaluation import (
     supported_metric_names,
 )
 from .logging import get_logger
+from .eval_model_transport import eval_model_transports
 
 
 _EVAL_AUDIT = get_logger("eval.audit")
@@ -99,11 +100,13 @@ class PlaygroundEvalService:
             with tempfile.TemporaryDirectory(prefix="harnest-playground-eval-") as tmp:
                 output = Path(tmp) / "results.csv"
                 try:
-                    with self._agent_module() as module_name:
+                    with self._agent_module() as module_name, eval_model_transports(
+                        self._application.target, config
+                    ) as prepared:
                         await evaluator.evaluate_eval_set(
                             agent_module=module_name,
                             eval_set=eval_set,
-                            eval_config=config,
+                            eval_config=prepared,
                             num_runs=1,
                             print_detailed_results=False,
                             output_file=str(output),

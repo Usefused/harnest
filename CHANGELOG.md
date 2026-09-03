@@ -16,6 +16,20 @@
   `harnest init --example` on ADK or LangGraph. Samples remain ignored until
   renamed, including native-format skill, plugin, and eval examples; preserve
   the default agent and storage code without adding redundant examples.
+* Return a complete structured JSON eval result from `harnest test --evals` by
+  default, and add `--eval-output FILE` for atomically writing the same result
+  to a selected file, including full case, invocation, metric, rubric, and
+  session details. Continue through independent scored suite failures, retain
+  partial results and redacted error details for infrastructure failures, and publish a
+  versioned result schema.
+* Standardize generated agents and implicit eval judge/simulator models on
+  `OPENAI_MODEL`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL`, including custom
+  OpenAI-compatible endpoints. Add `LiteLLMModel.from_openai_environment()`;
+  explicit eval model overrides and native-provider connectors remain supported.
+* Reuse an agent's explicit LiteLLM transport, custom authentication, and
+  lifecycle hooks for compatible eval judges and text user simulators in CLI
+  and playground runs. Preserve eval model overrides, reject ambiguous client
+  choices, and keep borrowed clients under their original runtime ownership.
 
 ### Fixes
 
@@ -31,6 +45,11 @@
 * Continue ADK sandbox model turns after successful code execution when the
   provider returns `STOP`, preserving genuine empty-response failures and
   native retry behavior instead of ending without a final answer.
+* Preserve explicitly supplied provider SDK clients and nested `model_kwargs`
+  credentials in LangGraph model calls and evaluation transport discovery.
+* Keep long tool identifiers and payloads inside the playground layout, reveal
+  complete identifiers on expansion, and wrap large tool results on desktop
+  and mobile.
 
 ## [0.10.1](https://github.com/Usefused/harnest/compare/v0.10.0...v0.10.1) (2026-09-01)
 

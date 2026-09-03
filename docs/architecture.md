@@ -67,13 +67,15 @@ mode checks.
 
 The general `LiteLLMModel("provider/model", **completion_args)` connector
 supports any LiteLLM provider and constructs either ADK's LiteLLM adapter or a
-LangChain `ChatLiteLLM` adapter lazily. The example
-uses `ollama_chat/qwen3.5:cloud`; `LITELLM_API_BASE` selects the endpoint. The
-deployment engine injects both values from the manifest's non-secret environment
-map. A production deployment can point them at an Ollama sidecar or network
-service without changing the agent package. The default `qwen3.5:cloud` request
-still goes through the local Ollama API; the daemon owns the user's Ollama Cloud
-sign-in and forwards the request.
+LangChain `ChatLiteLLM` adapter lazily. The scaffold and examples use
+`LiteLLMModel.from_openai_environment()`, which reads `OPENAI_MODEL` and defaults
+to `gpt-4.1-mini`. Raw names are normalized to `openai/<model>`; a native provider
+prefix is rejected on this path. The OpenAI-compatible adapter consumes
+`OPENAI_BASE_URL` and `OPENAI_API_KEY`, including for compatible backends such as
+Ollama. Non-secret model and endpoint settings belong in `spec.environment`;
+credentials are inherited locally or injected from deployment `spec.secrets`.
+Omitted eval judge and simulator model IDs use the same canonical model, while
+explicit model IDs and native evaluation services retain their own providers.
 
 The connector's optional `thinking` switch is framework-neutral: `True` maps to
 LiteLLM's medium reasoning effort, `False` maps to `none`, and omission preserves
@@ -93,6 +95,19 @@ once per built model and its result is supplied as LiteLLM's provider `client`;
 by mTLS/custom HTTP transports without coupling Harnest to certificate or
 gateway configuration. Sync hooks serve sync calls; async hooks require the
 framework's async path, and a model instance rejects mixed execution modes.
+
+Model adapters also propagate private transport bindings through managed
+runtime wrappers. Evaluation resolves an exact model binding first, then a
+unique same-provider binding; ambiguous authenticated destinations fail closed.
+ADK's registry contains only a stateless Harnest proxy class. Run-local aliases
+resolve through a revocable context scope, never through global credentials or
+replacement provider mappings. Proxies share the original lifecycle controller
+and copy requests with the authored model ID; structured results restore those
+IDs before persistence. Evaluation never inherits the agent's generation
+settings. CLI-owned clients close after all evaluators in the same event loop;
+playground evaluations leave server-owned clients open. Unrelated native
+providers and models hidden inside arbitrary advanced LangGraph closures do not
+participate in automatic transport discovery.
 
 ## Filesystem-first composition
 
@@ -438,10 +453,16 @@ references remain available without a Harnest metric allowlist. Authors never
 address temporary compiled paths.
 Eval execution is explicit because it can invoke live models and consume
 credentials, time, or paid capacity. Harnest passes `num_runs=1` to ADK's
-evaluator so a single command does not silently double model usage. The compiled
-artifact is temporary and no ADK eval history is persisted; external CI is
-responsible for retaining output. Selecting `--evals` without at least one
-validated eval set is a convention error.
+evaluator so a single command does not silently double model usage. Unless
+`--no-output` is selected, the command prints a complete structured JSON
+`EvalRunResult` after evaluation. The payload contains every suite and case,
+actual and expected invocations, overall and per-invocation metric results
+including rubric details, and session details. `--eval-output FILE` atomically
+writes the same payload to the selected file; explicit file output still occurs
+when `--no-output` suppresses terminal output. The compiled artifact is
+temporary, and Harnest does not retain implicit eval-result history. External CI
+must preserve the selected file when historical results are required. Selecting
+`--evals` without at least one validated eval set is a convention error.
 
 Harnest names two tool-trajectory policies. `business` is the default and maps
 to ADK `IN_ORDER`: every expected business call and argument must occur in

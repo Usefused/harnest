@@ -444,8 +444,13 @@ def _lifecycle_resources(value: Any) -> tuple[Any, ...]:
 
 
 def _attach_lifecycle_resource(value: Any, resource: Any) -> Any:
+    """Register one cleanup owner once despite repeated wrapper propagation."""
+
     current = _lifecycle_resources(value)
-    object.__setattr__(value, "__harnest_litellm_resources__", (*current, resource))
+    if not any(item is resource for item in current):
+        # The same adapter can reach a target through several graph paths;
+        # identity deduplication prevents duplicate cleanup responsibilities.
+        object.__setattr__(value, "__harnest_litellm_resources__", (*current, resource))
     return value
 
 
@@ -495,11 +500,13 @@ def create_adk_lifecycle_client(
 
 
 def propagate_litellm_lifecycles(source: Any, target: Any) -> Any:
-    """Make an enclosing runtime target own a model adapter's resources."""
+    """Propagate cleanup resources and borrowed transport metadata together."""
+
+    from .model_transport import propagate_model_transport_bindings
 
     for resource in _lifecycle_resources(source):
         _attach_lifecycle_resource(target, resource)
-    return target
+    return propagate_model_transport_bindings(source, target)
 
 
 async def close_litellm_lifecycles(value: Any) -> None:

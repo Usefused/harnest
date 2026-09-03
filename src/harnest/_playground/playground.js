@@ -253,6 +253,9 @@ function createToolCard(name, callId) {
   title.textContent = name || "Unnamed tool";
   const identifier = document.createElement("small");
   identifier.textContent = callId || "Agent tool call";
+  // The visible identifier truncates responsively; retain the complete value
+  // for pointer users without duplicating it in the compact summary.
+  identifier.title = identifier.textContent;
   heading.append(title, identifier);
   const status = document.createElement("span");
   status.className = "tool-status";
@@ -265,6 +268,7 @@ function createToolCard(name, callId) {
   return { detail, sections, status };
 }
 
+/** Add a wrapping payload section so large tool values stay inside their card. */
 function appendToolSection(card, label, value) {
   const section = document.createElement("section");
   section.className = "tool-section";

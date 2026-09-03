@@ -66,18 +66,20 @@ func (a *application) newCompileCommand() *cobra.Command {
 	return command
 }
 
+// newTestCommand compiles an agent and delegates its selected test lanes to Python.
 func (a *application) newTestCommand() *cobra.Command {
 	var includeSmoke bool
 	var includeEvals bool
 	var noOutput bool
 	var evalTrajectory string
+	var evalOutput string
 	command := &cobra.Command{
 		Use:   "test AGENT_DIR",
 		Short: "Compile an agent and run its authored tests",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			if evalTrajectory != "business" && evalTrajectory != "strict" {
-				return fmt.Errorf("--eval-trajectory must be business or strict")
+			if err := validateTestOptions(includeEvals, evalTrajectory, evalOutput); err != nil {
+				return err
 			}
 			bundle, err := loadAgentBundle(arguments[0])
 			if err != nil {
@@ -94,19 +96,10 @@ func (a *application) newTestCommand() *cobra.Command {
 				"--mode", bundle.Config.Spec.Framework.EffectiveMode(),
 			)
 			pythonArguments = withCLICompilerInterface(pythonArguments, bundle)
-			if includeSmoke {
-				pythonArguments = append(pythonArguments, "--smoke")
-			}
-			if includeEvals {
-				pythonArguments = append(
-					pythonArguments,
-					"--evals",
-					"--eval-trajectory", evalTrajectory,
-				)
-			}
-			if noOutput {
-				pythonArguments = append(pythonArguments, "--no-output")
-			}
+			pythonArguments = withTestOptions(
+				pythonArguments, includeSmoke, includeEvals, noOutput,
+				evalTrajectory, evalOutput,
+			)
 			return runPythonCLI(
 				command.Context(), a, python, pythonArguments,
 				configuredEnvironment(bundle), command.InOrStdin(),
@@ -128,7 +121,52 @@ func (a *application) newTestCommand() *cobra.Command {
 		"business",
 		"eval tool trajectory: business or strict",
 	)
+	command.Flags().StringVar(
+		&evalOutput,
+		"eval-output",
+		"",
+		"write the complete structured eval result to this JSON file",
+	)
 	return command
+}
+
+// validateTestOptions rejects option combinations that cannot produce a result.
+func validateTestOptions(includeEvals bool, evalTrajectory string, evalOutput string) error {
+	if evalTrajectory != "business" && evalTrajectory != "strict" {
+		return fmt.Errorf("--eval-trajectory must be business or strict")
+	}
+	// An output target has no meaningful producer unless the eval lane runs.
+	if strings.TrimSpace(evalOutput) != "" && !includeEvals {
+		return fmt.Errorf("--eval-output requires --evals")
+	}
+	return nil
+}
+
+// withTestOptions translates validated public flags to the Python test runner.
+func withTestOptions(
+	arguments []string,
+	includeSmoke bool,
+	includeEvals bool,
+	noOutput bool,
+	evalTrajectory string,
+	evalOutput string,
+) []string {
+	if includeSmoke {
+		arguments = append(arguments, "--smoke")
+	}
+	if includeEvals {
+		arguments = append(
+			arguments, "--evals", "--eval-trajectory", evalTrajectory,
+		)
+	}
+	if noOutput {
+		arguments = append(arguments, "--no-output")
+	}
+	// Validation guarantees an explicit target always has an active eval lane.
+	if strings.TrimSpace(evalOutput) != "" {
+		arguments = append(arguments, "--eval-output", evalOutput)
+	}
+	return arguments
 }
 
 // newServeCommand exposes one-shot serving and the constrained development supervisor.

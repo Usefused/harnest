@@ -1,0 +1,19 @@
+{
+  "eval_set_id": "city_facts_simulation",
+  "name": "City facts simulated conversation",
+  "description": "Exercises the LLM-backed user simulator and its per-turn quality metric.",
+  "eval_cases": [
+    {
+      "evalId": "simulated_paris_fact_finding",
+      "conversationScenario": {
+        "startingPrompt": "I would like one verified fact about Paris.",
+        "conversationPlan": "Ask the agent to verify a fact about Paris. Make sure the agent identifies France as the country whose capital is Paris. If the first answer does not mention France, ask one concise follow-up asking which country Paris is the capital of. Once the agent has stated that Paris is the capital of France, end the conversation with the configured stop signal. Do not ask about another city or request an external action."
+      },
+      "sessionInput": {
+        "appName": "city_facts_simulation",
+        "userId": "simulated-eval-user",
+        "state": {}
+      }
+    }
+  ]
+}

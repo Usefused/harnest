@@ -1,0 +1,18 @@
+name: City Facts Reference Evals
+description: Demonstrates reference-based and judged Harnest evaluations.
+version: 0.1.0
+supportedInterfaces:
+  - url: http://127.0.0.1:8080
+    protocolBinding: HTTP+JSON
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+defaultInputModes:
+  - text/plain
+defaultOutputModes:
+  - text/plain
+skills:
+  - id: verify-city-fact
+    name: Verify city fact
+    description: Looks up and reports a supported city fact.
+    tags: [evaluation, facts]

@@ -1,0 +1,3 @@
+apiVersion: harnest.dev/v1alpha1
+kind: ProjectLock
+projectSchema: 3

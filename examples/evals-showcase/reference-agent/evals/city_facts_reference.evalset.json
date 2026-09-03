@@ -1,0 +1,64 @@
+{
+  "eval_set_id": "city_facts_reference",
+  "name": "City facts reference and judge metrics",
+  "description": "Exercises every installed metric that accepts a static golden conversation.",
+  "eval_cases": [
+    {
+      "evalId": "verify_paris_across_two_turns",
+      "conversation": [
+        {
+          "userContent": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Call get_city_fact with city exactly 'Paris'. Then answer exactly: Paris is the capital of France, and its verified landmark is the Eiffel Tower."
+              }
+            ]
+          },
+          "finalResponse": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Paris is the capital of France, and its verified landmark is the Eiffel Tower."
+              }
+            ]
+          },
+          "intermediateData": {
+            "toolUses": [
+              {
+                "name": "get_city_fact",
+                "args": {"city": "Paris"}
+              }
+            ],
+            "toolResponses": []
+          }
+        },
+        {
+          "userContent": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Without another tool call, repeat which country Paris is the capital of and mention Paris by name."
+              }
+            ]
+          },
+          "finalResponse": {
+            "role": "model",
+            "parts": [
+              {"text": "Paris is the capital of France."}
+            ]
+          },
+          "intermediateData": {
+            "toolUses": [],
+            "toolResponses": []
+          }
+        }
+      ],
+      "sessionInput": {
+        "appName": "city_facts_reference",
+        "userId": "eval-user",
+        "state": {}
+      }
+    }
+  ]
+}

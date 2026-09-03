@@ -1,7 +1,7 @@
 PYTHON ?= $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.10 2>/dev/null || command -v python3)
 GOCACHE ?= $(CURDIR)/.cache/go-build
-LITELLM_API_BASE ?= http://127.0.0.1:11434
-LITELLM_MODEL ?= ollama_chat/qwen3.5:cloud
+OPENAI_BASE_URL ?= https://api.openai.com/v1
+OPENAI_MODEL ?= gpt-4.1-mini
 COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
 AGENT_URL ?= http://127.0.0.1:8080
 DEMO_SESSION_ID ?= demo-session
@@ -33,6 +33,7 @@ schemas:
 	$(PYTHON) -m json.tool schemas/deployment-plan.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/plugin.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/eval-run-result.schema.json >/dev/null
 
 plan:
 	PYTHONPATH=src $(PYTHON) -m harnest.cli plan examples/self-serve/orchestrator.py
@@ -46,10 +47,10 @@ example-install:
 	$(PYTHON) -m pip install -e .
 
 compile-example:
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli compile examples/self-serve/agents/helpdesk --output $(COMPILED_HELPDESK)
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli compile examples/self-serve/agents/helpdesk --output $(COMPILED_HELPDESK)
 
 serve-example: compile-example
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent
 
 demo-agent:
 	curl -sS $(AGENT_URL)/agent
@@ -64,18 +65,18 @@ demo-stream:
 	curl -N -sS -X POST $(AGENT_URL)/responses -H 'Content-Type: application/json' --data '{"input":"What should I collect next?","sessionId":"$(DEMO_SESSION_ID)","stream":true}'
 
 live-run: compile-example
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
 
 example-test:
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
 
 example-smoke:
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke
 
 live-test: example-smoke
 
 example-eval:
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --evals
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --evals
 
 example-all:
-	LITELLM_API_BASE=$(LITELLM_API_BASE) LITELLM_MODEL=$(LITELLM_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke --evals
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke --evals

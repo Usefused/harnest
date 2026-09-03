@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import os
 from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
 
 from .model_lifecycle import (
@@ -12,6 +13,7 @@ from .model_lifecycle import (
     _attach_lifecycle_resource,
     create_adk_lifecycle_client,
 )
+from .model_transport import attach_model_transport_binding
 
 if TYPE_CHECKING:
     from google.adk.models import BaseLlm
@@ -21,6 +23,29 @@ else:
     # Avoid importing ADK merely to define or inspect an agent. Runtime
     # validation deliberately accepts custom BaseLlm implementations.
     ModelInput: TypeAlias = Any
+
+
+DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+
+
+def _openai_model_name_from_environment(
+    default_model: str = DEFAULT_OPENAI_MODEL,
+) -> str:
+    """Resolve Harnest's canonical OpenAI-compatible model environment."""
+
+    configured = os.getenv("OPENAI_MODEL", default_model).strip()
+    if not configured:
+        raise ValueError("OPENAI_MODEL cannot be empty")
+    if "/" not in configured:
+        configured = f"openai/{configured}"
+    if configured.startswith("openai/"):
+        return _litellm_model_name(configured)
+    # OPENAI_MODEL deliberately selects the OpenAI-compatible transport so the
+    # agent and evaluator share OPENAI_API_KEY and OPENAI_BASE_URL. Explicitly
+    # authored LiteLLMModel instances remain available for native providers.
+    raise ValueError(
+        "OPENAI_MODEL must be an OpenAI model name or use the 'openai/' prefix"
+    )
 
 
 class ModelConnector(ABC):
@@ -81,19 +106,42 @@ def _langgraph_completion_args(
     if not isinstance(nested, Mapping):
         raise TypeError("model_kwargs must be a mapping")
     model_kwargs = dict(nested)
+    _promote_langgraph_credentials(arguments, model_kwargs)
     adapter_fields = set(getattr(adapter_type, "model_fields", {}))
     for name in tuple(arguments):
-        if name in adapter_fields:
+        if name in adapter_fields and name != "client":
             continue
         if name in model_kwargs:
             raise ValueError(f"duplicate LiteLLM model option: {name}")
-        # ChatLiteLLM silently ignores unknown constructor fields. Nesting only
-        # call-time options ensures reasoning and provider extensions reach
-        # LiteLLM while declared adapter fields retain native validation.
+        # ChatLiteLLM owns its `client` field as the LiteLLM delegate and
+        # overwrites it during validation. A native provider client belongs to
+        # completion kwargs, just like provider extensions and unknown options.
         model_kwargs[name] = arguments.pop(name)
     if model_kwargs:
         arguments["model_kwargs"] = model_kwargs
     return arguments
+
+
+def _promote_langgraph_credentials(
+    arguments: dict[str, Any], model_kwargs: dict[str, Any]
+) -> None:
+    """Keep nested credentials from being overwritten by empty adapter fields."""
+
+    # ChatLiteLLM appends these fields after model_kwargs, even when None.
+    # Preserve an explicitly authored top-level choice when both forms exist.
+    for name in ("api_base", "api_key", "organization", "extra_headers"):
+        if name in model_kwargs:
+            arguments.setdefault(name, model_kwargs.pop(name))
+
+
+def _langgraph_binding_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture normalized call options without carrying the LangChain wrapper."""
+
+    flattened = dict(arguments)
+    nested = flattened.pop("model_kwargs", {})
+    # Credential fields were promoted before validation; other nested options
+    # retain ChatLiteLLM's ordinary model_kwargs precedence.
+    return {**flattened, **nested}
 
 
 def _litellm_model_name(model: str) -> str:
@@ -150,6 +198,28 @@ class LiteLLMModel(ModelConnector):
             _with_thinking_mode(completion_args, thinking),
         )
 
+    @classmethod
+    def from_openai_environment(
+        cls,
+        *,
+        default_model: str = DEFAULT_OPENAI_MODEL,
+        thinking: bool | None = None,
+        lifecycle: LiteLLMLifecycle | None = None,
+        **completion_args: Any,
+    ) -> "LiteLLMModel":
+        """Use OPENAI_MODEL with the adapter's OPENAI_API_KEY/OPENAI_BASE_URL.
+
+        This reads the process environment; it does not load a dotenv file.
+        Explicit completion arguments retain their normal adapter precedence.
+        """
+
+        return cls(
+            _openai_model_name_from_environment(default_model),
+            thinking=thinking,
+            lifecycle=lifecycle,
+            **completion_args,
+        )
+
     def build(self) -> Any:
         """Build ADK's ``LiteLlm`` without contacting the provider."""
 
@@ -161,7 +231,13 @@ class LiteLLMModel(ModelConnector):
                 "harnest with its runtime dependencies"
             ) from exc
         if self.lifecycle is None:
-            return LiteLlm(model=self.model, **dict(self.completion_args))
+            adapter = LiteLlm(model=self.model, **dict(self.completion_args))
+            return attach_model_transport_binding(
+                adapter,
+                model=self.model,
+                completion_args=self.completion_args,
+                borrowed_client=self.completion_args.get("llm_client"),
+            )
         from google.adk.models.lite_llm import LiteLLMClient
 
         client = create_adk_lifecycle_client(
@@ -172,7 +248,13 @@ class LiteLLMModel(ModelConnector):
             llm_client=client,
             **dict(self.completion_args),
         )
-        return _attach_lifecycle_resource(adapter, client)
+        _attach_lifecycle_resource(adapter, client)
+        return attach_model_transport_binding(
+            adapter,
+            model=self.model,
+            completion_args=self.completion_args,
+            borrowed_client=client,
+        )
 
     def build_langgraph(self) -> Any:
         """Build LangChain's LiteLLM chat model without contacting the provider."""
@@ -185,15 +267,24 @@ class LiteLLMModel(ModelConnector):
             ) from exc
         kwargs = _langgraph_completion_args(ChatLiteLLM, self.completion_args)
         adapter = ChatLiteLLM(model=self.model, **kwargs)
+        binding_args = _langgraph_binding_args(kwargs)
         if self.lifecycle is None:
-            return adapter
+            return attach_model_transport_binding(
+                adapter, model=self.model, completion_args=binding_args
+            )
         client = _LifecycleLiteLLMClient(
             adapter.client, self.lifecycle, model=self.model, framework="langgraph"
         )
         # ChatLiteLLM validates by replacing `client` with the LiteLLM module.
         # Assigning after construction scopes the wrapper to this model only.
         adapter.client = client
-        return _attach_lifecycle_resource(adapter, client)
+        _attach_lifecycle_resource(adapter, client)
+        return attach_model_transport_binding(
+            adapter,
+            model=self.model,
+            completion_args=binding_args,
+            borrowed_client=client,
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)

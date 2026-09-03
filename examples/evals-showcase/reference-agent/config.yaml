@@ -1,0 +1,31 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: city-facts-reference
+  displayName: City Facts Reference Evals
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    dependencyFile: pyproject.toml
+  resources:
+    cpu: "1"
+    memory: 1Gi
+    ephemeralStorage: 1Gi
+    timeoutSeconds: 300
+    maxConcurrentRequests: 4
+  scaling:
+    minReplicas: 0
+    maxReplicas: 1
+  environment:
+    OPENAI_MODEL: gpt-4.1-mini
+    OPENAI_BASE_URL: https://api.openai.com/v1
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
+    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
+  secrets:
+    - environmentVariable: OPENAI_API_KEY
+      secretRef: projects/example/secrets/openai-api-key/latest

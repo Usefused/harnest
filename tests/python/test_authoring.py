@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -39,8 +39,11 @@ from harnest.runtime import create_fastapi_app, run_agent_message
 from harnest.server_config import DEFAULT_SERVER_YAML
 from harnest.testing import (
     AgentTestError,
+    _EvalResultCollector,
     _adk_eval_output_filter,
+    _eval_case_result_payload,
     _eval_config,
+    _evaluate_eval_sets,
     _isolated_eval_logging,
     _run_adk_evals,
     _run_langgraph_evals,
@@ -473,6 +476,47 @@ class AuthoringTests(unittest.TestCase):
         }
         self.assertEqual(built_model.kwargs, expected)
         self.assertEqual(built_agent.kwargs["model"].kwargs, expected)
+
+    def test_litellm_model_reads_canonical_openai_model_environment(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_MODEL": "local-compatible-model",
+                "OPENAI_API_KEY": "synthetic-openai-key",
+                "OPENAI_BASE_URL": "http://models.example.test/v1",
+            },
+            clear=False,
+        ):
+            connector = LiteLLMModel.from_openai_environment()
+
+        self.assertEqual(connector.model, "openai/local-compatible-model")
+        # The OpenAI-compatible adapter owns key and endpoint lookup, which is
+        # also how ADK judge and simulator models receive the same settings.
+        self.assertEqual(connector.completion_args, {})
+        self.assertNotIn("synthetic-openai-key", repr(connector))
+
+    def test_openai_model_environment_rejects_native_provider_prefix(self):
+        with patch.dict(
+            os.environ,
+            {"OPENAI_MODEL": "ollama_chat/qwen3.5:cloud"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "'openai/' prefix"):
+                LiteLLMModel.from_openai_environment()
+
+    def test_openai_model_environment_accepts_qualified_names_and_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                LiteLLMModel.from_openai_environment().model,
+                "openai/gpt-4.1-mini",
+            )
+        with patch.dict(
+            os.environ, {"OPENAI_MODEL": "openai/custom/model"}, clear=False
+        ):
+            self.assertEqual(
+                LiteLLMModel.from_openai_environment().model,
+                "openai/custom/model",
+            )
 
     def test_litellm_model_supports_thinking_and_non_thinking_modes(self):
         thinking = LiteLLMModel("ollama_chat/qwen3.5:cloud", thinking=True)
@@ -1320,14 +1364,28 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "root")
         self.assertEqual(manifest["interfaces"], {"cli": True})
 
-    def test_test_cli_supports_no_output_for_every_test_lane(self):
+    def test_test_cli_delegates_eval_result_output_and_quiet_mode(self):
         with patch("harnest.cli.run_agent_tests", return_value=0) as runner:
             default_status = cli_main(["test", ".", "--evals"])
-            quiet_status = cli_main(["test", ".", "--no-output"])
+            quiet_status = cli_main(
+                [
+                    "test",
+                    ".",
+                    "--evals",
+                    "--no-output",
+                    "--eval-output",
+                    "results/eval.json",
+                ]
+            )
 
         self.assertEqual((default_status, quiet_status), (0, 0))
         self.assertFalse(runner.call_args_list[0].kwargs["no_output"])
+        self.assertIsNone(runner.call_args_list[0].kwargs["eval_output"])
         self.assertTrue(runner.call_args_list[1].kwargs["no_output"])
+        self.assertEqual(
+            runner.call_args_list[1].kwargs["eval_output"],
+            Path("results/eval.json"),
+        )
 
     def test_authored_unit_test_runner_injects_agent_and_tools(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1436,7 +1494,11 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(suite.config.name, "test_config.json")
         self.assertEqual(
             eval_runner.call_args.kwargs,
-            {"trajectory": "business", "print_results": True},
+            {
+                "trajectory": "business",
+                "print_results": True,
+                "result_output": None,
+            },
         )
 
     def test_langgraph_test_runner_uses_shared_eval_suite_after_unit_tests(self):
@@ -1475,12 +1537,17 @@ class AuthoringTests(unittest.TestCase):
         )
         self.assertEqual(
             eval_runner.call_args.kwargs,
-            {"trajectory": "business", "print_results": True},
+            {
+                "trajectory": "business",
+                "print_results": True,
+                "result_output": None,
+            },
         )
 
     def test_authored_test_runner_can_suppress_all_test_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "authored"
+            result_output = Path(directory) / "results" / "eval.json"
             self._write(
                 root / "agent.py",
                 "from harnest.agent import Agent\n\n"
@@ -1504,13 +1571,25 @@ class AuthoringTests(unittest.TestCase):
                 errors = StringIO()
                 with redirect_stdout(output), redirect_stderr(errors):
                     exit_code = run_agent_tests(
-                        root, include_evals=True, no_output=True
+                        root,
+                        include_evals=True,
+                        no_output=True,
+                        eval_output=result_output,
                     )
 
         self.assertEqual(exit_code, 0)
         self.assertFalse(eval_runner.call_args.kwargs["print_results"])
+        self.assertEqual(
+            eval_runner.call_args.kwargs["result_output"], result_output
+        )
         self.assertEqual(output.getvalue(), "")
         self.assertEqual(errors.getvalue(), "")
+
+    def test_authored_test_runner_rejects_eval_output_without_evals(self):
+        with self.assertRaisesRegex(
+            AgentTestError, "--eval-output requires --evals"
+        ):
+            run_agent_tests(".", eval_output=Path("eval-result.json"))
 
     def test_named_eval_trajectories_override_only_tool_matching_policy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1576,9 +1655,445 @@ class AuthoringTests(unittest.TestCase):
             "harnest.lib.metrics.custom_quality",
         )
 
+    def test_eval_config_uses_canonical_model_for_implicit_judges_and_simulator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "test_config.json"
+            self._write(
+                config,
+                json.dumps(
+                    {
+                        "criteria": {
+                            "final_response_match_v2": {
+                                "threshold": 0.8,
+                                "judgeModelOptions": {"numSamples": 1},
+                            }
+                        },
+                        "userSimulatorConfig": {
+                            "type": "llm_backed",
+                            "maxAllowedInvocations": 2,
+                        },
+                    }
+                ),
+            )
+            with patch.dict(
+                os.environ, {"OPENAI_MODEL": "local-judge"}, clear=False
+            ):
+                loaded = _eval_config(EvalSuite((), config), "business")
+
+        criterion = loaded.criteria["final_response_match_v2"].model_dump(
+            by_alias=True
+        )
+        self.assertEqual(
+            criterion["judgeModelOptions"]["judgeModel"],
+            "openai/local-judge",
+        )
+        self.assertEqual(loaded.user_simulator_config.model, "openai/local-judge")
+
+    def test_eval_config_preserves_explicit_non_openai_model_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "test_config.json"
+            self._write(
+                config,
+                json.dumps(
+                    {
+                        "criteria": {
+                            "final_response_match_v2": {
+                                "threshold": 0.8,
+                                "judgeModelOptions": {
+                                    "judgeModel": "gemini-2.5-flash"
+                                },
+                            }
+                        },
+                        "userSimulatorConfig": {
+                            "type": "llm_backed",
+                            "model": "gemini-2.5-flash",
+                        },
+                    }
+                ),
+            )
+            with patch.dict(
+                os.environ, {"OPENAI_MODEL": "ollama_chat/unused"}, clear=False
+            ):
+                loaded = _eval_config(EvalSuite((), config), "business")
+
+        criterion = loaded.criteria["final_response_match_v2"].model_dump(
+            by_alias=True
+        )
+        self.assertEqual(
+            criterion["judgeModelOptions"]["judgeModel"],
+            "gemini-2.5-flash",
+        )
+        self.assertEqual(loaded.user_simulator_config.model, "gemini-2.5-flash")
+
+    def test_eval_config_defaults_an_omitted_scenario_simulator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            eval_set = Path(directory) / "conversation.evalset.json"
+            self._write(
+                eval_set,
+                json.dumps(
+                    {
+                        "evalCases": [
+                            {"conversationScenario": {"startingPrompt": "Hello"}}
+                        ]
+                    }
+                ),
+            )
+            with patch.dict(
+                os.environ, {"OPENAI_MODEL": "shared-simulator"}, clear=False
+            ):
+                loaded = _eval_config(EvalSuite((eval_set,)), "business")
+
+        self.assertEqual(
+            loaded.user_simulator_config.model, "openai/shared-simulator"
+        )
+
     def test_authored_test_runner_rejects_unknown_eval_trajectory(self):
         with self.assertRaisesRegex(AgentTestError, "business or strict"):
             run_agent_tests(".", eval_trajectory="approximate")
+
+    def test_eval_result_projection_retains_rubric_session_and_invocations(self):
+        from google.adk.evaluation.eval_case import Invocation
+        from google.adk.evaluation.eval_metrics import (
+            EvalMetricResult,
+            EvalMetricResultDetails,
+            EvalMetricResultPerInvocation,
+            EvalStatus,
+        )
+        from google.adk.evaluation.eval_result import EvalCaseResult
+        from google.adk.evaluation.eval_rubrics import RubricScore
+        from google.adk.sessions import Session
+        from google.genai import types as genai_types
+
+        actual = Invocation(
+            invocation_id="actual-1",
+            user_content=genai_types.Content(
+                role="user", parts=[genai_types.Part(text="Question")]
+            ),
+            final_response=genai_types.Content(
+                role="model", parts=[genai_types.Part(text="Answer")]
+            ),
+        )
+        expected = Invocation(
+            invocation_id="expected-1",
+            user_content=actual.user_content,
+            final_response=actual.final_response,
+        )
+        metric = EvalMetricResult(
+            metric_name="rubric_based_final_response_quality_v1",
+            threshold=1.0,
+            score=1.0,
+            eval_status=EvalStatus.PASSED,
+            details=EvalMetricResultDetails(
+                rubric_scores=[
+                    RubricScore(
+                        rubric_id="grounded-answer",
+                        score=1.0,
+                        rationale="The response cites the supplied evidence.",
+                    )
+                ]
+            ),
+        )
+        result = EvalCaseResult(
+            eval_set_id="quality",
+            eval_id="grounded",
+            final_eval_status=EvalStatus.PASSED,
+            overall_eval_metric_results=[metric],
+            eval_metric_result_per_invocation=[
+                EvalMetricResultPerInvocation(
+                    actual_invocation=actual,
+                    expected_invocation=expected,
+                    eval_metric_results=[metric],
+                )
+            ],
+            session_id="session-1",
+            session_details=Session(
+                id="session-1",
+                app_name="root",
+                user_id="eval-user",
+                state={"trace": "retained"},
+            ),
+            user_id="eval-user",
+        )
+
+        payload = _eval_case_result_payload(result)
+
+        # These nested fields are the diagnostic contract that CSV summaries
+        # cannot preserve, so assert their values rather than mere presence.
+        self.assertEqual(payload["finalEvalStatus"], "passed")
+        self.assertEqual(
+            payload["overallEvalMetricResults"][0]["details"]["rubricScores"][0],
+            {
+                "rationale": "The response cites the supplied evidence.",
+                "rubricId": "grounded-answer",
+                "score": 1.0,
+            },
+        )
+        self.assertEqual(
+            payload["evalMetricResultPerInvocation"][0]["actualInvocation"][
+                "invocationId"
+            ],
+            "actual-1",
+        )
+        self.assertEqual(
+            payload["evalMetricResultPerInvocation"][0]["expectedInvocation"][
+                "invocationId"
+            ],
+            "expected-1",
+        )
+        self.assertIn("evalSetFile", payload)
+        self.assertIn("evalMetricResults", payload)
+        self.assertEqual(payload["sessionDetails"]["state"]["trace"], "retained")
+        self.assertEqual(payload["sessionId"], "session-1")
+        self.assertEqual(payload["userId"], "eval-user")
+
+    def test_eval_set_runner_collects_later_suites_after_scored_failure(self):
+        calls = []
+
+        class EvalSet:
+            @classmethod
+            def model_validate_json(cls, payload):
+                """Expose only the suite identity needed by the evaluator fake."""
+
+                del cls
+                return types.SimpleNamespace(
+                    eval_set_id=json.loads(payload)["eval_set_id"]
+                )
+
+        class Evaluator:
+            @classmethod
+            async def evaluate_eval_set(cls, *, eval_set, **kwargs):
+                """Record every suite while making the first quality gate fail."""
+
+                del cls, kwargs
+                calls.append(eval_set.eval_set_id)
+                # A scored failure is recoverable at the suite boundary, so a
+                # later independent suite must still contribute to the result.
+                if eval_set.eval_set_id == "first":
+                    raise AssertionError("first suite failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.evalset.json"
+            second = root / "second.evalset.json"
+            self._write(first, json.dumps({"eval_set_id": "first"}))
+            self._write(second, json.dumps({"eval_set_id": "second"}))
+            suite = EvalSuite((first, second), root / "test_config.json")
+
+            with self.assertRaisesRegex(AssertionError, "first suite failed"):
+                asyncio.run(
+                    _evaluate_eval_sets(
+                        Evaluator,
+                        EvalSet,
+                        module_name="compiled.agent",
+                        suite=suite,
+                        config=object(),
+                        trajectory="business",
+                        print_results=False,
+                    )
+                )
+
+        self.assertEqual(calls, ["first", "second"])
+
+    def test_eval_set_runner_retains_empty_authored_suite(self):
+        class EvalSet:
+            @classmethod
+            def model_validate_json(cls, payload):
+                """Expose the empty authored suite identity to the runner."""
+
+                del cls
+                return types.SimpleNamespace(
+                    eval_set_id=json.loads(payload)["eval_set_id"]
+                )
+
+        class Evaluator:
+            @classmethod
+            async def evaluate_eval_set(cls, **kwargs):
+                """Mirror ADK's lack of a manager callback for an empty suite."""
+
+                del cls, kwargs
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            eval_set = root / "empty.evalset.json"
+            self._write(eval_set, json.dumps({"eval_set_id": "empty"}))
+            suite = EvalSuite((eval_set,), root / "test_config.json")
+            collector = _EvalResultCollector(
+                framework="adk", trajectory="business"
+            )
+
+            with redirect_stdout(StringIO()):
+                asyncio.run(
+                    _evaluate_eval_sets(
+                        Evaluator,
+                        EvalSet,
+                        module_name="compiled.agent",
+                        suite=suite,
+                        config=object(),
+                        trajectory="business",
+                        print_results=False,
+                        result_collector=collector,
+                    )
+                )
+            result = collector.payload(status="passed")
+
+        self.assertEqual(result["status"], "not_evaluated")
+        self.assertEqual(result["summary"]["suiteCount"], 1)
+        self.assertEqual(result["summary"]["caseCount"], 0)
+        self.assertEqual(len(result["evalSetResults"]), 1)
+        self.assertEqual(result["evalSetResults"][0]["evalSetId"], "empty")
+        self.assertEqual(
+            result["evalSetResults"][0]["status"], "not_evaluated"
+        )
+        self.assertEqual(result["evalSetResults"][0]["evalCaseResults"], [])
+
+    def test_adk_eval_error_result_captures_infrastructure_details(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "eval-result.json"
+            suite = EvalSuite((), root / "test_config.json")
+            with patch(
+                "harnest.testing._eval_dependencies",
+                return_value=(object(), object()),
+            ), patch(
+                "harnest.testing._eval_config", return_value=object()
+            ), patch(
+                "harnest.testing._adk_eval_output_filter"
+            ), patch(
+                "harnest.testing._evaluate_eval_sets",
+                side_effect=RuntimeError(
+                    "provider unavailable with synthetic-api-key"
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+                    _run_adk_evals(
+                        root,
+                        suite,
+                        print_results=False,
+                        result_output=output,
+                    )
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(
+            result["error"],
+            {
+                "message": "evaluation infrastructure failed",
+                "type": "RuntimeError",
+            },
+        )
+        self.assertNotIn("synthetic-api-key", json.dumps(result))
+
+    def test_adk_scored_failure_artifact_retains_case_metric_details(self):
+        case_payload = {
+            "evalSetId": "quality",
+            "evalId": "failed-case",
+            "finalEvalStatus": "failed",
+            "overallEvalMetricResults": [
+                {
+                    "metricName": "quality_metric",
+                    "evalStatus": "failed",
+                    "details": {
+                        "rubricScores": [
+                            {
+                                "rubricId": "grounding",
+                                "score": 0.0,
+                                "rationale": "The answer lacks evidence.",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "evalMetricResultPerInvocation": [],
+            "sessionId": "session-1",
+            "sessionDetails": None,
+            "userId": "eval-user",
+        }
+
+        async def evaluate_with_scored_failure(*args, result_collector, **kwargs):
+            """Persist ADK's scored case before raising its quality-gate error."""
+
+            del args, kwargs
+            result_collector.save_eval_set_result(
+                "harnest_eval",
+                "quality",
+                [types.SimpleNamespace(eval_id="failed-case")],
+            )
+            raise AssertionError("quality metric failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "eval-result.json"
+            suite = EvalSuite((), root / "test_config.json")
+            with patch(
+                "harnest.testing._eval_dependencies",
+                return_value=(object(), object()),
+            ), patch(
+                "harnest.testing._eval_config", return_value=object()
+            ), patch(
+                "harnest.testing._adk_eval_output_filter"
+            ), patch(
+                "harnest.testing._eval_case_result_payload",
+                return_value=case_payload,
+            ), patch(
+                "harnest.testing._evaluate_eval_sets",
+                side_effect=evaluate_with_scored_failure,
+            ):
+                with redirect_stderr(StringIO()):
+                    status = _run_adk_evals(
+                        root,
+                        suite,
+                        print_results=False,
+                        result_output=output,
+                    )
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 1)
+        self.assertEqual(result["status"], "failed")
+        suite_result = result["evalSetResults"][0]
+        self.assertEqual(suite_result["status"], "failed")
+        failed_case = suite_result["evalCaseResults"][0]
+        self.assertEqual(failed_case["evalId"], "failed-case")
+        rubric = failed_case["overallEvalMetricResults"][0]["details"][
+            "rubricScores"
+        ][0]
+        self.assertEqual(rubric["rationale"], "The answer lacks evidence.")
+
+    def test_langgraph_eval_publishes_structured_result(self):
+        application = types.SimpleNamespace(target=None)
+
+        @asynccontextmanager
+        async def eval_module(received_application):
+            """Supply a stable adapter module without importing LangGraph."""
+
+            self.assertIs(received_application, application)
+            yield "compiled.langgraph_eval"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "langgraph-result.json"
+            suite = EvalSuite((), root / "test_config.json")
+            config = types.SimpleNamespace(live_model_config=None)
+            with patch(
+                "harnest.testing._eval_dependencies",
+                return_value=(object(), object()),
+            ), patch(
+                "harnest.testing._eval_config", return_value=config
+            ), patch(
+                "harnest.eval_langgraph.langgraph_eval_agent_module", eval_module
+            ), patch("harnest.testing._evaluate_eval_sets"):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    status = _run_langgraph_evals(
+                        application, suite, result_output=output
+                    )
+            result = json.loads(output.read_text(encoding="utf-8"))
+            printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result, printed)
+        self.assertEqual(result["framework"], "langgraph")
+        self.assertEqual(result["status"], "not_evaluated")
+        self.assertEqual(result["summary"]["suiteCount"], 0)
 
     def test_langgraph_eval_rejects_adk_live_model_mode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1630,6 +2145,9 @@ class AuthoringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "authored"
             artifact = Path(directory) / "compiled"
+            result_output = Path(directory) / "results" / "eval-result.json"
+            result_output.parent.mkdir(parents=True)
+            result_output.write_text("stale result\n", encoding="utf-8")
             self._write(
                 root / "agent.py",
                 "from harnest.agent import Agent\n"
@@ -1681,9 +2199,238 @@ class AuthoringTests(unittest.TestCase):
             compile_artifact(root, artifact)
             suite = discover_evals(artifact / "source" / "agent.py")
 
-            status = _run_adk_evals(artifact, suite)
+            output = StringIO()
+            with redirect_stdout(output):
+                status = _run_adk_evals(
+                    artifact, suite, result_output=result_output
+                )
+            result = json.loads(result_output.read_text(encoding="utf-8"))
+            temporary_results = list(
+                result_output.parent.glob(f".{result_output.name}.*.tmp")
+            )
+
+            # The eval dependency already provides JSON Schema validation; use
+            # it here without adding a runtime dependency to Harnest itself.
+            from jsonschema import Draft202012Validator, FormatChecker
+
+            schema_path = (
+                Path(__file__).parents[2]
+                / "schemas"
+                / "eval-run-result.schema.json"
+            )
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            Draft202012Validator.check_schema(schema)
+            Draft202012Validator(
+                schema, format_checker=FormatChecker()
+            ).validate(result)
 
         self.assertEqual(status, 0)
+        self.assertEqual(temporary_results, [])
+        self.assertIn('"kind": "EvalRunResult"', output.getvalue())
+        self.assertEqual(result["apiVersion"], "harnest.dev/v1alpha1")
+        self.assertEqual(result["kind"], "EvalRunResult")
+        self.assertEqual(result["framework"], "adk")
+        self.assertEqual(result["trajectory"], "business")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(
+            result["summary"],
+            {
+                "caseCount": 1,
+                "failedCases": 0,
+                "notEvaluatedCases": 0,
+                "passedCases": 1,
+                "suiteCount": 1,
+            },
+        )
+        case = result["evalSetResults"][0]["evalCaseResults"][0]
+        self.assertTrue(case["sessionId"].startswith("___eval___session___"))
+        self.assertEqual(case["userId"], "eval-user")
+        self.assertIn("sessionDetails", case)
+        invocation = case["evalMetricResultPerInvocation"][0]
+        actual = invocation["actualInvocation"]
+        expected = invocation["expectedInvocation"]
+        self.assertEqual(
+            actual["finalResponse"]["parts"][0]["text"], "visible answer"
+        )
+        self.assertEqual(
+            expected["finalResponse"]["parts"][0]["text"], "visible answer"
+        )
+        metric = case["overallEvalMetricResults"][0]
+        self.assertEqual(metric["metricName"], "response_match_score")
+        self.assertEqual(metric["evalStatus"], "passed")
+        self.assertIn("rubricScores", metric["details"])
+
+    def test_official_adk_eval_preserves_multi_turn_history_and_session_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            artifact = Path(directory) / "compiled"
+            result_output = Path(directory) / "multi-turn-result.json"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "from google.adk.models import BaseLlm, LlmResponse\n"
+                "from google.genai import types\n\n"
+                "class HistoryRequiredLlm(BaseLlm):\n"
+                "    \"\"\"Answer the follow-up only from prior user history.\"\"\"\n\n"
+                "    async def generate_content_async(self, llm_request, stream=False):\n"
+                "        \"\"\"Require the first user turn to resolve the second.\"\"\"\n"
+                "        user_turns = [\n"
+                "            part.text\n"
+                "            for content in llm_request.contents\n"
+                "            if content.role == 'user'\n"
+                "            for part in (content.parts or [])\n"
+                "            if part.text\n"
+                "        ]\n"
+                "        current = user_turns[-1]\n"
+                "        if current.startswith('Remember:'):\n"
+                "            answer = 'I will remember the destination.'\n"
+                "        else:\n"
+                "            # The follow-up omits the city, so only session history\n"
+                "            # can supply the entity needed for the correct answer.\n"
+                "            remembered = any(\n"
+                "                'destination is Paris' in turn\n"
+                "                for turn in user_turns[:-1]\n"
+                "            )\n"
+                "            answer = (\n"
+                "                'Your destination is Paris.'\n"
+                "                if remembered\n"
+                "                else 'I no longer have the destination.'\n"
+                "            )\n"
+                "        yield LlmResponse(content=types.Content(\n"
+                "            role='model', parts=[types.Part(text=answer)]\n"
+                "        ))\n\n"
+                "root_agent = Agent(\n"
+                "    name='root', model=HistoryRequiredLlm(model='history-test')\n"
+                ")\n",
+            )
+            self._write(root / "instructions.md", "Remember conversation context.\n")
+            self._write(
+                root / "evals" / "history.evalset.json",
+                json.dumps(
+                    {
+                        "eval_set_id": "history",
+                        "eval_cases": [
+                            {
+                                "evalId": "destination-memory",
+                                "conversation": [
+                                    {
+                                        "userContent": {
+                                            "role": "user",
+                                            "parts": [
+                                                {
+                                                    "text": (
+                                                        "Remember: my destination "
+                                                        "is Paris."
+                                                    )
+                                                }
+                                            ],
+                                        },
+                                        "finalResponse": {
+                                            "role": "model",
+                                            "parts": [
+                                                {
+                                                    "text": (
+                                                        "I will remember the "
+                                                        "destination."
+                                                    )
+                                                }
+                                            ],
+                                        },
+                                    },
+                                    {
+                                        "userContent": {
+                                            "role": "user",
+                                            "parts": [
+                                                {
+                                                    "text": (
+                                                        "Which destination did "
+                                                        "I name?"
+                                                    )
+                                                }
+                                            ],
+                                        },
+                                        "finalResponse": {
+                                            "role": "model",
+                                            "parts": [
+                                                {
+                                                    "text": (
+                                                        "Your destination is Paris."
+                                                    )
+                                                }
+                                            ],
+                                        },
+                                    },
+                                ],
+                                # ADK retrieves result session details through
+                                # the evaluator app owner, so the authored input
+                                # uses that same owner for this diagnostic test.
+                                "sessionInput": {
+                                    "appName": "harnest_eval",
+                                    "userId": "history-user",
+                                    "state": {"testMarker": "multi-turn"},
+                                },
+                            }
+                        ],
+                    }
+                ),
+            )
+            self._write(
+                root / "evals" / "test_config.json",
+                json.dumps({"criteria": {"response_match_score": 1.0}}),
+            )
+            compile_artifact(root, artifact)
+            suite = discover_evals(artifact / "source" / "agent.py")
+
+            status = _run_adk_evals(
+                artifact,
+                suite,
+                print_results=False,
+                result_output=result_output,
+            )
+            result = json.loads(result_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result["status"], "passed")
+        case = result["evalSetResults"][0]["evalCaseResults"][0]
+        self.assertEqual(case["finalEvalStatus"], "passed")
+        invocations = case["evalMetricResultPerInvocation"]
+        self.assertEqual(len(invocations), 2)
+        actual_responses = [
+            invocation["actualInvocation"]["finalResponse"]["parts"][0]["text"]
+            for invocation in invocations
+        ]
+        self.assertEqual(
+            actual_responses,
+            [
+                "I will remember the destination.",
+                "Your destination is Paris.",
+            ],
+        )
+        follow_up = invocations[1]["actualInvocation"]["userContent"]["parts"][
+            0
+        ]["text"]
+        self.assertNotIn("Paris", follow_up)
+        self.assertTrue(
+            all(
+                invocation["evalMetricResults"][0]["evalStatus"] == "passed"
+                for invocation in invocations
+            )
+        )
+        session = case["sessionDetails"]
+        self.assertEqual(session["id"], case["sessionId"])
+        self.assertEqual(session["appName"], "harnest_eval")
+        self.assertEqual(session["userId"], "history-user")
+        self.assertEqual(session["state"]["testMarker"], "multi-turn")
+        event_texts = [
+            part["text"]
+            for event in session["events"]
+            if event.get("content")
+            for part in event["content"].get("parts", [])
+            if part.get("text")
+        ]
+        self.assertIn("Remember: my destination is Paris.", event_texts)
+        self.assertIn("Which destination did I name?", event_texts)
+        self.assertIn("Your destination is Paris.", event_texts)
 
     def test_langgraph_eval_executes_authored_custom_metric(self):
         with tempfile.TemporaryDirectory() as directory:

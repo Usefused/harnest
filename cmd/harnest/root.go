@@ -53,6 +53,7 @@ Typical workflow:
   harnest test my-agent
   harnest test my-agent --smoke --evals
   harnest test my-agent --evals --eval-trajectory strict
+  harnest test my-agent --evals --eval-output eval-result.json
   harnest compile my-agent --output .harnest/my-agent
   harnest run my-agent "Summarize today's activity"
   harnest serve my-agent
@@ -99,6 +100,7 @@ type application struct {
 	pythonFlag string
 }
 
+// newRootCommand assembles the user-facing CLI and its shared process policy.
 func newRootCommand(sys system, cliVersion string) *cobra.Command {
 	app := &application{system: sys, version: cliVersion}
 	command := &cobra.Command{

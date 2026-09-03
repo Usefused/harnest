@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest plugins search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest plugins search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -44,9 +44,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	if bundle.Config.Metadata.Name != "support-agent" {
 		t.Fatalf("got deployment name %q", bundle.Config.Metadata.Name)
 	}
-	if bundle.Config.Spec.Environment["LITELLM_MODEL"] != "ollama_chat/qwen3.5:cloud" {
-		t.Fatalf("generated environment is missing LiteLLM defaults: %v", bundle.Config.Spec.Environment)
-	}
+	assertScaffoldModelEnvironment(t, bundle)
 	agentSource, err := os.ReadFile(filepath.Join(target, "agent.py"))
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +54,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		`history="session"`,
 		"from harnest.agent import Agent",
 		"root_agent = Agent(",
+		"model=LiteLLMModel.from_openai_environment(),",
 	})
 	if strings.Contains(string(agentSource), "Graph(") {
 		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
@@ -205,6 +204,37 @@ func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	assertAdvancedLangGraphScaffold(t, advanced)
 }
 
+// TestInitAdvancedADKUsesCanonicalOpenAIEnvironment keeps native ADK scaffolds
+// on the same model credential contract as managed and LangGraph projects.
+func TestInitAdvancedADKUsesCanonicalOpenAIEnvironment(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "advanced-adk-agent")
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "init", target, "--framework", "adk", "--mode", "advanced",
+	); err != nil {
+		t.Fatal(err)
+	}
+	source := string(mustReadTestFile(t, filepath.Join(target, "agent.py")))
+	assertContainsAll(t, "advanced ADK scaffold", source, []string{
+		"from harnest.model import LiteLLMModel",
+		"model=LiteLLMModel.from_openai_environment().build(),",
+	})
+}
+
+// assertScaffoldModelEnvironment keeps model selection non-secret and ensures
+// generated projects do not advertise the retired provider-specific defaults.
+func assertScaffoldModelEnvironment(t *testing.T, bundle engine.Bundle) {
+	t.Helper()
+	if bundle.Config.Spec.Environment["OPENAI_MODEL"] != "gpt-4.1-mini" ||
+		bundle.Config.Spec.Environment["OPENAI_BASE_URL"] != "https://api.openai.com/v1" {
+		t.Fatalf("generated environment is missing OpenAI defaults: %v", bundle.Config.Spec.Environment)
+	}
+	for _, forbidden := range []string{"LITELLM_MODEL", "LITELLM_API_BASE", "OPENAI_API_KEY"} {
+		if _, exists := bundle.Config.Spec.Environment[forbidden]; exists {
+			t.Fatalf("generated environment contains unsupported or secret setting %q", forbidden)
+		}
+	}
+}
+
 func assertContainsAll(t *testing.T, label, contents string, expected []string) {
 	t.Helper()
 	for _, value := range expected {
@@ -250,7 +280,11 @@ func assertManagedLangGraphScaffold(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "managed scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Agent("})
+	assertContainsAll(t, "managed scaffold", string(source), []string{
+		"from harnest.agent import Agent",
+		"root_agent = Agent(",
+		"model=LiteLLMModel.from_openai_environment(),",
+	})
 	if _, err := os.Stat(filepath.Join(directory, "subagents", "helper.py")); !os.IsNotExist(err) {
 		t.Fatalf("managed LangGraph scaffold must not create an implicit subagent: %v", err)
 	}
@@ -280,7 +314,12 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "advanced scaffold", string(source), []string{"from harnest.agent import Agent", "root_agent = Agent.advanced(", "from langchain.agents import create_agent"})
+	assertContainsAll(t, "advanced scaffold", string(source), []string{
+		"from harnest.agent import Agent",
+		"root_agent = Agent.advanced(",
+		"from langchain.agents import create_agent",
+		"model=LiteLLMModel.from_openai_environment().build_langgraph(),",
+	})
 	if strings.Contains(string(source), "NativeApp") {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
 	}
@@ -423,6 +462,7 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 
 func TestEvalTrajectoryIsValidatedAndDelegated(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "eval-agent")
+	resultOutput := filepath.Join(t.TempDir(), "eval-result.json")
 	if err := createScaffold(target, "eval-agent"); err != nil {
 		t.Fatal(err)
 	}
@@ -434,13 +474,14 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 	_, _, err := executeForTest(
 		t, defaultSystem(), "--python", python, "test", target,
 		"--evals", "--eval-trajectory", "strict", "--no-output",
+		"--eval-output", resultOutput,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	arguments := mustReadTestFile(t, record)
 	assertContainsAll(t, "delegated eval arguments", string(arguments), []string{
-		"--evals\n--eval-trajectory\nstrict\n--no-output",
+		"--evals\n--eval-trajectory\nstrict\n--no-output\n--eval-output\n" + resultOutput,
 	})
 	_, _, err = executeForTest(
 		t, defaultSystem(), "--python", python, "test", target,
@@ -455,10 +496,78 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 	}
 	_, _, err = executeForTest(
 		t, defaultSystem(), "--python", python, "test", target,
+		"--eval-output", resultOutput,
+	)
+	if err == nil || !strings.Contains(err.Error(), "--eval-output requires --evals") {
+		t.Fatalf("got error %v, want eval output validation", err)
+	}
+	_, _, err = executeForTest(
+		t, defaultSystem(), "--python", python, "test", target,
 		"--eval-trajectory", "approximate",
 	)
 	if err == nil || !strings.Contains(err.Error(), "business or strict") {
 		t.Fatalf("got error %v, want trajectory validation", err)
+	}
+	testHelp, _, err := executeForTest(t, defaultSystem(), "test", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "test help", testHelp, []string{
+		"--eval-output string",
+		"write the complete structured eval result to this JSON file",
+	})
+}
+
+func TestEvalCommandReceivesCanonicalModelEnvironment(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "eval-environment-agent")
+	if err := createScaffold(target, "eval-environment-agent"); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(target, "config.yaml")
+	configured := strings.Replace(
+		string(mustReadTestFile(t, configPath)),
+		"OPENAI_MODEL: gpt-4.1-mini",
+		"OPENAI_MODEL: openai/gpt-configured-for-eval",
+		1,
+	)
+	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	record := filepath.Join(t.TempDir(), "environment.txt")
+	providerSecret := "openai-secret-must-not-be-recorded"
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	t.Setenv("OPENAI_API_KEY", providerSecret)
+	t.Setenv("OPENAI_MODEL", "openai/gpt-parent-must-be-overridden")
+	// Record presence markers only: captured test output must never disclose
+	// credentials while verifying Harnest's canonical model environment.
+	python := writeExecutable(t, `#!/bin/sh
+api_key=missing
+if [ -n "$OPENAI_API_KEY" ]; then api_key=present; fi
+printf 'api_key=%s\nmodel=%s\n' "$api_key" "$OPENAI_MODEL" > "$HARNEST_TEST_RECORD"
+`)
+	stdout, stderr, err := executeForTest(
+		t, defaultSystem(), "--python", python, "test", target, "--evals",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "canonical eval environment", markers, []string{
+		"api_key=present",
+		"model=openai/gpt-configured-for-eval",
+	})
+	if strings.Contains(markers, "openai/gpt-parent-must-be-overridden") {
+		t.Fatalf("configured OPENAI_MODEL did not override the parent environment")
+	}
+	for label, value := range map[string]string{
+		"record": markers,
+		"stdout": stdout,
+		"stderr": stderr,
+	} {
+		if strings.Contains(value, providerSecret) {
+			t.Fatalf("%s disclosed the provider credential", label)
+		}
 	}
 }
 
