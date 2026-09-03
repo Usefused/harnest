@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.11.0](https://github.com/Usefused/harnest/compare/v0.10.1...v0.11.0) (2026-09-03)
 
 ### Features
 
@@ -50,9 +50,6 @@
 * Keep long tool identifiers and payloads inside the playground layout, reveal
   complete identifiers on expansion, and wrap large tool results on desktop
   and mobile.
-
-## [0.11.0](https://github.com/Usefused/harnest/compare/v0.10.1...v0.11.0) (2026-09-03)
-
 
 ### Features
 
