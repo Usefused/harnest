@@ -11,6 +11,13 @@
   Revoke context on cancellation and early stream closure; reject unsafe native
   legacy-workflow `before_run_callback` replacement responses with repair guidance.
 
+## [0.11.1](https://github.com/Usefused/harnest/compare/v0.11.0...v0.11.1) (2026-09-04)
+
+
+### Fixes
+
+* bind managed context during native ADK evaluations ([0d6f6ef](https://github.com/Usefused/harnest/commit/0d6f6efb5308536ae6f23c399b7cd5344d0a54cf))
+
 ## [0.11.0](https://github.com/Usefused/harnest/compare/v0.10.1...v0.11.0) (2026-09-03)
 
 ### Features
