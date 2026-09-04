@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.13.0](https://github.com/Usefused/harnest/compare/v0.12.1...v0.13.0) (2026-09-04)
 
 ### Fixes
 
@@ -23,6 +23,10 @@
 
 * Add a hardened Chrome browsing sandbox example with an explicit host allowlist,
   pinned Playwright image, fresh-container scope, and bounded resources.
+
+### Features
+
+* expose stable public APIs and scoped sandbox cleanup ([c85daed](https://github.com/Usefused/harnest/commit/c85daed65ea7ec6490391870462744d4e734aafe))
 
 ## [0.12.1](https://github.com/Usefused/harnest/compare/v0.12.0...v0.12.1) (2026-09-04)
 
