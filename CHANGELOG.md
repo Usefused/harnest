@@ -6,10 +6,13 @@
 
 * Add invocation-scoped `AgentRuntimePrincipal` grants for permissioned server,
   client-hosted, and MCP tools. Custom HTTP routes and local agent sessions can
-  pass `agent_principal=` after application authentication; ADK and LangGraph
-  omit unavailable capabilities from the model and recheck before execution.
-  Fail before session or resource startup when a topology cannot guarantee
-  complete projection, including managed LangGraph graphs with native nodes.
+  pass `agent_principal=` after application authentication; nested calls inherit
+  or narrow grants, queued tasks reconstruct them from private durable state,
+  and cron-originated agent calls without explicit authority start with no
+  permissioned capabilities. ADK and LangGraph omit unavailable capabilities
+  where Harnest owns the model boundary and recheck Harnest-owned capabilities
+  before execution in managed and advanced modes. Managed topologies fail before
+  startup when Harnest cannot guarantee complete projection.
 
 ### Fixes
 

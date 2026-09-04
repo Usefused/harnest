@@ -15,7 +15,15 @@ from fastapi.testclient import TestClient
 from google.protobuf.json_format import MessageToDict
 
 from harnest.application import CompiledApplication
+from harnest.agent_principal import (
+    AgentRuntimePrincipal,
+    activate_agent_principal,
+    active_agent_principal,
+    create_agent_principal_binding,
+    revoke_agent_principal,
+)
 from harnest.checkpoint import RunScope
+from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.cron import CompiledCron
 from harnest.durable import NativeResumeInput, ResumeArtifact, native_durable_call
 from harnest.external_continuation import ExternalContinuationRuntime
@@ -267,6 +275,7 @@ async def _task_database_evidence(task_name: str) -> dict[str, object]:
                    payload.failure_code,
                    payload.arguments::text AS arguments,
                    payload.invocation::text AS invocation,
+                   payload.agent_permissions::text AS agent_permissions,
                    job.id AS job_id,
                    job.status::text AS job_status
             FROM harnest_task_payloads AS payload
@@ -374,6 +383,65 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await handle.result(), "private-cron-value")
             self.assertNotIn("private-cron-value", " ".join(native_logs.output))
         finally:
+            await manager.close()
+
+    async def test_real_worker_reconstructs_deferred_agent_permissions(self):
+        """Carry invocation grants through PostgreSQL into a fresh worker scope."""
+
+        observed = []
+        completed = asyncio.Event()
+
+        @task(queue="integration")
+        async def inspect_principal():
+            """Record the principal restored around the durable task attempt."""
+
+            principal = active_agent_principal()
+            observed.append(None if principal is None else principal.permissions)
+            completed.set()
+
+        definition = registration_for(inspect_principal)
+        assert definition is not None
+        unique = uuid.uuid4().hex
+        compiled = CompiledTask(
+            name=f"harnest.integration_{unique}.tasks.inspect_principal",
+            source="tasks/inspect_principal.py",
+            definition=definition,
+            authored=inspect_principal,
+        )
+        application = CompiledApplication(
+            name=f"integration_{unique}",
+            framework="langgraph",
+            mode="managed",
+            target=object(),
+            tasks=(compiled,),
+        )
+        manager = TaskRuntimeManager(application)
+        context_value = create_agent_context(
+            framework="langgraph",
+            agent_name="integration",
+            invocation_id=f"inv-{unique}",
+            user_id="integration-user",
+            session_id=f"session-{unique}",
+            metadata={},
+            resources={},
+        )
+        principal = AgentRuntimePrincipal.create(
+            permissions={"reports.read", "reports.compare"}
+        )
+        binding = create_agent_principal_binding(principal)
+        try:
+            with patch.dict(
+                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
+            ):
+                await manager.start()
+                with activate_context(context_value), activate_agent_principal(binding):
+                    handle = await inspect_principal.defer()
+                await asyncio.wait_for(completed.wait(), timeout=10)
+                await _wait_for_status(handle, "succeeded")
+            self.assertEqual(observed, [principal.permissions])
+        finally:
+            revoke_agent_principal(binding)
+            revoke_context(context_value)
             await manager.close()
 
     async def test_real_worker_schedules_retries_and_hides_payload_from_logs(self):
@@ -537,6 +605,7 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
         self.assertEqual(after["failure_code"], "task_cancelled")
         self.assertEqual(after["arguments"], "{}")
         self.assertIsNone(after["invocation"])
+        self.assertIsNone(after["agent_permissions"])
         self.assertEqual(after["job_status"], "cancelled")
         self.assertEqual(continuation["run_status"], "cancelled")
         self.assertIsNone(continuation["pending_action"])

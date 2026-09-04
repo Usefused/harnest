@@ -35,6 +35,7 @@ from harnest.backends.langgraph import (
 from harnest.application import CompiledApplication
 from harnest.approval import require_human_approval
 from harnest.client_tool import client_tool
+from harnest.context_agent import _resolve_invocation_agent_principal
 from harnest.context import context
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.mcp import MCPClient
@@ -250,7 +251,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(driver.seen, [(principal, False)])
         self.assertIsNone(active_agent_principal())
 
-    async def test_advanced_runtime_rejects_incomplete_projection(self):
+    async def test_advanced_runtime_enforces_harnest_owned_boundaries(self):
         driver = _RecordingDriver()
         driver.info = AgentInfo(
             id="support",
@@ -261,14 +262,11 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             mode="advanced",
         )
         wrapped = ExtensionRuntimeDriver(driver, [])
-        start_resources = AsyncMock()
-        wrapped._start_resources = start_resources
+        principal = AgentRuntimePrincipal.create(permissions={"support.read"})
 
-        with self.assertRaisesRegex(
-            AgentRuntimePermissionError, "managed Harnest agent"
-        ):
-            await wrapped.invoke(_request(AgentRuntimePrincipal.create()))
-        start_resources.assert_not_awaited()
+        await wrapped.invoke(_request(principal))
+
+        self.assertEqual(driver.seen, [(principal, False)])
 
     async def test_managed_runtime_rejects_incomplete_nested_projection(self):
         native_builder = StateGraph(dict)
@@ -309,6 +307,16 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             _graph_agent_principal_projection_complete(graph, type("Pregel", (), {}))
         )
+
+    def test_root_omission_is_unrestricted_but_cron_omission_fails_closed(self):
+        self.assertIsNone(
+            _resolve_invocation_agent_principal(None, trigger="user")
+        )
+
+        cron_principal = _resolve_invocation_agent_principal(None, trigger="cron")
+
+        self.assertIsInstance(cron_principal, AgentRuntimePrincipal)
+        self.assertEqual(cron_principal.permissions, frozenset())
 
     async def test_stream_scope_does_not_leak_to_the_caller_between_events(self):
         driver = _RecordingDriver()

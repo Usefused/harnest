@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import importlib
 import inspect
@@ -14,6 +14,13 @@ from typing import Any, AsyncIterator, Mapping, Sequence
 import uuid
 
 from ._exception_notes import add_exception_note
+from .agent_principal import (
+    AgentRuntimePrincipal,
+    activate_agent_principal,
+    active_agent_principal,
+    create_agent_principal_binding,
+    revoke_agent_principal,
+)
 from .context import (
     ContextUnavailableError,
     activate_context,
@@ -71,6 +78,7 @@ CREATE TABLE IF NOT EXISTS harnest_task_payloads (
     task_name text NOT NULL,
     arguments jsonb NOT NULL,
     invocation jsonb,
+    agent_permissions jsonb,
     trigger text NOT NULL DEFAULT 'agent',
     status text NOT NULL DEFAULT 'pending',
     result jsonb,
@@ -88,14 +96,16 @@ _PAYLOAD_MIGRATION_SQL = (
     "completed_at timestamptz",
     "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
     "trigger text NOT NULL DEFAULT 'agent'",
+    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
+    "agent_permissions jsonb",
 )
 _INSERT_PAYLOAD_SQL = """
 INSERT INTO harnest_task_payloads(
-    payload_id, task_name, arguments, invocation, trigger, status
+    payload_id, task_name, arguments, invocation, agent_permissions, trigger, status
 )
 VALUES (
     %(payload_id)s, %(task_name)s, %(arguments)s, %(invocation)s,
-    %(trigger)s, 'pending'
+    %(agent_permissions)s, %(trigger)s, 'pending'
 )
 ON CONFLICT (payload_id) DO NOTHING
 RETURNING payload_id
@@ -109,7 +119,7 @@ ORDER BY id
 LIMIT 2
 """
 _GET_PAYLOAD_SQL = """
-SELECT arguments, invocation, trigger, status, result, failure_code
+SELECT arguments, invocation, agent_permissions, trigger, status, result, failure_code
 FROM harnest_task_payloads
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
 """
@@ -121,7 +131,8 @@ WHERE payload_id=%(payload_id)s
 _COMPLETE_PAYLOAD_SQL = """
 UPDATE harnest_task_payloads
 SET status='completed', result=%(result)s, failure_code=NULL,
-    arguments='{}'::jsonb, invocation=NULL, completed_at=now()
+    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
+    completed_at=now()
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
   AND status='pending'
 RETURNING payload_id
@@ -129,7 +140,8 @@ RETURNING payload_id
 _FAIL_PAYLOAD_SQL = """
 UPDATE harnest_task_payloads
 SET status='failed', result=NULL, failure_code=%(failure_code)s,
-    arguments='{}'::jsonb, invocation=NULL, completed_at=now()
+    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
+    completed_at=now()
 WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
   AND status='pending'
 RETURNING payload_id
@@ -152,7 +164,8 @@ WITH target AS (
 )
 UPDATE harnest_task_payloads AS payload SET
     status='failed', result=NULL, failure_code='task_cancelled',
-    arguments='{}'::jsonb, invocation=NULL, completed_at=now()
+    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
+    completed_at=now()
 FROM cancelled
 WHERE payload.payload_id=cancelled.payload_id
   AND cancelled.cancelled_id=cancelled.id
@@ -386,6 +399,7 @@ class TaskRuntimeManager:
         self._require_ready()
         compiled = self._compiled_for(task_value)
         snapshot = _capture_invocation()
+        agent_permissions = _capture_agent_permissions()
         trigger = "agent" if snapshot is not None else "user"
         if idempotency_key is None:
             idempotency_key = _native_idempotency_key(
@@ -395,6 +409,7 @@ class TaskRuntimeManager:
             compiled,
             arguments,
             snapshot,
+            agent_permissions,
             trigger=trigger,
             idempotency_key=idempotency_key,
             schedule_in=schedule_in,
@@ -415,6 +430,7 @@ class TaskRuntimeManager:
                 cron.task,
                 safe_task_arguments(cron.arguments),
                 None,
+                None,
                 trigger="cron",
                 idempotency_key=f"{cron.name}:{timestamp}",
                 schedule_in=None,
@@ -429,6 +445,7 @@ class TaskRuntimeManager:
         compiled: CompiledTask,
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
+        agent_permissions: frozenset[str] | None = None,
         *,
         trigger: str,
         idempotency_key: str | None,
@@ -445,6 +462,7 @@ class TaskRuntimeManager:
                 payload_id,
                 arguments,
                 snapshot,
+                agent_permissions,
                 trigger=trigger,
                 queueing_lock=queueing_lock,
                 schedule_in=schedule_in,
@@ -478,6 +496,7 @@ class TaskRuntimeManager:
         payload_id: str,
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
+        agent_permissions: frozenset[str] | None,
         *,
         trigger: str,
         queueing_lock: str | None,
@@ -493,6 +512,7 @@ class TaskRuntimeManager:
                 payload_id,
                 arguments,
                 snapshot,
+                agent_permissions,
                 trigger=trigger,
                 connection=connection,
             )
@@ -766,12 +786,15 @@ class TaskRuntimeManager:
     ) -> None:
         """Restore safe invocation capabilities around one authored callable."""
 
-        arguments, snapshot, trigger = await self._get_payload(compiled, payload_id)
+        arguments, snapshot, agent_permissions, trigger = await self._get_payload(
+            compiled, payload_id
+        )
         try:
             result = await self._call_authored(
                 compiled,
                 arguments,
                 snapshot,
+                agent_permissions,
                 payload_id=payload_id,
                 trigger=trigger,
             )
@@ -799,6 +822,7 @@ class TaskRuntimeManager:
         compiled: CompiledTask,
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
+        agent_permissions: frozenset[str] | None = None,
         *,
         payload_id: str,
         trigger: str = "agent",
@@ -806,28 +830,29 @@ class TaskRuntimeManager:
         """Run inline or inside a reconstructed managed task invocation."""
 
         agent_scope = self._agent_scope(snapshot, payload_id, trigger)
-        if snapshot is None:
-            with agent_scope:
-                return await _resolve_task_call(compiled.function, arguments)
-        active = self._agent_context(snapshot)
-        session_store = self._session_store()
-        try:
-            async with invocation_session_context(
-                session_store,
-                framework=active.framework,
-                user_id=active.user_id,
-                session_id=active.session_id,
-                invocation_id=active.invocation_id,
-                trigger="agent",
-            ):
-                with (
-                    activate_context(active),
-                    self._credential_scope(),
-                    agent_scope,
-                ):
+        with _task_agent_principal_scope(agent_permissions):
+            if snapshot is None:
+                with agent_scope:
                     return await _resolve_task_call(compiled.function, arguments)
-        finally:
-            revoke_context(active)
+            active = self._agent_context(snapshot)
+            session_store = self._session_store()
+            try:
+                async with invocation_session_context(
+                    session_store,
+                    framework=active.framework,
+                    user_id=active.user_id,
+                    session_id=active.session_id,
+                    invocation_id=active.invocation_id,
+                    trigger="agent",
+                ):
+                    with (
+                        activate_context(active),
+                        self._credential_scope(),
+                        agent_scope,
+                    ):
+                        return await _resolve_task_call(compiled.function, arguments)
+            finally:
+                revoke_context(active)
 
     def _agent_scope(
         self,
@@ -899,6 +924,7 @@ class TaskRuntimeManager:
         payload_id: str,
         arguments: Mapping[str, Any],
         snapshot: Mapping[str, Any] | None,
+        agent_permissions: frozenset[str] | None,
         *,
         trigger: str,
         connection: Any,
@@ -913,6 +939,9 @@ class TaskRuntimeManager:
                 task_name=compiled.name,
                 arguments=dict(arguments),
                 invocation=None if snapshot is None else dict(snapshot),
+                agent_permissions=(
+                    None if agent_permissions is None else sorted(agent_permissions)
+                ),
                 trigger=trigger,
             )
         except Exception as error:
@@ -925,7 +954,9 @@ class TaskRuntimeManager:
 
     async def _get_payload(
         self, compiled: CompiledTask, payload_id: str
-    ) -> tuple[dict[str, Any], Mapping[str, Any] | None, str]:
+    ) -> tuple[
+        dict[str, Any], Mapping[str, Any] | None, frozenset[str] | None, str
+    ]:
         """Read one task-owned payload with its stable task-name predicate."""
 
         try:
@@ -936,12 +967,15 @@ class TaskRuntimeManager:
             )
             arguments = safe_task_arguments(row["arguments"])
             snapshot = _validated_snapshot(row.get("invocation"))
+            agent_permissions = _validated_agent_permissions(
+                row.get("agent_permissions")
+            )
             trigger = _validated_trigger(row.get("trigger", "agent"))
         except Exception as error:
             raise TaskRuntimeError(
                 f"task payload read failed with {type(error).__name__}"
             ) from None
-        return arguments, snapshot, trigger
+        return arguments, snapshot, agent_permissions, trigger
 
     async def _read_outcome(self, handle: TaskHandle) -> tuple[str, Any]:
         """Read one task result through its payload and compiled-name predicates."""
@@ -1394,6 +1428,42 @@ def _capture_invocation() -> Mapping[str, Any] | None:
             "metadata": safe_task_arguments(active.metadata),
         }
     )
+
+
+def _capture_agent_permissions() -> frozenset[str] | None:
+    """Capture only non-secret grants needed to constrain durable child work."""
+
+    principal = active_agent_principal()
+    return None if principal is None else principal.permissions
+
+
+def _validated_agent_permissions(value: Any) -> frozenset[str] | None:
+    """Reconstruct a fresh worker principal without trusting persisted shapes."""
+
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("task Agent Runtime Principal permissions must be an array")
+    return AgentRuntimePrincipal.create(permissions=value).permissions
+
+
+@contextmanager
+def _task_agent_principal_scope(
+    permissions: frozenset[str] | None,
+) -> Any:
+    """Bind inherited grants for one worker attempt and revoke copied contexts."""
+
+    if permissions is None:
+        yield
+        return
+    binding = create_agent_principal_binding(
+        AgentRuntimePrincipal.create(permissions=permissions)
+    )
+    try:
+        with activate_agent_principal(binding):
+            yield
+    finally:
+        revoke_agent_principal(binding)
 
 
 def _validated_snapshot(value: Any) -> Mapping[str, Any] | None:

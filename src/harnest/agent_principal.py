@@ -129,23 +129,20 @@ def validate_agent_principal(value: Any) -> None:
 
 
 def validate_agent_principal_runtime(value: Any, runtime_info: Any) -> None:
-    """Reject authority where the runtime cannot project every model boundary."""
+    """Require complete projection only where Harnest owns the whole agent."""
 
     validate_agent_principal(value)
     if value is None:
         return
-    projection_complete = (
-        getattr(runtime_info, "agent_principal_projection_complete", False)
-        is True
-    )
-    supported = (
-        getattr(runtime_info, "mode", None) == "managed"
-        and projection_complete
-    )
-    if not supported:
+    mode = getattr(runtime_info, "mode", None)
+    projection_complete = getattr(
+        runtime_info, "agent_principal_projection_complete", False
+    ) is True
+    if mode == "managed" and not projection_complete:
+        # Managed mode promises that Harnest owns capability projection. Advanced
+        # runtimes remain best-effort because authored graph/model wiring is opaque.
         raise AgentRuntimePermissionError(
-            "Agent Runtime Principal requires a managed Harnest agent with "
-            "complete tool projection"
+            "managed Agent Runtime Principal requires complete tool projection"
         )
 
 

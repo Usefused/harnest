@@ -8,6 +8,13 @@ import unittest
 from unittest.mock import patch
 
 from harnest.application import CompiledApplication
+from harnest.agent_principal import (
+    AgentRuntimePrincipal,
+    activate_agent_principal,
+    active_agent_principal,
+    create_agent_principal_binding,
+    revoke_agent_principal,
+)
 from harnest.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest.context import activate_context, create_agent_context, revoke_context
@@ -120,6 +127,7 @@ class _Connector:
                 "task_name": values["task_name"],
                 "arguments": values["arguments"],
                 "invocation": values["invocation"],
+                "agent_permissions": values["agent_permissions"],
                 "trigger": values["trigger"],
                 "status": "pending",
                 "result": None,
@@ -145,6 +153,7 @@ class _Connector:
                 failure_code=None,
                 arguments={},
                 invocation=None,
+                agent_permissions=None,
             )
         elif "status='failed'" in query:
             payload.update(
@@ -153,6 +162,7 @@ class _Connector:
                 failure_code=values["failure_code"],
                 arguments={},
                 invocation=None,
+                agent_permissions=None,
             )
         return [{"payload_id": values["payload_id"]}]
 
@@ -177,6 +187,7 @@ class _Connector:
             failure_code="task_cancelled",
             arguments={},
             invocation=None,
+            agent_permissions=None,
         )
         return [{"payload_id": payload_id}]
 
@@ -481,6 +492,53 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(TaskExecutionError, "task_cancelled"):
                     await cancel_handle.result()
         finally:
+            revoke_context(active)
+            await manager.close()
+
+    async def test_deferred_task_restores_principal_grants_for_nested_work(self):
+        observed = []
+
+        async def inspect_principal():
+            """Record the worker-scoped principal reconstructed from its payload."""
+
+            observed.append(active_agent_principal())
+
+        authored, compiled, application = _compiled(inspect_principal)
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="reporter",
+            invocation_id="inv-principal",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        parent = AgentRuntimePrincipal.create(
+            permissions={"reports.read", "reports.compare"}
+        )
+        binding = create_agent_principal_binding(parent)
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                await manager.start()
+                with activate_context(active), activate_agent_principal(binding):
+                    handle = await authored.defer()
+                payload = manager._app.connector.payloads[handle._payload_id]
+                self.assertEqual(
+                    payload["agent_permissions"],
+                    ["reports.compare", "reports.read"],
+                )
+                await manager._app.tasks[compiled.name].function(
+                    _job_context(), handle._payload_id
+                )
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0].permissions, parent.permissions)
+            self.assertNotEqual(observed[0].id, parent.id)
+            self.assertIsNone(active_agent_principal())
+        finally:
+            revoke_agent_principal(binding)
             revoke_context(active)
             await manager.close()
 
@@ -817,6 +875,7 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         result={"value": "ready"},
                         arguments={},
                         invocation=None,
+                        agent_permissions=None,
                     )
                     return suspended
 

@@ -313,6 +313,9 @@ class LocalAgentRuntime:
         supplied_metadata = _json_mapping(
             metadata or {}, "agent invocation metadata"
         )
+        principal = _resolve_invocation_agent_principal(
+            agent_principal, trigger=self._trigger
+        )
         return InvocationRequest(
             input=value,
             user_id=self._user_id,
@@ -320,7 +323,7 @@ class LocalAgentRuntime:
             invocation_id=invocation_id,
             metadata={**self._metadata, **supplied_metadata},
             state_delta={},
-            agent_principal=resolve_nested_agent_principal(agent_principal),
+            agent_principal=principal,
             transport=self._transport,
         )
 
@@ -647,6 +650,18 @@ async def _next_before_deadline(run: Any, deadline: float) -> tuple[str, Any]:
     if remaining <= 0:
         raise asyncio.TimeoutError
     return await next_run_boundary(run, timeout=remaining)
+
+
+def _resolve_invocation_agent_principal(
+    requested: AgentRuntimePrincipal | None, *, trigger: str
+) -> AgentRuntimePrincipal | None:
+    """Inherit caller grants and fail closed for unattended cron authority."""
+
+    principal = resolve_nested_agent_principal(requested)
+    if principal is None and trigger == "cron":
+        # A schedule has no interactive caller to authorize implicit access.
+        return AgentRuntimePrincipal.create()
+    return principal
 
 
 def _json_mapping(value: Mapping[str, Any], name: str) -> dict[str, Any]:
