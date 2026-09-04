@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.11.1](https://github.com/Usefused/harnest/compare/v0.11.0...v0.11.1) (2026-09-04)
 
 ### Fixes
 
@@ -10,9 +10,6 @@
   and explain unscored execution errors separately from task-quality failures.
   Revoke context on cancellation and early stream closure; reject unsafe native
   legacy-workflow `before_run_callback` replacement responses with repair guidance.
-
-## [0.11.1](https://github.com/Usefused/harnest/compare/v0.11.0...v0.11.1) (2026-09-04)
-
 
 ### Fixes
 
