@@ -86,6 +86,10 @@ LangGraph to execute code. Both agent frameworks call it through the same
   are defaults. Docker control-plane operations retain finite SDK I/O timeouts;
   admission is rechecked after they return. Docker availability is needed to
   confirm actual cleanup; ambiguous creation without an ID blocks retry.
+- Nested execution controls own local deadlines capped by every ancestor's
+  absolute deadline. Returning from a shorter helper does not shrink or restart
+  the outer budget. Copied worker contexts retain their helper's limit, while
+  cancellation and captured managed-context revocation remain call-wide.
 - Results include explicit `SandboxStatus` and optional `exit_code`. Successful
   stderr warnings remain successful; nonzero process exits fail even without
   stderr. Timeouts and output overflow have distinct statuses. Provider SDK

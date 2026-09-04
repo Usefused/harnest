@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Keep nested sandbox helper timeouts local to their scope instead of permanently
+  shortening the outer operation's deadline. Preserve absolute ancestor limits,
+  worker deadlines, shared cancellation, and managed-context revocation.
+
 ## [0.12.0](https://github.com/Usefused/harnest/compare/v0.11.1...v0.12.0) (2026-09-04)
 
 ### Changed

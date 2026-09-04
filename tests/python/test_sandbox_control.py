@@ -110,7 +110,8 @@ class SandboxControlTests(unittest.TestCase):
         with execution_control(10) as control:
             initial = control.deadline
             with execution_control(20) as nested:
-                self.assertIs(nested, control)
+                self.assertIsNot(nested, control)
+                self.assertIs(nested.cancelled, control.cancelled)
                 self.assertEqual(nested.deadline, initial)
         self.assertIsNone(current_control())
 

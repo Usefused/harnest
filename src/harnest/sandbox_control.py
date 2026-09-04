@@ -21,15 +21,29 @@ class SandboxCancelledError(RuntimeError):
 class SandboxControl:
     """Keep absolute deadlines and captured authority independent of worker context."""
 
-    def __init__(self, timeout_seconds: int | None) -> None:
-        """Capture the caller's lifetime before a framework copies its context."""
-        self.cancelled = threading.Event()
-        self.deadline: float | None = None
-        self._managed_context = optional_active_context()
+    def __init__(self, timeout_seconds: int | None, *, parent: SandboxControl | None = None) -> None:
+        """Share captured authority and cancellation, but own a scope-local deadline."""
+        self._parent = parent
+        self.cancelled = parent.cancelled if parent is not None else threading.Event()
+        self._deadline: float | None = None
+        self._managed_context = parent._managed_context if parent is not None else optional_active_context()
         self.constrain(timeout_seconds)
 
+    @property
+    def deadline(self) -> float | None:
+        """Cap local time by live ancestor deadlines without modifying their budgets."""
+        inherited = self._parent.deadline if self._parent is not None else None
+        if self._deadline is None:
+            return inherited
+        return self._deadline if inherited is None else min(self._deadline, inherited)
+
+    @deadline.setter
+    def deadline(self, value: float | None) -> None:
+        """Set only this scope's limit; ancestor limits continue to apply."""
+        self._deadline = value
+
     def constrain(self, timeout_seconds: int | None) -> None:
-        """Never extend a deadline when an execution crosses nested adapters."""
+        """Tighten this scope without extending an inherited absolute deadline."""
         if timeout_seconds is not None:
             candidate = time.monotonic() + timeout_seconds
             self.deadline = candidate if self.deadline is None else min(self.deadline, candidate)
@@ -80,10 +94,10 @@ def current_control() -> SandboxControl | None:
 
 @contextmanager
 def execution_control(timeout_seconds: int | None) -> Iterator[SandboxControl]:
-    """Create one call token or preserve its absolute deadline across adapters."""
-    inherited = current_control()
-    control = inherited or SandboxControl(timeout_seconds)
-    control.constrain(timeout_seconds)
+    """Scope deadlines independently while preserving call-wide cancellation."""
+    # Restoring a shared object's deadline would race with sibling workers and
+    # extend the budget of workers that retained the shorter helper context.
+    control = SandboxControl(timeout_seconds, parent=current_control())
     token = _CONTROL.set(control)
     try:
         control.check()
