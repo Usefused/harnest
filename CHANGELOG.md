@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.12.0](https://github.com/Usefused/harnest/compare/v0.11.1...v0.12.0) (2026-09-04)
 
 ### Changed
 
@@ -38,6 +38,10 @@
 * Accept composed FastAPI HTTP routers on versions that retain included-router
   wrappers. Validate fully prefixed paths at every include depth while retaining
   reserved-path, duplicate-endpoint, and unsupported-route protections.
+
+### Features
+
+* support portable agent plugins and harden application runtime ([6041858](https://github.com/Usefused/harnest/commit/6041858e9eb018468c690778f8e3acfb5f17b6ce))
 
 ## [0.11.1](https://github.com/Usefused/harnest/compare/v0.11.0...v0.11.1) (2026-09-04)
 
