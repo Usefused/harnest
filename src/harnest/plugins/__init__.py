@@ -44,9 +44,12 @@ class PluginContext:
 
     __slots__ = ("_continuations", "_lifetime", "_plugin_name")
 
-    def __init__(self, plugin_name: str) -> None:
-        """Bind the context to one identifier-safe runtime plugin."""
+    def __init__(self, plugin_name: str | None = None, *, extension_name: str | None = None) -> None:
+        """Accept canonical or legacy identity keywords without ambiguous ownership."""
 
+        if plugin_name is not None and extension_name is not None:
+            raise TypeError("provide extension_name or legacy plugin_name, not both")
+        plugin_name = extension_name if extension_name is not None else plugin_name
         if (
             not isinstance(plugin_name, str)
             or not plugin_name.isidentifier()
@@ -62,6 +65,12 @@ class PluginContext:
     @property
     def plugin_name(self) -> str:
         """Return the plugin whose invocation authority this context carries."""
+
+        return self._plugin_name
+
+    @property
+    def extension_name(self) -> str:
+        """Expose the canonical identity without duplicating invocation state."""
 
         return self._plugin_name
 
@@ -329,17 +338,11 @@ def _activation_key(
 
 
 def _activate_plugin(descriptor: RuntimePluginDescriptor) -> ActivatedPlugin:
-    """Load one plugin.py directly into its controlled public namespace."""
+    """Load either format into its own compiler-owned public namespace."""
 
     namespace = descriptor.namespace
-    parent = sys.modules[__name__]
-    if namespace in sys.modules or hasattr(parent, descriptor.name):
-        raise PluginNamespaceError(
-            f"runtime plugin namespace is already occupied: {namespace}"
-        )
     module = _plugin_module(descriptor)
-    sys.modules[namespace] = module
-    setattr(parent, descriptor.name, module)
+    _publish_namespace(module, namespace, descriptor.name)
     failure: str | None = None
     try:
         loader = module.__spec__.loader if module.__spec__ is not None else None
@@ -349,17 +352,40 @@ def _activate_plugin(descriptor: RuntimePluginDescriptor) -> ActivatedPlugin:
     except Exception as error:
         failure = type(error).__name__
     if failure is not None:
-        _remove_plugin_modules(descriptor.name)
+        _remove_plugin_modules(descriptor.name, namespace=namespace)
         raise PluginImportError(
             f"failed to import runtime plugin {descriptor.name!r} with {failure}"
         )
     try:
         plugin = _validated_plugin_export(module, descriptor)
     except Exception:
-        _remove_plugin_modules(descriptor.name)
+        _remove_plugin_modules(descriptor.name, namespace=namespace)
         raise
     Plugin._bind_identity(plugin, descriptor.name)
     return ActivatedPlugin(descriptor, module, plugin)
+
+
+def _namespace_aliases(namespace: str) -> tuple[str, ...]:
+    """Keep migrated imports bound to the same singleton, never a second owner."""
+
+    if namespace.startswith("harnest.extensions."):
+        return namespace, namespace.replace("harnest.extensions.", "harnest.plugins.", 1)
+    return (namespace,)
+
+
+def _publish_namespace(module: ModuleType, namespace: str, name: str) -> None:
+    """Check all canonical and compatibility names before publishing any alias."""
+
+    parents = {
+        alias: importlib.import_module(alias.rpartition(".")[0])
+        for alias in _namespace_aliases(namespace)
+    }
+    for alias, parent in parents.items():
+        if alias in sys.modules or hasattr(parent, name):
+            raise PluginNamespaceError(f"runtime plugin namespace is already occupied: {alias}")
+    for alias, parent in parents.items():
+        sys.modules[alias] = module
+        setattr(parent, name, module)
 
 
 def _plugin_module(descriptor: RuntimePluginDescriptor) -> ModuleType:
@@ -382,10 +408,12 @@ def _validated_plugin_export(
 ) -> Plugin[PluginContext]:
     """Require one locally-authored public class and its singleton instance."""
 
-    value = getattr(module, "plugin", None)
+    export = descriptor.entrypoint.partition(":")[2]
+    value = getattr(module, export, None)
     if not isinstance(value, Plugin):
         raise PluginImportError(
-            f"runtime plugin {descriptor.name!r} must export Plugin instance 'plugin'"
+            f"runtime plugin/extension {descriptor.name!r} must export "
+            f"Plugin instance '{export}' (Extension in the canonical API)"
         )
     plugin_type = type(value)
     if plugin_type is Plugin or plugin_type.__module__ != module.__name__:
@@ -459,19 +487,22 @@ def _release_activated(plugins: Sequence[ActivatedPlugin]) -> None:
 
     for activated in plugins:
         Plugin._clear_identity(activated.plugin, activated.descriptor.name)
-        _remove_plugin_modules(activated.descriptor.name)
+        _remove_plugin_modules(
+            activated.descriptor.name, namespace=activated.descriptor.namespace
+        )
 
 
-def _remove_plugin_modules(name: str) -> None:
-    """Remove one plugin namespace and every relative import it created."""
+def _remove_plugin_modules(name: str, *, namespace: str | None = None) -> None:
+    """Remove only the owning format's namespace and its relative imports."""
 
-    namespace = f"{__name__}.{name}"
-    for module_name in tuple(sys.modules):
-        if module_name == namespace or module_name.startswith(namespace + "."):
-            sys.modules.pop(module_name, None)
-    parent = sys.modules.get(__name__)
-    if parent is not None and hasattr(parent, name):
-        delattr(parent, name)
+    namespace = namespace or f"{__name__}.{name}"
+    for alias in _namespace_aliases(namespace):
+        for module_name in tuple(sys.modules):
+            if module_name == alias or module_name.startswith(alias + "."):
+                sys.modules.pop(module_name, None)
+        parent = sys.modules.get(alias.rpartition(".")[0])
+        if parent is not None and hasattr(parent, name):
+            delattr(parent, name)
 
 
 __all__ = [

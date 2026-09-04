@@ -1,0 +1,4 @@
+# Known-good framework/evaluation baseline. Update through the compatibility matrix.
+google-adk==2.8.0
+langgraph==1.2.11
+langchain==1.3.18

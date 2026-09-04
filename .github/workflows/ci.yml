@@ -59,7 +59,7 @@ jobs:
           cache: pip
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade build ".[all,quality]"
+        run: python -m pip install --upgrade build ".[all,quality]" -c requirements/frameworks.txt
 
       - name: Run quality gates
         # setup-python owns `python`; distro-specific python3.x executables may

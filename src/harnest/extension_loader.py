@@ -43,6 +43,9 @@ _ROOT_EXTENSION_ORIGIN = "root/extensions"
 _PLUGIN_EXTENSION_ORIGIN = re.compile(
     r"^plugins/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/extensions$"
 )
+_CANONICAL_EXTENSION_ORIGIN = re.compile(
+    r"^extensions/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/lifecycle$"
+)
 
 
 class ExtensionDiscoveryError(ValueError):
@@ -65,8 +68,8 @@ class ExtensionSource:
             raise TypeError("extension source directory must be path-like") from exc
         if not isinstance(self.origin, str) or not _valid_extension_origin(self.origin):
             raise ValueError(
-                "extension source origin must be 'root/extensions' or "
-                "'plugins/<name>/extensions'"
+                "extension source origin must be 'root/lifecycle' or "
+                "'extensions/<name>/lifecycle' (legacy origins are also supported)"
             )
         object.__setattr__(self, "directory", directory)
 
@@ -545,7 +548,7 @@ def _extension_files(root: Path) -> tuple[Path, ...]:
             raise ExtensionDiscoveryError(
                 authoring_guidance(
                     f"public extension resources must be Python files: {path}",
-                    expected="extensions/ holds Python (.py) files with lifecycle hooks or resource-provider declarations",
+                    expected="lifecycle/ holds Python (.py) files with lifecycle hooks or resource-provider declarations",
                     fix="Use a Python filename such as storage.py, without spaces or hyphens. " + inactive_entry_hint(path),
                 )
             )
@@ -859,9 +862,9 @@ def _ranked_listener_order(
 def _valid_extension_origin(origin: str) -> bool:
     """Accept only identities the artifact layout can reproduce exactly."""
 
-    return origin == _ROOT_EXTENSION_ORIGIN or bool(
+    return origin in {_ROOT_EXTENSION_ORIGIN, "root/lifecycle"} or bool(
         _PLUGIN_EXTENSION_ORIGIN.fullmatch(origin)
-    )
+    ) or bool(_CANONICAL_EXTENSION_ORIGIN.fullmatch(origin))
 
 
 def _validate_root(root: Path) -> None:

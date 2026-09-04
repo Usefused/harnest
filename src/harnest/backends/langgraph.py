@@ -27,11 +27,7 @@ from ..mcp_context import _is_governed_mcp_operation
 from ..structured import provider_output_schema
 from ..tool_arguments import invalid_argument_error, unknown_argument_error
 from ..tool_lifecycle import wrap_lifecycle_tool
-from ..sandbox import Sandbox
-from ..sandbox_adapters import SANDBOX_TOOL_NAME
-from ..sandbox_assignments import (
-    assigned_sandboxes, reject_sandbox_tool_collisions,
-)
+from ..sandbox_assignments import assigned_sandboxes
 
 
 def _langgraph_types():
@@ -356,17 +352,9 @@ def _build_ready_agent(
 
 
 def _agent_tools(definition: AgentDefinition, discovered: Sequence[Any]) -> list[Any]:
-    """Attach a scoped sandbox through native tools without shadowing capabilities."""
+    """Resolve authored tools; sandbox grants never add implicit model tools."""
     tools = _langchain_tools((*definition.tools, *discovered))
     assigned_sandboxes(definition)
-    if definition.sandbox is None:
-        return tools
-    if not isinstance(definition.sandbox, Sandbox):
-        raise TypeError("LangGraph requires a portable Sandbox, not a native ADK executor")
-    # Check after MCP materialization as well as at compile time: a remote tool
-    # must never replace or silently steal the sandbox's execution authority.
-    reject_sandbox_tool_collisions(tools, (SANDBOX_TOOL_NAME,))
-    tools.extend(_langchain_tools((definition.sandbox.to_langchain_tool(),)))
     return tools
 
 

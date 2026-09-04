@@ -81,9 +81,23 @@ func projectRuntimeRequirements(path, owner string) ([]string, error) {
 	return dependencies, nil
 }
 
-// pluginRuntimeRequirements discovers only folders carrying plugin.yaml.
+// pluginRuntimeRequirements collects canonical extensions and legacy runtime packages.
 func pluginRuntimeRequirements(root string) ([]string, []string, error) {
-	directory := filepath.Join(root, "plugins")
+	var requirements, projects []string
+	for _, folder := range []string{"plugins", "extensions"} {
+		values, files, err := packageRuntimeRequirements(filepath.Join(root, folder), folder == "extensions")
+		if err != nil {
+			return nil, nil, err
+		}
+		requirements = append(requirements, values...)
+		projects = append(projects, files...)
+	}
+	sort.Strings(projects)
+	return requirements, projects, nil
+}
+
+// packageRuntimeRequirements inspects manifest-bearing packages, never legacy hook files.
+func packageRuntimeRequirements(directory string, canonical bool) ([]string, []string, error) {
 	entries, err := optionalRegularDirectoryEntries(directory)
 	if err != nil {
 		return nil, nil, err
@@ -93,7 +107,10 @@ func pluginRuntimeRequirements(root string) ([]string, []string, error) {
 		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
 			continue
 		}
-		values, project, found, projectErr := pluginRuntimeProject(directory, entry)
+		if canonical && !entry.IsDir() {
+			continue // Legacy lifecycle files are validated by the Python layout resolver.
+		}
+		values, project, found, projectErr := pluginRuntimeProject(directory, entry, canonical)
 		if projectErr != nil {
 			return nil, nil, projectErr
 		}
@@ -109,13 +126,16 @@ func pluginRuntimeRequirements(root string) ([]string, []string, error) {
 
 // pluginRuntimeProject resolves one manifest-owned optional dependency file.
 func pluginRuntimeProject(
-	directory string, entry os.DirEntry,
+	directory string, entry os.DirEntry, canonical bool,
 ) ([]string, string, bool, error) {
 	pluginDirectory := filepath.Join(directory, entry.Name())
 	if !entry.IsDir() {
 		return nil, "", false, fmt.Errorf("runtime plugin path must be a directory: %s\n\nWhat Harnest expects: one subfolder per plugin, not loose files in plugins/.\nHow to fix: put an active plugin in its own folder. If %q is only a note, backup, or unused example, rename it to %q or move it outside plugins/. Names starting with _ are left out of automatic discovery", pluginDirectory, entry.Name(), "_"+entry.Name())
 	}
 	manifest := filepath.Join(pluginDirectory, "plugin.yaml")
+	if canonical {
+		manifest = filepath.Join(pluginDirectory, "extension.yaml")
+	}
 	found, err := regularDependencyPathExists(manifest, "runtime plugin manifest")
 	if err != nil || !found {
 		return nil, "", false, err
@@ -131,10 +151,14 @@ func pluginRuntimeProject(
 
 // regularDependencyPathExists distinguishes an absent optional file from I/O failure.
 func regularDependencyPathExists(path, label string) (bool, error) {
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("inspect %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s must be a regular file, not a symlink or directory: %s", label, path)
 	}
 	return true, nil
 }
@@ -220,9 +244,12 @@ func containsString(values []string, expected string) bool {
 	return false
 }
 
-// jointResolutionInputs creates the one generated input needed for @task.
+// jointResolutionInputs resolves task/plugin dependencies against the committed framework pin.
 func jointResolutionInputs(bundle engine.Bundle, plan runtimeDependencyPlan) ([]string, error) {
-	inputs := append([]string{}, plan.ProjectFiles...)
+	inputs, err := appendFrameworkResolutionInput(bundle, append([]string{}, plan.ProjectFiles...))
+	if err != nil {
+		return nil, err
+	}
 	if !plan.HasTasks {
 		return inputs, nil
 	}

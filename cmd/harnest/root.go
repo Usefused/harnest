@@ -19,19 +19,19 @@ Each agent owns its deployment config, Agent Card, instructions, Python
 definition, discovered tools and subagents, evaluations, and authored tests:
 
   my-agent/
-    config.yaml          deployment resources and runtime policy
-    server.yaml          mutable compiled-server policy
+    config.yaml          agent settings and optional server overrides
     agent-card.yaml      discovery metadata and capabilities
     agent.py             root Agent with compiler-owned imports
     instructions.md      root instructions
-    pyproject.toml       one dependency set for the agent and runtime plugins
+    pyproject.toml       one dependency set for the agent and Harnest Extensions
     lib/                 reusable Python helpers imported as harnest.lib.*
     models/              Pydantic contracts imported as harnest.models.*
     tools/               discovered Python tools
     tasks/               durable Python tasks
     cron/                UTC schedules targeting durable tasks
-    plugins/             runtime plugins or manifest-less MCP+skill agent-plugins
-    extensions/          portable lifecycle plus framework-specific integration
+    plugins/             Agent Plugins 1.0: plugin.json, optional skills/ and mcp.json
+    extensions/          reusable Harnest Extension packages
+    lifecycle/           application lifecycle hooks and resource factories
     subagents/           discovered Agent definitions
     mcp/                 MCPClient connections to external MCP servers
     sandbox/             optional ADK isolated code-execution backend
@@ -42,7 +42,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
 Typical workflow:
 
   harnest skills install
-  harnest plugins search postgres
+  harnest extensions search postgres
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example

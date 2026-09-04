@@ -22,7 +22,7 @@ import (
 
 const (
 	pluginEntryPointGroup    = "harnest.plugins"
-	pluginInspectionVersion  = 2
+	pluginInspectionVersion  = 3
 	maxPluginWheelBytes      = 16 * 1024 * 1024
 	maxPluginWheelFiles      = 10_000
 	maxPluginMetadataEntry   = 1024 * 1024
@@ -62,7 +62,8 @@ type pluginWheelManifest struct {
 		Entrypoint string `yaml:"entrypoint"`
 	} `yaml:"runtime"`
 	Requires struct {
-		Plugins []string `yaml:"plugins"`
+		Plugins    []string `yaml:"plugins"`
+		Extensions []string `yaml:"extensions"`
 	} `yaml:"requires"`
 	Capabilities []string `yaml:"capabilities"`
 }
@@ -223,7 +224,7 @@ func inspectPluginWheel(contents []byte, projectName, release string) error {
 func validatePluginWheelContent(
 	files []*zip.File, entrypoint pluginEntryPoint, projectName, release string,
 ) error {
-	slug := strings.TrimPrefix(normalizeProjectName(projectName), pypiPluginPrefix)
+	slug := extensionProjectSlug(projectName)
 	if normalizeProjectName(entrypoint.Name) != slug {
 		return fmt.Errorf("plugin entry point name does not match project name")
 	}
@@ -231,18 +232,19 @@ func validatePluginWheelContent(
 	if err != nil {
 		return err
 	}
-	manifestFile, err := findUniqueWheelFile(files, root+"/plugin.yaml")
+	stem, kind := extensionWheelFormat(entrypoint.Value)
+	manifestFile, err := findUniqueWheelFile(files, root+"/"+stem+".yaml")
 	if err != nil {
 		return err
 	}
-	if _, err := findUniqueWheelFile(files, root+"/plugin.py"); err != nil {
+	if _, err := findUniqueWheelFile(files, root+"/"+stem+".py"); err != nil {
 		return err
 	}
 	manifestBytes, err := readPluginWheelMetadata(manifestFile)
 	if err != nil {
 		return err
 	}
-	return validatePluginWheelManifest(manifestBytes, entrypoint.Name, release)
+	return validatePluginWheelManifest(manifestBytes, entrypoint.Name, release, kind, stem+":"+stem)
 }
 
 // findPluginEntryPointFile requires one unambiguous distribution metadata file.
@@ -328,12 +330,16 @@ func ignoredPluginEntryPointLine(line string) bool {
 func parsePluginEntryPointLine(
 	section, line string,
 ) (pluginEntryPoint, bool, error) {
-	if section != pluginEntryPointGroup {
+	if section != pluginEntryPointGroup && section != "harnest.extensions" {
 		return pluginEntryPoint{}, false, nil
 	}
 	name, value, found := strings.Cut(line, "=")
 	if !found {
 		return pluginEntryPoint{}, false, fmt.Errorf("invalid Harnest entry point")
+	}
+	stem, _ := extensionWheelFormat(strings.TrimSpace(value))
+	if (section == "harnest.extensions") != (stem == "extension") {
+		return pluginEntryPoint{}, false, fmt.Errorf("Harnest entry point group does not match its format")
 	}
 	return pluginEntryPoint{
 		Name: strings.TrimSpace(name), Value: strings.TrimSpace(value),
@@ -343,8 +349,8 @@ func parsePluginEntryPointLine(
 // pluginModuleRoot binds the standard entry point to the fixed runtime object.
 func pluginModuleRoot(value string) (string, error) {
 	module, attribute, found := strings.Cut(value, ":")
-	if !found || attribute != "plugin" || strings.ContainsAny(value, " []") {
-		return "", fmt.Errorf("Harnest entry point must end in .plugin:plugin")
+	if !found || (attribute != "plugin" && attribute != "extension") || strings.ContainsAny(value, " []") {
+		return "", fmt.Errorf("Harnest entry point must end in .extension:extension (or legacy .plugin:plugin)")
 	}
 	parts := strings.Split(module, ".")
 	for _, part := range parts {
@@ -352,8 +358,8 @@ func pluginModuleRoot(value string) (string, error) {
 			return "", fmt.Errorf("Harnest entry point must name a Python module")
 		}
 	}
-	if len(parts) < 2 || parts[len(parts)-1] != "plugin" {
-		return "", fmt.Errorf("Harnest entry point must end in .plugin:plugin")
+	if len(parts) < 2 || parts[len(parts)-1] != attribute {
+		return "", fmt.Errorf("Harnest entry point module must match its singleton name")
 	}
 	return strings.Join(parts[:len(parts)-1], "/"), nil
 }
@@ -375,7 +381,7 @@ func asciiIdentifierStart(value byte) bool {
 }
 
 // validatePluginWheelManifest binds runtime identity without full installation checks.
-func validatePluginWheelManifest(contents []byte, entryName, release string) error {
+func validatePluginWheelManifest(contents []byte, entryName, release, kind, entrypoint string) error {
 	var manifest pluginWheelManifest
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
@@ -387,7 +393,7 @@ func validatePluginWheelManifest(contents []byte, entryName, release string) err
 		return fmt.Errorf("plugin manifest must contain one document")
 	}
 	if manifest.APIVersion != "harnest.dev/v1alpha1" ||
-		manifest.Kind != "RuntimePlugin" || manifest.Runtime.Entrypoint != "plugin:plugin" ||
+		manifest.Kind != kind || manifest.Runtime.Entrypoint != entrypoint ||
 		manifest.Metadata.Name != entryName || manifest.Metadata.Version != release {
 		return fmt.Errorf("plugin manifest identity does not match its distribution")
 	}

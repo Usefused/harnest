@@ -44,7 +44,7 @@ func TestPluginPreflightExplainsLooseFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = pluginRuntimeProject(directory, entries[0])
+	_, _, _, err = pluginRuntimeProject(directory, entries[0], false)
 	if err == nil {
 		t.Fatal("loose plugin file was accepted")
 	}

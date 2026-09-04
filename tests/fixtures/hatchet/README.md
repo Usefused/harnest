@@ -41,8 +41,8 @@ The worker accepts `consumer-report` jobs. It records only a Harnest correlation
 identifier and Hatchet run ID. `GET http://localhost:8099/evidence/<id>` proves
 the job started; `POST http://localhost:8099/release/<id>` lets it complete.
 
-The RuntimePlugin source is `examples/plugins/hatchet`. Copy it to the
-ADK consumer agent as `plugins/hatchet` and add `hatchet-sdk>=1.38,<2` to the
+The Harnest Extension source is `examples/extensions/hatchet`. Copy it to the
+ADK consumer agent as `extensions/hatchet` and add `hatchet-sdk>=1.38,<2` to the
 root agent `pyproject.toml`. The plugin has no `tools/` directory by design.
 
 After installing the SDK, exercise the provider-only live boundary with:

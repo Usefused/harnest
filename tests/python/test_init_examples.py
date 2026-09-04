@@ -96,7 +96,7 @@ class InitExampleTests(unittest.TestCase):
             "tools/_example.py": "tools/echo.py",
             "tasks/_example.py": "tasks/prepare_report.py",
             "cron/_example.py": "cron/daily_report.py",
-            "plugins/_example": "plugins/starter_runtime",
+            "extensions/_example": "extensions/starter_runtime",
             "skills/_example": "skills/getting-started",
             "evals/_example.evalset.json": "evals/starter.evalset.json",
             "sandbox/_example.py": "sandbox/calculations.py",

@@ -1,9 +1,8 @@
 """Filesystem contract for reusable agent plugins.
 
-A plugin is a directory below ``plugins/`` that combines MCP client modules
-with skills explaining how an agent should use those MCP capabilities.  The
-directory is the plugin declaration: authors do not create a Python plugin
-object or aggregation module.
+A portable plugin below ``plugins/`` declares ``plugin.json`` with optional
+``mcp.json`` servers and ``skills/`` content. Legacy Python-factory packages
+remain readable without imposing their older layout rules on standard packages.
 
 This module only discovers and validates filesystem resources.  Importing MCP
 modules and validating their exports belongs to the bundle compiler.
@@ -14,6 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 from .authoring_errors import authoring_guidance, folder_entry_error, inactive_entry_hint
 
@@ -30,8 +30,8 @@ class PluginConventionError(ValueError):
 class PluginResources:
     """Resources discovered from one ``plugins/<name>/`` directory.
 
-    ``mcp_sources`` contains public Python modules from the plugin's ``mcp/``
-    directory. ``skill_directories`` contains directories with an uppercase
+    ``mcp_clients`` contains declarative portable servers; ``mcp_sources`` retains
+    legacy Python factories. ``skill_directories`` contains directories with an uppercase
     ``SKILL.md`` manifest. Paths are absolute when the input plugins directory
     is absolute and otherwise retain the caller's path form.
     """
@@ -40,28 +40,29 @@ class PluginResources:
     directory: Path
     mcp_sources: tuple[Path, ...] = ()
     skill_directories: tuple[Path, ...] = ()
+    mcp_clients: tuple[Any, ...] = ()
+    manifest: Mapping[str, Any] | None = None
 
     @property
     def is_empty(self) -> bool:
-        return not self.mcp_sources and not self.skill_directories
+        return not self.mcp_sources and not self.skill_directories and not self.mcp_clients
 
 
 def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
-    """Discover non-empty capability plugins in deterministic name order.
+    """Discover standard packages and older capability bundles deterministically.
 
     The accepted layout is::
 
         plugins/
           bigquery-memory/
-            mcp/
-              bigquery.py
+            plugin.json
+            mcp.json
             skills/
               conversation-storage/SKILL.md
 
-    Empty plugin directories are skipped. A non-empty plugin must have at least
-    one MCP module and one skill directory. Public entries outside ``mcp/`` and
-    ``skills/`` are rejected. Discovery never imports an MCP module; the bundle
-    compiler owns export loading and validation.
+    Standard MCP and skill components are optional and validated independently.
+    Discovery never imports package code. The bundle compiler owns legacy
+    Python factory loading and validation.
     """
 
     plugins_directory = Path(directory)
@@ -76,11 +77,14 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
         plugin = _discover_agent_plugin(plugin_directory)
         if plugin is not None:
             discovered.append(plugin)
+    names = [plugin.name for plugin in discovered]
+    if len(names) != len(set(names)):
+        raise PluginConventionError("duplicate Agent Plugin manifest name; give each installed plugin a unique name")
     return tuple(discovered)
 
 
 def _discover_agent_plugin(directory: Path) -> PluginResources | None:
-    """Validate and classify one manifest-less MCP-plus-skills plugin."""
+    """Prefer the standard manifest; never import its Python or client extensions."""
 
     if directory.is_symlink():
         raise PluginConventionError(
@@ -92,6 +96,15 @@ def _discover_agent_plugin(directory: Path) -> PluginResources | None:
         raise PluginConventionError(
             folder_entry_error(f"unexpected resource in plugins directory: {directory}", directory, kind="plugins")
         )
+    manifest = directory / "plugin.json"
+    if manifest.exists() or manifest.is_symlink():
+        from .agent_plugin_loader import discover_portable_plugin
+        return discover_portable_plugin(directory)
+    return _discover_legacy_plugin(directory)
+
+
+def _discover_legacy_plugin(directory: Path) -> PluginResources | None:
+    """Retain old Python-factory packages without imposing their rules on v1."""
     if not _PLUGIN_NAME.fullmatch(directory.name):
         raise PluginConventionError(
             "plugin directory name may contain only letters, numbers, "

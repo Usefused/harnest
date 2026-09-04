@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
+from .sandbox_policy import SandboxBudget
 from .sandbox_runtime import SandboxExecutionError, validate_backend
 from .sandbox_types import (
-    SandboxBackend, SandboxContext, SandboxFile, SandboxRequest, SandboxResult,
+    SandboxBackend, SandboxContext, SandboxFile, SandboxRequest, SandboxResult, SandboxStatus,
     freeze_sandbox_metadata, validate_timeout,
 )
 
@@ -73,16 +74,17 @@ class Sandbox:
         options: Mapping[str, Any] | None = None,
         metadata: Mapping[str, Any] | None = None,
         max_output_bytes: int = 1_048_576,
+        scope: str = "execution",
+        budget: SandboxBudget | None = None,
+        max_scopes: int = 8,
     ) -> "Sandbox":
-        """Use ADK's native Docker executor through either framework adapter.
+        """Run with explicit filesystem scope and Docker-enforced resource budgets.
 
-        Either ``image`` or ``docker_path`` is required. Networking is denied
-        by default. Harnest does not add per-session filesystem isolation or
-        CPU/memory limits; native provider behavior owns those guarantees.
-        Harnest supplies the native executor dependency. A host-side guard
-        enforces deadlines and bounds combined stdout/stderr before buffering;
-        successful calls stop processes but retain files; aborted executions
-        discard their container before subsequent reuse.
+        Each execution gets a fresh container by default. Invocation/session
+        scopes reuse containers only within the same authenticated identity tuple;
+        least-recently-used containers are removed at max_scopes. All scopes
+        stop background processes and clear scratch files after each call.
+        Docker execution is shared and does not import either framework.
         """
 
         from .sandbox_container import create_container_backend
@@ -92,7 +94,8 @@ class Sandbox:
         provider = create_container_backend(
             image=image, docker_path=docker_path, base_url=base_url,
             network=network, timeout_seconds=timeout_seconds, options=options,
-            max_output_bytes=max_output_bytes,
+            max_output_bytes=max_output_bytes, scope=scope, budget=budget,
+            max_scopes=max_scopes,
         )
 
         def build_container() -> Any:
@@ -125,6 +128,6 @@ class Sandbox:
 
 
 __all__ = [
-    "Sandbox", "SandboxBackend", "SandboxContext", "SandboxExecutionError",
-    "SandboxFile", "SandboxRequest", "SandboxResult",
+    "Sandbox", "SandboxBudget", "SandboxBackend", "SandboxContext", "SandboxExecutionError",
+    "SandboxFile", "SandboxRequest", "SandboxResult", "SandboxStatus",
 ]

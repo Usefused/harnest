@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from harnest.plugins.hatchet import hatchet
+from harnest.extensions.hatchet import hatchet
 from harnest.tool import tool
 
 

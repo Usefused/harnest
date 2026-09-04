@@ -199,6 +199,7 @@ def create_neutral_router(
     request_timeout: float = 300,
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
+    live_enabled: bool = True,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
@@ -206,8 +207,11 @@ def create_neutral_router(
     a2a_task_store: Any | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
-    """Create the one Harnest router shared by every runtime backend."""
+    """Create shared routes and advertise live transport only when enabled."""
 
+    # Embedders must make the same explicit boolean choice as the server config.
+    if not isinstance(live_enabled, bool):
+        raise TypeError("live_enabled must be boolean")
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
@@ -342,7 +346,7 @@ def create_neutral_router(
 
     @router.get("/agent")
     async def agent_info() -> dict[str, Any]:
-        """Describe the portable agent and its enabled transport endpoints."""
+        """Describe enabled endpoints without advertising a disabled live route."""
 
         info = driver.info
         value: dict[str, Any] = {
@@ -363,6 +367,9 @@ def create_neutral_router(
                 **dict(info.extra_endpoints),
             },
         }
+        # Discovery must agree with route availability, including custom driver metadata.
+        if not live_enabled:
+            value["endpoints"].pop("live", None)
         if info.framework is not None:
             value["framework"] = info.framework
         if info.mode is not None:
@@ -766,7 +773,6 @@ def create_neutral_router(
         completed["approvalId"] = pending.id
         return completed
 
-    @router.websocket("/live")
     async def live(websocket: WebSocket) -> None:
         """Serve live frames through the coordinator's shared request contract."""
 
@@ -829,6 +835,10 @@ def create_neutral_router(
         except WebSocketDisconnect:
             pass
 
+    # Do not register a live endpoint unless its transport is enabled.
+    if live_enabled:
+        router.add_api_websocket_route("/live", live)
+
     # Factories capture an unbound invoker during compilation. Bind only after
     # the final wrapped driver and shared continuation stores are available.
     mount_http_route_extensions(router, http_routes, invoke_from_http_route)
@@ -850,6 +860,7 @@ def create_neutral_app(
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     playground_enabled: bool = True,
+    live_enabled: bool = True,
     authenticator: Authenticator | None = None,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
@@ -859,7 +870,7 @@ def create_neutral_app(
     lifecycle_extensions: Sequence[Any] = (),
     playground_eval_service: Any | None = None,
 ) -> Any:
-    """Convenience application for drivers that do not mount native routes."""
+    """Build a neutral app with explicit live policy and compatible embedding defaults."""
 
     try:
         from fastapi import FastAPI
@@ -895,8 +906,10 @@ def create_neutral_app(
     from .playground import create_playground_router
     from .http_lifecycle import install_http_lifecycle
     from .server_limits import install_request_size_limit
+    from .server_transports import install_live_policy
 
     install_request_size_limit(app, max_request_bytes)
+    install_live_policy(app, live_enabled)
     if playground_enabled:
         app.include_router(
             create_playground_router(trace_store, playground_eval_service)
@@ -907,6 +920,7 @@ def create_neutral_app(
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
+            live_enabled=live_enabled,
             approval_store=approval_store,
             client_tool_store=client_tool_store,
             asset_store=asset_store,

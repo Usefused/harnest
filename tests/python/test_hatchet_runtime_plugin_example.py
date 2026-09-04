@@ -18,13 +18,13 @@ from harnest.plugins import (
     activate_runtime_plugins,
     release_runtime_plugins,
 )
-from harnest.runtime_plugins import discover_runtime_plugins
+from harnest.runtime_plugins import discover_application_extensions
 
 
 _SOURCE = (
     Path(__file__).resolve().parents[2]
     / "examples"
-    / "plugins"
+    / "extensions"
     / "hatchet"
 )
 
@@ -477,12 +477,12 @@ class _ActivePluginFixture:
         """Activate and bind the real public singleton for one isolated test."""
 
         self.temporary = tempfile.TemporaryDirectory()
-        root = Path(self.temporary.name) / "plugins"
+        root = Path(self.temporary.name) / "extensions"
         shutil.copytree(_SOURCE, root / "hatchet")
-        self.descriptors = discover_runtime_plugins(root)
+        self.descriptors = discover_application_extensions(root.parent)
         activated = activate_runtime_plugins(self.descriptors)
         module = activated[0].module
-        self.plugin = module.plugin
+        self.plugin = module.extension
         await self.plugin.start(
             SimpleNamespace(
                 continuations=self.provider,

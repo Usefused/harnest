@@ -16,7 +16,8 @@ from typing import Any, Iterable
 
 import yaml
 
-from .server_config import DEFAULT_SERVER_YAML
+from .server_config import ServerConfigError, project_server_config_yaml
+from .application_layout import ApplicationLayoutError, lifecycle_directory
 
 
 PROJECT_SCHEMA = 3
@@ -123,12 +124,15 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     framework = _framework(root / "config.yaml")
     actions: list[UpgradeAction] = []
     blockers: list[str] = []
-    _plan_server(root, actions, blockers)
+    _plan_server(root, blockers)
     _plan_project_lock(root, actions, blockers)
     _plan_dependencies(root, framework, actions, blockers)
     _plan_mcp(root, actions, blockers)
     _plan_extensions(root, framework, actions, blockers)
     _plan_storage(root, actions, blockers)
+    from .upgrade_layout import plan_application_layout
+
+    plan_application_layout(root, actions, blockers)
     return UpgradePlan(
         root,
         framework,
@@ -175,6 +179,7 @@ def apply_upgrade(plan: UpgradePlan) -> Path | None:
     for action in plan.actions:
         _verify_action_source(plan.root, action)
     backup = plan.root / ".harnest" / "upgrade-backups" / uuid.uuid4().hex
+    _verify_contained_target(plan.root, backup)
     backup.mkdir(parents=True, exist_ok=False)
     (backup / "plan.json").write_text(
         json.dumps(plan.public(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -213,22 +218,13 @@ def _framework(path: Path) -> str:
     return framework
 
 
-def _plan_server(
-    root: Path, actions: list[UpgradeAction], blockers: list[str]
-) -> None:
-    path = root / "server.yaml"
-    if path.is_symlink() or path.exists() and not path.is_file():
-        blockers.append("server.yaml must be a regular file")
-        return
-    if not path.exists():
-        actions.append(
-            UpgradeAction(
-                "create",
-                "server.yaml",
-                "add standalone HTTP, streaming, live, limits, and playground policy",
-                content=DEFAULT_SERVER_YAML,
-            )
-        )
+def _plan_server(root: Path, blockers: list[str]) -> None:
+    """Validate existing policy without generating a redundant defaults file."""
+
+    try:
+        project_server_config_yaml(root)
+    except ServerConfigError as exc:
+        blockers.append(str(exc))
 
 
 def _plan_project_lock(
@@ -276,10 +272,19 @@ def _plan_project_schema(
             _rewrite(
                 root,
                 path,
-                PROJECT_LOCK,
+                _upgraded_project_lock(path),
                 f"advance the project schema from {schema} to {PROJECT_SCHEMA}",
             )
         )
+
+
+def _upgraded_project_lock(path: Path) -> str:
+    """Advance layout metadata without silently unpinning a resolved framework."""
+    from .project_lock import read_project_lock
+
+    value = read_project_lock(path.parent)
+    value["projectSchema"] = PROJECT_SCHEMA
+    return yaml.safe_dump(value, sort_keys=False)
 
 
 def _project_lock_values(path: Path) -> tuple[Any, Any, Any]:
@@ -554,7 +559,13 @@ def _plan_extensions(
     actions: list[UpgradeAction],
     blockers: list[str],
 ) -> None:
-    directory = root / "extensions"
+    """Upgrade legacy decorators in the selected root without scanning packages."""
+
+    try:
+        directory = lifecycle_directory(root)
+    except ApplicationLayoutError as error:
+        blockers.append(str(error))
+        return
     if not directory.exists():
         return
     if directory.is_symlink() or not directory.is_dir():
@@ -599,7 +610,7 @@ def _plan_storage(
             ),
             UpgradeAction(
                 "create",
-                "extensions/storage.py",
+                f"{lifecycle_directory(root).name}/storage.py",
                 "declare the required session-store and checkpointer factories",
                 content=_STORAGE_EXTENSION,
             ),
@@ -612,12 +623,29 @@ def _storage_factories(
 ) -> dict[str, list[str]] | None:
     """Inspect lifecycle ownership without executing authored extension code."""
 
-    directory = root / "extensions"
-    found = {"session_store": [], "checkpointer": []}
-    if not directory.exists():
-        return found
-    if directory.is_symlink() or not directory.is_dir():
+    from .runtime_plugins import discover_application_extensions, RuntimePluginConventionError
+
+    try:
+        directories = (lifecycle_directory(root), *(
+            item.lifecycle_directory for item in discover_application_extensions(root)
+        ))
+    except (ApplicationLayoutError, RuntimePluginConventionError) as error:
+        blockers.append(str(error))
         return None
+    found = {"session_store": [], "checkpointer": []}
+    for directory in directories:
+        if not _collect_storage_factories(root, directory, found, blockers):
+            return None
+    return found
+
+
+def _collect_storage_factories(root: Path, directory: Path, found: dict, blockers: list[str]) -> bool:
+    """Include extension-owned storage before deciding to generate default factories."""
+
+    if not directory.exists():
+        return True
+    if directory.is_symlink() or not directory.is_dir():
+        return False
     for path in sorted(directory.rglob("*.py")):
         if _ignored(path.relative_to(directory).parts) or path.is_symlink():
             continue
@@ -625,10 +653,10 @@ def _storage_factories(
             _, module = _python_source(path)
         except UpgradeError as exc:
             blockers.append(str(exc))
-            return None
+            return False
         for phase, line in _module_storage_factories(module):
             found[phase].append(f"{_relative(root, path)}:{line}")
-    return found
+    return True
 
 
 def _module_storage_factories(module: ast.Module) -> tuple[tuple[str, int], ...]:
@@ -640,12 +668,22 @@ def _module_storage_factories(module: ast.Module) -> tuple[tuple[str, int], ...]
             continue
         for decorator in item.decorator_list:
             value = decorator.func if isinstance(decorator, ast.Call) else decorator
-            if isinstance(value, ast.Attribute) and value.attr in {
-                "session_store",
-                "checkpointer",
-            }:
-                found.append((value.attr, item.lineno))
+            phase = _storage_decorator_phase(value)
+            if phase is not None:
+                found.append((phase, item.lineno))
     return tuple(found)
+
+
+def _storage_decorator_phase(value: ast.AST) -> str | None:
+    """Normalize both public storage decorator spellings without evaluating code."""
+
+    if not isinstance(value, ast.Attribute):
+        return None
+    if value.attr in {"session_store", "checkpointer"}:
+        return value.attr
+    if isinstance(value.value, ast.Attribute) and value.value.attr == "storage":
+        return {"sessions": "session_store", "checkpoints": "checkpointer"}.get(value.attr)
+    return None
 
 
 def _block_duplicate_storage(
@@ -667,7 +705,7 @@ def _storage_targets_conflict(root: Path, blockers: list[str]) -> bool:
 
     conflicts = [
         relative
-        for relative in ("lib/storage.py", "extensions/storage.py")
+        for relative in ("lib/storage.py", f"{lifecycle_directory(root).name}/storage.py")
         if (root / relative).exists() or (root / relative).is_symlink()
     ]
     if conflicts:
@@ -676,7 +714,7 @@ def _storage_targets_conflict(root: Path, blockers: list[str]) -> bool:
             + ", ".join(conflicts)
         )
     invalid_directories = []
-    for relative in ("lib", "extensions"):
+    for relative in ("lib", lifecycle_directory(root).name):
         path = root / relative
         if path.exists() and (path.is_symlink() or not path.is_dir()):
             invalid_directories.append(relative)
@@ -899,7 +937,11 @@ def _rewrite(root: Path, path: Path, content: str, detail: str) -> UpgradeAction
 
 
 def _action_order(action: UpgradeAction) -> tuple[int, str]:
-    return {"rewrite": 0, "create": 1, "move": 2, "delete": 3}.get(action.kind, 9), action.path
+    """Move child files first, then vacate the old lifecycle root for packages."""
+
+    rank = {"rewrite": 0, "create": 1, "move": 2, "delete": 3,
+            "relocate_lifecycle": 4, "relocate_extension": 5}
+    return rank.get(action.kind, 9), action.path
 
 
 def _render_actions(actions: tuple[UpgradeAction, ...]) -> list[str]:
@@ -919,7 +961,11 @@ def _render_blockers(blockers: tuple[str, ...]) -> list[str]:
 
 
 def _verify_action_source(root: Path, action: UpgradeAction) -> None:
+    """Fail stale sources and newly occupied destinations before any mutation."""
+
     target = root / action.path
+    _verify_contained_target(root, target)
+    _verify_action_destination(root, action)
     if action.kind == "create" and (target.exists() or target.is_symlink()):
         raise UpgradeError(f"upgrade source changed after planning: {action.path}")
     if action.digest is None:
@@ -927,6 +973,31 @@ def _verify_action_source(root: Path, action: UpgradeAction) -> None:
     actual = _tree_digest(target) if target.is_dir() else _file_digest(target)
     if actual != action.digest:
         raise UpgradeError(f"upgrade source changed after planning: {action.path}")
+
+
+def _verify_action_destination(root: Path, action: UpgradeAction) -> None:
+    """Fail occupied move destinations before creating backups or rewriting sources."""
+
+    if action.destination is not None:
+        destination = root / action.destination
+        _verify_contained_target(root, destination)
+        # Package destinations can currently be children of the legacy lifecycle
+        # tree, which is moved away first. All other destinations must stay absent.
+        vacated = action.kind == "relocate_extension" and lifecycle_directory(root) == root / "extensions"
+        if not vacated and (destination.exists() or destination.is_symlink()):
+            raise UpgradeError(f"upgrade destination changed after planning: {action.destination}")
+
+
+def _verify_contained_target(root: Path, target: Path) -> None:
+    """Reject parent-link swaps and path escapes before any upgrade writes."""
+
+    if not target.is_relative_to(root) or ".." in target.relative_to(root).parts:
+        raise UpgradeError(f"upgrade target escapes the project: {target}")
+    current = target
+    while current != root.parent:
+        if current.is_symlink():
+            raise UpgradeError(f"upgrade target contains a symlink: {current}")
+        current = current.parent
 
 
 def _backup_action(root: Path, backup: Path, action: UpgradeAction) -> None:
@@ -944,13 +1015,14 @@ def _backup_action(root: Path, backup: Path, action: UpgradeAction) -> None:
 
 
 def _apply_action(root: Path, action: UpgradeAction) -> None:
+    """Apply one verified change in lifecycle-before-package migration order."""
     source = root / action.path
     if action.kind in {"create", "rewrite"}:
         if action.content is None:
             raise UpgradeError(f"upgrade action has no content: {action.path}")
         _atomic_write(source, action.content)
         return
-    if action.kind == "move" and action.destination is not None:
+    if action.kind in {"move", "relocate_lifecycle", "relocate_extension"} and action.destination is not None:
         destination = root / action.destination
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)

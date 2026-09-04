@@ -2,8 +2,8 @@
 
 ## Source locations
 
-- `extensions/authentication.py`: ordered `@lifecycle.authenticate` listeners.
-- `extensions/credentials.py`: the optional root provider factory.
+- `lifecycle/authentication.py`: ordered `@lifecycle.authenticate` listeners.
+- `lifecycle/credentials.py`: the optional root provider factory.
 - `lib/`: verification, exchange, and outbound client implementation.
 - `tools/`: fixed-purpose model capabilities that call trusted library code.
 - `docs/authentication.md`: canonical public behavior and examples.

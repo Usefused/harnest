@@ -62,7 +62,6 @@ class AgentDefinition:
         default_factory=tuple
     )
     mcp: Sequence[MCPClient] = field(default_factory=tuple)
-    sandbox: Sandbox | Any | None = None
     input_schema: PydanticModel | None = None
     output_key: str | None = None
     output_schema: PydanticModel | None = None
@@ -147,8 +146,6 @@ class AgentDefinition:
             validate_sandbox_name(name)
         if len(names) != len(set(names)):
             raise ValueError("agent sandboxes must not contain duplicate names")
-        if self.sandbox is not None and names:
-            raise ValueError("use either agent sandbox= or sandboxes=[...], not both")
         if not isinstance(self._sandbox_bindings, Mapping):
             raise TypeError("resolved sandbox bindings must be a mapping")
         if any(not isinstance(value, Sandbox) for value in self._sandbox_bindings.values()):
@@ -178,14 +175,9 @@ class AgentDefinition:
             ) from exc
 
         kwargs = self._build_kwargs()
-        from .sandbox_adk import sandbox_agent_type
-
-        # Scope ADK's consumed-code STOP compatibility to sandbox agents;
-        # ordinary agents and advanced native instances retain their own flow.
-        native_type = sandbox_agent_type(LlmAgent) if self.sandbox is not None else LlmAgent
         from .agent_scope_adk import managed_adk_agent_type
 
-        native_type = managed_adk_agent_type(native_type)
+        native_type = managed_adk_agent_type(LlmAgent)
         built = native_type(**kwargs)
         propagate_litellm_lifecycles(kwargs["model"], built)
         propagate_mcp_lifecycles(kwargs["tools"], built)
@@ -225,12 +217,6 @@ class AgentDefinition:
         if self.output_key is not None:
             kwargs["output_key"] = self.output_key
         kwargs.update(self._schema_kwargs())
-        if self.sandbox is not None:
-            kwargs["code_executor"] = (
-                self.sandbox.to_adk_executor()
-                if isinstance(self.sandbox, Sandbox)
-                else self.sandbox
-            )
         if self.generate_content_config is not None:
             kwargs["generate_content_config"] = self._content_config()
         return kwargs

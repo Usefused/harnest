@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
+from enum import Enum
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,16 @@ class SandboxRequest:
         object.__setattr__(self, "metadata", freeze_sandbox_metadata(self.metadata))
 
 
+class SandboxStatus(str, Enum):
+    """Provider-reported outcome; stderr alone does not mean execution failed."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    OUTPUT_LIMIT_EXCEEDED = "output_limit_exceeded"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxResult:
     """Return execution output without coupling providers to ADK or LangChain."""
@@ -76,8 +87,16 @@ class SandboxResult:
     output_files: tuple[SandboxFile, ...] = field(default=(), repr=False)
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
+    status: SandboxStatus = SandboxStatus.SUCCEEDED
+    exit_code: int | None = None
+
     def __post_init__(self) -> None:
         """Validate results before exposing them to the model's native loop."""
+        object.__setattr__(self, "status", SandboxStatus(self.status))
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise TypeError("sandbox exit_code must be an integer or None")
+        if self.exit_code not in (None, 0) and self.status == SandboxStatus.SUCCEEDED:
+            raise ValueError("a nonzero exit_code cannot have succeeded status")
         if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
             raise TypeError("sandbox stdout and stderr must be text")
         object.__setattr__(self, "output_files", _files(self.output_files))

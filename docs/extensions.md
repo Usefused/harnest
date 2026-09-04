@@ -1,12 +1,12 @@
-# Runtime extensions
+# Lifecycle hooks and factories
 
-Root `extensions/**/*.py` files add application lifecycle behavior without
+Root `lifecycle/**/*.py` files add application lifecycle behavior without
 adding tools, agents, MCP clients, or skills. Files and nested directories may
 have any valid public Python name. Harnest ignores ordinary helper functions and
 discovers only functions decorated through `harnest.lifecycle`.
 
 Every agent declares one session-store and one checkpointer factory. `harnest
-init` keeps both in `extensions/storage.py` and returns the shared development
+init` keeps both in `lifecycle/storage.py` and returns the shared development
 store from `lib/storage.py`:
 
 ```python
@@ -92,7 +92,7 @@ A team that intentionally presents pre-tool subagent narration can opt in with
 one optional root factory:
 
 ```python
-# extensions/output.py
+# lifecycle/output.py
 from harnest.lifecycle import lifecycle
 from harnest.output import OutputPolicy
 
@@ -121,7 +121,7 @@ Use one repeatable runtime factory per telemetry destination. Supplying
 `traces`, `logs`, or both selects the signals sent to that destination:
 
 ```python
-# extensions/telemetry.py
+# lifecycle/telemetry.py
 import os
 
 from harnest import TelemetryExporter, lifecycle
@@ -151,7 +151,7 @@ subagents run use the same destinations; nested agents cannot declare another
 exporter set.
 
 ```python
-# extensions/history.py
+# lifecycle/history.py
 from harnest.lifecycle import lifecycle
 
 
@@ -203,7 +203,7 @@ startup and reverse-order shutdown. Lifecycle ownership alone does not publish
 the entered value; `@context` makes that exposure explicit:
 
 ```python
-# extensions/memory.py
+# lifecycle/memory.py
 import os
 
 from google.cloud import bigquery

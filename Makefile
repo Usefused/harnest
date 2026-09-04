@@ -29,10 +29,12 @@ vet:
 
 schemas:
 	$(PYTHON) -m json.tool schemas/config.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/project-lock.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/agent-card.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/deployment-plan.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/plugin.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/extension.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/eval-run-result.schema.json >/dev/null
 
 plan:

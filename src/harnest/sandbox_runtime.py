@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .logging import get_logger
 from .sandbox_control import SandboxCancelledError, execution_control
-from .sandbox_types import SandboxBackend
+from .sandbox_types import SandboxBackend, SandboxStatus
 
 
 _AUDIT = get_logger("harnest.audit")
@@ -17,6 +17,11 @@ _AUDIT = get_logger("harnest.audit")
 
 class SandboxExecutionError(RuntimeError):
     """A provider failed without exposing its private exception payload."""
+
+    def __init__(self, message: str, *, status: SandboxStatus = SandboxStatus.FAILED) -> None:
+        """Expose a bounded machine-readable outcome alongside a sanitized message."""
+        super().__init__(message)
+        self.status = status
 
 
 class SandboxProviderContractError(TypeError):
@@ -96,8 +101,8 @@ class SandboxRuntime:
             self._audit("failure")
             raise SandboxExecutionError(
                 "portable sandbox providers must implement SandboxBackend.execute "
-                "and return SandboxResult; native ADK executors require the "
-                "legacy Agent(sandbox=...) path, not named sandbox capabilities"
+                "and return SandboxResult; named sandbox capabilities do not "
+                "accept native ADK executors"
             ) from None
         except SandboxInputFilesUnsupportedError:
             self._audit("failure")
@@ -111,9 +116,10 @@ class SandboxRuntime:
             # Explicit build() remains available for trusted configuration checks.
             raise SandboxExecutionError(
                 f"sandbox execution failed ({type(error).__name__}); "
-                "check provider configuration and its execution contract"
+                "check provider configuration and its execution contract",
+                status=SandboxStatus.TIMED_OUT if isinstance(error, TimeoutError) else SandboxStatus.FAILED,
             ) from None
-        self._audit("failure" if getattr(result, "stderr", "") else "success")
+        self._audit("success" if getattr(result, "status", SandboxStatus.SUCCEEDED) == SandboxStatus.SUCCEEDED else "failure")
         return result
 
     def _audit(self, outcome: str) -> None:

@@ -216,6 +216,12 @@ class _ContextAccess:
         return mcp
 
     @property
+    def extensions(self) -> Any:
+        """Resolve typed Harnest Extension context within a managed invocation."""
+
+        return self.plugins
+
+    @property
     def plugins(self) -> Any:
         """Return non-enumerable same-process plugin capabilities."""
 

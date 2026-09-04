@@ -30,7 +30,7 @@ _SIZE_MULTIPLIERS = {
 
 
 class ServerConfigError(ValueError):
-    """A server.yaml file is unsafe or does not match the public contract."""
+    """Server settings are unsafe or do not match the public contract."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +57,7 @@ class ServerConfig:
     http: HTTPServerConfig = HTTPServerConfig()
     limits: ServerLimits = ServerLimits()
     playground: PlaygroundConfig = PlaygroundConfig()
+    live: bool = False
 
     def with_overrides(
         self,
@@ -91,6 +92,7 @@ class ServerConfig:
 DEFAULT_SERVER_CONFIG = ServerConfig()
 DEFAULT_SERVER_YAML = """apiVersion: harnest.dev/v1alpha1
 kind: Server
+live: false
 http:
   host: 127.0.0.1
   port: 8080
@@ -109,13 +111,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 
 def _construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict[Any, Any]:
+    """Reject ambiguous keys in both project and legacy server documents."""
+
     seen: set[Any] = set()
     for key_node, _value_node in node.value:
         key = loader.construct_object(key_node, deep=False)
+        # Restrict keys before set membership so complex YAML keys fail cleanly.
         if not isinstance(key, str):
-            raise ServerConfigError("server.yaml mapping keys must be strings")
+            raise ServerConfigError("configuration mapping keys must be strings")
+        # Never let YAML silently choose the last security-sensitive setting.
         if key in seen:
-            raise ServerConfigError(f"duplicate server.yaml key: {key}")
+            raise ServerConfigError(f"duplicate configuration key: {key}")
         seen.add(key)
     return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
 
@@ -150,12 +156,66 @@ def _load_server_config(
     """Read once so compilation and startup share parsing and validation."""
 
     config_path = Path(path)
-    contents = _read_config(config_path)
+    return _decode_config(_read_yaml(config_path), config_path, environment)
+
+
+def _read_yaml(path: Path, *, max_bytes: int | None = _MAX_CONFIG_BYTES) -> Any:
+    """Read regular YAML with the owning document's size and key policy."""
+
+    contents = _read_config(path, max_bytes=max_bytes)
     try:
-        value = yaml.load(contents, Loader=_UniqueKeyLoader)
+        return yaml.load(contents, Loader=_UniqueKeyLoader)
     except (ServerConfigError, yaml.YAMLError) as exc:
-        raise ServerConfigError(f"invalid {config_path}: {exc}") from exc
-    return _decode_config(value, config_path, environment)
+        raise ServerConfigError(f"invalid {path}: {exc}") from exc
+
+
+def project_server_config_yaml(directory: str | Path) -> str:
+    """Validate one authored server source and preserve startup-only references."""
+
+    root = Path(directory)
+    project = root / "config.yaml"
+    legacy = root / SERVER_CONFIG_FILENAME
+    # Direct Python compilation may have no deployment config; it still gets defaults.
+    if project.exists() or project.is_symlink():
+        # Deployment config historically has no server-file size limit; apply
+        # that limit to the extracted runtime document, not unrelated settings.
+        config = _mapping(_read_yaml(project, max_bytes=None), str(project))
+        # Presence, including an empty section, claims sole ownership of server policy.
+        if "server" in config:
+            if legacy.exists() or legacy.is_symlink():
+                raise ServerConfigError(
+                    "choose config.yaml server or legacy server.yaml, not both; "
+                    "move the legacy settings into server and remove server.yaml"
+                )
+            document = _project_server_document(config["server"])
+            _decode_config(document, project, None)
+            contents = yaml.safe_dump(document, sort_keys=False)
+            # The generated file must fit the same bound enforced at startup.
+            if len(contents.encode("utf-8")) > _MAX_CONFIG_BYTES:
+                raise ServerConfigError(f"server configuration exceeds 64KiB: {project}")
+            return contents
+    # Preserve legacy bytes and their strict versioned contract for existing projects.
+    if legacy.exists() or legacy.is_symlink():
+        validate_server_config_template(legacy)
+        return _read_config(legacy)
+    return DEFAULT_SERVER_YAML
+
+
+def _project_server_document(value: Any) -> dict[str, Any]:
+    """Fill omitted fields without resolving environment values or hiding typos."""
+
+    settings = _mapping(value, "config.yaml server")
+    document = yaml.safe_load(DEFAULT_SERVER_YAML)
+    sections = {"http", "limits", "playground", "live"}
+    _require_keys(dict.fromkeys(sections) | dict(settings), sections, "server")
+    for name, value in settings.items():
+        # Live is a transport switch, while the other sections merge nested defaults.
+        if name == "live":
+            document[name] = value
+            continue
+        overrides = _mapping(value, f"server.{name}")
+        document[name] = document[name] | dict(overrides)
+    return document
 
 
 def materialize_server_config(source: str | Path, destination: str | Path) -> None:
@@ -185,14 +245,18 @@ def validate_max_request_bytes(value: Any) -> int:
     return _byte_size(value, "max_request_bytes")
 
 
-def _read_config(path: Path) -> str:
+def _read_config(path: Path, *, max_bytes: int | None = _MAX_CONFIG_BYTES) -> str:
+    """Require a regular UTF-8 file and enforce the server document size bound."""
+
     try:
         info = path.lstat()
     except OSError as exc:
         raise ServerConfigError(f"read {path}: {exc}") from exc
+    # Never follow authored links or read special files as server policy.
     if not stat.S_ISREG(info.st_mode):
         raise ServerConfigError(f"server configuration must be a regular file: {path}")
-    if info.st_size > _MAX_CONFIG_BYTES:
+    # Project files may be larger; only the extracted server document is bounded.
+    if max_bytes is not None and info.st_size > max_bytes:
         raise ServerConfigError(f"server configuration exceeds 64KiB: {path}")
     try:
         return path.read_text(encoding="utf-8")
@@ -205,8 +269,13 @@ def _decode_config(
     path: Path,
     environment: Mapping[str, str] | None,
 ) -> ServerConfig:
-    root = _mapping(value, "server.yaml")
-    _require_keys(root, {"apiVersion", "kind", "http", "limits", "playground"}, "server.yaml")
+    """Validate current policy while retaining live access for legacy documents."""
+
+    # Older compiled/authored server files exposed WebSockets unconditionally.
+    # New defaults explicitly include live: false and do not take this fallback.
+    root = {"live": True, **_mapping(value, "server.yaml")}
+    _require_keys(root, {"apiVersion", "kind", "http", "limits", "playground", "live"}, "server.yaml")
+    # Reject unrelated document kinds before decoding their settings.
     if root["apiVersion"] != _API_VERSION or root["kind"] != "Server":
         raise ServerConfigError(
             f"{path}: unsupported apiVersion/kind "
@@ -216,6 +285,7 @@ def _decode_config(
         http=_decode_http(root["http"], environment),
         limits=_decode_limits(root["limits"], environment),
         playground=_decode_playground(root["playground"], environment),
+        live=_resolved_boolean(root["live"], "live", environment),
     )
 
 
@@ -536,6 +606,7 @@ __all__ = [
     "format_byte_size",
     "load_server_config",
     "materialize_server_config",
+    "project_server_config_yaml",
     "validate_server_config_template",
     "validate_max_request_bytes",
 ]

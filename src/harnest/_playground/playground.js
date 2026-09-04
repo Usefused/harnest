@@ -77,6 +77,7 @@ const runtime = {
   transport: "stream",
   socket: null,
   liveSessionId: "",
+  liveEnabled: false,
   busy: false,
   streamingBubble: null,
   typingBubble: null,
@@ -438,6 +439,7 @@ function renderOutputItem(item) {
   return false;
 }
 
+/** Load agent identity and enable only its advertised transports. */
 async function loadAgent() {
   const response = await api(endpoints.agent, { method: "GET" });
   const agent = await response.json();
@@ -445,6 +447,20 @@ async function loadAgent() {
   ui.agentDescription.textContent = agent.description || "No description provided.";
   ui.agentFramework.textContent = agent.framework || "custom";
   ui.agentMode.textContent = agent.mode || "managed";
+  configureLiveTransport(agent);
+}
+
+/** Keep the Live control and any existing connection aligned with server discovery. */
+function configureLiveTransport(agent) {
+  runtime.liveEnabled = Boolean(agent.endpoints?.live);
+  const button = document.querySelector('.transport[data-transport="live"]');
+  button.disabled = !runtime.liveEnabled;
+  // Explain disabled availability without offering a connection that cannot succeed.
+  button.title = runtime.liveEnabled ? "" : "Live connections are disabled for this agent";
+  // Reconnecting to an HTTP-only agent must not retain a stale live selection.
+  if (!runtime.liveEnabled && runtime.transport === "live") {
+    selectTransport(document.querySelector('.transport[data-transport="stream"]'));
+  }
 }
 
 /** Switch between conversation and local evaluation without discarding either view. */
@@ -1447,7 +1463,11 @@ async function sendLive(input, sessionId) {
   }));
 }
 
+/** Open a live session only while the current server advertises WebSockets. */
 function ensureLiveSocket(sessionId) {
+  // Discovery can change on reconnect; never reuse a stale live connection.
+  if (!runtime.liveEnabled) return Promise.reject(new Error("Live connections are disabled for this agent"));
+  // Keep a healthy connection when it already belongs to the selected session.
   if (runtime.socket?.readyState === WebSocket.OPEN && runtime.liveSessionId === sessionId) {
     return Promise.resolve(runtime.socket);
   }
@@ -1560,7 +1580,10 @@ function finishFailedRequest(error) {
   showError(error);
 }
 
+/** Select an available transport and retire connections owned by the previous one. */
 function selectTransport(button) {
+  // Disabled controls can also be reached by programmatic selection.
+  if (button.disabled) return;
   runtime.transport = button.dataset.transport;
   button.closest(".segmented").dataset.active = runtime.transport;
   for (const candidate of document.querySelectorAll(".transport")) {
@@ -1569,6 +1592,7 @@ function selectTransport(button) {
     candidate.setAttribute("aria-checked", String(active));
   }
   ui.transportNote.textContent = transportNotes[runtime.transport];
+  // HTTP transports no longer own a WebSocket connection.
   if (runtime.transport !== "live") closeLiveSocket();
   setStatus(`${button.textContent.trim()} mode ready`, "ok");
 }

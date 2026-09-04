@@ -92,7 +92,7 @@ class SandboxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self._root(directory)
             self._write(root / "sandbox" / "_README.md", "Optional sandbox.\n")
-            self.assertIsNone(self._definition(root).sandbox)
+            self.assertFalse(hasattr(self._definition(root), "sandbox"))
 
             self._write(
                 root / "sandbox" / "sandbox.py",
@@ -100,7 +100,7 @@ class SandboxTests(unittest.TestCase):
                 "sandbox = Sandbox.provider(lambda: None, name='test-provider')\n",
             )
             definition = self._definition(root)
-            self.assertIsNone(definition.sandbox)
+            self.assertFalse(hasattr(definition, "sandbox"))
             self.assertEqual(dict(definition._sandbox_bindings), {})
             self._write(root / "agent.py", "from harnest import Agent\nroot_agent = Agent(name='root', model='test/model', sandboxes=['sandbox'])\n")
             definition = self._definition(root)
@@ -160,9 +160,8 @@ class SandboxTests(unittest.TestCase):
                 "from harnest.sandbox import Sandbox\n"
                 "sandbox = Sandbox.provider(lambda: None)\n",
             )
-            definition = self._definition(root)
-            self.assertIsInstance(definition.sandbox, Sandbox)
-            self.assertEqual(dict(definition._sandbox_bindings), {})
+            with self.assertRaisesRegex(Exception, "unexpected keyword argument.*sandbox"):
+                self._definition(root)
 
 
 if __name__ == "__main__":

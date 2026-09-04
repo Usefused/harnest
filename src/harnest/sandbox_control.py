@@ -14,6 +14,9 @@ from .context import ContextUnavailableError, optional_active_context
 class SandboxCancelledError(RuntimeError):
     """An execution lost its caller or its managed invocation authority."""
 
+    from .sandbox_types import SandboxStatus
+    status = SandboxStatus.CANCELLED
+
 
 class SandboxControl:
     """Keep absolute deadlines and captured authority independent of worker context."""

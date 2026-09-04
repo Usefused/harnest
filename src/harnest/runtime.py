@@ -718,17 +718,21 @@ def create_fastapi_app(
     max_concurrency: int = 8,
     max_request_bytes: int = DEFAULT_SERVER_CONFIG.limits.max_request_bytes,
     playground_enabled: bool = True,
+    live_enabled: bool = True,
     adk_session_storage: ADKSessionStorage | None = None,
     langgraph_session_store: SessionStore | None = None,
     authenticator: Authenticator | None = None,
 ) -> Any:
-    """Build the neutral server and opt advanced ADK agents into native routes."""
+    """Build a server with explicit live policy; embedding keeps its historical default."""
 
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
         raise ValueError("max concurrency must be at least one")
     max_request_bytes = validate_max_request_bytes(max_request_bytes)
+    # A transport opt-in must never rely on the truthiness of a string.
+    if not isinstance(live_enabled, bool):
+        raise TypeError("live_enabled must be boolean")
     if not isinstance(playground_enabled, bool):
         raise TypeError("playground_enabled must be boolean")
     application = load_compiled_application(artifact)
@@ -742,6 +746,7 @@ def create_fastapi_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
+            live_enabled=live_enabled,
             adk_session_storage=adk_session_storage,
             langgraph_session_store=langgraph_session_store,
             authenticator=authenticator,
@@ -761,11 +766,12 @@ def _build_fastapi_app(
     max_concurrency: int,
     max_request_bytes: int,
     playground_enabled: bool,
+    live_enabled: bool,
     adk_session_storage: ADKSessionStorage | None,
     langgraph_session_store: SessionStore | None,
     authenticator: Authenticator | None,
 ) -> Any:
-    """Construct the server after its authored library has been acquired."""
+    """Apply the same live transport choice to neutral and native server backends."""
 
     _validate_session_storage_choice(
         application, adk_session_storage, langgraph_session_store
@@ -800,6 +806,7 @@ def _build_fastapi_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
+            live_enabled=live_enabled,
             authenticator=authenticator,
             telemetry_exporter_factories=application.telemetry_exporters,
         )
@@ -833,6 +840,7 @@ def _build_fastapi_app(
             http_routes=application.http_routes,
             lifecycle_extensions=application.extensions,
             playground_enabled=playground_enabled,
+            live_enabled=live_enabled,
             playground_eval_service=eval_service,
             authenticator=authenticator,
             a2a_task_store=_a2a_task_store(application),
@@ -898,13 +906,17 @@ def _build_native_adk_app(
     max_concurrency: int,
     max_request_bytes: int,
     playground_enabled: bool,
+    live_enabled: bool,
     authenticator: Authenticator | None,
     telemetry_exporter_factories: Any,
 ) -> tuple[Any, Any]:
+    """Keep native ADK WebSockets behind the same live policy as neutral routes."""
+
     from .neutral_runtime import create_neutral_router
     from .http_lifecycle import install_http_lifecycle
     from .playground import create_playground_router
     from .server_limits import install_request_size_limit
+    from .server_transports import install_live_policy
     from .telemetry import configure_observability
 
     os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
@@ -946,6 +958,7 @@ def _build_native_adk_app(
         request_timeout=request_timeout,
         max_concurrency=max_concurrency,
         max_request_bytes=max_request_bytes,
+        live_enabled=live_enabled,
         asset_store=application.asset_store,
         asset_stores=application.asset_stores,
         a2a_task_store=_a2a_task_store(application),
@@ -957,6 +970,7 @@ def _build_native_adk_app(
     install_http_lifecycle(app, application.extensions)
     install_authentication(app, authenticator)
     install_request_size_limit(app, max_request_bytes)
+    install_live_policy(app, live_enabled)
     telemetry = configure_observability(
         application.name,
         framework=application.framework,
@@ -1091,7 +1105,7 @@ def _runtime_parser() -> argparse.ArgumentParser:
 
 
 def _load_server(args: Any) -> tuple[Any, Any]:
-    """Resolve authored server policy and construct its runtime application."""
+    """Resolve server defaults and transport opt-ins before constructing the app."""
 
     server = load_server_config(args.artifact / SERVER_CONFIG_FILENAME)
     server = server.with_overrides(
@@ -1113,6 +1127,7 @@ def _load_server(args: Any) -> tuple[Any, Any]:
         max_concurrency=http.max_concurrent_requests,
         max_request_bytes=server.limits.max_request_bytes,
         playground_enabled=server.playground.enabled,
+        live_enabled=server.live,
     )
     return application, http
 

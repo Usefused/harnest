@@ -1,0 +1,59 @@
+name: Framework compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+        resolution: [locked, minimum, latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Resolve supported framework dependencies
+        env:
+          RESOLUTION: ${{ matrix.resolution }}
+        run: |
+          case "$RESOLUTION" in
+            locked) python -m pip install '.[all,quality]' -c requirements/frameworks.txt ;;
+            minimum) python -m pip install '.[all,quality]' -c requirements/frameworks-minimum.txt ;;
+            latest) python -m pip install --upgrade '.[all,quality]' ;;
+          esac
+          python -m pip check
+          python -m pip freeze
+      - name: Test both framework contracts without model calls
+        run: >-
+          python -m pytest -q
+          tests/python/test_compatibility.py
+          tests/python/test_project_lock.py
+          tests/python/test_frameworks.py
+          tests/python/test_named_sandbox_frameworks.py
+          tests/python/test_named_sandbox_runtime.py
+          tests/python/test_sandbox_frameworks.py
+          tests/python/test_sandbox_container.py
+          tests/python/test_sandbox_guard.py
+          tests/python/test_sandbox_control.py
+          tests/python/test_eval_langgraph.py
+          tests/python/test_eval_adk_context.py
+          tests/python/test_eval_adk_context_edges.py
+          tests/python/test_eval_transport_entrypoints.py
+      - name: Prepare real Docker isolation checks
+        run: docker pull python:3.12-slim
+      - name: Verify actual container limits and cleanup
+        env:
+          HARNEST_TEST_DOCKER: '1'
+        run: python -m pytest -q tests/python/test_sandbox_docker_integration.py

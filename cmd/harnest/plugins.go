@@ -21,8 +21,9 @@ import (
 
 const (
 	pypiPluginPrefix          = "harnest-plugin-"
+	pypiExtensionPrefix       = "harnest-extension-"
 	pypiSimpleJSONMediaType   = "application/vnd.pypi.simple.v1+json"
-	pluginCatalogCacheVersion = 1
+	pluginCatalogCacheVersion = 2
 	pluginCatalogTTL          = 10 * time.Minute
 	maxPluginCatalogBytes     = 64 * 1024 * 1024
 	maxPluginMetadataBytes    = 2 * 1024 * 1024
@@ -56,9 +57,16 @@ type pypiProjectMetadata struct {
 // newPluginsCommand exposes discovery without making Harnest a package registry.
 func (a *application) newPluginsCommand() *cobra.Command {
 	command := &cobra.Command{
-		Use:   "plugins",
-		Short: "Discover Harnest plugins published on PyPI",
-		Long: `Discover plugins published as ordinary packages on public PyPI.
+		Use:     "extensions",
+		Aliases: []string{"plugins"},
+		Short:   "Discover Harnest Extensions published on PyPI",
+		Long: `Discover Harnest Extensions on public PyPI without importing package code.
+
+Publish harnest-extension-* packages with one harnest.extensions entry point,
+such as "postgres = harnest_extension_postgres.extension:extension", and include
+extension.yaml plus extension.py. The plugins command remains an alias, and
+the legacy distribution contract below is still supported. Search does not
+install packages or convert their layouts. Use harnest upgrade to migrate.
 
 The harnest-plugin-* name is only a candidate namespace. Search results must
 also contain one harnest.plugins entry point and its plugin.yaml/plugin.py
@@ -83,7 +91,7 @@ func (a *application) newPluginSearchCommand() *cobra.Command {
 	var jsonOutput bool
 	command := &cobra.Command{
 		Use:   "search [QUERY]",
-		Short: "Search harnest-plugin-* packages on PyPI",
+		Short: "Search Harnest Extension packages on PyPI",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if limit < 1 || limit > 50 {
@@ -273,9 +281,7 @@ func decodePyPIProjectArray(decoder *json.Decoder) ([]string, error) {
 		if err := decoder.Decode(&project); err != nil {
 			return nil, err
 		}
-		if validPyPIProjectName(project.Name) && strings.HasPrefix(
-			normalizeProjectName(project.Name), pypiPluginPrefix,
-		) {
+		if validPyPIProjectName(project.Name) && isExtensionProject(project.Name) {
 			projects = append(projects, project.Name)
 		}
 	}
@@ -307,7 +313,7 @@ func matchingPluginProjects(projects []string, query string, limit int) []string
 	}
 	ranked := []rankedProject{}
 	for _, project := range projects {
-		slug := strings.TrimPrefix(normalizeProjectName(project), pypiPluginPrefix)
+		slug := extensionProjectSlug(project)
 		rank, matches := pluginProjectRank(slug, normalizedQuery)
 		if matches {
 			ranked = append(ranked, rankedProject{name: project, rank: rank})
@@ -362,7 +368,7 @@ func normalizeProjectName(value string) string {
 
 func normalizePluginQuery(value string) string {
 	joined := strings.Join(strings.Fields(value), "-")
-	return strings.TrimPrefix(normalizeProjectName(joined), pypiPluginPrefix)
+	return extensionProjectSlug(joined)
 }
 
 // validPyPIProjectName rejects cache or response text that is unsafe to render.
@@ -482,7 +488,7 @@ func validPluginCatalogCache(cached pluginCatalogCache) bool {
 	previous := ""
 	for _, project := range cached.Projects {
 		normalized := normalizeProjectName(project)
-		if !validPyPIProjectName(project) || !strings.HasPrefix(normalized, pypiPluginPrefix) || normalized <= previous {
+		if !validPyPIProjectName(project) || !isExtensionProject(normalized) || normalized <= previous {
 			return false
 		}
 		previous = normalized

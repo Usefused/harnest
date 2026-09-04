@@ -1,14 +1,17 @@
-"""Portable access to ADK's native Docker execution and lifecycle policy."""
+"""Identity-scoped Docker execution shared by ADK and LangGraph."""
 
 from __future__ import annotations
 
 import copy
+from collections import OrderedDict
 import threading
 from typing import Any, Mapping
 
 from .sandbox_control import execution_control
+from .sandbox_policy import SandboxBudget, scope_key, validate_scope
 from .sandbox_runtime import SandboxInputFilesUnsupportedError
-from .sandbox_guard import close_guarded_executor, create_guarded_executor, guard_failed
+from .sandbox_guard import close_guarded_executor, guard_failed
+from .sandbox_docker import create_docker_executor
 from .sandbox_types import SandboxRequest, SandboxResult, validate_timeout
 
 
@@ -35,8 +38,26 @@ def create_container_backend(
     base_url: str | None = None, network: bool = False,
     timeout_seconds: int = 300, options: Mapping[str, Any] | None = None,
     max_output_bytes: int = 1_048_576,
+    scope: str = "execution", budget: SandboxBudget | None = None, max_scopes: int = 8,
 ) -> ContainerSandboxBackend:
-    """Validate configuration without contacting Docker or constructing its executor."""
+    """Validate identity scopes and hard budgets without contacting Docker."""
+    _validate_container_settings(image, docker_path, base_url, network, timeout_seconds, max_output_bytes)
+    validate_scope(scope, max_scopes)
+    budget = SandboxBudget() if budget is None else budget
+    if not isinstance(budget, SandboxBudget):
+        raise TypeError("sandbox budget must be SandboxBudget")
+    config = _validate_options(options)
+    config.update(
+        image=image, docker_path=docker_path, base_url=base_url,
+        network_enabled=network, timeout_seconds=timeout_seconds,
+        harnest_resource_limits=budget.docker_options(),
+    )
+    return ContainerSandboxBackend(config, max_output_bytes, scope=scope, max_scopes=max_scopes)
+
+
+def _validate_container_settings(image: Any, docker_path: Any, base_url: Any,
+                                 network: Any, timeout_seconds: Any, max_output_bytes: Any) -> None:
+    """Keep provider policy validation separate from acquiring Docker resources."""
     validate_timeout(timeout_seconds)
     if timeout_seconds is None:
         raise ValueError("container sandbox timeout_seconds must be a positive integer")
@@ -49,62 +70,84 @@ def create_container_backend(
         raise TypeError("container sandbox network must be a boolean")
     if type(max_output_bytes) is not int or max_output_bytes <= 0:
         raise ValueError("container sandbox max_output_bytes must be a positive integer")
-    config = _validate_options(options)
-    config.update(
-        image=image, docker_path=docker_path, base_url=base_url,
-        network_enabled=network, timeout_seconds=timeout_seconds,
-    )
-    return ContainerSandboxBackend(config, max_output_bytes)
 
 
 class ContainerSandboxBackend:
-    """Reuse one native executor whose Docker lifecycle remains framework-owned.
+    """Own bounded, identity-scoped containers behind the portable Docker provider.
 
-    Harnest does not add per-session filesystem isolation or CPU/memory limits.
-    Native ADK owns execution and networking; the host-side transport guard
-    enforces output/deadline bounds and cleans up aborted or failed starts.
+    The default execution scope never retains files between calls. Retained
+    scopes are a bounded LRU cache, not durable session storage.
     """
 
-    def __init__(self, config: dict[str, Any], max_output_bytes: int = 1_048_576) -> None:
-        """Snapshot provider options and defer native construction until execution."""
+    def __init__(self, config: dict[str, Any], max_output_bytes: int = 1_048_576, *,
+                 scope: str = "execution", max_scopes: int = 8) -> None:
+        """Snapshot provider options and defer Docker construction until execution."""
         self._config = copy.deepcopy(config)
         self._executor: Any = None
         self._lock = threading.Lock()
         self._max_output_bytes = max_output_bytes
         self._closed = False
+        self._scope, self._max_scopes = scope, max_scopes
+        self._scopes: OrderedDict[tuple[str, ...], Any] = OrderedDict()
 
     def new_backend(self) -> ContainerSandboxBackend:
-        """Copy validated configuration without sharing a native executor across adapters."""
-        return ContainerSandboxBackend(self._config, self._max_output_bytes)
+        """Copy validated policy without sharing container ownership across applications."""
+        return ContainerSandboxBackend(self._config, self._max_output_bytes,
+                                       scope=self._scope, max_scopes=self._max_scopes)
 
     def execute(self, request: SandboxRequest) -> SandboxResult:
-        """Adapt requests while serializing shared native executor configuration."""
+        """Authorize identity-scoped reuse and enforce cancellation-aware admission."""
         if request.input_files:
-            # Native Docker execution ignores these; fail rather than imply
+            # File transfer is unsupported; fail rather than imply
             # that model-supplied files were made available in the container.
             raise SandboxInputFilesUnsupportedError("container sandbox does not support input_files")
+        key = scope_key(self._scope, request.context)
         timeout = min(self._config["timeout_seconds"], request.timeout_seconds or self._config["timeout_seconds"])
-        # Admission is part of the deadline. A revoked/cancelled invocation
-        # must not start merely because an earlier execution released the lock.
         with execution_control(timeout) as control, control.acquire(self._lock):
             if self._closed:
                 raise RuntimeError("container sandbox is closed")
             self._retire_failed_executor()
-            control.check()
-            self._ensure_executor()
-            control.check()
+            self._select_scope(key)
             try:
+                control.check()
+                self._ensure_executor()
+                control.check()
                 return self._execute(request)
             finally:
-                self._retire_failed_executor()
+                self._release_scope(key)
+
+    def _select_scope(self, key: tuple[str, ...] | None) -> None:
+        """Evict only quiescent owned containers before admitting another identity."""
+        if key is not None and key in self._scopes:
+            self._executor = self._scopes.pop(key)
+            return
+        if len(self._scopes) >= self._max_scopes:
+            oldest = next(iter(self._scopes))
+            # Keep the entry if cleanup fails, so ownership is never lost.
+            close_guarded_executor(self._scopes[oldest])
+            del self._scopes[oldest]
+
+    def _release_scope(self, key: tuple[str, ...] | None) -> None:
+        """Never retain default-scope files or recycle an aborted container."""
+        if self._executor is None:
+            return
+        if key is None or guard_failed(self._executor):
+            # A cleanup failure keeps _executor poisoned for the next admission.
+            close_guarded_executor(self._executor)
+        else:
+            self._scopes[key] = self._executor
+        self._executor = None
 
     def close(self) -> None:
-        """Revoke new execution and remove this backend's exact owned container."""
+        """Revoke admission and preserve every failed cleanup handle for retry."""
         with self._lock:
             self._closed = True
             if self._executor is not None:
                 close_guarded_executor(self._executor)
                 self._executor = None
+            for key in tuple(self._scopes):
+                close_guarded_executor(self._scopes[key])
+                del self._scopes[key]
 
     def _ensure_executor(self) -> None:
         """Remember failed-start cleanup ownership until termination is confirmed."""
@@ -124,24 +167,16 @@ class ContainerSandboxBackend:
 
     def _execute(self, request: SandboxRequest) -> SandboxResult:
         """Allow shorter request deadlines without extending the configured maximum."""
-        from google.adk.code_executors.code_execution_utils import CodeExecutionInput
-
         timeout = self._config["timeout_seconds"]
         self._executor.timeout_seconds = min(timeout, request.timeout_seconds or timeout)
         try:
-            result = self._executor.execute_code(
-                None, CodeExecutionInput(code=request.code, execution_id=request.execution_id),
-            )
-            return SandboxResult(stdout=result.stdout, stderr=result.stderr)
+            return self._executor.execute(request)
         finally:
-            # The native executor is shared, so a previous shorter deadline
+            # Retained scope executors are reused, so a previous shorter deadline
             # must not leak into another invocation after success or failure.
             self._executor.timeout_seconds = timeout
 
 
 def _create_executor(config: dict[str, Any], max_output_bytes: int) -> Any:
-    """Use native ADK with bounded host-side transport and failure cleanup."""
-    if config["image"] is None:
-        # A Dockerfile build uses the native executor's default image tag.
-        config.pop("image")
-    return create_guarded_executor(config, max_output_bytes)
+    """Construct the shared Docker provider without importing either framework."""
+    return create_docker_executor(config, max_output_bytes)

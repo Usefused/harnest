@@ -47,13 +47,14 @@ fingerprinted environment below `.harnest/environments/`. It resolves
 `pyproject.toml` and updates `uv.lock`; commit the lock after reviewing it. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. Upgrade Harnest to change framework versions.
-Runtime plugins and agent-plugins use this same interpreter and dependency set;
-do not create plugin-local projects, virtual environments, or lockfiles.
+Harnest Extensions use this same interpreter and dependency set. Agent Plugin
+MCP servers may use separate runtimes; their mutable dependencies and caches
+belong in client-managed `PLUGIN_DATA`, not the immutable plugin source.
 Compile, test, and serve run the same synchronization automatically. In CI, use
 `harnest env sync AGENT_DIR --frozen` before testing to reject a missing or
 stale lock instead of changing it.
 
-Before editing an existing project, inspect `config.yaml`, `server.yaml`,
+Before editing an existing project, inspect `config.yaml`, any legacy `server.yaml`,
 `agent.py`, `instructions.md`, `agent-card.yaml`, and only the resource folders
 relevant to the request. Preserve unrelated user changes. If multiple resources need the
 same ordinary Python implementation, add it once under root `lib/` and import
@@ -194,10 +195,16 @@ small `harnest-agent` launcher. It runs without the external provisioner:
 printf '%s\n' 'Hello' | .harnest/support-agent/harnest-agent run
 ```
 
-The launcher automatically reads adjacent `server.yaml`. Edit the authored file
-before compiling, or replace the adjacent compiled copy and restart. Use it for
+Author optional server overrides under root `server` in `config.yaml`; omit
+unchanged settings. The compiler emits a full `server.yaml` beside the launcher,
+which reads it at startup. Legacy authored `server.yaml` still works, but cannot
+coexist with inline settings. Replace the compiled copy and restart for an
+operator override. Use it for
 host/port, remote-bind consent, timeout, concurrency, request size, and the
-playground toggle. It does not configure authentication, persistent sessions,
+playground toggle. Add `server.live: true` in authored `config.yaml` to enable
+WebSockets on the same listener; new projects otherwise use HTTP/SSE only.
+The playground disables its Live choice when `/agent` does not advertise it.
+It does not configure authentication, persistent sessions,
 TLS, secrets, or deployment resources. The request-size limit covers all HTTP
 bodies and WebSocket frames. Explicit serve flags are temporary overrides.
 
@@ -242,9 +249,9 @@ Before finishing a modification:
 1. Confirm every resource is in the right folder and follows its export-name
    contract.
 2. Confirm nested agents own only their sibling supported resources; parent
-   tools/skills do not leak in. Runtime plugins, agent-plugins, and root
-   extensions are root-only. A manifest-less agent-plugin contains only MCP
-   clients plus skills; a runtime plugin has `plugin.yaml`, `plugin.py`, and
+   tools/skills do not leak in. Harnest Extensions, agent-plugins, and root
+   lifecycle hooks are root-only. An Agent Plugin uses `plugin.json` with optional
+   `mcp.json` and skills; a Harnest Extension has `extension.yaml`, `extension.py`, and
    declared capabilities.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
    resources are not manually registered. Confirm reusable helpers live only in

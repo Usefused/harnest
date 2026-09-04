@@ -90,6 +90,7 @@ def _deterministic_adk_source(*, advanced):
 
 
 def _fake_adk_modules(*, public_mcp_exports=True):
+    """Isolate every supported ADK import path from previously loaded real modules."""
     google = types.ModuleType("google")
     google.__path__ = []
     adk = types.ModuleType("google.adk")
@@ -108,6 +109,8 @@ def _fake_adk_modules(*, public_mcp_exports=True):
     mcp_tool = types.ModuleType("google.adk.tools.mcp_tool")
     mcp_tool.__path__ = []
     mcp_tool.McpToolset = _recording_class("McpToolset")
+    toolset_module = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
+    toolset_module.McpToolset = mcp_tool.McpToolset
     session_manager = types.ModuleType(
         "google.adk.tools.mcp_tool.mcp_session_manager"
     )
@@ -155,6 +158,7 @@ def _fake_adk_modules(*, public_mcp_exports=True):
         "google.adk.models.lite_llm": lite_llm,
         "google.adk.tools": tools_package,
         "google.adk.tools.mcp_tool": mcp_tool,
+        "google.adk.tools.mcp_tool.mcp_toolset": toolset_module,
         "google.adk.tools.mcp_tool.mcp_session_manager": session_manager,
         "google.adk.evaluation": evaluation,
         "google.adk.evaluation.eval_set": eval_set_module,
@@ -959,6 +963,35 @@ class AuthoringTests(unittest.TestCase):
             "harnest-agent",
             [record["path"] for record in first["files"]],
         )
+
+    def test_compile_artifact_materializes_inline_server_settings(self):
+        """Carry authored overrides into runtime policy and hash the single source."""
+        from harnest.server_config import load_server_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            output = Path(directory) / "compiled"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "root_agent = Agent(name='root', model='gemini-test')\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            authored = "server:\n  http:\n    port: ${PORT}\n  playground:\n    enabled: false\n"
+            self._write(root / "config.yaml", authored)
+            with patch.dict(sys.modules, _fake_adk_modules()):
+                manifest = compile_artifact(root, output)
+                repeated = compile_artifact(root, output)
+            server = load_server_config(output / "server.yaml", environment={"PORT": "9094"})
+            self.assertEqual(server.http.port, 9094)
+            self.assertEqual(server.http.max_concurrent_requests, 8)
+            self.assertFalse(server.playground.enabled)
+            self.assertEqual((output / "source/config.yaml").read_text(), authored)
+            self.assertFalse((output / "source/server.yaml").exists())
+            paths = {record["path"] for record in manifest["files"]}
+            self.assertIn("source/config.yaml", paths)
+            self.assertNotIn("server.yaml", paths)
+            self.assertEqual(manifest, repeated)
 
     def test_compile_artifact_binds_explicit_cli_interface(self):
         with tempfile.TemporaryDirectory() as directory:

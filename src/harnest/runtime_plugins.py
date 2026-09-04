@@ -89,13 +89,28 @@ class RuntimePluginDescriptor:
     def source(self) -> Path:
         """Return the validated Python entrypoint without resolving outside the root."""
 
-        return self.directory / "plugin.py"
+        return self.directory / (self.entrypoint.partition(":")[0] + ".py")
 
     @property
     def namespace(self) -> str:
         """Return the controlled public module installed during activation."""
 
-        return f"harnest.plugins.{self.name}"
+        parent = "extensions" if self.entrypoint == "extension:extension" else "plugins"
+        return f"harnest.{parent}.{self.name}"
+
+    @property
+    def lifecycle_directory(self) -> Path:
+        """Keep legacy plugin hooks distinct from canonical extension hooks."""
+
+        name = "lifecycle" if self.entrypoint == "extension:extension" else "extensions"
+        return self.directory / name
+
+    @property
+    def lifecycle_origin(self) -> str:
+        """Preserve provenance for capability checks across both package formats."""
+
+        parent = self.namespace.split(".")[1]
+        return f"{parent}/{self.name}/{self.lifecycle_directory.name}"
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -140,6 +155,30 @@ def discover_runtime_plugins(
         for plugin_directory in _plugin_directories(root)
         if (descriptor := _load_optional_descriptor(plugin_directory)) is not None
     )
+    _validate_casefold_names(descriptors)
+    _validate_dependency_projects(descriptors)
+    return _dependency_order(descriptors)
+
+
+def discover_application_extensions(root: str | Path) -> tuple[RuntimePluginDescriptor, ...]:
+    """Resolve both layouts into one dependency graph before executing any code."""
+
+    from .application_layout import lifecycle_directory
+
+    root = Path(root)
+    lifecycle = lifecycle_directory(root)
+    descriptors = []
+    for folder, canonical in (("plugins", False), ("extensions", True)):
+        directory = root / folder
+        if canonical and lifecycle == directory:
+            continue
+        _require_optional_directory(directory, label=folder)
+        if not directory.exists():
+            continue
+        for child in _plugin_directories(directory):
+            descriptor = _load_optional_descriptor(child, canonical=canonical)
+            if descriptor is not None:
+                descriptors.append(descriptor)
     _validate_casefold_names(descriptors)
     _validate_dependency_projects(descriptors)
     return _dependency_order(descriptors)
@@ -223,22 +262,34 @@ def _plugin_directories(root: Path) -> tuple[Path, ...]:
     return tuple(directories)
 
 
-def _load_optional_descriptor(directory: Path) -> RuntimePluginDescriptor | None:
-    """Load one manifest while leaving manifest-less agent-plugins untouched."""
+def _load_optional_descriptor(
+    directory: Path, *, canonical: bool = False
+) -> RuntimePluginDescriptor | None:
+    """Load explicit extension manifests and preserve legacy agent-plugin discovery."""
 
-    path = directory / "plugin.yaml"
+    # A portable manifest owns this package, even if invalid. Never fall through
+    # to executable legacy content that an unimplemented namespace could carry.
+    portable = directory / "plugin.json"
+    if not canonical and (portable.exists() or portable.is_symlink()):
+        return None
+    path = directory / ("extension.yaml" if canonical else "plugin.yaml")
     if path.is_symlink():
         raise RuntimePluginConventionError(
             f"runtime plugin manifest cannot be a symlink: {path}"
         )
     if not path.exists():
+        if canonical:
+            raise RuntimePluginConventionError(
+                f"Harnest Extension {directory} needs extension.yaml and extension.py. "
+                "Put hook-only Python files in lifecycle/ instead."
+            )
         return None
     if not path.is_file():
         raise RuntimePluginConventionError(
             f"runtime plugin manifest must be a regular file: {path}"
         )
     document = _load_manifest(path)
-    return _descriptor_from_document(directory, document)
+    return _descriptor_from_document(directory, document, canonical=canonical)
 
 
 def _load_manifest(path: Path) -> Mapping[str, Any]:
@@ -270,7 +321,7 @@ def _load_manifest(path: Path) -> Mapping[str, Any]:
 
 
 def _descriptor_from_document(
-    directory: Path, document: Mapping[str, Any]
+    directory: Path, document: Mapping[str, Any], *, canonical: bool = False
 ) -> RuntimePluginDescriptor:
     """Validate the closed manifest schema before hashing executable content."""
 
@@ -280,7 +331,7 @@ def _descriptor_from_document(
         label="runtime plugin manifest",
     )
     _require_literal(document, "apiVersion", _API_VERSION)
-    _require_literal(document, "kind", _KIND)
+    _require_literal(document, "kind", "Extension" if canonical else _KIND)
     metadata = _require_mapping(document.get("metadata"), label="metadata")
     runtime = _require_mapping(document.get("runtime"), label="runtime")
     _reject_unknown(metadata, {"name", "version"}, label="metadata")
@@ -294,13 +345,14 @@ def _descriptor_from_document(
     entrypoint = _require_nonempty_string(
         runtime.get("entrypoint"), label="runtime.entrypoint"
     )
-    if entrypoint != _ENTRYPOINT:
+    expected_entrypoint = "extension:extension" if canonical else _ENTRYPOINT
+    if entrypoint != expected_entrypoint:
         raise RuntimePluginConventionError(
-            f"runtime plugin entrypoint must be {_ENTRYPOINT!r}"
+            f"Harnest Extension entrypoint must be {expected_entrypoint!r}"
         )
-    requires = _parse_requires(document.get("requires"))
+    requires = _parse_requires(document.get("requires"), canonical=canonical)
     capabilities = _parse_capabilities(document.get("capabilities"))
-    _validate_entrypoint(directory)
+    _validate_entrypoint(directory, filename=entrypoint.partition(":")[0] + ".py")
     try:
         project = load_runtime_plugin_project(
             directory, expected_name=name, expected_version=version
@@ -327,16 +379,17 @@ def _validate_dependency_projects(
     validate_runtime_plugin_dependencies(None, descriptors)
 
 
-def _parse_requires(value: Any) -> tuple[str, ...]:
+def _parse_requires(value: Any, *, canonical: bool = False) -> tuple[str, ...]:
     """Validate optional dependency names independently from graph resolution."""
 
     if value is None:
         return ()
     mapping = _require_mapping(value, label="requires")
-    _reject_unknown(mapping, {"plugins"}, label="requires")
-    names = _require_string_list(mapping.get("plugins", []), label="requires.plugins")
+    key = "extensions" if canonical else "plugins"
+    _reject_unknown(mapping, {key}, label="requires")
+    names = _require_string_list(mapping.get(key, []), label=f"requires.{key}")
     validated = tuple(
-        _require_identifier(name, label="requires.plugins") for name in names
+        _require_identifier(name, label=f"requires.{key}") for name in names
     )
     _reject_duplicates(validated, label="runtime plugin dependencies")
     return tuple(sorted(validated))
@@ -355,10 +408,10 @@ def _parse_capabilities(value: Any) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _validate_entrypoint(directory: Path) -> None:
-    """Require a contained regular plugin.py before any namespace activation."""
+def _validate_entrypoint(directory: Path, *, filename: str = "plugin.py") -> None:
+    """Require the format's contained regular entrypoint before activation."""
 
-    source = directory / "plugin.py"
+    source = directory / filename
     if source.is_symlink():
         raise RuntimePluginConventionError(
             f"runtime plugin entrypoint cannot be a symlink: {source}"

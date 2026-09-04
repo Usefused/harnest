@@ -62,7 +62,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&frozen,
 		"frozen",
 		false,
-		"require the existing uv.lock without updating it",
+		"require existing dependency and framework locks without updating them",
 	)
 	return command
 }
@@ -161,6 +161,7 @@ func ensureRegularEnvironmentDirectory(path string) error {
 	return nil
 }
 
+// environmentFingerprint invalidates cached environments when committed dependency pins change.
 func environmentFingerprint(
 	bundle engine.Bundle, wheel runtimewheel.Artifact, plan runtimeDependencyPlan,
 ) (string, error) {
@@ -182,6 +183,7 @@ func environmentFingerprint(
 	}
 	for _, path := range []string{
 		filepath.Join(bundle.Directory, "uv.lock"),
+		filepath.Join(bundle.Directory, "harnest.lock"),
 		filepath.Join(bundle.Directory, ".harnest", runtimeRequirementsLockFile),
 	} {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, true); err != nil {
@@ -276,6 +278,7 @@ func lockEnvironment(path string) (func(), error) {
 	return func() { _ = os.Remove(path) }, nil
 }
 
+// installAgentEnvironment publishes only after the resolved framework lock is verified.
 func (a *application) installAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
@@ -294,6 +297,9 @@ func (a *application) installAgentEnvironment(
 		return pythonSelection{}, err
 	}
 	if err := a.installAgentWheel(command, bundle, staged); err != nil {
+		return pythonSelection{}, err
+	}
+	if err := a.verifyAndRecordFramework(command, bundle, staged, frozen); err != nil {
 		return pythonSelection{}, err
 	}
 	return publishAgentEnvironment(bundle, wheel, paths, staged, plan)
@@ -428,18 +434,22 @@ func (a *application) syncJointRuntimeDependencies(
 	return nil
 }
 
+// installAgentWheel installs the release alongside the exact committed framework pin.
 func (a *application) installAgentWheel(
 	command *cobra.Command,
 	bundle engine.Bundle,
 	staged stagedAgentEnvironment,
 ) error {
 	wheelRequirement := staged.wheelPath + "[" + bundle.Config.Spec.Framework.Name + "]"
-	if err := a.runRuntimeCommandWithEnvironment(
-		command,
-		staged.environment,
-		staged.uvPath,
-		"pip", "install", "--python", staged.python, wheelRequirement,
-	); err != nil {
+	pin, err := lockedFrameworkRequirement(bundle)
+	if err != nil {
+		return err
+	}
+	arguments := []string{"pip", "install", "--python", staged.python, wheelRequirement}
+	if pin != "" {
+		arguments = append(arguments, pin)
+	}
+	if err := a.runRuntimeCommandWithEnvironment(command, staged.environment, staged.uvPath, arguments...); err != nil {
 		return fmt.Errorf("install Harnest into agent environment: %w", err)
 	}
 	return nil

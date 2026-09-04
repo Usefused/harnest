@@ -158,7 +158,14 @@ def eval_config(suite: EvalSuite, trajectory: str) -> Any:
 
 
 def eval_dependencies() -> tuple[Any, Any]:
-    """Load ADK's evaluator and EvalSet model for either framework adapter."""
+    """Validate the shared evaluation engine before loading either framework adapter."""
+
+    from .compatibility import FrameworkCompatibilityError, validate_framework_compatibility
+
+    try:
+        validate_framework_compatibility("adk")
+    except FrameworkCompatibilityError as exc:
+        raise EvaluationError(str(exc)) from exc
 
     try:
         from google.adk.evaluation.agent_evaluator import AgentEvaluator

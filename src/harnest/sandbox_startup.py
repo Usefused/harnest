@@ -17,10 +17,10 @@ def check_startup() -> None:
 class OwnedStartupClient:
     """Keep the native client policy while intercepting its resource acquisition."""
 
-    def __init__(self, owner: Any, client: Any) -> None:
+    def __init__(self, owner: Any, client: Any, *, limits: dict[str, Any] | None = None) -> None:
         """Use a dedicated native client's existing finite control-plane timeout."""
         self._client = client
-        self.containers = OwnedStartupContainers(owner, client.containers)
+        self.containers = OwnedStartupContainers(owner, client.containers, limits=limits)
 
     def __getattr__(self, name: str) -> Any:
         """Forward images, configuration, and cleanup unchanged to native Docker."""
@@ -30,9 +30,10 @@ class OwnedStartupClient:
 class OwnedStartupContainers:
     """Run SDK startup verbatim but retain each created resource before start."""
 
-    def __init__(self, owner: Any, containers: Any) -> None:
+    def __init__(self, owner: Any, containers: Any, *, limits: dict[str, Any] | None = None) -> None:
         """Capture the only container collection this executor is allowed to own."""
         self.owner, self._containers = owner, containers
+        self._limits = limits or {}
 
     def __getattr__(self, name: str) -> Any:
         """Preserve the collection's client and native image-pull fallback."""
@@ -53,7 +54,8 @@ class OwnedStartupContainers:
 
         check_startup()
         try:
-            container = self._containers.create(*args, **kwargs)
+            # Apply policy last: native defaults cannot weaken authored hard limits.
+            container = self._containers.create(*args, **(kwargs | self._limits))
         except ImageNotFound:
             # This explicit rejection is safe for native pull-and-retry.
             raise

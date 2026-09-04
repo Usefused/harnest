@@ -7,6 +7,10 @@
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
+    "server": {
+      "description": "Optional standalone server overrides; omitted settings use safe defaults.",
+      "$ref": "server.schema.json#/$defs/settings"
+    },
     "apiVersion": { "const": "harnest.dev/v1alpha1" },
     "kind": { "const": "Agent" },
     "metadata": {

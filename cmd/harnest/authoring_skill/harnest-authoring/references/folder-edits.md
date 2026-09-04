@@ -13,7 +13,7 @@ folder has different ownership or may not compile at all.
 2. Read `config.yaml` first. Record the selected framework and whether the mode
    is `managed` or `advanced`; that decision changes how capabilities are wired.
 3. Inventory authored files with `rg --files`, excluding `.harnest/`. Read the
-   root `agent.py`, `instructions.md`, `server.yaml` when serving behavior is in
+   root `agent.py`, `instructions.md`, and any legacy `server.yaml` when serving is in
    scope, and only the resource folders involved in the requested change.
 4. Identify the owning `agent.py`. The root owns root sibling resources. A
    folder agent at `subagents/<name>/agent.py` owns supported folders beside
@@ -37,21 +37,21 @@ and extended examples into that skill's linked `references/` files.
 | Add one callable capability | Owning `tools/<name>.py` | Export one `@tool` callable named exactly `<name>`. |
 | Add model-facing operational guidance | Owning `skills/<skill>/SKILL.md` | Give it distinct frontmatter name/description and put supporting files below that skill. |
 | Connect one MCP server | Owning `mcp/<name>.py` | Export zero-argument `client()` returning `MCPClient`; the filename supplies identity and ordinary Python reads environment/secrets. |
-| Bundle reusable MCP access plus usage guidance | Root manifest-less `plugins/<name>/mcp/` and `plugins/<name>/skills/` | This is an agent-plugin. It needs at least one MCP client and one skill and never contains agents or lifecycle code. |
-| Add same-process SDK behavior, lifecycle, or declared managed content | Root `plugins/<name>/plugin.yaml`, `plugin.py`, and capability folders | This is a runtime plugin. Export `plugin`, declare dependencies/capabilities, and consume its public API below `harnest.plugins.<name>`. |
+| Reuse portable MCP access or skills | Root `plugins/<name>/plugin.json`, optional `mcp.json` and `skills/` | Use Agent Plugins 1.0. MCP-only and skills-only packages are valid; no Python factories or registration required. Harnest ignores unsupported client namespaces. |
+| Add same-process SDK behavior, lifecycle, or declared managed content | Root `extensions/<name>/extension.yaml`, `extension.py`, and capability folders | This is a Harnest Extension. Export `extension`, declare dependencies/capabilities, and consume its public API below `harnest.extensions.<name>`. |
 | Add a simple subagent | Owning `subagents/<name>.py` | Export managed `Agent` as `<name>` with an explicit instruction, or export `Agent.advanced(...)` around a fully composed native agent of the same name. |
 | Add a subagent with private tools, MCP, sandbox, or skills | Owning `subagents/<name>/agent.py` plus sibling resources | Managed agents only: add that folder's non-empty `instructions.md`; do not expect parent resources to inherit. Advanced agents compose capabilities natively in the flat-file form. |
-| Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `extensions/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use one `@lifecycle.output_policy` factory only when public subagent narration should differ from the safe default. |
-| Add session, checkpoint, asset, or custom storage | Root `extensions/**/*.py` | Use distributed `@lifecycle.storage.sessions`, `.checkpoints`, `.assets("name")`, or `.custom("name")` factories; shared factories may stack these decorators. |
-| Export traces or logs directly to one or more destinations | Root `extensions/telemetry.py` | Add one repeatable `@lifecycle.telemetry_exporter` runtime factory per destination; return `TelemetryExporter` with `traces`, `logs`, or both. |
+| Add authentication, invocation/model policy, persistence, guardrails, or event transforms | Root `lifecycle/**/*.py` | Decorate executable listeners with `@lifecycle.*`; use one `@lifecycle.output_policy` factory only when public subagent narration should differ from the safe default. |
+| Add session, checkpoint, asset, or custom storage | Root `lifecycle/**/*.py` | Use distributed `@lifecycle.storage.sessions`, `.checkpoints`, `.assets("name")`, or `.custom("name")` factories; shared factories may stack these decorators. |
+| Export traces or logs directly to one or more destinations | Root `lifecycle/telemetry.py` | Add one repeatable `@lifecycle.telemetry_exporter` runtime factory per destination; return `TelemetryExporter` with `traces`, `logs`, or both. |
 | Share ordinary Python across resources | Root `lib/**/*.py` | Import below `harnest.lib`; it is global library code, not a discovered resource. |
-| Add sandboxed code execution | `sandbox/<name>.py`, each allowed agent's declaration, and its business tool | Export a matching `Sandbox` variable; assign `Agent(sandboxes=["<name>"])`; call `context.sandboxes["<name>"].execute(code)` or async `aexecute` from an authored tool. No model tool is added automatically. Root names are available to same-project subagents, but access is never inherited. Declare third-party provider dependencies. Harnest adds no per-session filesystem isolation or CPU/memory limits. |
+| Add sandboxed code execution | `sandbox/<name>.py`, each allowed agent's declaration, and its business tool | Export a matching `Sandbox` variable; assign `Agent(sandboxes=["<name>"])`; call `context.sandboxes["<name>"].execute(code)` or async `aexecute` from an authored tool. No model tool is added automatically. Root names are available to same-project subagents, but access is never inherited. Declare third-party provider dependencies. Use SandboxBudget for built-in Docker limits and scope for identity-bound container reuse; custom providers enforce their own limits. |
 | Add offline behavior coverage | Root `tests/unit/test_*.py` | Use compiler fixtures; do not manually import the compiled agent. |
 | Add authorized live coverage | Root `tests/smoke/test_*.py` | Keep external calls behind the smoke lane. |
 | Add ADK evaluations | Root `evals/` | Keep executable evals at root; expected responses contain visible output only. |
 | Change public identity or advertised capability | Root `agent-card.yaml` | Do not use the card as runtime wiring. |
 | Change resources, environment, framework, mode, or entrypoint | Root `config.yaml` | Treat framework/mode changes as migrations, not incidental edits. |
-| Change standalone host, request limits, concurrency, timeout, or playground | Root `server.yaml` | Use exact `${NAME}` for startup environment values; keep auth, storage, TLS, secrets, and deployment scaling outside this file. |
+| Change standalone host, request limits, concurrency, timeout, or playground | Root `config.yaml` → `server` | Omit unchanged defaults. Use exact `${NAME}` for startup environment values; keep auth, storage, TLS, secrets, and deployment scaling outside this section. Move legacy `server.yaml` settings here and remove that file before using inline settings. |
 
 ## Wire managed resources correctly
 
@@ -75,7 +75,7 @@ and extended examples into that skill's linked `references/` files.
 - Cross-cutting invocation policy still belongs in a portable lifecycle
   extension. Use `lib/` for implementation shared by resources, not to disguise
   persistence, auditing, or guardrails that must surround every call.
-- Put zero-argument context providers in root `extensions/`. Use
+- Put zero-argument context providers in root `lifecycle/`. Use
   `@context("name")` to publish a value once per invocation, or combine it with
   `@lifecycle.resource` for application startup and shutdown. Consumers in
   nodes, tools, listeners, and subagents call `context.resource("name")`;
@@ -86,19 +86,19 @@ and extended examples into that skill's linked `references/` files.
   `context.credentials` and `context.mcp` are separate non-enumerable
   capabilities; managed MCP access fails closed unless the runtime can reuse a
   fully governed tool dispatcher.
-- Managed mode also discovers runtime plugins, starts them in dependency order,
+- Managed mode also discovers Harnest Extensions, starts them in dependency order,
   and composes their declared content and extensions automatically. Do not
   import a plugin's extension or register its discovered content manually;
-  import only its intended public Python API below `harnest.plugins.<name>`.
+  import only its intended public Python API below `harnest.extensions.<name>`.
 
 ## Treat advanced mode differently
 
 Advanced mode owns all framework wiring in `agent.py`. Harnest deliberately
 rejects populated managed-discovery folders rather than silently attaching
-their content to an opaque native target. Manifest-less agent-plugins are
+their content to an opaque native target. Agent Plugin components are
 managed content, not a shortcut around that boundary.
 
-Runtime plugins may still participate where Harnest owns the application
+Harnest Extensions may still participate where Harnest owns the application
 boundary, such as startup/shutdown and neutral HTTP, context, storage,
 credentials, session, asset, or portable invocation lifecycle. Their manifest
 does not make direct native model, tool, MCP, graph, checkpoint, or subagent

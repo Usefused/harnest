@@ -29,7 +29,7 @@ store = PostgresStore(os.environ["DATABASE_URL"])
 ```
 
 ```python
-# extensions/storage.py
+# lifecycle/storage.py
 from harnest.lib.storage import store
 from harnest.lifecycle import lifecycle
 

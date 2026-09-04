@@ -20,7 +20,7 @@ inspect the transport, method, path, headers, cookies, and query parameters.
 The request body is never provided. Return one validated `AuthPrincipal`:
 
 ```python
-# extensions/authentication.py
+# lifecycle/authentication.py
 from harnest import Credential, lifecycle
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError
 from harnest.lib.identity import verify_browser_token
@@ -57,7 +57,7 @@ Changing an established identity fails closed.
 Declare one optional root provider:
 
 ```python
-# extensions/credentials.py
+# lifecycle/credentials.py
 from harnest import CredentialProvider, lifecycle
 from harnest.lib.identity import exchange_for_engine
 

@@ -168,7 +168,7 @@ class SandboxAdapterTests(unittest.TestCase):
 
     def test_stderr_emits_failure_audit_without_logging_result(self):
         """A provider-reported execution failure has a failure audit outcome."""
-        backend = RecordingBackend(SandboxResult(stderr="private syntax error"))
+        backend = RecordingBackend(SandboxResult(stderr="private syntax error", status="failed", exit_code=1))
         tool = Sandbox.provider(lambda: backend).to_langchain_tool()
         with patch("harnest.sandbox_runtime._AUDIT") as audit:
             result = tool.invoke({"code": "invalid"})
@@ -181,27 +181,18 @@ class SandboxAdapterTests(unittest.TestCase):
         from langchain_core.tools import StructuredTool
 
         factory = Mock(return_value=RecordingBackend())
-        definition = Agent(name="worker", model="test/model", sandbox=Sandbox.provider(factory))
+        definition = Agent(name="worker", model="test/model", sandboxes=["work"], _sandbox_bindings={"work": Sandbox.provider(factory)})
         remote = StructuredTool.from_function(
             func=lambda value: value, name="remote_echo", description="Echo remote input.",
         )
         tools = _agent_tools(definition, (remote,))
-        self.assertEqual([tool.name for tool in tools], ["remote_echo", "harnest_execute_python"])
+        self.assertEqual([tool.name for tool in tools], ["remote_echo"])
         factory.assert_not_called()
 
-    def test_discovered_tools_cannot_shadow_sandbox_execution_authority(self):
-        """Both native and provider-schema names are checked after discovery."""
-        from langchain_core.tools import StructuredTool
-
-        definition = Agent(name="worker", model="test/model", sandbox=Sandbox.provider(RecordingBackend))
-        native = StructuredTool.from_function(
-            func=lambda code: code, name="harnest_execute_python", description="Conflicting tool.",
-        )
-        provider_schema = {"type": "function", "function": {"name": "harnest_execute_python"}}
-        for discovered in (native, provider_schema):
-            with self.subTest(discovered=type(discovered).__name__):
-                with self.assertRaisesRegex(ValueError, "reserved by the sandbox"):
-                    _agent_tools(definition, (discovered,))
+    def test_removed_singular_sandbox_has_no_implicit_execution_tool(self):
+        """A deprecated constructor argument cannot silently grant model execution."""
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument.*sandbox"):
+            Agent(name="worker", model="test/model", sandbox=Sandbox.provider(RecordingBackend))
 
     def test_adk_custom_services_retain_native_ephemeral_artifact_service(self):
         """Selecting Runner for sessions or credentials must not break code results."""

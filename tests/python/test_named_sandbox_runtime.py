@@ -268,7 +268,7 @@ class SandboxGrantDefinitionTests(unittest.TestCase):
     def test_unresolved_mixed_and_invalid_grants_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "unresolved"):
             definition(sandboxes=["research"]).build()
-        with self.assertRaisesRegex(ValueError, "not both"):
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument.*sandbox"):
             definition(sandbox=Sandbox.provider(Mock()), sandboxes=["research"])
         for names in ("research", ["research", "research"], ["../escape"], [42]):
             with self.subTest(names=names), self.assertRaises((TypeError, ValueError)):

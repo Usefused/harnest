@@ -64,7 +64,7 @@ from .plugins import (
 from .runtime_plugins import (
     RuntimePluginConventionError,
     RuntimePluginDescriptor,
-    discover_runtime_plugins,
+    discover_application_extensions,
     validate_runtime_plugin_dependencies,
 )
 from .sandbox import Sandbox
@@ -72,7 +72,7 @@ from .sandbox_catalog import (
     SandboxCatalogError, current_sandbox_catalog, independent_sandbox_catalog, resolve_sandbox_assignments,
     sandbox_catalog_scope,
 )
-from .server_config import SERVER_CONFIG_FILENAME, materialize_server_config
+from .server_config import SERVER_CONFIG_FILENAME, project_server_config_yaml
 from .skills import (
     FilesystemSkillSource,
     SkillRegistry,
@@ -83,6 +83,7 @@ from .skills import (
     scoped_skill_sources,
 )
 from .source_tree import ignored_source_path
+from .application_layout import ApplicationLayoutError, lifecycle_directory
 from .task import CompiledTask, registration_for as task_registration_for
 
 _T = TypeVar("_T")
@@ -250,9 +251,15 @@ def compile_application(
     except FrameworkCompatibilityError as exc:
         raise BundleImportError(str(exc)) from exc
     anchor = _resolve_compile_anchor(source, entrypoint)
+    from .project_lock import verify_framework_lock
+
+    try:
+        verify_framework_lock(anchor.parent, compatibility)
+    except FrameworkCompatibilityError as exc:
+        raise BundleImportError(str(exc)) from exc
     if mode == "advanced":
         _reject_advanced_plugin_files(anchor.parent, framework)
-    runtime_plugins = _discover_runtime_plugins(anchor.parent / "plugins")
+    runtime_plugins = _discover_runtime_plugins(anchor.parent)
     _validate_runtime_plugin_project_set(anchor.parent, runtime_plugins)
     _validate_runtime_plugin_layouts(runtime_plugins)
     export_name = entrypoint.partition(":")[2]
@@ -647,14 +654,15 @@ def _load_extensions(
     framework: str,
     runtime_plugins: Sequence[RuntimePluginDescriptor] = (),
 ) -> Any:
-    """Compile root and plugin listeners through one application registry."""
+    """Compile explicit lifecycle roots with format-specific capability provenance."""
 
+    directory = lifecycle_directory(bundle_root)
     sources = (
-        ExtensionSource(bundle_root / "extensions", "root/extensions"),
+        ExtensionSource(directory, f"root/{directory.name}"),
         *(
             ExtensionSource(
-                plugin.directory / "extensions",
-                f"plugins/{plugin.name}/extensions",
+                plugin.lifecycle_directory,
+                plugin.lifecycle_origin,
             )
             for plugin in runtime_plugins
         ),
@@ -733,7 +741,7 @@ def compile_artifact(
     mode: str = "managed",
     cli_enabled: bool = False,
 ) -> dict[str, Any]:
-    """Validate an agent and atomically materialize its importable artifact."""
+    """Validate server policy before authored code and atomically build an artifact."""
 
     if not isinstance(cli_enabled, bool):
         raise TypeError("cli_enabled must be a boolean")
@@ -761,6 +769,8 @@ def compile_artifact(
             "excluded from the copied source"
         )
 
+    # Reject conflicting or invalid server settings before importing authored Python.
+    server_contents = project_server_config_yaml(source_directory)
     built = compile_application(
         anchor, entrypoint=entrypoint, framework=framework, mode=mode
     )
@@ -774,11 +784,11 @@ def compile_artifact(
         )
         try:
             _copy_agent_source(source_directory, staging / "source")
-            materialize_server_config(
-                source_directory / SERVER_CONFIG_FILENAME,
-                staging / SERVER_CONFIG_FILENAME,
+            # Runtime policy stays mutable beside the launcher; source remains hashed.
+            (staging / SERVER_CONFIG_FILENAME).write_text(
+                server_contents, encoding="utf-8"
             )
-            _write_artifact_loader(staging, entrypoint, framework, mode)
+            _write_artifact_loader(staging, entrypoint, framework, mode, source_directory)
             file_records = _artifact_file_records(staging)
             plugin_records = _compiled_plugin_records(built.plugins)
             task_records = _compiled_task_records(built.tasks)
@@ -890,7 +900,7 @@ def _release_compiled_plugins(plugins: Sequence[ActivatedPlugin]) -> None:
 
 
 def _copy_agent_source(source: Path, destination: Path) -> None:
-    """Copy authored source while excluding environments and generated state."""
+    """Copy authored source and executable bits, excluding generated state."""
 
     destination.mkdir()
     paths = sorted(
@@ -916,21 +926,30 @@ def _copy_agent_source(source: Path, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+        # Package-local MCP executables must remain runnable after compilation,
+        # but source setuid/setgid and sticky bits must never enter the artifact.
+        target.chmod((target.stat().st_mode & 0o666) | (path.stat().st_mode & 0o111))
 
 
 def _write_artifact_loader(
-    directory: Path, source_entrypoint: str, framework: str, mode: str
+    directory: Path, source_entrypoint: str, framework: str, mode: str,
+    source_directory: Path | None = None,
 ) -> None:
+    """Carry stable installation ownership across fresh immutable source generations."""
+    from .agent_plugin_runtime import installation_id
+    scope = installation_id(source_directory or directory)
     (directory / "agent.py").write_text(
         '"""Generated Harnest application entrypoint; do not edit."""\n\n'
         "from pathlib import Path\n\n"
         "from harnest import compile_application\n\n"
-        "application = compile_application(\n"
-        '    Path(__file__).parent / "source",\n'
-        f"    entrypoint={source_entrypoint!r},\n"
-        f"    framework={framework!r},\n"
-        f"    mode={mode!r},\n"
-        ")\n"
+        "from harnest.agent_plugin_runtime import plugin_installation\n\n"
+        f"with plugin_installation({scope!r}):\n"
+        "    application = compile_application(\n"
+        '        Path(__file__).parent / "source",\n'
+        f"        entrypoint={source_entrypoint!r},\n"
+        f"        framework={framework!r},\n"
+        f"        mode={mode!r},\n"
+        "    )\n"
         "app = application.native_app or application.target\n"
         "root_agent = application.target\n",
         encoding="utf-8",
@@ -1505,14 +1524,12 @@ def _compose_definition(
         skill_sources=skill_sources,
         skill_scopes=skill_scopes,
     )
-    sandbox = _resolve_sandbox(root.sandbox, framework)
     return replace(
         root,
         instruction=instruction,
         tools=tools,
         subagents=subagents,
         mcp=mcp,
-        sandbox=sandbox,
         _sandbox_bindings=resolve_sandbox_assignments(root.name, root.sandboxes),
     )
 
@@ -1528,6 +1545,7 @@ def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
     root_only_resources = (
         ("plugins", "capability plugins"),
         ("extensions", "runtime extensions"),
+        ("lifecycle", "application lifecycle"),
         ("lib", "authored libraries"),
         ("models", "authored models"),
     )
@@ -1713,19 +1731,6 @@ def _register_skill_scope(
         raise BundleDuplicateError(f"duplicate skill scope for agent {agent_name!r}")
     skill_scopes[agent_name] = scope
     return scope
-
-
-def _resolve_sandbox(
-    explicit: Sandbox | None, framework: str
-) -> Sandbox | None:
-    """Preserve explicit single-executor compatibility without auto-granting catalog entries."""
-    resolved = explicit
-    if framework == "langgraph" and resolved is not None and not isinstance(resolved, Sandbox):
-        raise BundleConventionError(
-            "LangGraph sandbox configuration must be a portable Sandbox; "
-            "native ADK executors cannot be attached directly"
-        )
-    return resolved
 
 
 def _resolve_instruction(bundle_root: Path, explicit: str | None) -> str:
@@ -2166,11 +2171,11 @@ def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]
 def _discover_runtime_plugins(
     directory: Path,
 ) -> tuple[RuntimePluginDescriptor, ...]:
-    """Resolve the local plugin dependency graph before importing agent code."""
+    """Resolve canonical and legacy extension packages before importing agent code."""
 
     try:
-        return discover_runtime_plugins(directory)
-    except RuntimePluginConventionError as exc:
+        return discover_application_extensions(directory)
+    except (RuntimePluginConventionError, ApplicationLayoutError) as exc:
         raise BundleConventionError(str(exc)) from exc
 
 
@@ -2203,6 +2208,11 @@ def _validate_runtime_plugin_project_set(
 def _validate_runtime_plugin_entries(plugin: RuntimePluginDescriptor) -> None:
     """Reject roots that could masquerade as a second agent application."""
 
+    entries = _RUNTIME_PLUGIN_ENTRIES
+    if plugin.entrypoint == "extension:extension":
+        entries = (entries - {"plugin.yaml", "plugin.py", "extensions"}) | {
+            "extension.yaml", "extension.py", "lifecycle"
+        }
     for path in sorted(plugin.directory.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise BundleConventionError(
@@ -2210,11 +2220,13 @@ def _validate_runtime_plugin_entries(plugin: RuntimePluginDescriptor) -> None:
             )
         if _is_ignored(path):
             continue
-        if path.name not in _RUNTIME_PLUGIN_ENTRIES:
+        if path.name not in entries:
             raise BundleConventionError(
                 f"unexpected runtime plugin resource: {path}"
             )
-        expected_file = path.name in {"plugin.yaml", "plugin.py", "pyproject.toml"}
+        expected_file = path.name in {
+            "plugin.yaml", "plugin.py", "extension.yaml", "extension.py", "pyproject.toml"
+        }
         if expected_file != path.is_file():
             expected = "file" if expected_file else "directory"
             raise BundleConventionError(
@@ -2263,7 +2275,7 @@ def _listener_plugin(
     """Resolve compiler-owned listener provenance without trusting callbacks."""
 
     parts = Path(listener.relative_path).parts
-    if len(parts) < 3 or parts[0] != "plugins":
+    if len(parts) < 3 or parts[0] not in {"plugins", "extensions"}:
         return None
     return by_name.get(parts[1])
 
@@ -2271,12 +2283,12 @@ def _listener_plugin(
 def _discover_plugin_mcp(
     plugins: Sequence[PluginResources],
 ) -> tuple[tuple[PluginResources, tuple[MCPClient, ...]], ...]:
-    """Load each plugin's MCP clients without an aggregation module."""
+    """Use portable declarations directly; only legacy bundles import Python factories."""
 
     return tuple(
         (
             plugin,
-            _discover_mcp(
+            plugin.mcp_clients if plugin.manifest is not None else _discover_mcp(
                 plugin.directory / "mcp",
                 capability_scope=f"plugin__{plugin.name}__mcp",
             ),

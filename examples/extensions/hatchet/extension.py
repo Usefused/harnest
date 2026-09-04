@@ -9,7 +9,7 @@ from typing import Any
 from harnest.continuation import ContinuationConflictError
 from harnest.context import context
 from harnest.durable import current_native_durable_call
-from harnest.plugins import Plugin, PluginContext, plugin_mutation
+from harnest.extensions import Extension, ExtensionContext, extension_mutation
 
 from .lib.client import (
     HatchetRun,
@@ -34,12 +34,12 @@ _RECOVERY_PAGE_SIZE = 100
 _RECOVERY_WORKFLOW_NAME = "harnest-recovery"
 
 
-class HatchetContext(PluginContext):
-    """Typed invocation view exposed through `context.plugins("hatchet")`."""
+class HatchetContext(ExtensionContext):
+    """Typed invocation view exposed through `context.extensions("hatchet")`."""
 
     __slots__ = ("_owner",)
 
-    def __init__(self, plugin_name: str, owner: "HatchetPlugin") -> None:
+    def __init__(self, plugin_name: str, owner: "HatchetExtension") -> None:
         """Bind operations to the application-owned plugin singleton."""
 
         super().__init__(plugin_name)
@@ -72,7 +72,7 @@ class HatchetContext(PluginContext):
         await self._owner._cancel(job)
 
 
-class HatchetPlugin(Plugin[HatchetContext]):
+class HatchetExtension(Extension[HatchetContext]):
     """Expose Hatchet as an invocation-safe native plugin capability."""
 
     def __init__(self) -> None:
@@ -107,12 +107,12 @@ class HatchetPlugin(Plugin[HatchetContext]):
         self._continuations = None
         self._application_id = None
 
-    def create_context(self, base: PluginContext) -> HatchetContext:
+    def create_context(self, base: ExtensionContext) -> HatchetContext:
         """Create a fresh revocable view after plugin startup succeeds."""
 
         if not self._started:
             raise RuntimeError("Hatchet plugin is not started")
-        return HatchetContext(base.plugin_name, self)
+        return HatchetContext(base.extension_name, self)
 
     async def run(
         self, workflow_name: str, job_input: Mapping[str, Any]
@@ -157,7 +157,7 @@ class HatchetPlugin(Plugin[HatchetContext]):
         )
         transport = await open_hatchet_transport(("runs:create",))
         try:
-            async with plugin_mutation("hatchet", "run.create", trigger="agent"):
+            async with extension_mutation("hatchet", "run.create", trigger="agent"):
                 return await transport.run(
                     workflow_name,
                     job_input,
@@ -300,7 +300,7 @@ class HatchetPlugin(Plugin[HatchetContext]):
 
         transport = await open_hatchet_transport(("runs:cancel",))
         try:
-            async with plugin_mutation("hatchet", "run.cancel", trigger="agent"):
+            async with extension_mutation("hatchet", "run.cancel", trigger="agent"):
                 await transport.cancel(job)
         finally:
             await transport.aclose()
@@ -358,7 +358,7 @@ class HatchetPlugin(Plugin[HatchetContext]):
     ) -> None:
         """Audit completion only after Harnest commits the continuation result."""
 
-        async with plugin_mutation(
+        async with extension_mutation(
             "hatchet", "continuation.complete", trigger="agent"
         ):
             await continuations.complete(external_id, result)
@@ -371,7 +371,7 @@ class HatchetPlugin(Plugin[HatchetContext]):
     ) -> None:
         """Persist a stable failure code without exposing Hatchet error payloads."""
 
-        async with plugin_mutation(
+        async with extension_mutation(
             "hatchet", "continuation.fail", trigger="agent"
         ):
             await continuations.fail(external_id, error_code)
@@ -414,16 +414,16 @@ def _validate_result(value: Any) -> Mapping[str, Any]:
     return dict(value)
 
 
-plugin = HatchetPlugin()
+extension = HatchetExtension()
 # The domain-facing name reads naturally while retaining the required export.
-hatchet = plugin
+hatchet = extension
 
 
 __all__ = [
     "HatchetContext",
-    "HatchetPlugin",
+    "HatchetExtension",
     "HatchetRun",
     "HatchetRunStatus",
     "hatchet",
-    "plugin",
+    "extension",
 ]

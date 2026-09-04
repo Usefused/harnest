@@ -48,7 +48,7 @@ class SandboxCatalogTests(unittest.TestCase):
     def test_registry_presence_does_not_grant_any_sandbox(self):
         definition = self.compose()
         self.assertEqual(dict(definition._sandbox_bindings), {})
-        self.assertIsNone(definition.sandbox)
+        self.assertFalse(hasattr(definition, "sandbox"))
 
     def test_multiple_grants_resolve_exact_names_in_authored_order(self):
         definition = self.compose(["research", "calculations"])

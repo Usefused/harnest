@@ -7,44 +7,43 @@
     "environmentReference": {
       "type": "string",
       "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
-    }
-  },
-  "additionalProperties": false,
-  "required": ["apiVersion", "kind", "http", "limits", "playground"],
-  "properties": {
-    "apiVersion": {
-      "const": "harnest.dev/v1alpha1"
-    },
-    "kind": {
-      "const": "Server"
     },
     "http": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "host",
-        "port",
-        "allowRemote",
-        "requestTimeoutSeconds",
-        "maxConcurrentRequests"
-      ],
       "properties": {
         "host": {
           "anyOf": [
-            {"type": "string", "minLength": 1, "pattern": "^[^$]*$"},
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^$]*$"
+            },
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         },
         "port": {
           "oneOf": [
-            {"type": "integer", "minimum": 1, "maximum": 65535},
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         },
         "allowRemote": {
           "oneOf": [
-            {"type": "boolean"},
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         },
         "requestTimeoutSeconds": {
@@ -54,13 +53,21 @@
               "exclusiveMinimum": 0,
               "maximum": 86400
             },
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         },
         "maxConcurrentRequests": {
           "oneOf": [
-            {"type": "integer", "minimum": 1, "maximum": 100000},
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         }
       }
@@ -68,16 +75,21 @@
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxRequestBytes"],
       "properties": {
         "maxRequestBytes": {
           "oneOf": [
-            {"type": "integer", "minimum": 1024, "maximum": 1073741824},
+            {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 1073741824
+            },
             {
               "type": "string",
               "pattern": "^[1-9][0-9]*(B|KiB|MiB|GiB)?$"
             },
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         }
       }
@@ -85,15 +97,91 @@
     "playground": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled"],
       "properties": {
         "enabled": {
           "oneOf": [
-            {"type": "boolean"},
-            {"$ref": "#/$defs/environmentReference"}
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/environmentReference"
+            }
           ]
         }
       }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "http": {
+          "$ref": "#/$defs/http"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "playground": {
+          "$ref": "#/$defs/playground"
+        },
+        "live": {
+          "$ref": "#/$defs/live",
+          "default": false,
+          "description": "Enable WebSocket transport on the HTTP server."
+        }
+      }
+    },
+    "live": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/environmentReference"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "http",
+    "limits",
+    "playground"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "harnest.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "Server"
+    },
+    "http": {
+      "$ref": "#/$defs/http",
+      "required": [
+        "host",
+        "port",
+        "allowRemote",
+        "requestTimeoutSeconds",
+        "maxConcurrentRequests"
+      ]
+    },
+    "limits": {
+      "$ref": "#/$defs/limits",
+      "required": [
+        "maxRequestBytes"
+      ]
+    },
+    "playground": {
+      "$ref": "#/$defs/playground",
+      "required": [
+        "enabled"
+      ]
+    },
+    "live": {
+      "$ref": "#/$defs/live",
+      "default": true,
+      "description": "Legacy server files without this setting retain WebSocket access."
     }
   }
 }

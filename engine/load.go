@@ -189,6 +189,7 @@ func validateInstructions(path string) error {
 	return nil
 }
 
+// validateBundleResourceDirectories checks canonical and legacy roots before loading code.
 func validateBundleResourceDirectories(directory string) error {
 	legacy := filepath.Join(directory, "mcp_servers")
 	if _, err := os.Lstat(legacy); err == nil {
@@ -196,7 +197,7 @@ func validateBundleResourceDirectories(directory string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect legacy MCP directory %s: %w", legacy, err)
 	}
-	for _, name := range []string{"lib", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals"} {
+	for _, name := range []string{"lib", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "lifecycle", "plugins", "sandbox", "skills", "evals"} {
 		if err := validateOptionalBundleDirectory(directory, name); err != nil {
 			return err
 		}

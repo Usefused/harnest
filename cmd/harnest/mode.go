@@ -19,6 +19,7 @@ var managedResourceDirectories = []string{
 	"subagents",
 	"mcp",
 	"extensions",
+	"lifecycle",
 	"plugins",
 	"sandbox",
 	"skills",

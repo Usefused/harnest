@@ -7,7 +7,7 @@ func managedExampleScaffoldFiles(files map[string]string, agentName, framework s
 		"tools/_example.py":                                       "\"\"\"Copy to echo.py to expose the echo tool.\"\"\"\n\n" + files["tools/echo.py"],
 		"sandbox/_example.py":                                     files["sandbox/_example.py"],
 		"skills/_example/SKILL.md":                                files["skills/getting-started/SKILL.md"],
-		"plugins/_example_agent/mcp/starter.py":                   files["plugins/starter/mcp/starter.py"],
+		"plugins/_example_agent/plugin.json":                      files["plugins/starter/plugin.json"],
 		"plugins/_example_agent/skills/starter-guidance/SKILL.md": files["plugins/starter/skills/starter-guidance/SKILL.md"],
 		"evals/_example.evalset.json":                             files["evals/starter.evalset.json"],
 		"tests/unit/_example.py":                                  "\"\"\"Copy to test_agent.py after activating tools/_example.py as echo.py.\"\"\"\n\n" + files["tests/unit/test_agent.py"],
@@ -26,7 +26,7 @@ func managedExampleScaffoldFiles(files map[string]string, agentName, framework s
 }
 
 // managedFolderCodeSamples supplies neutral, opt-in templates for the remaining
-// folder contracts, including both runtime and MCP-plus-skills plugin layouts.
+// folder contracts, keeping Harnest Extensions separate from Agent Plugins.
 func managedFolderCodeSamples() map[string]string {
 	return map[string]string{
 		"lib/_example.py": `"""Copy to messages.py; import with from harnest.lib.messages import normalize."""
@@ -112,46 +112,60 @@ def client():
     """Resolve the authored endpoint when Harnest discovers this client."""
     return MCPClient.streamable_http(os.environ["HARNEST_MCP_URL"], prefix="knowledge")
 `,
-		"plugins/_example/plugin.yaml": `apiVersion: harnest.dev/v1alpha1
-kind: RuntimePlugin
+		"extensions/_example/extension.yaml": `apiVersion: harnest.dev/v1alpha1
+kind: Extension
 metadata:
   name: starter_runtime
   version: 0.1.0
 runtime:
-  entrypoint: plugin:plugin
+  entrypoint: extension:extension
 capabilities: []
 `,
-		"plugins/_example/plugin.py": `"""Copy the containing folder to plugins/starter_runtime to enable this plugin.
+		"extensions/_example/extension.py": `"""Copy the containing folder to extensions/starter_runtime to enable this extension.
 
-Declare any contributed lifecycle/context authority in plugin.yaml before use.
+Declare any contributed lifecycle/context authority in extension.yaml before use.
 """
 
-from harnest.plugins import Plugin
+from harnest.extensions import Extension
 
 
-class StarterPlugin(Plugin):
+class StarterExtension(Extension):
     """Own application-lifetime resources without importing a framework."""
 
     async def start(self, start_context):
-        """Acquire plugin-owned clients here, never during module import."""
+        """Acquire extension-owned clients here, never during module import."""
 
     async def stop(self):
-        """Close only resources this plugin acquired during startup."""
+        """Close only resources this extension acquired during startup."""
 
 
-plugin = StarterPlugin()
+extension = StarterExtension()
 `,
 		"plugins/_README.md": `# Plugin samples
 
-Copy _example/ to starter_runtime/ to enable the framework-neutral RuntimePlugin.
-Its folder name must match metadata.name in plugin.yaml. The plugin.py entrypoint
-owns application-lifetime resources; declare contributed authorities explicitly.
+Copy _example_agent/ to starter/ to enable this skills-only Agent Plugin.
+Its plugin.json manifest follows Agent Plugins 1.0. Skills and MCP servers are
+optional components: a plugin can provide either or both.
 
-Copy _example_agent/ to starter/ to enable the separate MCP-plus-skills
-agent-plugin. Configure HARNEST_MCP_URL before use. Keep at least one MCP client
-and one skill together; this manifest-less format cannot own lifecycle hooks.
+To add an MCP server, create starter/mcp.json after replacing the HTTPS
+placeholder endpoint with your server's address:
 
-Both underscore-prefixed folders are ignored until copied or renamed.
+    {
+      "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+      "mcpServers": {
+        "knowledge": {
+          "type": "streamable-http",
+          "url": "https://mcp.example.com/mcp"
+        }
+      }
+    }
+
+Use declarative mcp.json, not Python factories, inside Agent Plugins. Keep
+credentials out of committed files. Application lifecycle hooks and resource
+factories belong in lifecycle/ or Harnest Extensions, not Agent Plugins.
+
+The underscore-prefixed folder is ignored until copied or renamed.
+Harnest Extension samples live separately in extensions/_example/.
 `,
 		"skills/_README.md": `# Skill sample
 

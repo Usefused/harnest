@@ -155,7 +155,7 @@ Configure each storage implementation through the existing extension
 lifecycle:
 
 ```python
-# extensions/assets.py
+# lifecycle/assets.py
 from harnest import AssetStorage, lifecycle
 from harnest.lib.assets import S3AssetStorage
 

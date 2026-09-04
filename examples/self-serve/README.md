@@ -16,7 +16,7 @@ then change at least:
 6. `tools/<name>.py` → an `@tool` callable exported as `<name>`;
 7. `subagents/<name>.py` → an `AgentDefinition` exported as `<name>`;
 8. `mcp/<name>.py` → an `MCPClient` or `None` exported as `<name>`;
-9. `extensions/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
+9. `lifecycle/storage.py` and `lib/storage.py` → shared session and checkpoint ownership;
 10. `skills/<name>/SKILL.md` → optional progressive Agent Skills; and
 11. `evals/<id>.evalset.json` → optional official ADK eval sets; and
 12. `tests/unit/test_*.py` and `tests/smoke/test_*.py` → offline and opt-in
@@ -224,11 +224,13 @@ or LangGraph package.
   `<name>`.
 - `mcp/<name>.py` must export an `MCPClient` or `None` named `<name>`.
   Exporting `None` is the supported way to disable an optional integration.
-- `plugins/<name>/mcp/` contains plugin-owned MCP client definitions and
-  `plugins/<name>/skills/` contains progressive instructions that teach the
-  host agent when and how to use those MCP tools. A non-empty plugin requires
-  at least one client and one skill; plugins never contain agents.
-- `extensions/<name>/lifecycle.py` exports an `Extension` named `extension`.
+- `plugins/<folder>/plugin.json` declares an Agent Plugins 1.0 package.
+  Optional `mcp.json` supplies standard MCP servers; optional `skills/` supplies
+  progressive instructions. Neither component requires the other. See the
+  [Agent Plugins guide](https://docs.usefused.com/harnest/build/agent-plugins).
+- `lifecycle/*.py` declares lifecycle hooks and resource factories.
+- `extensions/<name>/extension.yaml` declares a Harnest Extension whose
+  `extension.py` exports the singleton `extension`.
   Optional `adk.py` or `langgraph.py` files provide native integration for the
   selected framework.
 - `__init__.py`, dotfiles, caches, and underscore-prefixed helper files are
@@ -238,7 +240,7 @@ Any optional resource root can be missing, empty, or contain only ignored
 starter/helper files. Compilation skips it and continues. Public files and
 directories are validated strictly once present. `harnest init` gives every
 resource folder starter content, including an inline graph agent, an
-environment-gated MCP-and-skill plugin, a portable extension, and an ignored
+environment-gated MCP-and-skill plugin, lifecycle hooks, and an ignored
 sandbox example that can be renamed to `sandbox.py` when isolation is
 configured.
 

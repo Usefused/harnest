@@ -1,14 +1,15 @@
 # Harnest by [Fused](https://usefused.com)
 
-Harnest is a lightweight agent harness that takes agent building from zero to a
-complete, testable agent in minutes. It manages the work around your agent:
+Harnest is a production application harness for ADK and LangGraph agents.
+
+It manages the work around your agent:
 project structure, dependencies, capability discovery, compilation, tests,
 serving, sessions, approvals, authentication, storage, telemetry, and a
 development playground.
 
 Every Harnest agent is compiled from the capabilities you add. Tools, subagents,
-MCP connections, agent skills, plugins, sandboxes, and lifecycle extensions are
-left out unless you use them.
+MCP connections, agent skills, Agent Plugins, Harnest Extensions, sandboxes, and
+lifecycle hooks are left out unless you use them.
 
 | Mode | Harnest manages | You control |
 | --- | --- | --- |
@@ -158,7 +159,7 @@ The neutral API is documented at
 [http://127.0.0.1:8080/docs](http://127.0.0.1:8080/docs).
 
 Configure the local bind, request limits, concurrency, timeout, and playground
-in the project's `server.yaml`. See [Serving agents](https://docs.usefused.com/harnest/runtime/serving)
+in the optional `server:` section of `config.yaml`. Omit it to use the defaults. Set `server.live: true` to enable WebSockets on the same host and port. See [Serving agents](https://docs.usefused.com/harnest/runtime/serving)
 for the HTTP, SSE, WebSocket, approval, authentication, storage, and production
 boundaries.
 

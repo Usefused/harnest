@@ -498,7 +498,9 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._mcp_clients.append(client)
         tools: list[Any] = []
         for server_name, configured in names:
-            discovered = await client.get_tools(server_name=server_name)
+            discovered = await _discover_configured_mcp_tools(
+                client, server_name, configured, resources=self._mcp_clients,
+            )
             selected = _filtered_mcp_tools(
                 discovered, server_name=server_name, allowed=configured.tool_filter
             )
@@ -1555,9 +1557,42 @@ def _mcp_connections(
         )
         if name in connections:
             raise ValueError(f"duplicate LangGraph MCP client name {name!r}")
-        names.append((name, configured))
-        connections[name] = configured.to_langgraph_connection()
+        connection = _configured_mcp_connection(configured)
+        if connection is not None:
+            names.append((name, configured))
+            connections[name] = connection
     return connections, names
+
+
+def _configured_mcp_connection(configured: Any) -> dict[str, Any] | None:
+    """Contain portable configuration failures without weakening native MCP policy."""
+    try:
+        return configured.to_langgraph_connection()
+    except Exception as error:
+        if getattr(configured, "portable", None) is None:
+            raise
+        configured.portable.failed(error)
+        return None
+
+
+async def _discover_configured_mcp_tools(
+    client: Any, name: str, configured: Any, *, resources: list[Any] | None = None,
+) -> list[Any]:
+    """Keep portable stdio literal and contain failures within their component."""
+    try:
+        if getattr(configured, "portable", None) is not None and configured.transport == "stdio":
+            from .agent_plugin_langgraph import PortableStdioOwner
+            if resources is None:
+                raise RuntimeError("portable stdio requires runtime-owned cleanup")
+            owner = PortableStdioOwner(client, name, configured)
+            resources.append(owner)
+            return await owner.start()
+        return await client.get_tools(server_name=name)
+    except Exception as error:
+        if getattr(configured, "portable", None) is None:
+            raise
+        configured.portable.failed(error)
+        return []
 
 
 def _mcp_server_approval_policies(

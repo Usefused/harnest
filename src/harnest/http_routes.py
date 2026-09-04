@@ -216,15 +216,41 @@ def _require_api_router(router: Any, *, identity: str) -> None:
         )
 
 
-def _route_contracts(router: Any, *, identity: str) -> tuple[tuple[str, str], ...]:
-    """Extract ordinary HTTP and WebSocket contracts from one authored router."""
+def _route_contracts(
+    router: Any,
+    *,
+    identity: str,
+    prefix: str = "",
+    ancestors: frozenset[int] = frozenset(),
+) -> tuple[tuple[str, str], ...]:
+    """Inspect HTTP leaves with their effective paths across FastAPI versions."""
 
-    from fastapi.routing import APIRoute
+    from fastapi import routing
+
+    if id(router) in ancestors:
+        raise HTTPRouteError(f"HTTP route factory {identity} contains a router cycle")
+    ancestors = ancestors | {id(router)}
+    # FastAPI 0.137+ retains included routers instead of cloning their leaves.
+    # Recognize that concrete wrapper only; arbitrary mounts remain forbidden.
+    included_type = getattr(routing, "_IncludedRouter", ())
 
     contracts: list[tuple[str, str]] = []
     for route in router.routes:
-        if isinstance(route, APIRoute):
-            contracts.extend((method, route.path) for method in sorted(route.methods))
+        if isinstance(route, routing.APIRoute):
+            contracts.extend(
+                (method, prefix + route.path) for method in sorted(route.methods)
+            )
+            continue
+        if isinstance(route, included_type):
+            # The leaf already includes its own router prefix; each include
+            # context supplies its parent/include prefix. Keep every occurrence
+            # so mounting one child twice still participates in conflict checks.
+            contracts.extend(_route_contracts(
+                route.original_router,
+                identity=identity,
+                prefix=prefix + route.include_context.prefix,
+                ancestors=ancestors,
+            ))
             continue
         raise HTTPRouteError(
             f"HTTP route factory {identity} may contain only FastAPI HTTP routes; "

@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest plugins search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "server.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest extensions search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -28,6 +28,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	}
 }
 
+// TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent checks runnable defaults without extra server YAML.
 func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "support-agent")
 	stdout, _, err := executeForTest(t, defaultSystem(), "init", target)
@@ -68,23 +69,23 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"models/_README.md":      "from harnest.models.support import",
-		"extensions/storage.py":  "@lifecycle.storage.checkpoints",
+		"lifecycle/storage.py":   "@lifecycle.storage.checkpoints",
 		"tools/_README.md":       "Add one @tool callable",
 		"tasks/_README.md":       "durable @task callable",
 		"cron/_README.md":        "UTC Cron declaration",
-		"plugins/_README.md":     "RuntimePlugin folders",
-		"extensions/_README.md":  "@lifecycle-decorated functions",
+		"plugins/_README.md":     "Agent Plugin folders",
+		"lifecycle/_README.md":   "@lifecycle-decorated hooks",
+		"extensions/_README.md":  "extension.yaml and extension.py",
 		"tests/unit/_README.md":  "offline test_*.py",
 		"tests/smoke/_README.md": "opt-in test_*.py",
 	})
-	serverConfig := string(mustReadTestFile(t, filepath.Join(target, "server.yaml")))
-	assertContainsAll(t, "generated server.yaml", serverConfig, []string{
-		"apiVersion: harnest.dev/v1alpha1", "kind: Server",
-		"exact ${NAME}", "Partial interpolation and $NAME",
-		"host: 127.0.0.1", "port: 8080", "allowRemote: false",
-		"requestTimeoutSeconds: 300", "maxConcurrentRequests: 8",
-		"maxRequestBytes: 1MiB", "enabled: true",
-	})
+	// Safe defaults require no authored server file or empty override block.
+	if _, err := os.Stat(filepath.Join(target, "server.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("minimal scaffold should omit server.yaml: %v", err)
+	}
+	if bundle.Config.Server != nil {
+		t.Fatal("minimal scaffold should rely on server defaults")
+	}
 	assertOnlyPlaceholderResources(t, target)
 }
 
@@ -101,14 +102,14 @@ func TestInitExampleFillsOnlyPlaceholderFolders(t *testing.T) {
 			assertManagedFolderExamples(t, target)
 			assertOnlyPlaceholderResources(t, target)
 			defaults := scaffoldFilesForMode("example-agent", framework, "managed", false)
-			for _, path := range []string{"agent.py", "config.yaml", "server.yaml", "agent-card.yaml",
-				"instructions.md", "pyproject.toml", "harnest.lock", "extensions/storage.py"} {
+			for _, path := range []string{"agent.py", "config.yaml", "agent-card.yaml",
+				"instructions.md", "pyproject.toml", "harnest.lock", "lifecycle/storage.py"} {
 				if actual := string(mustReadTestFile(t, filepath.Join(target, path))); actual != defaults[path] {
 					t.Fatalf("--example replaced existing default content in %s", path)
 				}
 			}
-			if _, err := os.Stat(filepath.Join(target, "extensions", "_example.py")); !os.IsNotExist(err) {
-				t.Fatalf("extensions already has default code and needs no extra sample: %v", err)
+			if _, err := os.Stat(filepath.Join(target, "lifecycle", "_example.py")); !os.IsNotExist(err) {
+				t.Fatalf("lifecycle already has default code and needs no extra sample: %v", err)
 			}
 		})
 	}
@@ -119,16 +120,16 @@ func TestInitExampleFillsOnlyPlaceholderFolders(t *testing.T) {
 func assertManagedFolderExamples(t *testing.T, target string) {
 	t.Helper()
 	assertFilesContain(t, target, map[string]string{
-		"lib/_example.py":                       "def normalize(",
-		"models/_example.py":                    "class Message(BaseModel)",
-		"tools/_example.py":                     "from harnest.tool import tool",
-		"tasks/_example.py":                     "@task(queue=",
-		"cron/_example.py":                      "daily_report = Cron(",
-		"subagents/_example.py":                 "helper = Agent(",
-		"mcp/_example.py":                       "def client():",
-		"plugins/_example/plugin.py":            "class StarterPlugin(Plugin)",
-		"plugins/_example/plugin.yaml":          "name: starter_runtime",
-		"plugins/_example_agent/mcp/starter.py": "from harnest.mcp import MCPClient",
+		"lib/_example.py":                                         "def normalize(",
+		"models/_example.py":                                      "class Message(BaseModel)",
+		"tools/_example.py":                                       "from harnest.tool import tool",
+		"tasks/_example.py":                                       "@task(queue=",
+		"cron/_example.py":                                        "daily_report = Cron(",
+		"subagents/_example.py":                                   "helper = Agent(",
+		"mcp/_example.py":                                         "def client():",
+		"extensions/_example/extension.py":                        "class StarterExtension(Extension)",
+		"extensions/_example/extension.yaml":                      "name: starter_runtime",
+		"plugins/_example_agent/plugin.json":                      "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 		"plugins/_example_agent/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"skills/_example/SKILL.md":                                "name: getting-started",
 		"sandbox/_example.py":                                     "network=False",
@@ -356,7 +357,7 @@ func isRequiredStoreResource(directory, name string) bool {
 	if directory == "lib" {
 		return name == "storage.py"
 	}
-	return directory == "extensions" && name == "storage.py"
+	return directory == "lifecycle" && name == "storage.py"
 }
 
 func TestPythonResolutionPrecedence(t *testing.T) {

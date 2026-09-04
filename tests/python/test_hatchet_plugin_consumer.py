@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-import harnest.plugins as plugin_namespace
+import harnest.extensions as plugin_namespace
 from harnest.bundle import compile_artifact
 from harnest.checkpoint import RunScope
 from harnest.runtime import create_fastapi_app
@@ -42,13 +42,13 @@ REAL_LIVE_READY = REAL_MODEL_LIVE and all(
 )
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer"
 _REAL_FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer_real"
-_PRODUCER_PLUGIN = Path(__file__).parents[2] / "examples" / "plugins" / "hatchet"
+_PRODUCER_PLUGIN = Path(__file__).parents[2] / "examples" / "extensions" / "hatchet"
 
 
 def _install_hatchet_plugin(source: Path) -> Path:
     """Install the producer-owned plugin exactly as a consumer would attach it."""
 
-    plugin = source / "plugins" / "hatchet"
+    plugin = source / "extensions" / "hatchet"
     shutil.copytree(_PRODUCER_PLUGIN, plugin)
     return plugin
 
@@ -360,15 +360,15 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
             )
             files = {item["path"] for item in manifest["files"]}
             self.assertIn("source/tools/create_report_job.py", files)
-            self.assertIn("source/plugins/hatchet/plugin.py", files)
+            self.assertIn("source/extensions/hatchet/extension.py", files)
             self.assertFalse(
-                any(path.startswith("source/plugins/hatchet/tools/") for path in files)
+                any(path.startswith("source/extensions/hatchet/tools/") for path in files)
             )
 
         # Artifact compilation must release the temporary public namespace so
         # the next independently compiled agent cannot inherit this plugin.
         self.assertFalse(hasattr(plugin_namespace, "hatchet"))
-        self.assertNotIn("harnest.plugins.hatchet", sys.modules)
+        self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
     def test_consumer_does_not_import_the_external_sdk_or_plugin_internals(self):
         """Keep the reusable adapter boundary observable in the static fixture."""
@@ -376,7 +376,7 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
         tool_source = (_FIXTURE / "tools" / "create_report_job.py").read_text(
             "utf-8"
         )
-        self.assertIn("from harnest.plugins.hatchet import hatchet", tool_source)
+        self.assertIn("from harnest.extensions.hatchet import hatchet", tool_source)
         self.assertNotIn("from hatchet", tool_source)
         self.assertNotIn("plugins.hatchet.plugin", tool_source)
         self.assertIn("await hatchet.run(", tool_source)
@@ -407,15 +407,15 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
                 (artifact / "harnest-manifest.json").read_text("utf-8")
             )
             files = {item["path"] for item in manifest["files"]}
-            self.assertIn("source/extensions/model_evidence.py", files)
-            self.assertIn("source/extensions/storage.py", files)
-            self.assertIn("source/plugins/hatchet/plugin.py", files)
+            self.assertIn("source/lifecycle/model_evidence.py", files)
+            self.assertIn("source/lifecycle/storage.py", files)
+            self.assertIn("source/extensions/hatchet/extension.py", files)
             project = (source / "pyproject.toml").read_text("utf-8")
             self.assertIn('"asyncpg>=0.30,<1"', project)
             self.assertIn('"litellm>=1.84,<2"', project)
 
         self.assertFalse(hasattr(plugin_namespace, "hatchet"))
-        self.assertNotIn("harnest.plugins.hatchet", sys.modules)
+        self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
 
 @unittest.skipUnless(ADK_AVAILABLE, "Google ADK is required")
@@ -443,7 +443,7 @@ class HatchetConsumerRuntimeTests(unittest.TestCase):
                     playground_enabled=False,
                 )
                 module = plugin_namespace.hatchet
-                plugin = module.plugin
+                plugin = module.extension
                 service = _FakeHatchetService(module)
                 with patch.object(
                     module,
@@ -458,7 +458,7 @@ class HatchetConsumerRuntimeTests(unittest.TestCase):
                 self.assertGreaterEqual(service.close_count, 2)
 
             self.assertFalse(hasattr(plugin_namespace, "hatchet"))
-            self.assertNotIn("harnest.plugins.hatchet", sys.modules)
+            self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
     def _exercise_runtime(self, test_client, app, service, evidence: Path) -> None:
         """Drive one principal-owned wait through completion and cleanup."""

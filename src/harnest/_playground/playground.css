@@ -659,3 +659,6 @@ body.eval-mode .topbar { grid-template-columns: minmax(180px, 1fr) auto; }
   .eval-catalog-summary { grid-template-columns: 1fr; }
   .eval-summary-card { grid-template-columns: 1fr repeat(3, auto); }
 }
+
+/* Keep unavailable transports visible without inviting a failed connection. */
+.transport:disabled { opacity: .4; cursor: not-allowed; }

@@ -22,10 +22,37 @@ type AgentSource struct {
 }
 
 type AgentConfig struct {
-	APIVersion string          `yaml:"apiVersion" json:"apiVersion"`
-	Kind       string          `yaml:"kind" json:"kind"`
-	Metadata   AgentMetadata   `yaml:"metadata" json:"metadata"`
-	Spec       AgentConfigSpec `yaml:"spec" json:"spec"`
+	APIVersion string               `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string               `yaml:"kind" json:"kind"`
+	Metadata   AgentMetadata        `yaml:"metadata" json:"metadata"`
+	Spec       AgentConfigSpec      `yaml:"spec" json:"spec"`
+	Server     *AgentServerSettings `yaml:"server,omitempty" json:"server,omitempty"`
+}
+
+// AgentServerSettings carries optional standalone policy to Python compilation.
+// Scalar values retain exact environment references; the server decoder owns
+// their type/range validation and resolves references only at runtime startup.
+type AgentServerSettings struct {
+	Live       any                      `yaml:"live,omitempty" json:"live,omitempty"`
+	HTTP       *AgentHTTPSettings       `yaml:"http,omitempty" json:"http,omitempty"`
+	Limits     *AgentServerLimits       `yaml:"limits,omitempty" json:"limits,omitempty"`
+	Playground *AgentPlaygroundSettings `yaml:"playground,omitempty" json:"playground,omitempty"`
+}
+
+type AgentHTTPSettings struct {
+	Host                  any `yaml:"host,omitempty" json:"host,omitempty"`
+	Port                  any `yaml:"port,omitempty" json:"port,omitempty"`
+	AllowRemote           any `yaml:"allowRemote,omitempty" json:"allowRemote,omitempty"`
+	RequestTimeoutSeconds any `yaml:"requestTimeoutSeconds,omitempty" json:"requestTimeoutSeconds,omitempty"`
+	MaxConcurrentRequests any `yaml:"maxConcurrentRequests,omitempty" json:"maxConcurrentRequests,omitempty"`
+}
+
+type AgentServerLimits struct {
+	MaxRequestBytes any `yaml:"maxRequestBytes,omitempty" json:"maxRequestBytes,omitempty"`
+}
+
+type AgentPlaygroundSettings struct {
+	Enabled any `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 type AgentMetadata struct {

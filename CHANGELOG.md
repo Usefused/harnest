@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* Load Agent Plugins 1.0 packages from `plugin.json`, with independently optional
+  skills and declarative `mcp.json`. Map portable MCP servers into ADK and
+  LangGraph with bounded validation, isolated component failures, safe path and
+  origin handling, and persistent per-installation `PLUGIN_DATA` across reloads.
+
+* Separate reusable Harnest Extensions in `extensions/<name>/` from application
+  hooks and factories in `lifecycle/`; Agent Plugins remain in `plugins/`.
+  Add `extension.yaml`, `extension.py`, `Extension`, `ExtensionContext`, and
+  `context.extensions`, with backed-up, collision-checked `harnest upgrade`
+  migration and legacy runtime-plugin compatibility. Update generated projects,
+  dependency discovery, and extension search without changing runtime ownership.
+
+- Lock the resolved framework version in `harnest.lock` after environment sync, enforce it during installation and compilation, and preserve it through schema upgrades.
+- Remove `Agent(sandbox=...)`; use named `sandboxes=[...]` grants and authored tools on both frameworks.
+- Run container sandboxes through a framework-independent Docker provider with explicit execution/invocation/session scopes, bounded container reuse, CPU/memory/process/scratch budgets, non-root read-only execution, and typed execution status. Scratch is cleared after every call.
+- Continuously test pinned, minimum, and latest-compatible ADK/LangGraph dependencies, including shared evaluations and real Docker isolation.
+
+### Features
+
+* Opt into WebSocket serving with `server.live: true` in `config.yaml`. New
+  projects default to HTTP/SSE only; legacy server files retain live access
+  unless disabled. Disabled live transport rejects native and custom WebSocket
+  handshakes and is unavailable in playground transport selection.
+
+* Configure standalone serving through an optional `server` section in
+  `config.yaml`, with defaults for omitted settings. New projects and upgrades
+  no longer create `server.yaml`; existing files remain supported, while
+  conflicting inline and legacy settings fail before agent code loads.
+
+### Fixes
+
+* Accept composed FastAPI HTTP routers on versions that retain included-router
+  wrappers. Validate fully prefixed paths at every include depth while retaining
+  reserved-path, duplicate-endpoint, and unsupported-route protections.
+
 ## [0.11.1](https://github.com/Usefused/harnest/compare/v0.11.0...v0.11.1) (2026-09-04)
 
 ### Fixes

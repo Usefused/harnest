@@ -1,4 +1,4 @@
-"""Host-owned bounds around the native ADK Docker execution transport."""
+"""Host-owned Docker transport bounds, shared by portable and native adapters."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import threading
 import time
 from typing import Any, Callable
 
-from .sandbox_control import current_control
+from .sandbox_control import current_control, SandboxCancelledError
+from .sandbox_types import SandboxStatus
 from .sandbox_socket import collect_output
 from .sandbox_startup import OwnedStartupClient, check_startup
 
@@ -33,6 +34,8 @@ class GuardedContainer:
         """Keep ownership explicit so aborts never target unrelated containers."""
         self.owner, self.container, self.limit = owner, container, limit
         self.failed = False
+        self.status = SandboxStatus.SUCCEEDED
+        self.exit_code: int | None = None
         self.removed = False
         self.stopped = False
         self._cleanup_lock = threading.Lock()
@@ -70,15 +73,23 @@ class GuardedContainer:
             _close_socket(state.get("socket"))
             self.close()
             if isinstance(exc, TimeoutError):
+                self.status, self.exit_code = SandboxStatus.TIMED_OUT, 124
                 return ExecResult(124, (b"", b"") if demux else b"")
             if isinstance(exc, OutputLimitError):
+                self.status, self.exit_code = SandboxStatus.OUTPUT_LIMIT_EXCEEDED, 1
                 message = b"Sandbox output exceeded max_output_bytes; execution terminated."
                 return ExecResult(1, (b"", message) if demux else message)
+            self.status = SandboxStatus.CANCELLED if isinstance(exc, SandboxCancelledError) else SandboxStatus.FAILED
             raise
 
     def _finish(self, result: Any) -> Any:
         """Native timeouts also require container removal to stop detached children."""
-        if result.exit_code == 124:
+        self.exit_code = result.exit_code
+        self.status = SandboxStatus.SUCCEEDED if result.exit_code == 0 else SandboxStatus.FAILED
+        # Native ADK adapters use a supervisor's timeout sentinel. Portable
+        # execution has a host deadline, so authored exit(124) is just failure.
+        if result.exit_code == getattr(self.owner, "native_timeout_exit_code", 124):
+            self.status = SandboxStatus.TIMED_OUT
             self.close()
         return result
 
@@ -207,6 +218,8 @@ def create_guarded_executor(config: dict[str, Any], max_output_bytes: int) -> An
     from google.adk.code_executors import ContainerCodeExecutor
     from pydantic import PrivateAttr
 
+    limits = config.pop("harnest_resource_limits", {})
+
     class GuardedExecutor(ContainerCodeExecutor):
         """Native configuration and Python wrapper with host-owned transport guards."""
 
@@ -235,7 +248,7 @@ def create_guarded_executor(config: dict[str, Any], max_output_bytes: int) -> An
         def _ContainerCodeExecutor__init_container(self) -> None:
             """Capture native create ownership before an image's start can fail."""
             check_startup()
-            self._client = OwnedStartupClient(self, self._client)
+            self._client = OwnedStartupClient(self, self._client, limits=limits)
             super()._ContainerCodeExecutor__init_container()
             check_startup()
 
@@ -266,7 +279,8 @@ def close_guarded_executor(executor: Any) -> None:
         executor._client = None
     if getattr(executor, "_startup_uncertain", False):
         raise SandboxCleanupError(executor)
-    atexit.unregister(executor._ContainerCodeExecutor__cleanup_container)
+    cleanup = getattr(executor, "_ContainerCodeExecutor__cleanup_container", None) or executor.close
+    atexit.unregister(cleanup)
 
 
 def guard_failed(executor: Any) -> bool:

@@ -27,6 +27,18 @@ class FrameworkCompatibilityTests(unittest.TestCase):
             },
         )
 
+    def test_ci_framework_constraints_stay_inside_the_release_contract(self):
+        """Pinned and minimum lanes must track the advertised distribution ranges."""
+        from packaging.specifiers import SpecifierSet
+
+        root = Path(__file__).resolve().parents[2]
+        for name in ("frameworks.txt", "frameworks-minimum.txt"):
+            lines = (root / "requirements" / name).read_text().splitlines()
+            versions = dict(line.split("==", 1) for line in lines if line and not line.startswith("#"))
+            for contract in FRAMEWORK_COMPATIBILITY.values():
+                with self.subTest(lane=name, framework=contract.framework):
+                    self.assertIn(versions[contract.distribution], SpecifierSet(contract.versions))
+
     def test_supported_distribution_is_resolved_with_harnest_version(self):
         versions = {"harnest": "0.1.0", "langgraph": "1.9.4"}
         with patch(

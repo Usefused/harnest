@@ -70,6 +70,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
         )
 
     def test_plan_is_read_only_and_lists_destructive_contract_changes(self):
+        """Plan required migrations without adding optional server defaults."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.legacy_agent(root)
@@ -90,7 +91,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
         self.assertEqual(plan.blockers, ())
         operations = {(item.kind, item.path, item.destination) for item in plan.actions}
         self.assertIn(("move", "mcp_servers", "mcp"), operations)
-        self.assertIn(("create", "server.yaml", None), operations)
+        self.assertNotIn(("create", "server.yaml", None), operations)
         self.assertIn(("create", "harnest.lock", None), operations)
         self.assertIn(("create", "lib/storage.py", None), operations)
         self.assertIn(("create", "extensions/storage.py", None), operations)
@@ -100,6 +101,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
         )
 
     def test_apply_backs_up_and_migrates_mcp_and_lifecycle_source(self):
+        """Keep backups and finish migrations without creating redundant server YAML."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.legacy_agent(root)
@@ -113,19 +115,19 @@ class RepositoryUpgradeTests(unittest.TestCase):
             self.assertFalse((root / "mcp_servers").exists())
             mcp = (root / "mcp" / "catalog.py").read_text(encoding="utf-8")
             self.assertIn("def client():", mcp)
-            lifecycle = (root / "extensions" / "audit" / "lifecycle.py").read_text(
+            lifecycle = (root / "lifecycle" / "audit" / "lifecycle.py").read_text(
                 encoding="utf-8"
             )
             self.assertIn("from harnest.lifecycle import DROP_EVENT, lifecycle", lifecycle)
             self.assertIn("@lifecycle.before_invoke", lifecycle)
             self.assertIn("@lifecycle.on_event", lifecycle)
             self.assertNotIn("Extension(", lifecycle)
-            native = (root / "extensions" / "audit" / "adk.py").read_text(
+            native = (root / "lifecycle" / "audit" / "adk.py").read_text(
                 encoding="utf-8"
             )
             self.assertIn("@_harnest_lifecycle.adk_plugin", native)
-            self.assertTrue((root / "extensions" / "audit" / "_langgraph.py").is_file())
-            self.assertTrue((root / "server.yaml").is_file())
+            self.assertTrue((root / "lifecycle" / "audit" / "_langgraph.py").is_file())
+            self.assertFalse((root / "server.yaml").exists())
             self.assertTrue((root / "harnest.lock").is_file())
             self.assertFalse((root / "requirements.txt").exists())
             pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")

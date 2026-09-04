@@ -33,6 +33,12 @@ class PluginStartContext:
     _custom_stores: Mapping[str, Any] = field(repr=False)
     _continuations: Any | None = field(default=None, repr=False)
 
+    @property
+    def extension_name(self) -> str:
+        """Expose canonical extension identity while preserving legacy callers."""
+
+        return self.plugin_name
+
     def __post_init__(self) -> None:
         """Validate public identity and hide the copied storage registry."""
 

@@ -187,6 +187,8 @@ def _tool_result(result: SandboxResult) -> dict[str, Any]:
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "status": result.status.value,
+        "exit_code": result.exit_code,
         "metadata": sandbox_metadata_to_dict(result.metadata),
         "output_files": [
             {

@@ -68,6 +68,8 @@ class MCPClient:
     identity: str | None = field(default=None, repr=False)
     capability_id: str | None = field(default=None, repr=False)
     lifecycle: MCPClientLifecycle | None = field(default=None, repr=False)
+    cwd: str | None = None
+    portable: Any = field(default=None, repr=False)
     _lifecycle_controller: _MCPClientLifecycleController | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -183,17 +185,11 @@ class MCPClient:
             raise ValueError(f"unsupported MCP transport: {self.transport}")
 
     def to_adk_toolset(self):
-        """Construct an ADK MCP toolset, resolving ``${ENV_VAR}`` placeholders."""
+        """Use native transport while preserving portable expansion and failure rules."""
 
         classes = _adk_mcp_classes()
         binding = self._lifecycle_binding("adk")
-        connection = self._adk_connection(classes, binding=binding)
-        toolset_type = self._adk_toolset_type(classes[0])
-        toolset = toolset_type(
-            connection_params=connection,
-            tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
-            tool_name_prefix=self.tool_name_prefix,
-        )
+        toolset = self._construct_adk_toolset(classes, binding)
         _attach_adk_mcp_toolset_metadata(
             toolset,
             public_name=self.identity or self.tool_name_prefix or self._client_name(),
@@ -203,6 +199,25 @@ class MCPClient:
         if binding is not None:
             attach_mcp_lifecycle(toolset, binding)
         return toolset
+
+    def _construct_adk_toolset(self, classes, binding):
+        """Keep portable parameter and constructor failures inside their component."""
+        from .agent_plugin_runtime import disabled_adk_toolset, portable_adk_toolset
+        try:
+            connection = self._adk_connection(classes, binding=binding)
+            toolset_type = self._adk_toolset_type(classes[0])
+            if self.portable is not None:
+                toolset_type = portable_adk_toolset(toolset_type, self)
+            return toolset_type(
+                connection_params=connection,
+                tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
+                tool_name_prefix=self.tool_name_prefix,
+            )
+        except Exception as error:
+            if self.portable is None:
+                raise
+            self.portable.failed(error)
+            return disabled_adk_toolset()
 
     def _adk_toolset_type(self, base: Any) -> Any:
         policy = self.approval
@@ -265,9 +280,9 @@ class MCPClient:
             return self._adk_stdio(stdio_params, server_parameters)
         params = sse_params if self.transport == "sse" else stream_params
         kwargs: dict[str, Any] = {
-            "url": _expand(self.url or ""),
+            "url": self._expand(self.url or ""),
             "headers": {
-                key: _expand(value) for key, value in self.headers.items()
+                key: self._expand(value) for key, value in self.headers.items()
             },
             "timeout": self.timeout_seconds,
             "sse_read_timeout": self.sse_read_timeout_seconds,
@@ -275,15 +290,32 @@ class MCPClient:
         if binding is not None:
             # Both framework adapters own and close each returned session client.
             kwargs["httpx_client_factory"] = binding.client_factory()
+        if self.portable is not None:
+            from .agent_plugin_runtime import portable_http_factory
+            kwargs["httpx_client_factory"] = portable_http_factory(self.url or "")
         return params(**kwargs)
 
     def _adk_stdio(self, params: Any, server_parameters: Any) -> Any:
-        server = server_parameters(
-            command=_expand(self.command or ""),
-            args=[_expand(arg) for arg in self.args],
-            env={key: _expand(value) for key, value in self.env.items()} or None,
-        )
+        """Share stdio configuration without host expansion of portable fields."""
+        configuration = self._stdio_configuration()
+        configuration["env"] = configuration["env"] or None
+        server = server_parameters(**configuration)
         return params(server_params=server, timeout=self.timeout_seconds)
+
+    def _expand(self, value: str) -> str:
+        """Keep portable HTTP fields literal and native factory environment support."""
+        return value if self.portable is not None else _expand(value)
+
+    def _stdio_configuration(self) -> dict[str, Any]:
+        """Keep one stdio mapping for both framework adapters."""
+        if self.portable is not None:
+            return self.portable.stdio(self)
+        value = {"command": _expand(self.command or ""),
+                 "args": [_expand(arg) for arg in self.args],
+                 "env": {key: _expand(item) for key, item in self.env.items()}}
+        if self.cwd is not None:
+            value["cwd"] = _expand(self.cwd)
+        return value
 
     def to_langgraph_connection(self) -> dict[str, Any]:
         """Return a LangChain MCP adapter connection without opening it."""
@@ -291,9 +323,7 @@ class MCPClient:
         if self.transport == "stdio":
             return {
                 "transport": "stdio",
-                "command": _expand(self.command or ""),
-                "args": [_expand(arg) for arg in self.args],
-                "env": {key: _expand(value) for key, value in self.env.items()},
+                **self._stdio_configuration(),
                 "session_kwargs": {
                     "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
                 },
@@ -304,8 +334,8 @@ class MCPClient:
                 if self.transport == "streamable-http"
                 else self.transport
             ),
-            "url": _expand(self.url or ""),
-            "headers": {key: _expand(value) for key, value in self.headers.items()},
+            "url": self._expand(self.url or ""),
+            "headers": {key: self._expand(value) for key, value in self.headers.items()},
             "timeout": self.timeout_seconds,
             "sse_read_timeout": self.sse_read_timeout_seconds,
             "session_kwargs": {
@@ -316,6 +346,9 @@ class MCPClient:
         if binding is not None:
             # LangChain forwards this factory to the same MCP SDK transport seam.
             connection["httpx_client_factory"] = binding.client_factory()
+        if self.portable is not None:
+            from .agent_plugin_runtime import portable_http_factory
+            connection["httpx_client_factory"] = portable_http_factory(self.url or "")
         return connection
 
     def _lifecycle_binding(
@@ -331,7 +364,7 @@ class MCPClient:
             name=name,
             transport=cast(Literal["sse", "streamable-http"], self.transport),
             framework=framework,
-            url=_expand(self.url or ""),
+            url=self._expand(self.url or ""),
         )
         return _MCPClientLifecycleBinding(controller, context)
 
@@ -442,6 +475,8 @@ def _mcp_connection_configuration(client: MCPClient) -> tuple[Any, ...]:
         client.tool_name_prefix,
         client.timeout_seconds,
         client.sse_read_timeout_seconds,
+        client.cwd,
+        client.portable,
         # Lifecycle instances may hold distinct certificate and gateway state.
         id(client.lifecycle) if client.lifecycle is not None else None,
     )

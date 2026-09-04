@@ -60,6 +60,12 @@ versions. This check applies to both managed lowering and advanced targets:
 advanced mode exposes framework-native APIs but does not opt out of Harnest's
 tested dependency range.
 
+Environment sync records the installed framework distribution and exact version in
+`harnest.lock`. Installers constrain subsequent environments to that pin, and
+compilation checks it before importing authored code. Frozen sync cannot create
+or change a pin; schema upgrades preserve it. CI tests the committed baseline,
+minimum supported versions, and latest compatible versions for both backends.
+
 The generated manifest records the Harnest version and the selected installed
 framework version. These values describe the compiler/runtime compatibility
 context; they do not replace the source digest or the configured framework and
@@ -240,9 +246,10 @@ marked root-only:
 | `cron/<name>.py` (root-only) | A same-named `Cron` targeting a discovered root task; strict five-column UTC schedule. |
 | `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
 | `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
-| `plugins/<name>/mcp/<client>.py` (root-only) | A plugin-owned `client()` factory using the same rule. |
-| `plugins/<name>/skills/<skill>/SKILL.md` (root-only) | Plugin-owned progressive skills. |
-| `extensions/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
+| `plugins/<folder>/plugin.json` (root-only) | Agent Plugins 1.0 manifest; declares the unique portable package name. |
+| `plugins/<folder>/mcp.json` (root-only) | Optional standard MCP servers, adapted to the selected framework without importing package Python. |
+| `plugins/<folder>/skills/<skill>/SKILL.md` (root-only) | Optional plugin-owned progressive skills, independent of MCP availability. |
+| `lifecycle/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
 | `sandbox/<name>.py` | One matching framework-neutral `Sandbox` variable per file; each agent explicitly grants authored-tool access with `sandboxes=[...]`, then tools call `context.sandboxes["<name>"].execute(code)` or `aexecute(code)`. No automatic model tool is added. Discovery alone grants no access. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
 | `evals/<id>.evalset.json` (root test lane) | A test-only ADK `EvalSet`, executable against ADK or LangGraph, whose `eval_set_id` matches its filename. |
@@ -353,7 +360,7 @@ must contain at least one of each and never contributes an agent or execution
 path. See [Plugins](plugins.md).
 
 Runtime extensions are decorated functions in arbitrary public
-`extensions/**/*.py` modules. Multiple listeners share a phase in explicit
+`lifecycle/**/*.py` modules. Multiple listeners share a phase in explicit
 order with source path as a deterministic tie-breaker. Portable behavior covers
 authentication, invocation, normalized events, errors, and managed model calls.
 Explicit ADK-plugin and LangGraph-middleware factories preserve native callbacks
@@ -424,8 +431,9 @@ tracing, and server boundaries. Explicitly decorated native capabilities inherit
 that invocation context whether the advanced component is the root, an ADK
 subagent, or a LangGraph node; Harnest does not inspect opaque native targets to
 discover capabilities automatically. Managed
-LangGraph also rejects native ADK-only sandbox executors (portable `Sandbox`
-providers are supported), `output_key`,
+LangGraph sandbox grants use the same portable provider contract as ADK;
+neither framework accepts the removed `Agent(sandbox=...)` argument. Managed
+LangGraph rejects `output_key`,
 `generate_content_config`, and implicit subagent delegation rather than
 silently ignoring them.
 
@@ -542,7 +550,7 @@ LangGraph nested `Agent` definitions cannot consume discovered child subagents
 today. Parent resources are not added to the nested definition, and nested
 resources are not promoted to the parent.
 Plugins and extensions remain root-only; populated nested `plugins/` or
-`extensions/` folders are convention errors.
+`lifecycle/` folders are convention errors.
 
 A direct `subagents/<name>.py` and same-named nested folder are mutually
 exclusive. A flat subagent has no private resource directory, so it must provide
@@ -571,15 +579,23 @@ environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode are
 excluded. Source symlinks are rejected, keeping artifacts self-contained and
 preventing credentials or external files from being pulled in accidentally.
 
-The compiler validates authored `server.yaml` and copies it beside the launcher;
-if an older source tree omits it, the compiler materializes the safe loopback
-default. The adjacent copy is runtime policy and may be replaced after compile,
+Before importing authored Python, the compiler validates the optional root
+`server` section in `config.yaml` and fills omitted fields with safe defaults.
+It emits a full versioned `server.yaml` beside the launcher. A legacy authored
+`server.yaml` is preserved when no inline section exists; declaring both is an
+error. New scaffolds and upgrades do not create an authored defaults file. The adjacent copy is runtime policy and may be replaced after compile,
 so it is the sole regular artifact file excluded from the manifest digest. The
 authored copy under `source/` remains hashed, and the Go loader rejects a missing,
 symlinked, or non-regular adjacent file plus every other unmanifested file.
 
 The launcher's explicit `serve` command reads this file without additional
-flags. `http` controls binding, remote-bind consent, timeout, and concurrency;
+flags. New defaults include `live: false`; root `server.live: true` in project
+config enables WebSockets on the same HTTP listener. Missing `live` in legacy
+server documents preserves the old enabled behavior. Disabled policy omits the
+neutral `/live` route and its discovery entry, and rejects all WebSocket ASGI
+scopes before native or authored handlers execute. Embedded Python app builders
+retain their historical `live_enabled=True` default; the launcher passes its
+resolved server choice explicitly. `http` controls binding, remote-bind consent, timeout, and concurrency;
 `limits.maxRequestBytes` is
 enforced across neutral and advanced-native HTTP bodies and WebSocket frames;
 and `playground.enabled` controls the bundled UI. Explicit launcher flags are
@@ -683,7 +699,7 @@ and `/run_live`. Those expose ADK-native models and track the installed ADK
 version; LangGraph applications do not emulate them. They are not the stable
 Harnest integration boundary.
 
-Root extensions may add application routes through repeatable
+Root lifecycle may add application routes through repeatable
 `@lifecycle.http_routes` factories. Compilation calls each synchronous factory
 once with an unbound `AgentInvoker`, validates its FastAPI `APIRouter`, and
 rejects duplicate or Harnest-owned paths. Server composition then binds that

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnest.dev/schemas/project-lock.schema.json",
+  "title": "Harnest project lock",
+  "type": "object",
+  "required": ["apiVersion", "kind", "projectSchema"],
+  "properties": {
+    "apiVersion": {"const": "harnest.dev/v1alpha1"},
+    "kind": {"const": "ProjectLock"},
+    "projectSchema": {"type": "integer", "minimum": 0},
+    "framework": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "distribution", "version"],
+      "properties": {
+        "name": {"enum": ["adk", "langgraph"]},
+        "distribution": {"enum": ["google-adk", "langgraph"]},
+        "version": {"type": "string", "pattern": "^[0-9][A-Za-z0-9.!+_-]*$"}
+      },
+      "allOf": [{
+        "if": {"properties": {"name": {"const": "adk"}}},
+        "then": {"properties": {"distribution": {"const": "google-adk"}}},
+        "else": {"properties": {"distribution": {"const": "langgraph"}}}
+      }]
+    }
+  }
+}
