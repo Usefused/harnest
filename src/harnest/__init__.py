@@ -1,6 +1,12 @@
 """Public authoring API for Harnest agents."""
 
-from .agent import Agent, AgentDefinition, instruction_file
+from .agent import (
+    Agent,
+    AgentDefinition,
+    AgentRuntimePermissionError,
+    AgentRuntimePrincipal,
+    instruction_file,
+)
 from .a2a import (
     A2AClient,
     A2AClientError,
@@ -120,6 +126,8 @@ from .tracing import Tracer, current_trace_ids, get_tracer, span, traced
 __all__ = [
     "Agent",
     "AgentDefinition",
+    "AgentRuntimePermissionError",
+    "AgentRuntimePrincipal",
     "AgentInvoker",
     "AgentResponse",
     "AgentContext",

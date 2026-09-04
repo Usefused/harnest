@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from harnest.approval import ApprovalRun
+from harnest.agent import AgentRuntimePrincipal
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest.continuation import ContinuationConflictError
 from harnest.durable import (
@@ -23,7 +24,10 @@ from harnest.runtime_invocation import InvocationCoordinator
 
 
 def _request(
-    invocation_id: str, *, session_id: str = "session-1"
+    invocation_id: str,
+    *,
+    session_id: str = "session-1",
+    agent_principal: AgentRuntimePrincipal | None = None,
 ) -> InvocationRequest:
     """Build one fully scoped invocation without private provider content."""
 
@@ -34,6 +38,7 @@ def _request(
         invocation_id=invocation_id,
         metadata={},
         state_delta={},
+        agent_principal=agent_principal,
     )
 
 
@@ -373,6 +378,36 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             scope=RunScope("consumer", "user-1", "session-1", "run-plain")
         )
         self.assertEqual(stored.status, "running")
+
+    async def test_principal_fails_before_cross_replica_wait_is_persisted(self):
+        """Never resume a restricted invocation without its opaque authority."""
+
+        request = _request(
+            "run-principal",
+            agent_principal=AgentRuntimePrincipal.create(
+                permissions={"hatchet.run"}
+            ),
+        )
+        await _begin(self.store, request)
+        with self.runtime.execution(_run(request), request), native_durable_call(
+            _artifact(request.invocation_id)
+        ), self.assertRaisesRegex(
+            ExternalContinuationUnavailableError, "Agent Runtime Principal"
+        ):
+            await self.port.suspend(
+                "provider-run-principal",
+                capability="hatchet.run",
+                schema_id="report/v1",
+                validate=_validate,
+            )
+
+        self.assertIsNone(
+            await self.store.get_continuation_by_external_id(
+                application_id="consumer",
+                provider="hatchet",
+                external_id="provider-run-principal",
+            )
+        )
 
     async def test_langgraph_replay_restores_existing_wait_on_second_replica(self):
         """Consume the claimed value when ToolNode re-enters plugin wait code."""

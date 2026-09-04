@@ -9,6 +9,12 @@ import unittest
 
 
 CONTRACTS = {
+    "agent": {
+        "agent_principal": [
+            "AgentRuntimePermissionError",
+            "AgentRuntimePrincipal",
+        ]
+    },
     "auth": {"runtime_auth": ["AuthPrincipal", "AuthenticationError", "Authenticator", "principal_for"]},
     "http": {
         "http_routes": ["AgentInvoker", "AgentResponse", "HTTPRouteError"],

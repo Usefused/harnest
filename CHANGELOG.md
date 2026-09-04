@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Features
+
+* Add invocation-scoped `AgentRuntimePrincipal` grants for permissioned server,
+  client-hosted, and MCP tools. Custom HTTP routes and local agent sessions can
+  pass `agent_principal=` after application authentication; ADK and LangGraph
+  omit unavailable capabilities from the model and recheck before execution.
+
 ### Fixes
 
 * Group public Python imports under their domains: authentication, HTTP, server

@@ -34,6 +34,7 @@ def tool(
     description: str | None = None,
     output_schema: PydanticModel | None = None,
     durable: bool = False,
+    permission: str | None = None,
 ) -> Callable[[F], F]: ...
 
 
@@ -43,6 +44,7 @@ def tool(
     description: str | None = None,
     output_schema: PydanticModel | None = None,
     durable: bool = False,
+    permission: str | None = None,
 ):
     """Mark a typed Python function as a managed Harnest tool.
 
@@ -55,6 +57,10 @@ def tool(
 
     if type(durable) is not bool:
         raise TypeError("tool durable must be a boolean")
+    if permission is not None:
+        from .agent_principal import validate_permission
+
+        validate_permission(permission)
 
     configured_schema = validate_output_schema(
         output_schema, field_name="tool output_schema"
@@ -79,7 +85,12 @@ def tool(
         # The lifecycle wrapper stays outside approval and validation so policy
         # can short-circuit harmlessly, while every executed side effect still
         # crosses the existing approval and schema boundaries.
-        return wrap_lifecycle_tool(wrap_approved_tool(wrapped))
+        governed = wrap_lifecycle_tool(wrap_approved_tool(wrapped))
+        if permission is not None:
+            from .agent_principal import attach_required_permissions
+
+            attach_required_permissions(governed, (permission,))
+        return governed
 
     return decorate(function) if function is not None else decorate
 

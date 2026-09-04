@@ -19,6 +19,7 @@ from starlette.responses import Response
 from starlette.exceptions import HTTPException
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .agent_principal import AgentRuntimePrincipal
 from .assets import (
     DEFAULT_MAX_ASSET_BYTES,
     AssetNotFoundError,
@@ -310,6 +311,7 @@ def create_neutral_router(
         input_value: Any,
         session_id: str | None,
         metadata: Mapping[str, Any],
+        agent_principal: AgentRuntimePrincipal | None,
     ) -> Mapping[str, Any]:
         """Invoke custom routes through the same policy path as `/responses`."""
 
@@ -329,6 +331,7 @@ def create_neutral_router(
             metadata=metadata,
             transport="custom_http",
             validate_before_session=False,
+            agent_principal=agent_principal,
         )
         return await coordinator.invoke_json(run)
 

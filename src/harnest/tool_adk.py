@@ -26,10 +26,22 @@ class ADKPortableToolLifecyclePlugin(BasePlugin):
         super().__init__(name="_harnest_portable_tool_lifecycle")
         self._pipeline = ToolLifecyclePipeline(listeners)
 
+    async def before_model_callback(
+        self, *, callback_context: Any, llm_request: Any
+    ) -> None:
+        """Remove permissioned capabilities from this invocation's model view."""
+
+        del callback_context
+        _project_model_tools(llm_request)
+
     async def before_tool_callback(
         self, *, tool: Any, tool_args: dict[str, Any], tool_context: Any
     ) -> Any:
         """Transform or finish one native call before transport execution."""
+
+        from .agent_principal import require_capability
+
+        require_capability(tool, name=_tool_name(tool))
 
         argument_error = unknown_argument_error(
             _tool_name(tool), tool_args, _declared_argument_names(tool)
@@ -121,6 +133,39 @@ def _already_governed(tool: Any) -> bool:
         return True
     function = getattr(tool, "func", None)
     return getattr(function, "__harnest_tool_lifecycle_wrapped__", False) is True
+
+
+def _project_model_tools(llm_request: Any) -> None:
+    """Filter ADK's invocation-local declarations without mutating the agent."""
+
+    from .agent_principal import capability_is_available
+
+    tools = getattr(llm_request, "tools_dict", None)
+    if not isinstance(tools, dict):
+        return
+    unavailable = {
+        name for name, tool in tools.items() if not capability_is_available(tool)
+    }
+    if not unavailable:
+        return
+    llm_request.tools_dict = {
+        name: tool for name, tool in tools.items() if name not in unavailable
+    }
+    _project_tool_declarations(getattr(llm_request, "config", None), unavailable)
+
+
+def _project_tool_declarations(config: Any, unavailable: set[str]) -> None:
+    """Keep ADK's provider declarations aligned with its runtime tool index."""
+
+    for tool_group in getattr(config, "tools", None) or ():
+        declarations = getattr(tool_group, "function_declarations", None)
+        if declarations is None:
+            continue
+        tool_group.function_declarations = [
+            declaration
+            for declaration in declarations
+            if getattr(declaration, "name", None) not in unavailable
+        ]
 
 
 @contextmanager

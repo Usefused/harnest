@@ -8,6 +8,8 @@ import inspect
 import re
 from typing import Any
 
+from .agent_principal import AgentRuntimePrincipal
+
 
 class HTTPRouteError(ValueError):
     """An authored HTTP route violates Harnest's server contract."""
@@ -70,7 +72,8 @@ class AgentResponse:
 
 
 _InvokeHTTPRoute = Callable[
-    [Any, Any, str | None, Mapping[str, Any]], Awaitable[Mapping[str, Any]]
+    [Any, Any, str | None, Mapping[str, Any], AgentRuntimePrincipal | None],
+    Awaitable[Mapping[str, Any]],
 ]
 
 
@@ -87,8 +90,9 @@ class AgentInvoker:
         input: Any,
         session_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> AgentResponse:
-        """Invoke through Harnest's authenticated response coordinator."""
+        """Invoke with an optional application-authorized runtime principal."""
 
         if self._invoke is None:
             raise RuntimeError("AgentInvoker is available only while serving Harnest")
@@ -99,7 +103,7 @@ class AgentInvoker:
         if metadata is not None and not isinstance(metadata, Mapping):
             raise TypeError("metadata must be a mapping")
         payload = await self._invoke(
-            connection, input, session_id, dict(metadata or {})
+            connection, input, session_id, dict(metadata or {}), agent_principal
         )
         return AgentResponse._from_payload(payload)
 

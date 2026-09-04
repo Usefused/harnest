@@ -18,6 +18,7 @@ from .mcp_context import (
     _managed_mcp_tool,
     _mark_governed_mcp_operation,
 )
+from .agent_principal import required_permissions
 
 
 _ACTIVE_NATIVE_TOOL_CONTEXT: ContextVar[Any | None] = ContextVar(
@@ -163,7 +164,13 @@ def _adk_mcp_marker(
 
     # Approval, when configured, already wraps remote_tool.run_async during
     # toolset discovery. Passing no policy avoids a second authorization gate.
-    return _managed_mcp_tool(client_name, name, invoke, approval=None)
+    return _managed_mcp_tool(
+        client_name,
+        name,
+        invoke,
+        approval=None,
+        required_permissions=tuple(required_permissions(remote_tool)),
+    )
 
 
 def _native_marker_operation(

@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
+from .agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
 from .mcp import MCPClient
 from .mcp_lifecycle import propagate_mcp_lifecycles
 from .model import ModelInput, resolve_model
@@ -357,3 +358,12 @@ def _build_adk_subagent(value: Any) -> Any:
 
 # A short alias reads naturally in agent.py: Agent(...).build().
 Agent = AgentDefinition
+
+
+__all__ = [
+    "Agent",
+    "AgentDefinition",
+    "AgentRuntimePermissionError",
+    "AgentRuntimePrincipal",
+    "instruction_file",
+]

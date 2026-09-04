@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
+from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence, cast
 
 from .approval import (
@@ -78,6 +79,8 @@ class MCPClient:
     lifecycle: MCPClientLifecycle | None = field(default=None, repr=False)
     cwd: str | None = None
     portable: Any = field(default=None, repr=False)
+    permission: str | None = None
+    tool_permissions: Mapping[str, str] = field(default_factory=dict, repr=False)
     _lifecycle_controller: _MCPClientLifecycleController | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -90,6 +93,8 @@ class MCPClient:
         env: Mapping[str, str] | None = None,
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
+        permission: str | None = None,
+        tool_permissions: Mapping[str, str] | None = None,
         timeout_seconds: float = 30,
         lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
@@ -100,6 +105,8 @@ class MCPClient:
             env=env or {},
             tool_filter=tools,
             tool_name_prefix=prefix,
+            permission=permission,
+            tool_permissions=tool_permissions or {},
             timeout_seconds=timeout_seconds,
             lifecycle=lifecycle,
         )
@@ -112,6 +119,8 @@ class MCPClient:
         headers: Mapping[str, str] | None = None,
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
+        permission: str | None = None,
+        tool_permissions: Mapping[str, str] | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
@@ -122,6 +131,8 @@ class MCPClient:
             headers=headers or {},
             tool_filter=tools,
             tool_name_prefix=prefix,
+            permission=permission,
+            tool_permissions=tool_permissions or {},
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
             lifecycle=lifecycle,
@@ -135,6 +146,8 @@ class MCPClient:
         headers: Mapping[str, str] | None = None,
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
+        permission: str | None = None,
+        tool_permissions: Mapping[str, str] | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
@@ -145,6 +158,8 @@ class MCPClient:
             headers=headers or {},
             tool_filter=tools,
             tool_name_prefix=prefix,
+            permission=permission,
+            tool_permissions=tool_permissions or {},
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
             lifecycle=lifecycle,
@@ -153,7 +168,35 @@ class MCPClient:
     def __post_init__(self) -> None:
         self._validate_timeouts()
         self._validate_transport()
+        self._validate_permissions()
         self._initialize_lifecycle()
+
+    def _validate_permissions(self) -> None:
+        """Freeze client and tool requirements using permissioned-tool identifiers."""
+
+        from .agent_principal import validate_permission
+
+        if self.permission is not None:
+            validate_permission(self.permission)
+        if not isinstance(self.tool_permissions, Mapping):
+            raise TypeError("MCP tool_permissions must be a mapping")
+        normalized: dict[str, str] = {}
+        for name, permission in self.tool_permissions.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("MCP permission tool names must be non-empty strings")
+            normalized[name] = validate_permission(permission)
+        object.__setattr__(
+            self, "tool_permissions", MappingProxyType(normalized)
+        )
+
+    def required_permissions_for(self, tool_name: str) -> frozenset[str]:
+        """Combine an optional client requirement with one remote-tool requirement."""
+
+        return frozenset(
+            item
+            for item in (self.permission, self.tool_permissions.get(tool_name))
+            if item is not None
+        )
 
     def _initialize_lifecycle(self) -> None:
         """Validate and privately bind the optional remote-client lifecycle."""
@@ -229,46 +272,68 @@ class MCPClient:
 
     def _adk_toolset_type(self, base: Any) -> Any:
         policy = self.approval
-        if policy is None:
+        required_permission = self.permission
+        tool_permissions = dict(self.tool_permissions)
+        if policy is None and required_permission is None and not tool_permissions:
             return base
         client_name = self._client_name()
         public_name = self.identity or self.tool_name_prefix or client_name
         exposed_prefix = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
 
-        class ApprovalMcpToolset(base):
-            """Expose adapter identity and gate tools after ADK discovery."""
+        class GovernedMcpToolset(base):
+            """Apply approval and principal projection after ADK discovery."""
 
             # Invocation adapters need the canonical capability key without
             # retaining the MCPClient, whose fields include raw connection data.
             __harnest_mcp_public_name__ = public_name
             __harnest_mcp_client_name__ = client_name
-            __harnest_mcp_approval_wrapped__ = True
+            __harnest_mcp_approval_wrapped__ = policy is not None
 
             async def get_tools(self, readonly_context: Any = None) -> list[Any]:
+                from .agent_principal import (
+                    attach_required_permissions,
+                    capability_is_available,
+                    permissions_are_available,
+                )
+
+                client_requirements = (
+                    () if required_permission is None else (required_permission,)
+                )
+                if not permissions_are_available(client_requirements):
+                    return []
                 tools = await super().get_tools(readonly_context)
                 names = tuple(
                     str(getattr(tool, "name", "")).removeprefix(exposed_prefix)
                     for tool in tools
                 )
-                _validate_approval_tools(policy, names, capability_id=client_name)
+                _validate_mcp_permission_tools(tool_permissions, names, client_name)
+                if policy is not None:
+                    _validate_approval_tools(policy, names, capability_id=client_name)
+                selected: list[Any] = []
                 for remote_tool in tools:
                     exposed_name = str(getattr(remote_tool, "name", ""))
                     name = exposed_name.removeprefix(exposed_prefix)
-                    if not policy.applies_to(name):
-                        continue
-
-                    # ADK creates MCP tools only after discovery. Wrapping its
-                    # public execution method is the only point that can audit
-                    # success after transport I/O without copying MCP internals.
-                    remote_tool.run_async = _guard_adk_mcp_tool(
-                        remote_tool.run_async,
-                        client_name=client_name,
-                        tool_name=name,
-                        policy=policy,
+                    requirements = tuple(
+                        item
+                        for item in (required_permission, tool_permissions.get(name))
+                        if item is not None
                     )
-                return tools
+                    attach_required_permissions(remote_tool, requirements)
+                    if policy is not None and policy.applies_to(name):
+                        # ADK creates MCP tools only after discovery. Wrapping its
+                        # public execution method is the only point that can audit
+                        # success after transport I/O without copying MCP internals.
+                        remote_tool.run_async = _guard_adk_mcp_tool(
+                            remote_tool.run_async,
+                            client_name=client_name,
+                            tool_name=name,
+                            policy=policy,
+                        )
+                    if capability_is_available(remote_tool):
+                        selected.append(remote_tool)
+                return selected
 
-        return ApprovalMcpToolset
+        return GovernedMcpToolset
 
     def _client_name(self) -> str:
         """Return the canonical capability identity used by approval and audit."""
@@ -504,6 +569,21 @@ def _validate_approval_tools(
     if missing:
         raise ValueError(
             f"MCP capability {capability_id!r} approval references unavailable "
+            f"tools: {', '.join(missing)}"
+        )
+
+
+def _validate_mcp_permission_tools(
+    tool_permissions: Mapping[str, str],
+    remote_names: Sequence[str],
+    capability_id: str,
+) -> None:
+    """Fail closed when permission metadata names an unavailable remote tool."""
+
+    missing = sorted(set(tool_permissions) - set(remote_names))
+    if missing:
+        raise ValueError(
+            f"MCP capability {capability_id!r} permissions reference unavailable "
             f"tools: {', '.join(missing)}"
         )
 

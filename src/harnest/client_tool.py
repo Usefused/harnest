@@ -333,6 +333,7 @@ def client_tool(
     description: str | None = None,
     timeout_seconds: int = 300,
     output_schema: PydanticModel | None = None,
+    permission: str | None = None,
 ) -> Callable[[F], F]: ...
 
 
@@ -342,11 +343,16 @@ def client_tool(
     description: str | None = None,
     timeout_seconds: int = 300,
     output_schema: PydanticModel | None = None,
+    permission: str | None = None,
 ):
-    """Declare a typed tool implemented by the HTTP or WebSocket client."""
+    """Declare an optionally permissioned tool implemented by the client."""
 
     if not isinstance(timeout_seconds, int) or timeout_seconds < 1:
         raise ValueError("client tool timeout_seconds must be a positive integer")
+    if permission is not None:
+        from .agent_principal import validate_permission
+
+        validate_permission(permission)
     configured_schema = validate_output_schema(
         output_schema, field_name="client tool output_schema"
     )
@@ -367,6 +373,9 @@ def client_tool(
 
         @functools.wraps(fn)
         async def invoke(*args: Any, **kwargs: Any) -> Any:
+            from .agent_principal import require_capability
+
+            require_capability(invoke, name=fn.__name__)
             execution = _CURRENT.get()
             if execution is None:
                 raise ClientToolError(
@@ -405,7 +414,13 @@ def client_tool(
         # after the client-tool marker exists so both authored orders are safe.
         from .approval import wrap_approved_tool
 
-        return wrap_approved_tool(invoke)  # type: ignore[return-value]
+        governed = wrap_approved_tool(invoke)
+        if permission is not None:
+            from .agent_principal import attach_required_permissions
+
+            attach_required_permissions(invoke, (permission,))
+            attach_required_permissions(governed, (permission,))
+        return governed  # type: ignore[return-value]
 
     return decorate(function) if function is not None else decorate
 

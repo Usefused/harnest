@@ -27,6 +27,7 @@ from ._library import (
     activate_authored_library,
     release_authored_library,
 )
+from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_principal
 from .runtime_auth import Authenticator, install_authentication
 from .runtime_contract import (
     AgentInfo, InvocationRequest, InvocationResult, NoCustomerFacingOutputError,
@@ -396,6 +397,7 @@ async def run_agent_message(
     message: str,
     *,
     request_timeout: float = 300,
+    agent_principal: AgentRuntimePrincipal | None = None,
 ) -> dict[str, Any]:
     """Run one request through the same driver used by the HTTP server."""
 
@@ -410,6 +412,7 @@ async def run_agent_message(
             application,
             message,
             request_timeout=request_timeout,
+            agent_principal=resolve_nested_agent_principal(agent_principal),
         )
     finally:
         release_authored_library(Path(artifact).resolve() / "source")
@@ -421,6 +424,7 @@ async def _run_agent_message(
     message: str,
     *,
     request_timeout: float,
+    agent_principal: AgentRuntimePrincipal | None,
 ) -> dict[str, Any]:
     """Run direct execution while the caller owns the library lifecycle."""
 
@@ -456,6 +460,7 @@ async def _run_agent_message(
             invocation_id=f"direct_{uuid.uuid4().hex}",
             metadata={},
             state_delta={},
+            agent_principal=agent_principal,
             transport="direct",
         )
         from .logging import get_logger

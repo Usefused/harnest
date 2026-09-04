@@ -99,7 +99,8 @@ def _langchain_tools(values: Sequence[Any]) -> list[Any]:
     result = []
     for value in values:
         if isinstance(value, BaseTool):
-            result.append(_strict_langchain_tool(_govern_langchain_base_tool(value)))
+            native = _strict_langchain_tool(_govern_langchain_base_tool(value))
+            result.append(_retain_tool_permissions(value, native))
         elif isinstance(value, Mapping):
             result.append(dict(value))
         elif callable(value):
@@ -108,12 +109,26 @@ def _langchain_tools(values: Sequence[Any]) -> list[Any]:
                 if is_durable_tool(value)
                 else value
             )
-            result.append(_strict_langchain_tool(langchain_tool(runtime_value)))
+            native = _strict_langchain_tool(langchain_tool(runtime_value))
+            result.append(_retain_tool_permissions(value, native))
         else:
             raise TypeError(
                 "LangGraph tools must be callables, BaseTool instances, or mappings"
             )
     return result
+
+
+def _retain_tool_permissions(source: Any, target: Any) -> Any:
+    """Copy permissioned-tool metadata onto LangChain's native wrapper."""
+
+    from ..agent_principal import attach_required_permissions, required_permissions
+
+    permissions = required_permissions(source)
+    return (
+        attach_required_permissions(target, tuple(permissions))
+        if permissions
+        else target
+    )
 
 
 def _strict_langchain_tool(tool: Any) -> Any:
@@ -366,21 +381,47 @@ def _langgraph_agent_scope_middleware(agent_name: str) -> Any:
     class HarnestAgentScopeMiddleware(AgentMiddleware):
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             with _managed_agent_scope(agent_name):
-                return await handler(request)
+                return await handler(_project_principal_tools(request))
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
             with _managed_agent_scope(agent_name):
-                return handler(request)
+                return handler(_project_principal_tools(request))
 
         async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
             with _managed_agent_scope(agent_name):
+                _require_principal_tool(request)
                 return await handler(request)
 
         def wrap_tool_call(self, request: Any, handler: Any) -> Any:
             with _managed_agent_scope(agent_name):
+                _require_principal_tool(request)
                 return handler(request)
 
     return HarnestAgentScopeMiddleware()
+
+
+def _project_principal_tools(request: Any) -> Any:
+    """Give one model call only tools available to its runtime principal."""
+
+    from ..agent_principal import capability_is_available
+
+    tools = getattr(request, "tools", None)
+    if tools is None:
+        return request
+    selected = [tool for tool in tools if capability_is_available(tool)]
+    return request if len(selected) == len(tools) else request.override(tools=selected)
+
+
+def _require_principal_tool(request: Any) -> None:
+    """Recheck execution so replayed calls cannot bypass model projection."""
+
+    from ..agent_principal import require_capability
+
+    tool = getattr(request, "tool", None)
+    call = getattr(request, "tool_call", {})
+    name = call.get("name") if isinstance(call, Mapping) else None
+    if tool is not None:
+        require_capability(tool, name=str(name or getattr(tool, "name", "tool")))
 
 
 @contextmanager

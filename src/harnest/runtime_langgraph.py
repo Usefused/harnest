@@ -39,6 +39,7 @@ from .mcp import (
     _invoke_governed_mcp_call,
     _mcp_result_failed,
     _validate_approval_tools,
+    _validate_mcp_permission_tools,
 )
 from .mcp_context import (
     MCPToolCallError,
@@ -505,6 +506,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 discovered, server_name=server_name, allowed=configured.tool_filter
             )
             _validate_mcp_approval(selected, server_name, configured)
+            _apply_mcp_permissions(selected, server_name, configured)
             public_name = configured.identity or server_name
             self._register_mcp_context_tools(public_name, server_name, selected)
             tools.extend(selected)
@@ -1411,7 +1413,14 @@ def _langgraph_mcp_marker(
         )
         return _context_mcp_tool_result(result)
 
-    marker = _managed_mcp_tool(client_name, tool_name, operation)
+    from .agent_principal import required_permissions
+
+    marker = _managed_mcp_tool(
+        client_name,
+        tool_name,
+        operation,
+        required_permissions=tuple(required_permissions(tool)),
+    )
 
     async def routed(
         tool_input: Any,
@@ -1620,6 +1629,32 @@ def _validate_mcp_approval(
         str(getattr(tool, "name", "")).removeprefix(prefix) for tool in tools
     )
     _validate_approval_tools(policy, remote_names, capability_id=server_name)
+
+
+def _apply_mcp_permissions(
+    tools: Sequence[Any], server_name: str, configured: Any
+) -> None:
+    """Attach declared MCP requirements to discovered native tool objects."""
+
+    from .agent_principal import attach_required_permissions
+
+    prefix = f"{server_name}_"
+    named = [
+        (
+            tool,
+            str(getattr(tool, "name", "")).removeprefix(prefix),
+        )
+        for tool in tools
+    ]
+    _validate_mcp_permission_tools(
+        configured.tool_permissions,
+        tuple(name for _, name in named),
+        server_name,
+    )
+    for tool, name in named:
+        attach_required_permissions(
+            tool, tuple(configured.required_permissions_for(name))
+        )
 
 
 def mcp_approval_interceptor(

@@ -9,6 +9,11 @@ from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 from ._exception_notes import add_exception_note
+from .agent_principal import (
+    activate_agent_principal,
+    create_agent_principal_binding,
+    revoke_agent_principal,
+)
 from .lifecycle import DROP_EVENT, LifecycleContext, LifecycleListener
 from .lifecycle_transition import Finish, Next, UNCHANGED
 from .context import (
@@ -225,11 +230,11 @@ def _replacement_request(
             f"extension {listener.identity} before_invoke must return "
             "InvocationRequest or None, or use explicit lifecycle control flow"
         )
-    ownership = ("invocation_id", "user_id", "session_id")
+    ownership = ("invocation_id", "user_id", "session_id", "agent_principal")
     if any(getattr(replacement, name) != getattr(current, name) for name in ownership):
         raise ExtensionTransformError(
             f"extension {listener.identity} before_invoke cannot replace "
-            "invocation_id, user_id, or session_id"
+            "invocation_id, user_id, session_id, or agent_principal"
         )
     return replacement
 
@@ -522,9 +527,14 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
+        principal_binding = self._principal_binding(request)
         try:
             async with self._session_scope(request):
-                with activate_context(agent_context), self._credential_scope():
+                with (
+                    activate_context(agent_context),
+                    activate_agent_principal(principal_binding),
+                    self._credential_scope(),
+                ):
                     return await self._invoke_bound(
                         request, lifecycle_context, agent_context
                     )
@@ -532,6 +542,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             # ContextVars are copied into child tasks, so resetting this task's
             # token alone cannot remove capabilities from work that outlives it.
             revoke_context(agent_context)
+            revoke_agent_principal(principal_binding)
 
     async def _invoke_bound(
         self,
@@ -582,11 +593,16 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
+        principal_binding = self._principal_binding(request)
         iterator: AsyncIterator[RuntimeEvent] | None = None
         try:
             async with self._session_scope(request):
                 try:
-                    with activate_context(agent_context), self._credential_scope():
+                    with (
+                        activate_context(agent_context),
+                        activate_agent_principal(principal_binding),
+                        self._credential_scope(),
+                    ):
                         await self._bind_invocation_resources(agent_context)
                         transformed_request, short = await self._before(
                             lifecycle_context, request
@@ -594,14 +610,21 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                     events: list[RuntimeEvent] = []
                     if short is not None:
                         async for event in self._short_stream(
-                            short, lifecycle_context, agent_context, events
+                            short,
+                            lifecycle_context,
+                            agent_context,
+                            principal_binding,
+                            events,
                         ):
                             yield event
                         return
                     iterator = self._driver.stream(transformed_request).__aiter__()
                     while True:
                         transformed_event = await self._next_stream_event(
-                            iterator, lifecycle_context, agent_context
+                            iterator,
+                            lifecycle_context,
+                            agent_context,
+                            principal_binding,
                         )
                         if transformed_event is _STREAM_END:
                             break
@@ -611,23 +634,34 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                         # The caller must not inherit agent capabilities while it handles
                         # a frame; context is rebound only while advancing the backend.
                         yield transformed_event
-                    with activate_context(agent_context), self._credential_scope():
+                    with (
+                        activate_context(agent_context),
+                        activate_agent_principal(principal_binding),
+                        self._credential_scope(),
+                    ):
                         await self._after_stream(
                             lifecycle_context,
                             _stream_result(transformed_request, events),
                         )
                 except Exception as error:
-                    with activate_context(agent_context), self._credential_scope():
+                    with (
+                        activate_context(agent_context),
+                        activate_agent_principal(principal_binding),
+                        self._credential_scope(),
+                    ):
                         await self._notify_error(lifecycle_context, error)
                     raise
                 finally:
                     if iterator is not None:
                         with activate_context(
                             agent_context
+                        ), activate_agent_principal(
+                            principal_binding
                         ), self._credential_scope():
                             await _close_iterator(iterator)
         finally:
             revoke_context(agent_context)
+            revoke_agent_principal(principal_binding)
 
     def _agent_context(self, request: InvocationRequest) -> AgentContext:
         """Give each invocation an isolated view over shared application values."""
@@ -658,6 +692,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         await self._start_resources()
         active = self._agent_context(request)
         lifecycle_context = _context(self._driver, request)
+        principal_binding = self._principal_binding(request)
         try:
             # Evaluation sessions must not lease or mutate the server's live
             # session backend, even when application resources are borrowed.
@@ -667,7 +702,9 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 invocation_id=request.invocation_id,
             ):
                 with (
-                    activate_context(active), self._credential_scope(),
+                    activate_context(active),
+                    activate_agent_principal(principal_binding),
+                    self._credential_scope(),
                     model_invocation_scope(lifecycle_context),
                     _tool_lifecycle_pipeline_scope(self._tool_lifecycle_pipeline),
                 ):
@@ -675,6 +712,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                     yield
         finally:
             revoke_context(active)
+            revoke_agent_principal(principal_binding)
 
     def _credential_scope(self) -> Any:
         """Bind credentials separately from enumerable agent resources."""
@@ -682,6 +720,17 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         if self._credential_provider is None:
             return nullcontext()
         return _activate_credential_provider(self._credential_provider)
+
+    def _principal_binding(self, request: InvocationRequest) -> Any:
+        """Reject native apps that cannot guarantee model capability projection."""
+
+        if request.agent_principal is not None and self.info.mode != "managed":
+            from .agent_principal import AgentRuntimePermissionError
+
+            raise AgentRuntimePermissionError(
+                "Agent Runtime Principal requires a managed Harnest agent"
+            )
+        return create_agent_principal_binding(request.agent_principal)
 
     def _session_scope(self, request: InvocationRequest) -> Any:
         """Bind one portable session lease around all agent lifecycle stages."""
@@ -717,11 +766,13 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         iterator: AsyncIterator[RuntimeEvent],
         lifecycle_context: LifecycleContext,
         agent_context: AgentContext,
+        principal_binding: Any,
     ) -> RuntimeEvent | object:
         """Advance native streaming only while invocation capabilities are bound."""
 
         with (
             activate_context(agent_context),
+            activate_agent_principal(principal_binding),
             self._credential_scope(),
             model_invocation_scope(lifecycle_context),
             _tool_lifecycle_pipeline_scope(self._tool_lifecycle_pipeline),
@@ -737,18 +788,27 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         result: InvocationResult,
         lifecycle_context: LifecycleContext,
         agent_context: AgentContext,
+        principal_binding: Any,
         events: list[RuntimeEvent],
     ) -> AsyncIterator[RuntimeEvent]:
         """Project a lifecycle-finished response through normal stream policy."""
 
         for event in result.events:
-            with activate_context(agent_context), self._credential_scope():
+            with (
+                activate_context(agent_context),
+                activate_agent_principal(principal_binding),
+                self._credential_scope(),
+            ):
                 transformed = await self._event(lifecycle_context, event)
             if transformed is DROP_EVENT:
                 continue
             events.append(transformed)
             yield transformed
-        with activate_context(agent_context), self._credential_scope():
+        with (
+            activate_context(agent_context),
+            activate_agent_principal(principal_binding),
+            self._credential_scope(),
+        ):
             await self._after_stream(lifecycle_context, result)
 
     async def close(self) -> None:

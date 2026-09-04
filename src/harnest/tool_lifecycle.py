@@ -204,6 +204,9 @@ def _wrap_async_tool(function: F) -> F:
 
     @functools.wraps(function)
     async def invoke(*args: Any, **kwargs: Any) -> Any:
+        from .agent_principal import require_capability
+
+        require_capability(invoke, name=function.__name__)
         pipeline = _ACTIVE_TOOL_PIPELINE.get()
         if pipeline is None:
             return await function(*args, **kwargs)
@@ -222,6 +225,9 @@ def _wrap_sync_tool(function: F) -> F:
 
     @functools.wraps(function)
     def invoke(*args: Any, **kwargs: Any) -> Any:
+        from .agent_principal import require_capability
+
+        require_capability(invoke, name=function.__name__)
         pipeline = _ACTIVE_TOOL_PIPELINE.get()
         if pipeline is None:
             return function(*args, **kwargs)

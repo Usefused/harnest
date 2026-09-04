@@ -185,15 +185,31 @@ class _GovernedMCPTool:
     client_name: str
     name: str
     _operation: _MCPCall = field(repr=False, compare=False)
+    required_permissions: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         _require_name(self.client_name, "MCP client name")
         _require_name(self.name, "MCP tool name")
         if not callable(self._operation):
             raise TypeError("managed MCP tool operation must be callable")
+        from .agent_principal import validate_permission
+
+        for permission in self.required_permissions:
+            validate_permission(permission)
 
     async def invoke(self, arguments: Mapping[str, Any]) -> Any:
         """Run the single path shared by framework and context-originated calls."""
+
+        from .agent_principal import (
+            AgentRuntimePermissionError,
+            permissions_are_available,
+        )
+
+        if not permissions_are_available(self.required_permissions):
+            raise AgentRuntimePermissionError(
+                f"capability {self.name!r} is unavailable to the "
+                "Agent Runtime Principal"
+            )
 
         binding = _active_binding()
         public_name = binding.public_names.get(id(self))
@@ -319,6 +335,7 @@ def _managed_mcp_tool(
     operation: _MCPCall,
     *,
     approval: ApprovalPolicy | None = None,
+    required_permissions: Sequence[str] = (),
 ) -> _GovernedMCPTool:
     """Create the one governed wrapper for an actually discovered framework tool."""
 
@@ -341,7 +358,12 @@ def _managed_mcp_tool(
     # ToolLifecycle derives the public tool identity from __name__. Assigning the
     # discovered stable name prevents an internal helper name entering policy.
     approved.__name__ = name
-    return _GovernedMCPTool(client_name, name, wrap_lifecycle_tool(approved))
+    return _GovernedMCPTool(
+        client_name,
+        name,
+        wrap_lifecycle_tool(approved),
+        frozenset(required_permissions),
+    )
 
 
 def _mark_governed_mcp_operation(operation: Any) -> Any:
@@ -368,13 +390,26 @@ def _activate_mcp_context(
 
     from .context import context
 
+    from .agent_principal import permissions_are_available
+
     active = context.current()
     lifetime = _MCPContextLifetime()
-    managed = {
-        name: _managed_client(name, tools, active.invocation_id, lifetime)
+    projected = {
+        name: {
+            tool_name: tool
+            for tool_name, tool in tools.items()
+            if permissions_are_available(
+                getattr(tool, "required_permissions", ())
+            )
+        }
         for name, tools in clients.items()
     }
-    public_names = _tool_public_names(clients)
+    projected = {name: tools for name, tools in projected.items() if tools}
+    managed = {
+        name: _managed_client(name, tools, active.invocation_id, lifetime)
+        for name, tools in projected.items()
+    }
+    public_names = _tool_public_names(projected)
     binding = _MCPBinding(
         MappingProxyType(managed),
         MappingProxyType(public_names),

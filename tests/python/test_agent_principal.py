@@ -1,0 +1,413 @@
+import asyncio
+from types import SimpleNamespace
+import unittest
+
+from harnest import AgentRuntimePermissionError, AgentRuntimePrincipal
+from harnest.agent_principal import (
+    activate_agent_principal,
+    active_agent_principal,
+    attach_required_permissions,
+    create_agent_principal_binding,
+    resolve_nested_agent_principal,
+    revoke_agent_principal,
+)
+from harnest.backends.langgraph import _langchain_tools, _project_principal_tools
+from harnest.approval import require_human_approval
+from harnest.client_tool import client_tool
+from harnest.context import context
+from harnest.context import activate_context, create_agent_context, revoke_context
+from harnest.mcp import MCPClient
+from harnest.mcp_context import (
+    MCPClientUnavailableError,
+    MCPToolUnavailableError,
+    _activate_mcp_context,
+    _managed_mcp_tool,
+    mcp,
+)
+from harnest.neutral_runtime import (
+    AgentInfo,
+    InvocationRequest,
+    InvocationResult,
+)
+from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.tool import tool
+from harnest.tool_adk import _project_model_tools
+
+
+def _request(principal=None):
+    return InvocationRequest(
+        input="hello",
+        user_id="user-1",
+        session_id="session-1",
+        invocation_id="invocation-1",
+        metadata={},
+        state_delta={},
+        agent_principal=principal,
+    )
+
+
+class _RecordingDriver:
+    def __init__(self):
+        self.info = AgentInfo(
+            id="support",
+            name="support",
+            description="Support",
+            card={},
+            framework="langgraph",
+            mode="managed",
+        )
+        self.seen = []
+
+    async def invoke(self, request):
+        self.seen.append((active_agent_principal(), hasattr(context, "agent_principal")))
+        return InvocationResult("ok", (), None, request.session_id, {})
+
+    async def stream(self, request):
+        for index in range(2):
+            self.seen.append(active_agent_principal())
+            yield {"type": "message", "text": str(index)}
+
+
+class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
+    def test_permission_identifiers_are_validated_at_authoring_boundaries(self):
+        with self.assertRaisesRegex(ValueError, "permission must start"):
+            AgentRuntimePrincipal.create(permissions={"bad permission"})
+        with self.assertRaisesRegex(ValueError, "permission must start"):
+            MCPClient.sse(
+                "https://mcp.invalid/sse",
+                tool_permissions={"read": "bad permission"},
+            )
+        with self.assertRaisesRegex(ValueError, "permission must start"):
+            tool(permission="bad permission")
+
+    def test_principals_can_only_be_derived_with_fewer_permissions(self):
+        principal = AgentRuntimePrincipal.create(
+            permissions={"billing.read", "billing.write"}
+        )
+
+        restricted = principal.restrict({"billing.read"})
+
+        self.assertEqual(restricted.permissions, frozenset({"billing.read"}))
+        self.assertNotEqual(restricted.id, principal.id)
+        with self.assertRaises(AgentRuntimePermissionError):
+            principal.restrict({"admin.all"})
+
+    def test_nested_invocations_inherit_and_cannot_amplify_permissions(self):
+        principal = AgentRuntimePrincipal.create(permissions={"billing.read"})
+        binding = create_agent_principal_binding(principal)
+        try:
+            with activate_agent_principal(binding):
+                self.assertIs(resolve_nested_agent_principal(None), principal)
+                restricted = resolve_nested_agent_principal(
+                    AgentRuntimePrincipal.create(permissions=())
+                )
+                with self.assertRaises(AgentRuntimePermissionError):
+                    resolve_nested_agent_principal(
+                        AgentRuntimePrincipal.create(
+                            permissions={"billing.read", "billing.write"}
+                        )
+                    )
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual(restricted.permissions, frozenset())
+
+    async def test_permissioned_tool_is_unrestricted_without_a_principal(self):
+        @tool(permission="billing.write")
+        async def charge():
+            """Charge the customer."""
+
+            return "charged"
+
+        self.assertEqual(await charge(), "charged")
+
+    async def test_permissioned_tool_rechecks_the_active_principal(self):
+        @tool(permission="billing.write")
+        async def charge():
+            """Charge the customer."""
+
+            return "charged"
+
+        denied = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.read"})
+        )
+        allowed = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.write"})
+        )
+        try:
+            with activate_agent_principal(denied):
+                with self.assertRaises(AgentRuntimePermissionError):
+                    await charge()
+            with activate_agent_principal(allowed):
+                self.assertEqual(await charge(), "charged")
+        finally:
+            revoke_agent_principal(denied)
+            revoke_agent_principal(allowed)
+
+    async def test_client_tool_rechecks_before_requesting_client_execution(self):
+        @client_tool(permission="device.location")
+        async def location():
+            """Read the device location."""
+
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                with self.assertRaises(AgentRuntimePermissionError):
+                    await location()
+        finally:
+            revoke_agent_principal(binding)
+
+    async def test_permission_precedes_approval_in_both_decorator_orders(self):
+        @require_human_approval(message="Approve charge?")
+        @tool(permission="billing.write")
+        async def outer_approval():
+            """Charge with approval outside the tool marker."""
+
+        @tool(permission="billing.write")
+        @require_human_approval(message="Approve charge?")
+        async def outer_tool():
+            """Charge with the tool marker outside approval."""
+
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                for operation in (outer_approval, outer_tool):
+                    with self.assertRaises(AgentRuntimePermissionError):
+                        await operation()
+        finally:
+            revoke_agent_principal(binding)
+
+    async def test_runtime_binds_principal_privately_for_invoke(self):
+        driver = _RecordingDriver()
+        wrapped = ExtensionRuntimeDriver(driver, [])
+        principal = AgentRuntimePrincipal.create(permissions={"support.read"})
+
+        await wrapped.invoke(_request(principal))
+
+        self.assertEqual(driver.seen, [(principal, False)])
+        self.assertIsNone(active_agent_principal())
+
+    async def test_advanced_runtime_rejects_incomplete_projection(self):
+        driver = _RecordingDriver()
+        driver.info = AgentInfo(
+            id="support",
+            name="support",
+            description="Support",
+            card={},
+            framework="langgraph",
+            mode="advanced",
+        )
+        wrapped = ExtensionRuntimeDriver(driver, [])
+
+        with self.assertRaisesRegex(
+            AgentRuntimePermissionError, "managed Harnest agent"
+        ):
+            await wrapped.invoke(_request(AgentRuntimePrincipal.create()))
+
+    async def test_stream_scope_does_not_leak_to_the_caller_between_events(self):
+        driver = _RecordingDriver()
+        wrapped = ExtensionRuntimeDriver(driver, [])
+        principal = AgentRuntimePrincipal.create(permissions={"support.read"})
+        observed = []
+
+        async for _event in wrapped.stream(_request(principal)):
+            observed.append(active_agent_principal())
+
+        self.assertEqual(driver.seen, [principal, principal])
+        self.assertEqual(observed, [None, None])
+
+    async def test_child_task_cannot_retain_principal_after_invocation(self):
+        release = asyncio.Event()
+
+        class ChildDriver(_RecordingDriver):
+            async def invoke(self, request):
+                async def retained():
+                    await release.wait()
+                    return active_agent_principal()
+
+                self.retained = asyncio.create_task(retained())
+                return await super().invoke(request)
+
+        driver = ChildDriver()
+        wrapped = ExtensionRuntimeDriver(driver, [])
+        principal = AgentRuntimePrincipal.create(permissions={"support.read"})
+
+        await wrapped.invoke(_request(principal))
+        release.set()
+
+        with self.assertRaises(AgentRuntimePermissionError):
+            await driver.retained
+
+    def test_langgraph_projects_only_available_tools(self):
+        public = SimpleNamespace(name="public")
+        read = attach_required_permissions(
+            SimpleNamespace(name="read"), ("billing.read",)
+        )
+        write = attach_required_permissions(
+            SimpleNamespace(name="write"), ("billing.write",)
+        )
+
+        class Request:
+            tools = [public, read, write]
+
+            def override(self, *, tools):
+                return SimpleNamespace(tools=tools)
+
+        binding = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.read"})
+        )
+        try:
+            with activate_agent_principal(binding):
+                projected = _project_principal_tools(Request())
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual([item.name for item in projected.tools], ["public", "read"])
+
+    def test_adk_projects_matching_tool_declarations(self):
+        public = SimpleNamespace(name="public")
+        hidden = attach_required_permissions(
+            SimpleNamespace(name="hidden"), ("admin.use",)
+        )
+        group = SimpleNamespace(
+            function_declarations=[
+                SimpleNamespace(name="public"),
+                SimpleNamespace(name="hidden"),
+            ]
+        )
+        request = SimpleNamespace(
+            tools_dict={"public": public, "hidden": hidden},
+            config=SimpleNamespace(tools=[group]),
+        )
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                _project_model_tools(request)
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual(tuple(request.tools_dict), ("public",))
+        self.assertEqual(
+            [item.name for item in group.function_declarations], ["public"]
+        )
+
+    def test_real_framework_wrappers_retain_permission_metadata(self):
+        from google.adk.tools import FunctionTool
+        from langchain.agents.middleware.types import ModelRequest
+
+        @tool
+        def public():
+            """Return public data."""
+
+        @tool(permission="records.private")
+        def private():
+            """Return private data."""
+
+        langgraph_tools = _langchain_tools((public, private))
+        langgraph_request = ModelRequest(
+            model=object(), messages=[], tools=langgraph_tools
+        )
+        adk_request = SimpleNamespace(
+            tools_dict={
+                "public": FunctionTool(public),
+                "private": FunctionTool(private),
+            },
+            config=SimpleNamespace(tools=[]),
+        )
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                langgraph_projected = _project_principal_tools(langgraph_request)
+                _project_model_tools(adk_request)
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual(
+            [item.name for item in langgraph_projected.tools], ["public"]
+        )
+        self.assertEqual(tuple(adk_request.tools_dict), ("public",))
+
+    async def test_adk_mcp_discovery_applies_client_and_tool_permissions(self):
+        discovered = 0
+
+        class Toolset:
+            async def get_tools(self, _readonly_context=None):
+                nonlocal discovered
+                discovered += 1
+                return [
+                    SimpleNamespace(name="remote_read"),
+                    SimpleNamespace(name="remote_write"),
+                ]
+
+        client = MCPClient.sse(
+            "https://mcp.invalid/sse",
+            prefix="remote",
+            permission="billing.connect",
+            tool_permissions={"write": "billing.write"},
+        )
+        governed = client._adk_toolset_type(Toolset)()
+        denied = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        allowed = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.connect"})
+        )
+        try:
+            with activate_agent_principal(denied):
+                self.assertEqual(await governed.get_tools(), [])
+            with activate_agent_principal(allowed):
+                tools = await governed.get_tools()
+        finally:
+            revoke_agent_principal(denied)
+            revoke_agent_principal(allowed)
+
+        self.assertEqual(discovered, 1)
+        self.assertEqual([item.name for item in tools], ["remote_read"])
+
+    async def test_context_mcp_projects_tools_and_empty_clients(self):
+        async def operation(arguments):
+            return arguments
+
+        read = _managed_mcp_tool(
+            "billing", "read", operation, required_permissions=("billing.read",)
+        )
+        write = _managed_mcp_tool(
+            "billing", "write", operation, required_permissions=("billing.write",)
+        )
+        admin = _managed_mcp_tool(
+            "admin", "delete", operation, required_permissions=("admin.delete",)
+        )
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="root",
+            invocation_id="invocation-1",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        binding = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.read"})
+        )
+        try:
+            with activate_context(active), activate_agent_principal(
+                binding
+            ), _activate_mcp_context(
+                {
+                    "billing": {"read": read, "write": write},
+                    "admin": {"delete": admin},
+                }
+            ):
+                self.assertEqual(
+                    await mcp("billing").call_tool("read", {"page": 1}),
+                    {"page": 1},
+                )
+                with self.assertRaises(MCPToolUnavailableError):
+                    await mcp("billing").call_tool("write")
+                with self.assertRaises(MCPClientUnavailableError):
+                    mcp("admin")
+        finally:
+            revoke_context(active)
+            revoke_agent_principal(binding)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
+
+if TYPE_CHECKING:
+    from .agent_principal import AgentRuntimePrincipal
 
 
 RuntimeEvent = dict[str, Any]
@@ -110,6 +113,14 @@ class InvocationRequest:
     metadata: Mapping[str, Any]
     state_delta: Mapping[str, Any]
     transport: str | None = None
+    agent_principal: AgentRuntimePrincipal | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Reject public lookalikes before private runtime authority is activated."""
+
+        from .agent_principal import validate_agent_principal
+
+        validate_agent_principal(self.agent_principal)
 
 
 @dataclass(frozen=True, slots=True)

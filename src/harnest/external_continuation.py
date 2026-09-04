@@ -324,6 +324,14 @@ class ExternalContinuationRuntime:
             raise ExternalContinuationUnavailableError(
                 "unfinished external work requires @tool(durable=True)"
             )
+        if execution.request.agent_principal is not None:
+            # Stored continuations can resume on another replica, where the
+            # opaque invocation authority is deliberately unavailable. Failing
+            # before persistence prevents a restricted run resuming unrestricted.
+            raise ExternalContinuationUnavailableError(
+                "external continuations do not support Agent Runtime Principal "
+                "resumption"
+            )
         self.register_schema(provider, schema_id, validate)
         request = execution.request
         existing = await self.provider(provider).lookup(external_id)

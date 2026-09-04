@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from _session_store_fixture import write_session_store
+from harnest import AgentRuntimePrincipal
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.http_routes import (
     AgentInvoker,
@@ -33,6 +34,26 @@ def _application_router(invoker: AgentInvoker) -> APIRouter:
             metadata={"source": "threadify"},
         )
         return response.as_dict()
+
+    return router
+
+
+def _principal_router(invoker: AgentInvoker) -> APIRouter:
+    """Model the application gateway mapping auth into runtime grants."""
+
+    router = APIRouter(prefix="/restricted")
+
+    @router.post("/execute")
+    async def execute(request: Request):
+        return (
+            await invoker.invoke(
+                connection=request,
+                input="hello",
+                agent_principal=AgentRuntimePrincipal.create(
+                    permissions={"tickets.read"}
+                ),
+            )
+        ).as_dict()
 
     return router
 
@@ -122,6 +143,28 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
 
 
 class AgentInvokerTests(unittest.TestCase):
+    def test_custom_route_passes_application_authorized_runtime_principal(self):
+        driver = FakeDriver()
+        extension = create_http_route_extension(
+            _principal_router, identity="http.py:1:http_routes"
+        )
+        app = create_neutral_app(
+            driver,
+            authenticator=HeaderAuthenticator(),
+            http_routes=(extension,),
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/restricted/execute", headers={"x-test-user": "alice"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            driver.invocations[0].agent_principal.permissions,
+            frozenset({"tickets.read"}),
+        )
+
     def test_custom_route_uses_authenticated_identity_and_shared_runtime(self):
         driver = FakeDriver()
         extension = create_http_route_extension(

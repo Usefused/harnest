@@ -501,6 +501,11 @@ def wrap_approved_tool(function: F) -> F:
         return function
     @functools.wraps(function)
     async def async_call(*args: Any, **kwargs: Any) -> Any:
+        from .agent_principal import require_capability
+
+        # Permission projection must precede an approval prompt regardless of
+        # which decorator the author placed outermost.
+        require_capability(async_call, name=function.__name__)
         arguments = bind_tool_arguments(function, args, kwargs)
         grant = await _authorize("tool", function.__name__, arguments, policy)
         try:

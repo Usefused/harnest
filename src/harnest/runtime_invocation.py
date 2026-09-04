@@ -12,6 +12,7 @@ import uuid
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 
+from .agent_principal import AgentRuntimePrincipal
 from .approval import InMemoryApprovalStore
 from .assets import AssetScope, AssetStore
 from .client_tool import InMemoryClientToolStore
@@ -161,6 +162,7 @@ class InvocationCoordinator:
         metadata: Mapping[str, Any],
         transport: str,
         invocation_id: str | None = None,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> InvocationRequest:
         """Build one portable request after transport-owned authorization."""
 
@@ -171,6 +173,7 @@ class InvocationCoordinator:
             invocation_id=invocation_id or f"resp_{uuid.uuid4().hex}",
             metadata=dict(metadata),
             state_delta={},
+            agent_principal=agent_principal,
             transport=transport,
         )
 
@@ -184,6 +187,7 @@ class InvocationCoordinator:
         transport: str,
         require_non_empty_text: bool = True,
         validate_before_session: bool = True,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> InvocationRequest:
         """Resolve a caller-owned session and normalized input into one request."""
 
@@ -215,6 +219,7 @@ class InvocationCoordinator:
             session_id=session.id,
             metadata=metadata,
             transport=transport,
+            agent_principal=agent_principal,
         )
 
     async def invoke_json(self, request: InvocationRequest) -> dict[str, Any]:

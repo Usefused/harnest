@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Iterator, Literal, Mapping
 import uuid
 
 from ._json import json_value
+from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_principal
 from .approval import InMemoryApprovalStore
 from .client_tool import InMemoryClientToolStore
 from .logging import get_logger
@@ -303,6 +304,7 @@ class LocalAgentRuntime:
         session: AgentSession,
         value: Any,
         metadata: Mapping[str, Any] | None,
+        agent_principal: AgentRuntimePrincipal | None,
     ) -> InvocationRequest:
         """Build a portable request without bypassing the final driver pipeline."""
 
@@ -318,6 +320,7 @@ class LocalAgentRuntime:
             invocation_id=invocation_id,
             metadata={**self._metadata, **supplied_metadata},
             state_delta={},
+            agent_principal=resolve_nested_agent_principal(agent_principal),
             transport=self._transport,
         )
 
@@ -328,11 +331,12 @@ class LocalAgentRuntime:
         *,
         metadata: Mapping[str, Any] | None,
         request_timeout: float | None,
+        agent_principal: AgentRuntimePrincipal | None,
     ) -> AgentResponse | AgentPendingResponse:
         """Run locally while surfacing only replica-safe durable continuations."""
 
         timeout = self._timeout(request_timeout)
-        request = self._request(session, value, metadata)
+        request = self._request(session, value, metadata, agent_principal)
         run = self._start_run(request, stream=False)
         join_terminal = False
         try:
@@ -370,11 +374,12 @@ class LocalAgentRuntime:
         *,
         metadata: Mapping[str, Any] | None,
         request_timeout: float | None,
+        agent_principal: AgentRuntimePrincipal | None,
     ) -> AsyncIterator[AgentStreamItem]:
         """Yield portable events and one validated terminal local envelope."""
 
         timeout = self._timeout(request_timeout)
-        request = self._request(session, value, metadata)
+        request = self._request(session, value, metadata, agent_principal)
         run = self._start_run(request, stream=True)
         sequence = 0
         deadline = asyncio.get_running_loop().time() + timeout
@@ -476,6 +481,7 @@ class AgentSession:
         *,
         metadata: Mapping[str, Any] | None = None,
         request_timeout: float | None = None,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> AgentResponse | AgentPendingResponse:
         """Run one non-streaming turn through the complete runtime pipeline."""
 
@@ -486,6 +492,7 @@ class AgentSession:
                 value,
                 metadata=metadata,
                 request_timeout=request_timeout,
+                agent_principal=agent_principal,
             )
 
     async def stream(
@@ -494,6 +501,7 @@ class AgentSession:
         *,
         metadata: Mapping[str, Any] | None = None,
         request_timeout: float | None = None,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> AsyncIterator[AgentStreamItem]:
         """Stream portable events and a final response with cancellation cleanup."""
 
@@ -507,6 +515,7 @@ class AgentSession:
                     value,
                     metadata=metadata,
                     request_timeout=request_timeout,
+                    agent_principal=agent_principal,
                 )
             ) as source:
                 async for item in source:
