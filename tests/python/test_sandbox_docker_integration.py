@@ -6,6 +6,7 @@ import sys
 import unittest
 
 from harnest.sandbox import Sandbox, SandboxBudget, SandboxContext, SandboxRequest, SandboxStatus
+from harnest.sandbox_control import execution_control
 
 
 @unittest.skipUnless(os.environ.get("HARNEST_TEST_DOCKER") == "1", "set HARNEST_TEST_DOCKER=1 for real Docker isolation checks")
@@ -59,6 +60,28 @@ class DockerIsolationTests(unittest.TestCase):
         self.assertFalse(backend._scopes)
         result = backend.execute(SandboxRequest("import os; print(os.path.exists('/tmp/private'))"))
         self.assertEqual(result.stdout.strip(), "False")
+
+    def test_missing_container_recovery_and_cleanup_after_cancellation(self):
+        """Recover a lost retained container, then remove its replacement while cancelled."""
+        from docker.errors import NotFound
+
+        backend = self.backend(scope="session")
+        identity = SandboxContext("worker", "turn", "alice", "session")
+        request = SandboxRequest("print('ready')", context=identity)
+        with execution_control(30) as parent:
+            backend.execute(request)
+            owner = next(iter(backend._scopes.values()))
+            owner._guard.container.remove(force=True, v=True)
+            with self.assertRaises(NotFound):
+                backend.execute(request)
+            parent.check()
+            self.assertEqual(backend.execute(request).stdout.strip(), "ready")
+            replacement = next(iter(backend._scopes.values()))
+            parent.cancelled.set()
+            backend.close()
+            self.assertTrue(replacement._guard.removed)
+            self.assertFalse(backend._scopes)
+            self.assertTrue(parent.cancelled.is_set())
 
     def test_real_execution_without_either_framework_importable(self):
         """Execute through Docker in a process where ADK/LangGraph cannot be imported."""

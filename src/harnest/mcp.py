@@ -23,6 +23,11 @@ from .mcp_lifecycle import (
     _mcp_lifecycle_controller,
     attach_mcp_lifecycle,
 )
+from .mcp_context import (
+    MCPClientUnavailableError, MCPContext, MCPContextUnavailableError,
+    MCPLifecycleError, MCPLifecyclePipeline, MCPToolCallError, MCPToolCallRequest,
+    MCPToolLifecycleContext, MCPToolUnavailableError, ManagedMCPClient,
+)
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _ADK_PUBLIC_NAME = "__harnest_mcp_public_name__"
@@ -30,6 +35,9 @@ _ADK_CLIENT_NAME = "__harnest_mcp_client_name__"
 _ADK_APPROVAL_WRAPPED = "__harnest_mcp_approval_wrapped__"
 
 __all__ = [
+    "MCPClientUnavailableError", "MCPContext", "MCPContextUnavailableError",
+    "MCPLifecycleError", "MCPLifecyclePipeline", "MCPToolCallError", "MCPToolCallRequest",
+    "MCPToolLifecycleContext", "MCPToolUnavailableError", "ManagedMCPClient",
     "MCPClient",
     "MCPClientContext",
     "MCPClientLifecycle",

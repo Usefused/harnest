@@ -22,7 +22,7 @@ The request body is never provided. Return one validated `AuthPrincipal`:
 ```python
 # lifecycle/authentication.py
 from harnest import Credential, lifecycle
-from harnest.runtime_auth import AuthPrincipal, AuthenticationError
+from harnest.auth import AuthPrincipal, AuthenticationError
 from harnest.lib.identity import verify_browser_token
 
 

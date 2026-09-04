@@ -8,12 +8,15 @@ import os
 from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
 
 from .model_lifecycle import (
+    LiteLLMContext,
     LiteLLMLifecycle,
     _LifecycleLiteLLMClient,
     _attach_lifecycle_resource,
     create_adk_lifecycle_client,
 )
 from .model_transport import attach_model_transport_binding
+from .model_hooks import ModelLifecycleError
+from .lifecycle import ModelCallRequest, ModelCallResponse, ModelLifecycleContext, ModelMessage
 
 if TYPE_CHECKING:
     from google.adk.models import BaseLlm
@@ -383,6 +386,8 @@ def resolve_model_for(model: ModelInput, framework: str) -> Any:
 
 
 __all__ = [
+    "ModelLifecycleError", "ModelCallRequest", "ModelCallResponse", "ModelLifecycleContext", "ModelMessage",
+    "LiteLLMContext",
     "LiteLLMLifecycle",
     "LiteLLMModel",
     "ModelConnector",

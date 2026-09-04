@@ -7,7 +7,11 @@ import functools
 import inspect
 from typing import Any, TypeVar, overload
 
-from .client_tool import client_tool, current_transient_media
+from .client_tool import (
+    ClientToolError, ClientToolExecution, InMemoryClientToolStore, PendingClientTool,
+    client_tool, client_tool_execution, current_transient_media,
+)
+from .tool_lifecycle import ToolCallRequest, ToolLifecycleContext, ToolLifecycleError
 from .structured import (
     PydanticModel,
     callable_output_schema,
@@ -160,4 +164,8 @@ def _validated_tool(function: F, schema: PydanticModel) -> F:
     return wrapped  # type: ignore[return-value]
 
 
-__all__ = ["client_tool", "tool"]
+__all__ = [
+    "client_tool", "tool", "ClientToolError", "ClientToolExecution",
+    "InMemoryClientToolStore", "PendingClientTool", "client_tool_execution",
+    "current_transient_media", "ToolCallRequest", "ToolLifecycleContext", "ToolLifecycleError",
+]

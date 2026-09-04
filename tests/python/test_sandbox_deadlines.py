@@ -77,26 +77,57 @@ class SandboxDeadlineTests(unittest.TestCase):
                     with self.assertRaises(TimeoutError):
                         helper.check()
 
-    def test_nested_failure_restores_binding_but_keeps_shared_cancellation(self):
-        """Catching a failed helper must not revive potentially detached execution."""
+    def test_nested_failure_revokes_helper_but_preserves_parent(self):
+        """Recovery keeps the caller healthy without reviving detached failed work."""
         with execution_control(60) as outer:
             with self.assertRaisesRegex(ValueError, "helper failed"):
                 with execution_control(5) as helper:
+                    retained = copy_context()
                     raise ValueError("helper failed")
             self.assertIs(current_control(), outer)
             self.assertEqual(outer.deadline, 160)
             self.assertIs(helper.cancelled, outer.cancelled)
             with self.assertRaises(SandboxCancelledError):
-                outer.check()
+                retained.run(lambda: current_control().check())
+            outer.check()
+            self.assertFalse(outer.cancelled.is_set())
+            with execution_control(5) as recovery:
+                recovery.check()
 
-    def test_expired_nested_scope_cancels_shared_execution(self):
+    def test_expired_nested_scope_preserves_parent_budget(self):
         with execution_control(60) as outer:
             with self.assertRaises(TimeoutError):
                 with execution_control(5) as helper:
                     self.clock.return_value = 106
                     helper.check()
-            self.assertTrue(outer.cancelled.is_set())
+            self.assertFalse(outer.cancelled.is_set())
             self.assertEqual(outer.deadline, 160)
+            outer.check()
+
+    def test_retained_failed_helper_cannot_cancel_healthy_parent(self):
+        """Re-entering a failed worker context must not escalate its local failure."""
+        def retry():
+            with execution_control(5):
+                self.fail("failed helper admitted more work")
+
+        with execution_control(60) as outer:
+            with self.assertRaises(ValueError):
+                with execution_control(5):
+                    retained = copy_context()
+                    raise ValueError("missing container")
+            with self.assertRaises(SandboxCancelledError):
+                retained.run(retry)
+            outer.check()
+            self.assertFalse(outer.cancelled.is_set())
+
+    def test_explicit_cancellation_still_cancels_parent(self):
+        with execution_control(60) as outer:
+            with self.assertRaises(asyncio.CancelledError):
+                with execution_control(5):
+                    raise asyncio.CancelledError()
+            self.assertTrue(outer.cancelled.is_set())
+            with self.assertRaises(SandboxCancelledError):
+                outer.check()
 
     def test_nested_scope_retains_captured_managed_revocation(self):
         active = _managed()
@@ -139,6 +170,25 @@ class SandboxDeadlineTests(unittest.TestCase):
 
     def test_langgraph_provider_helpers_leave_time_for_outer_execution(self):
         self._exercise_adapter("langgraph")
+
+    def test_both_adapters_can_recover_from_missing_container(self):
+        """Cross native adapters and runtime admission after a caught Docker error."""
+        from docker.errors import NotFound
+
+        def execute(_request):
+            try:
+                with execution_control(5):
+                    raise NotFound("container no longer exists")
+            except NotFound:
+                pass
+            with execution_control(5) as recovery:
+                recovery.check()
+            return SandboxResult(stdout="recreated")
+
+        definition = Sandbox.provider(lambda: SimpleNamespace(execute=execute), timeout_seconds=60)
+        adk_result = definition.to_adk_executor().execute_code(None, CodeExecutionInput(code="pass"))
+        self.assertEqual(adk_result.stdout, "recreated")
+        self.assertEqual(definition.to_langchain_tool().invoke({"code": "pass"})["stdout"], "recreated")
 
 
 class ConcurrentSandboxDeadlineTests(unittest.IsolatedAsyncioTestCase):

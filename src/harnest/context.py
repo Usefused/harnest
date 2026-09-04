@@ -7,7 +7,17 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
+
+if TYPE_CHECKING:
+    from .context_session import SessionContext, SessionDataError
+    from .context_storage import StorageContext
+    from .context_assets import ScopedAssets
+    from .context_agent import (
+        AgentContinuationUnsupportedError, AgentInvocationTimeout,
+        AgentInvocationUnavailableError, AgentPendingResponse, AgentResponse,
+        AgentSession, AgentSessionNotFoundError, AgentStreamItem, LocalAgentRuntime,
+    )
 
 
 _CONTEXT_ATTRIBUTE = "__harnest_context_registration__"
@@ -451,6 +461,36 @@ def _validate_name(name: str) -> None:
 context = _ContextAccess()
 
 
+# These contracts depend on context activation primitives. Resolve them after
+# module initialization so public imports do not create provider import cycles.
+_PUBLIC_CONTRACTS = {
+    "SessionContext": "context_session", "SessionDataError": "context_session",
+    "StorageContext": "context_storage", "ScopedAssets": "context_assets",
+    **dict.fromkeys((
+        "AgentContinuationUnsupportedError", "AgentInvocationTimeout",
+        "AgentInvocationUnavailableError", "AgentPendingResponse", "AgentResponse",
+        "AgentSession", "AgentSessionNotFoundError", "AgentStreamItem", "LocalAgentRuntime",
+    ), "context_agent"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Expose context-owned contracts without loading runtime adapters eagerly."""
+    from importlib import import_module
+
+    module = _PUBLIC_CONTRACTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{module}", __package__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Include lazy public contracts in interactive API discovery."""
+    return sorted(set(globals()) | _PUBLIC_CONTRACTS.keys())
+
+
 __all__ = [
     "AgentContext",
     "ContextRegistration",
@@ -459,4 +499,4 @@ __all__ = [
     "activate_agent_scope",
     "context",
     "derive_agent_context",
-]
+] + list(_PUBLIC_CONTRACTS)

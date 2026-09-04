@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from .sandbox_control import current_control, SandboxCancelledError
+from .sandbox_control import cleanup_control, current_control, SandboxCancelledError
 from .sandbox_types import SandboxStatus
 from .sandbox_socket import collect_output
 from .sandbox_startup import OwnedStartupClient, check_startup
@@ -199,14 +199,15 @@ def _close_socket(raw: Any) -> None:
 
 def _remove_owned_container(container: Any) -> None:
     """Bound cleanup I/O so an unavailable daemon cannot hold admission forever."""
-    _bounded_container_call(container, lambda: container.remove(force=True, v=True))
+    with cleanup_control(2) as control:
+        _bounded_container_call(container, lambda: container.remove(force=True, v=True), control.remaining())
 
 
-def _bounded_container_call(container: Any, operation: Callable[[], None]) -> None:
+def _bounded_container_call(container: Any, operation: Callable[[], None], timeout: float = 2.0) -> None:
     """Give lifecycle requests a finite I/O bound without changing provider options."""
     api = container.client.api
     previous = api.timeout
-    api.timeout = min(previous or 2.0, 2.0)
+    api.timeout = min(previous or timeout, timeout)
     try:
         operation()
     finally:

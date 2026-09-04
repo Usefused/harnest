@@ -673,13 +673,21 @@ the factory; module import must not connect or perform network I/O. See
 exporters also receive Harnest telemetry produced during subagent execution;
 nested agents cannot register competing destinations.
 
+Use public domain modules for authored imports: `harnest.auth` for principals,
+`harnest.http` for route/lifecycle contracts, `harnest.server` for configuration,
+`harnest.tool` for client tools and tool lifecycle types, `harnest.mcp` for MCP
+contexts, `harnest.model` for model contexts, `harnest.context` for scoped context
+types, `harnest.runtime` for runtime contracts, `harnest.assets` for `Stored`, and
+`harnest.store` for storage contracts. Query lifecycle guarantees with
+`lifecycle.coverage(...)`. Avoid implementation-module paths in new examples.
+
 `harnest.sandbox.Sandbox.container(...)` and `Sandbox.provider(...)` define lazy
 framework-neutral executors. Define `sandbox/<name>.py` with a matching variable
 and explicitly assign `Agent(sandboxes=["<name>"])` on every allowed agent.
 Names are 1–47 ASCII identifier characters. Named assignments do not expose
 model tools. Inside an authored tool, import `context` from `harnest` and call
 `context.sandboxes["<name>"].execute(code, input_files=())` or await `aexecute`
-with the same arguments. Both return `SandboxResult`; check `stderr` and choose
+with the same arguments. Both return `SandboxResult`; check `status` and choose
 which stdout, files, or safe metadata fields to return to the model. The tool's
 surrounding Python still executes on the agent server.
 Root catalog names are available to all same-project agents, including flat,
@@ -691,6 +699,14 @@ Access requires a managed invocation: unassigned names raise
 `ContextUnavailableError`. Backend failures raise sanitized
 `SandboxExecutionError`; provider stderr stays in `SandboxResult`.
 `Agent(sandbox=...)` is removed. Declare sandbox/<name>.py, grant `sandboxes=["<name>"]`, and call it from an authored tool.
+
+Provider scopes use `from harnest.sandbox import control`: open execution with
+`control.execute(timeout_seconds=...)`, inspect its token with `control.current()`,
+and release owned resources with `control.cleanup(timeout_seconds=5)` after
+cancellation. Cleanup forbids new execution; pass its `remaining()` budget to SDK
+I/O and use `check()` before operations. Ordinary nested failures revoke only the
+failed scope and descendants; explicit cancellation still propagates. Import
+`SandboxCancelledError` from `harnest.sandbox` when handling revoked work.
 
 ## Production runtime resources
 

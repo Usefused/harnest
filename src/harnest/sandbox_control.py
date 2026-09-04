@@ -9,24 +9,33 @@ import time
 from typing import Any, Iterator
 
 from .context import ContextUnavailableError, optional_active_context
+from .sandbox_types import SandboxStatus, validate_timeout
 
 
 class SandboxCancelledError(RuntimeError):
     """An execution lost its caller or its managed invocation authority."""
 
-    from .sandbox_types import SandboxStatus
     status = SandboxStatus.CANCELLED
+
+
+class _FailedScopeError(SandboxCancelledError):
+    """A failed helper revoked its own workers, without cancelling its caller."""
 
 
 class SandboxControl:
     """Keep absolute deadlines and captured authority independent of worker context."""
 
-    def __init__(self, timeout_seconds: int | None, *, parent: SandboxControl | None = None) -> None:
+    def __init__(self, timeout_seconds: int | None, *, parent: SandboxControl | None = None,
+                 _cleanup: bool = False) -> None:
         """Share captured authority and cancellation, but own a scope-local deadline."""
         self._parent = parent
         self.cancelled = parent.cancelled if parent is not None else threading.Event()
+        self._failed = threading.Event()
+        self._cleanup = _cleanup
         self._deadline: float | None = None
-        self._managed_context = parent._managed_context if parent is not None else optional_active_context()
+        self._managed_context = None if _cleanup else (
+            parent._managed_context if parent is not None else optional_active_context()
+        )
         self.constrain(timeout_seconds)
 
     @property
@@ -54,6 +63,8 @@ class SandboxControl:
 
     def check(self) -> None:
         """Fail closed even in watchdog threads without the caller's ContextVar."""
+        if self._has_failed_scope():
+            raise _FailedScopeError("sandbox execution scope failed")
         if self.cancelled.is_set():
             raise SandboxCancelledError("sandbox execution was cancelled")
         if self._managed_context is not None:
@@ -63,6 +74,10 @@ class SandboxControl:
                 raise SandboxCancelledError("sandbox invocation is no longer active") from None
         if self.deadline is not None and time.monotonic() >= self.deadline:
             raise TimeoutError("sandbox execution deadline expired")
+
+    def _has_failed_scope(self) -> bool:
+        """Revoke detached descendants without invalidating healthy siblings."""
+        return self._failed.is_set() or (self._parent is not None and self._parent._has_failed_scope())
 
     @contextmanager
     def acquire(self, lock: Any) -> Iterator[None]:
@@ -97,13 +112,57 @@ def execution_control(timeout_seconds: int | None) -> Iterator[SandboxControl]:
     """Scope deadlines independently while preserving call-wide cancellation."""
     # Restoring a shared object's deadline would race with sibling workers and
     # extend the budget of workers that retained the shorter helper context.
-    control = SandboxControl(timeout_seconds, parent=current_control())
+    parent = current_control()
+    if parent is not None and parent._cleanup:
+        raise SandboxCancelledError("sandbox execution is forbidden during cleanup")
+    control = SandboxControl(timeout_seconds, parent=parent)
     token = _CONTROL.set(control)
     try:
         control.check()
         yield control
-    except BaseException:
-        control.cancelled.set()
+    except BaseException as error:
+        # Failed work must stop its detached descendants, but recoverable SDK
+        # errors and local timeouts must not cancel the caller or sibling work.
+        control._failed.set()
+        if not isinstance(error, Exception) or (
+            isinstance(error, SandboxCancelledError) and not isinstance(error, _FailedScopeError)
+        ):
+            control.cancelled.set()
         raise
     finally:
         _CONTROL.reset(token)
+
+
+@contextmanager
+def cleanup_control(timeout_seconds: int = 5) -> Iterator[SandboxControl]:
+    """Admit resource release under a fresh finite deadline, never execution.
+
+    Provider I/O must use remaining() as its transport timeout and check() before
+    each side effect. This cooperative scope cannot interrupt arbitrary Python.
+    Nested cleanup inherits the original cleanup deadline and cannot renew it.
+    """
+    validate_timeout(timeout_seconds)
+    if timeout_seconds is None:
+        raise ValueError("sandbox cleanup requires a finite timeout")
+    parent = current_control()
+    control = SandboxControl(timeout_seconds, parent=parent if parent and parent._cleanup else None, _cleanup=True)
+    token = _CONTROL.set(control)
+    try:
+        control.check()
+        yield control
+        control.check()
+    finally:
+        # A retained cleanup context cannot be reused after its owner returns.
+        control._failed.set()
+        _CONTROL.reset(token)
+
+
+class _ControlNamespace:
+    """Public provider controls, exported through harnest.sandbox.control."""
+
+    execute = staticmethod(execution_control)
+    cleanup = staticmethod(cleanup_control)
+    current = staticmethod(current_control)
+
+
+control = _ControlNamespace()

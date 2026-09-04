@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from .sandbox_policy import SandboxBudget
+from .sandbox_control import SandboxCancelledError, cleanup_control, control
 from .sandbox_runtime import SandboxExecutionError, validate_backend
 from .sandbox_types import (
     SandboxBackend, SandboxContext, SandboxFile, SandboxRequest, SandboxResult, SandboxStatus,
@@ -128,6 +129,7 @@ class Sandbox:
 
 
 __all__ = [
+    "control", "cleanup_control", "SandboxCancelledError",
     "Sandbox", "SandboxBudget", "SandboxBackend", "SandboxContext", "SandboxExecutionError",
     "SandboxFile", "SandboxRequest", "SandboxResult", "SandboxStatus",
 ]

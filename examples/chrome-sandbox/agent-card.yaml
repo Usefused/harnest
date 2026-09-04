@@ -1,0 +1,18 @@
+name: Chrome Sandbox
+description: Reads approved public pages in an isolated Chromium browser.
+version: 0.1.0
+supportedInterfaces:
+  - url: http://127.0.0.1:8080
+    protocolBinding: HTTP+JSON
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+defaultInputModes:
+  - text/plain
+defaultOutputModes:
+  - text/plain
+skills:
+  - id: browse-page
+    name: Browse page
+    description: Reads an approved public web page with Chromium.
+    tags: [browser, chromium]

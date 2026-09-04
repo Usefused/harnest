@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
+from .asset_policy import Stored
 
 
 _MEDIA_TYPE_PATTERN = re.compile(
@@ -561,6 +562,7 @@ def _utc_now() -> datetime:
 
 
 __all__ = [
+    "Stored",
     "AssetMediaMetadata",
     "AssetNotFoundError",
     "AssetQuotaError",

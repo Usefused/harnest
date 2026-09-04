@@ -89,7 +89,22 @@ LangGraph to execute code. Both agent frameworks call it through the same
 - Nested execution controls own local deadlines capped by every ancestor's
   absolute deadline. Returning from a shorter helper does not shrink or restart
   the outer budget. Copied worker contexts retain their helper's limit, while
-  cancellation and captured managed-context revocation remain call-wide.
+  explicit cancellation and captured managed-context revocation remain call-wide.
+  Ordinary exceptions and local deadline expiry revoke the failed scope and its
+  descendants, leaving a caller that catches the error and healthy siblings usable.
+- Public provider controls use `from harnest.sandbox import control`:
+  `control.execute(...)` opens an execution scope, `control.current()` returns
+  its active token, and `control.cleanup(...)` opens a cleanup-only scope.
+  `sandbox_control.py` remains an implementation module; existing function imports
+  remain compatible.
+- `control.cleanup(timeout_seconds=5)` temporarily admits resource release under
+  a separate finite deadline after execution cancellation or context revocation.
+  Nested cleanup cannot extend that deadline; exiting revokes retained cleanup
+  contexts. Execution controls reject cleanup contexts before provider admission.
+  Cleanup is cooperative: check admission before each operation and pass
+  `remaining()` to SDK transport timeouts. It cannot stop arbitrary blocking
+  Python. Built-in Docker removal uses this scope and a bounded transport call;
+  failed removal retains ownership for retry.
 - Results include explicit `SandboxStatus` and optional `exit_code`. Successful
   stderr warnings remain successful; nonzero process exits fail even without
   stderr. Timeouts and output overflow have distinct statuses. Provider SDK

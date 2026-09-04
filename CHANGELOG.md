@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Group public Python imports under their domains: authentication, HTTP, server
+  configuration, tools, MCP, models, lifecycle, context, runtime, assets, and
+  storage. Preserve existing imports and type identity; add `lifecycle.coverage`
+  and update authoring examples to avoid implementation-module imports.
+
+* Expose sandbox scopes through `from harnest.sandbox import control`, with
+  `control.execute(...)`, `control.cleanup(...)`, and `control.current()`.
+  Add `control.cleanup(timeout_seconds=5)` for provider resource release after
+  cancellation or invocation revocation. Require a finite cleanup deadline, block
+  new sandbox execution inside cleanup, and use its remaining budget for built-in
+  Docker removal requests.
+
+* Isolate recoverable nested sandbox helper failures and local timeouts to the
+  failed scope and its descendants, so callers can catch them without cancelling
+  healthy outer or sibling work. Explicit cancellation and managed-context
+  revocation remain call-wide.
+
+* Add a hardened Chrome browsing sandbox example with an explicit host allowlist,
+  pinned Playwright image, fresh-container scope, and bounded resources.
+
 ## [0.12.1](https://github.com/Usefused/harnest/compare/v0.12.0...v0.12.1) (2026-09-04)
 
 ### Fixes

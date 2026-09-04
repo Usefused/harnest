@@ -39,6 +39,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/python/test_compatibility.py
+          tests/python/test_public_imports.py
           tests/python/test_project_lock.py
           tests/python/test_frameworks.py
           tests/python/test_named_sandbox_frameworks.py
@@ -47,6 +48,8 @@ jobs:
           tests/python/test_sandbox_container.py
           tests/python/test_sandbox_guard.py
           tests/python/test_sandbox_control.py
+          tests/python/test_sandbox_deadlines.py
+          tests/python/test_sandbox_cleanup.py
           tests/python/test_eval_langgraph.py
           tests/python/test_eval_adk_context.py
           tests/python/test_eval_adk_context_edges.py

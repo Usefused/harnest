@@ -93,6 +93,7 @@ from .lifecycle import DROP_EVENT, Finish, LifecycleContext, Next, lifecycle
 from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
 from .logging import Logger, get_logger
 from .sandbox import (
+    cleanup_control,
     Sandbox, SandboxBudget, SandboxStatus, SandboxBackend, SandboxContext, SandboxExecutionError,
     SandboxFile, SandboxRequest, SandboxResult,
 )
@@ -222,7 +223,7 @@ __all__ = [
     "OutputPolicy",
     "ResponseRequest",
     "FrameworkMetadata",
-    "Sandbox", "SandboxBudget", "SandboxStatus",
+    "Sandbox", "SandboxBudget", "SandboxStatus", "cleanup_control",
     "SandboxBackend",
     "SandboxContext",
     "SandboxExecutionError",

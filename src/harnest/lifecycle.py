@@ -11,6 +11,7 @@ import re
 from typing import Any, Callable, Mapping, MutableMapping
 
 from .lifecycle_transition import Finish, Next, TransitionContext
+from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
 
 
 _PHASES = frozenset(
@@ -240,6 +241,7 @@ class _SkillDecorators:
 
 
 class _LifecycleDecorators:
+    coverage = staticmethod(lifecycle_coverage)
     # Discovery requires both factories so compiled roots always declare who
     # owns committed conversation state and resumable in-progress state.
     session_store = _PhaseDecorator("session_store")
@@ -381,6 +383,7 @@ lifecycle = _LifecycleDecorators()
 
 
 __all__ = [
+    "CoverageLevel", "LifecycleCoverage", "lifecycle_coverage", "TransitionContext",
     "DROP_EVENT",
     "Finish",
     "LifecycleContext",
