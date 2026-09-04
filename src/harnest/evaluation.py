@@ -199,7 +199,7 @@ def customer_facing_eval_output_plugin() -> Any:
 
 @contextmanager
 def adk_eval_agent_module(application: Any) -> Iterator[str]:
-    """Expose an isolated ADK application copy through its evaluator protocol."""
+    """Expose isolated native plugins with managed identity and error reporting."""
 
     package_name = f"_harnest_adk_eval_{uuid.uuid4().hex}"
     module_name = f"{package_name}.agent"
@@ -207,24 +207,49 @@ def adk_eval_agent_module(application: Any) -> Iterator[str]:
     package.__path__ = []
     module = ModuleType(module_name)
     module.root_agent = application.target
-    module.app = _evaluation_app(application)
     sys.modules[package_name] = package
     sys.modules[module_name] = module
     try:
-        yield module_name
+        with prepared_adk_eval_app(application.native_app) as app:
+            module.app = app
+            module.root_agent = app.root_agent if app is not None else application.target
+            yield module_name
     finally:
         sys.modules.pop(module_name, None)
         sys.modules.pop(package_name, None)
 
 
-def _evaluation_app(application: Any) -> Any:
-    """Copy the native App so filtering never mutates live request plugins."""
-
-    app = application.native_app
+@contextmanager
+def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
+    """Share CLI/playground context setup without mutating the live native app."""
     if app is None:
-        return None
-    plugins = [customer_facing_eval_output_plugin(), *list(app.plugins)]
-    return app.model_copy(update={"plugins": plugins})
+        yield None
+        return
+    from .context_adk import adk_agent_context_plugins
+    from .eval_adk import evaluation_context_plugins
+    from .eval_adk_cleanup import guarded_eval_plugins, guarded_eval_root
+    from .eval_errors import evaluation_error_boundary, evaluation_error_plugin
+
+    enter, exit_plugin = adk_agent_context_plugins(app.root_agent.name)
+    eval_enter, eval_exit = evaluation_context_plugins()
+    observer = evaluation_error_plugin()
+
+    async def close_scope() -> None:
+        """Unwind identity before capabilities when legacy ADK skips callbacks."""
+        try:
+            await exit_plugin.after_run_callback(invocation_context=None)
+        finally:
+            await eval_exit._close()
+    # Capability setup precedes authored callbacks; identity and resource
+    # cleanup run last so after/error callbacks can still use session identity.
+    plugins = [
+        customer_facing_eval_output_plugin(), eval_enter, enter, observer,
+        *list(app.plugins), exit_plugin, eval_exit,
+    ]
+    with evaluation_error_boundary(observer):
+        root = guarded_eval_root(app.root_agent, close_scope)
+        plugins = guarded_eval_plugins(app.root_agent, plugins, close_scope)
+        yield app.model_copy(update={"plugins": plugins, "root_agent": root})
 
 
 def supported_metric_names() -> tuple[str, ...]:

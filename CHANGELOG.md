@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Establish managed invocation context for native ADK CLI and playground
+  evaluations so skill tools and session-aware callbacks can run. Keep eval
+  sessions separate from live sessions, preserve runtime capability ownership,
+  and explain unscored execution errors separately from task-quality failures.
+  Revoke context on cancellation and early stream closure; reject unsafe native
+  legacy-workflow `before_run_callback` replacement responses with repair guidance.
+
 ## [0.11.0](https://github.com/Usefused/harnest/compare/v0.10.1...v0.11.0) (2026-09-03)
 
 ### Features

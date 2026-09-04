@@ -650,6 +650,32 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             ),
         )
 
+    @asynccontextmanager
+    async def native_invocation_context(
+        self, request: InvocationRequest, *, session_store: SessionStore | None = None
+    ) -> AsyncIterator[None]:
+        """Bind owned capabilities while a native evaluator owns runner and events."""
+        await self._start_resources()
+        active = self._agent_context(request)
+        lifecycle_context = _context(self._driver, request)
+        try:
+            # Evaluation sessions must not lease or mutate the server's live
+            # session backend, even when application resources are borrowed.
+            async with invocation_session_context(
+                session_store, framework=self.info.framework or "",
+                user_id=request.user_id, session_id=request.session_id,
+                invocation_id=request.invocation_id,
+            ):
+                with (
+                    activate_context(active), self._credential_scope(),
+                    model_invocation_scope(lifecycle_context),
+                    _tool_lifecycle_pipeline_scope(self._tool_lifecycle_pipeline),
+                ):
+                    await self._bind_invocation_resources(active)
+                    yield
+        finally:
+            revoke_context(active)
+
     def _credential_scope(self) -> Any:
         """Bind credentials separately from enumerable agent resources."""
 

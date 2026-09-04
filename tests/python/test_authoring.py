@@ -2104,8 +2104,14 @@ class AuthoringTests(unittest.TestCase):
                 _run_langgraph_evals(object(), EvalSuite((), config))
 
     def test_adk_eval_filter_scores_only_customer_facing_parts(self):
-        authored_plugin = object()
-        app = types.SimpleNamespace(plugins=[authored_plugin])
+        """Filter an isolated native App without mutating its authored plugins."""
+        from google.adk.agents import LlmAgent
+        from google.adk.apps import App
+        from google.adk.plugins import BasePlugin
+
+        authored_plugin = BasePlugin(name="authored")
+        app = App(name="compiled", root_agent=LlmAgent(name="root", model="gemini-test"),
+                  plugins=[authored_plugin])
         package = types.ModuleType("compiled")
         package.__path__ = []
         module = types.ModuleType("compiled.agent")
@@ -2126,8 +2132,10 @@ class AuthoringTests(unittest.TestCase):
             sys.modules,
             {"compiled": package, "compiled.agent": module},
         ), _adk_eval_output_filter("compiled.agent"):
-            eval_plugin = app.plugins[0]
-            self.assertIs(app.plugins[1], authored_plugin)
+            self.assertIsNot(module.app, app)
+            eval_plugin = module.app.plugins[0]
+            self.assertIn(authored_plugin.name, [item.name for item in module.app.plugins])
+            self.assertEqual(app.plugins, [authored_plugin])
             asyncio.run(
                 eval_plugin.on_event_callback(
                     invocation_context=object(), event=event

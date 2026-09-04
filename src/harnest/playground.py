@@ -107,12 +107,16 @@ def create_playground_router(
 
         @router.post("/_harnest/evals/run", include_in_schema=False)
         async def playground_eval_run(request: _EvalRunRequest) -> dict[str, Any]:
+            """Separate runtime failures from invalid requests and scored outcomes."""
             from .evaluation import EvaluationError
+            from .eval_errors import EvaluationExecutionError
 
             try:
                 return await eval_service.run(request.suite_id, request.trajectory)
             except KeyError:
                 raise HTTPException(status_code=404, detail="Eval suite not found")
+            except EvaluationExecutionError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
             except (EvaluationError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 

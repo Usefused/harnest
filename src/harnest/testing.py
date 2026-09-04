@@ -229,11 +229,14 @@ def _publish_eval_result(
 
     payload = collector.payload(status=status)
     if error is not None:
+        from .eval_errors import EvaluationExecutionError
+
         # Provider exceptions can echo API keys, headers, prompts, or payloads.
         # Retain only stable type-level diagnostics in the durable result.
         payload["error"] = {
             "type": type(error).__name__,
-            "message": "evaluation infrastructure failed",
+            "message": str(error) if isinstance(error, EvaluationExecutionError)
+            else "evaluation infrastructure failed",
         }
     # Persist first so a broken output stream cannot discard an explicitly
     # requested result artifact after evaluation has already completed.
@@ -301,29 +304,32 @@ def _isolated_eval_logging() -> Iterator[None]:
             _restore_eval_logger(logger, original.get(logger))
 
 
-def _eval_output_filter_plugin() -> Any:
-    """Build an eval-only ADK plugin without importing ADK during test discovery."""
-
-    from .evaluation import customer_facing_eval_output_plugin
-
-    return customer_facing_eval_output_plugin()
-
-
 @contextmanager
 def _adk_eval_output_filter(module_name: str) -> Iterator[None]:
-    """Temporarily prepend customer-facing normalization to an ADK eval App."""
+    """Prepare managed native evaluation without modifying the compiled app."""
+
+    from .evaluation import prepared_adk_eval_app
 
     agent_module = importlib.import_module(module_name)
     app = getattr(agent_module, "app", None)
     plugins = getattr(app, "plugins", None)
     if not isinstance(plugins, list):
         raise AgentTestError("compiled ADK eval application has no plugin list")
-    plugin = _eval_output_filter_plugin()
-    plugins.insert(0, plugin)
-    try:
-        yield
-    finally:
-        plugins.remove(plugin)
+    missing = object()
+    original_root = getattr(agent_module, "root_agent", missing)
+    with prepared_adk_eval_app(app) as prepared:
+        agent_module.app = prepared
+        # ADK's evaluator rebuilds App.root_agent from the module export, so
+        # both must point at the isolated legacy cancellation-safe root.
+        agent_module.root_agent = prepared.root_agent
+        try:
+            yield
+        finally:
+            agent_module.app = app
+            if original_root is missing:
+                del agent_module.root_agent
+            else:
+                agent_module.root_agent = original_root
 
 
 class SmokeClient:
@@ -536,25 +542,32 @@ def _run_adk_evals(
     collector = _EvalResultCollector(framework="adk", trajectory=trajectory)
 
     async def evaluate_all() -> None:
-        """Keep borrowed clients and their owner in the same evaluation loop."""
+        """Keep native evaluation capabilities and model clients in one loop."""
+
+        from .eval_adk import adk_evaluation_runtime
+        from .application import CompiledApplication
 
         target = getattr(sys.modules.get(module_name), "root_agent", None)
+        application = getattr(sys.modules.get(module_name), "application", None)
         try:
-            with eval_model_transports(target, config) as prepared:
-                await _evaluate_eval_sets(
-                    AgentEvaluator,
-                    EvalSet,
-                    module_name=module_name,
-                    suite=suite,
-                    config=prepared,
-                    trajectory=trajectory,
-                    print_results=print_results,
-                    result_collector=collector,
-                )
+            async with adk_evaluation_runtime(application):
+                with eval_model_transports(target, config) as prepared:
+                    await _evaluate_eval_sets(
+                        AgentEvaluator,
+                        EvalSet,
+                        module_name=module_name,
+                        suite=suite,
+                        config=prepared,
+                        trajectory=trajectory,
+                        print_results=print_results,
+                        result_collector=collector,
+                    )
         finally:
-            # This imported agent belongs to the CLI run, unlike a playground's
-            # server-owned agent. Close after every judge and simulator finishes.
-            await close_owned_eval_model_transports(target, primary_error=sys.exc_info()[1])
+            # A real compiled application's runtime owns model shutdown. The
+            # bare-module compatibility path has no such owner; close only it
+            # here so custom clients never receive duplicate close calls.
+            if not isinstance(application, CompiledApplication):
+                await close_owned_eval_model_transports(target, primary_error=sys.exc_info()[1])
 
     import_root = str(artifact.parent)
     sys.path.insert(0, import_root)

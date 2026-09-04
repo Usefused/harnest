@@ -101,7 +101,10 @@ class AgentContext:
     def _require_active(self) -> None:
         if not self._lifetime.active:
             raise ContextUnavailableError(
-                "Harnest context is available only during a managed invocation"
+                "Harnest context is available only during a managed invocation. "
+                "This invocation has finished, so its session identity and capabilities "
+                "can no longer be used. Await context-dependent work before the "
+                "invocation ends; do not retain its context for later tasks."
             )
 
 
@@ -146,7 +149,12 @@ class _ContextAccess:
         active = optional_active_context()
         if active is None:
             raise ContextUnavailableError(
-                "Harnest context is available only during a managed invocation"
+                "Harnest context is available only during a managed invocation. "
+                "No active invocation was found for this tool or callback. Session "
+                "identity, skills, and other managed capabilities require Harnest's "
+                "runtime or evaluation entrypoint; they are not available during "
+                "module import or an unwrapped native-framework call. If this happens "
+                "inside a Harnest-managed run, report a context integration bug."
             )
         active._require_active()
         return active

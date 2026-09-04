@@ -82,7 +82,10 @@ class PlaygroundEvalService:
         if path is None:
             raise KeyError(suite_id)
         async with self._run_lock:
-            return await self._run_locked(path, trajectory)
+            from .eval_adk import adk_evaluation_runtime
+
+            async with adk_evaluation_runtime(self._application, self._driver):
+                return await self._run_locked(path, trajectory)
 
     async def _run_locked(self, path: Path, trajectory: str) -> dict[str, Any]:
         """Own evaluator registration and temporary output for one complete run."""
