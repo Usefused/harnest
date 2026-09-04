@@ -13,6 +13,7 @@ from .agent_principal import (
     activate_agent_principal,
     create_agent_principal_binding,
     revoke_agent_principal,
+    validate_agent_principal_runtime,
 )
 from .lifecycle import DROP_EVENT, LifecycleContext, LifecycleListener
 from .lifecycle_transition import Finish, Next, UNCHANGED
@@ -524,6 +525,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
                 continue
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        self._validate_agent_principal(request)
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
@@ -590,6 +592,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[RuntimeEvent]:
+        self._validate_agent_principal(request)
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
         agent_context = self._agent_context(request)
@@ -689,6 +692,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self, request: InvocationRequest, *, session_store: SessionStore | None = None
     ) -> AsyncIterator[None]:
         """Bind owned capabilities while a native evaluator owns runner and events."""
+        self._validate_agent_principal(request)
         await self._start_resources()
         active = self._agent_context(request)
         lifecycle_context = _context(self._driver, request)
@@ -722,15 +726,14 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         return _activate_credential_provider(self._credential_provider)
 
     def _principal_binding(self, request: InvocationRequest) -> Any:
-        """Reject native apps that cannot guarantee model capability projection."""
+        """Create the already-validated private invocation binding."""
 
-        if request.agent_principal is not None and self.info.mode != "managed":
-            from .agent_principal import AgentRuntimePermissionError
-
-            raise AgentRuntimePermissionError(
-                "Agent Runtime Principal requires a managed Harnest agent"
-            )
         return create_agent_principal_binding(request.agent_principal)
+
+    def _validate_agent_principal(self, request: InvocationRequest) -> None:
+        """Fail before starting resources when projection is incomplete."""
+
+        validate_agent_principal_runtime(request.agent_principal, self.info)
 
     def _session_scope(self, request: InvocationRequest) -> Any:
         """Bind one portable session lease around all agent lifecycle stages."""

@@ -278,7 +278,6 @@ class MCPClient:
             return base
         client_name = self._client_name()
         public_name = self.identity or self.tool_name_prefix or client_name
-        exposed_prefix = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
 
         class GovernedMcpToolset(base):
             """Apply approval and principal projection after ADK discovery."""
@@ -303,7 +302,7 @@ class MCPClient:
                     return []
                 tools = await super().get_tools(readonly_context)
                 names = tuple(
-                    str(getattr(tool, "name", "")).removeprefix(exposed_prefix)
+                    str(getattr(tool, "name", ""))
                     for tool in tools
                 )
                 _validate_mcp_permission_tools(tool_permissions, names, client_name)
@@ -311,8 +310,9 @@ class MCPClient:
                     _validate_approval_tools(policy, names, capability_id=client_name)
                 selected: list[Any] = []
                 for remote_tool in tools:
-                    exposed_name = str(getattr(remote_tool, "name", ""))
-                    name = exposed_name.removeprefix(exposed_prefix)
+                    # BaseToolset applies its presentation prefix only after
+                    # this method returns, so these are canonical remote names.
+                    name = str(getattr(remote_tool, "name", ""))
                     requirements = tuple(
                         item
                         for item in (required_permission, tool_permissions.get(name))

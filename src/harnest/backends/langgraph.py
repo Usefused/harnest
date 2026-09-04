@@ -24,10 +24,15 @@ from ..graph import (
 from ..model_lifecycle import propagate_litellm_lifecycles
 from ..model_hooks import bind_model_extension
 from ..mcp_context import _is_governed_mcp_operation
+from ..sandbox_assignments import assigned_sandboxes
 from ..structured import provider_output_schema
 from ..tool_arguments import invalid_argument_error, unknown_argument_error
 from ..tool_lifecycle import wrap_lifecycle_tool
-from ..sandbox_assignments import assigned_sandboxes
+
+
+_AGENT_PRINCIPAL_PROJECTION_COMPLETE = (
+    "__harnest_agent_principal_projection_complete__"
+)
 
 
 def _langgraph_types():
@@ -890,12 +895,37 @@ def _build_ready_graph(
     _add_join_edges(builder, join_inputs, LANGGRAPH_START)
     _add_terminal_edges(builder, graph, END)
 
+    projection_complete = _graph_agent_principal_projection_complete(graph, Pregel)
     compiled = builder.compile(name=graph.name, checkpointer=checkpointer)
     if graph.max_concurrency is not None:
         compiled = compiled.with_config(max_concurrency=graph.max_concurrency)
+    # Native Pregel nodes own their internal model and tool middleware. Record
+    # that boundary on the completed graph so the outer runtime can fail before
+    # accepting authority it cannot project.
+    object.__setattr__(
+        compiled, _AGENT_PRINCIPAL_PROJECTION_COMPLETE, projection_complete
+    )
     for runtime_node in runtime_nodes:
         propagate_litellm_lifecycles(runtime_node, compiled)
     return compiled
+
+
+def _graph_agent_principal_projection_complete(
+    graph: Graph, Pregel: type[Any] | None = None
+) -> bool:
+    """Return whether every model-bearing graph node is Harnest-managed."""
+
+    native_type = Pregel
+    if native_type is None:
+        *_, native_type = _langgraph_types()
+    for value in graph.nodes.values():
+        if isinstance(value, Graph):
+            if not _graph_agent_principal_projection_complete(value, native_type):
+                return False
+            continue
+        if isinstance(value, (_AdvancedAgentDefinition, native_type)):
+            return False
+    return True
 
 
 def _graph_state(add_messages: Any) -> type[Any]:

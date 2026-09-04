@@ -12,7 +12,10 @@ import uuid
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 
-from .agent_principal import AgentRuntimePrincipal
+from .agent_principal import (
+    AgentRuntimePrincipal,
+    validate_agent_principal_runtime,
+)
 from .approval import InMemoryApprovalStore
 from .assets import AssetScope, AssetStore
 from .client_tool import InMemoryClientToolStore
@@ -191,6 +194,9 @@ class InvocationCoordinator:
     ) -> InvocationRequest:
         """Resolve a caller-owned session and normalized input into one request."""
 
+        # Principal support must be known before implicit session creation or
+        # content resolution can mutate storage or acquire downstream resources.
+        validate_agent_principal_runtime(agent_principal, self.driver.info)
         if validate_before_session:
             # `/responses` historically rejects its envelope and text limit
             # before implicit session creation. Custom routes were introduced

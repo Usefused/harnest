@@ -128,6 +128,27 @@ def validate_agent_principal(value: Any) -> None:
         raise TypeError("agent_principal must be an AgentRuntimePrincipal or None")
 
 
+def validate_agent_principal_runtime(value: Any, runtime_info: Any) -> None:
+    """Reject authority where the runtime cannot project every model boundary."""
+
+    validate_agent_principal(value)
+    if value is None:
+        return
+    projection_complete = (
+        getattr(runtime_info, "agent_principal_projection_complete", False)
+        is True
+    )
+    supported = (
+        getattr(runtime_info, "mode", None) == "managed"
+        and projection_complete
+    )
+    if not supported:
+        raise AgentRuntimePermissionError(
+            "Agent Runtime Principal requires a managed Harnest agent with "
+            "complete tool projection"
+        )
+
+
 def resolve_nested_agent_principal(
     requested: AgentRuntimePrincipal | None,
 ) -> AgentRuntimePrincipal | None:

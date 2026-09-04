@@ -289,6 +289,9 @@ def _adk_agent_info(
         extra_endpoints=dict(extra_endpoints or {}),
         input_schema=application.input_schema,
         output_schema=application.output_schema,
+        # The application plugin manager observes managed ADK subagents too;
+        # advanced roots do not expose an equivalent complete boundary.
+        agent_principal_projection_complete=application.mode == "managed",
     )
 
 

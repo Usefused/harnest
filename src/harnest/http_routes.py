@@ -8,7 +8,7 @@ import inspect
 import re
 from typing import Any
 
-from .agent_principal import AgentRuntimePrincipal
+from .agent_principal import AgentRuntimePrincipal, validate_agent_principal
 
 
 class HTTPRouteError(ValueError):
@@ -102,6 +102,7 @@ class AgentInvoker:
             raise ValueError("session_id must be a non-empty string")
         if metadata is not None and not isinstance(metadata, Mapping):
             raise TypeError("metadata must be a mapping")
+        validate_agent_principal(agent_principal)
         payload = await self._invoke(
             connection, input, session_id, dict(metadata or {}), agent_principal
         )

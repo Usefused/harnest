@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +146,9 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
 class AgentInvokerTests(unittest.TestCase):
     def test_custom_route_passes_application_authorized_runtime_principal(self):
         driver = FakeDriver()
+        driver.info = replace(
+            driver.info, agent_principal_projection_complete=True
+        )
         extension = create_http_route_extension(
             _principal_router, identity="http.py:1:http_routes"
         )
@@ -164,6 +168,43 @@ class AgentInvokerTests(unittest.TestCase):
             driver.invocations[0].agent_principal.permissions,
             frozenset({"tickets.read"}),
         )
+
+    def test_incomplete_projection_fails_before_implicit_session_creation(self):
+        driver = FakeDriver()
+        driver.info = replace(
+            driver.info, agent_principal_projection_complete=False
+        )
+        extension = create_http_route_extension(
+            _principal_router, identity="http.py:1:http_routes"
+        )
+
+        with TestClient(
+            create_neutral_app(driver, http_routes=(extension,)),
+            raise_server_exceptions=False,
+        ) as client:
+            response = client.post("/restricted/execute")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(driver.sessions, {})
+
+    def test_invoker_rejects_principal_lookalikes_before_dispatch(self):
+        invoker = AgentInvoker()
+        dispatched = False
+
+        async def invoke(*_args):
+            nonlocal dispatched
+            dispatched = True
+            return {}
+
+        invoker._bind(invoke)
+        with self.assertRaisesRegex(TypeError, "agent_principal"):
+            asyncio.run(
+                invoker.invoke(
+                    connection=object(), input="hello", agent_principal=object()
+                )
+            )
+
+        self.assertFalse(dispatched)
 
     def test_custom_route_uses_authenticated_identity_and_shared_runtime(self):
         driver = FakeDriver()

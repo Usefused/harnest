@@ -27,6 +27,11 @@ from .approval import ApprovalPolicy
 from .application import CompiledApplication
 from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
+from .backends.langgraph import (
+    ManagedGraphPlan,
+    _AGENT_PRINCIPAL_PROJECTION_COMPLETE,
+    _graph_agent_principal_projection_complete,
+)
 from .checkpoint import CheckpointStore, HarnestStore, RunScope
 from .checkpoint_langgraph import managed_run_config
 from .client_tool import current_transient_media
@@ -1224,6 +1229,19 @@ async def _reference_safe_output_message(
 
 
 def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> AgentInfo:
+    """Build transport metadata including principal projection coverage."""
+
+    projection_complete = application.mode == "managed"
+    if projection_complete and application.kind == "graph":
+        target = application.target
+        projection_complete = (
+            _graph_agent_principal_projection_complete(target.graph)
+            if isinstance(target, ManagedGraphPlan)
+            else getattr(
+                target, _AGENT_PRINCIPAL_PROJECTION_COMPLETE, False
+            )
+            is True
+        )
     return AgentInfo(
         id=application.name,
         name=str(card.get("name") or application.name),
@@ -1234,6 +1252,7 @@ def _agent_info(application: CompiledApplication, card: dict[str, Any]) -> Agent
         lifecycle_coverage=application.lifecycle_coverage.report(),
         input_schema=application.input_schema,
         output_schema=application.output_schema,
+        agent_principal_projection_complete=projection_complete,
     )
 
 

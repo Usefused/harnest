@@ -76,6 +76,7 @@ class AgentInfo:
     input_schema: Any = None
     output_schema: Any = None
     lifecycle_coverage: Mapping[str, str] = field(default_factory=dict)
+    agent_principal_projection_complete: bool = field(default=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,7 +27,11 @@ from ._library import (
     activate_authored_library,
     release_authored_library,
 )
-from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_principal
+from .agent_principal import (
+    AgentRuntimePrincipal,
+    resolve_nested_agent_principal,
+    validate_agent_principal_runtime,
+)
 from .runtime_auth import Authenticator, install_authentication
 from .runtime_contract import (
     AgentInfo, InvocationRequest, InvocationResult, NoCustomerFacingOutputError,
@@ -449,6 +453,7 @@ async def _run_agent_message(
         # A one-shot invocation may execute tasks, but it must never compete
         # with a long-lived server for periodic schedule ownership.
         driver = _runtime_driver(application, card=card, enable_cron=False)
+        validate_agent_principal_runtime(agent_principal, driver.info)
         session_id = uuid.uuid4().hex
         await driver.create_session(
             session_id=session_id, user_id=_DIRECT_USER_ID, state={}

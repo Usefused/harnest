@@ -1,6 +1,19 @@
 import asyncio
 from types import SimpleNamespace
+from typing import ClassVar
 import unittest
+from unittest.mock import AsyncMock
+
+from google.adk.agents import LlmAgent
+from google.adk.apps import App
+from google.adk.models import BaseLlm, LlmResponse
+from google.genai import types as genai_types
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import START as LANGGRAPH_START
+from langgraph.graph import StateGraph
 
 from harnest import AgentRuntimePermissionError, AgentRuntimePrincipal
 from harnest.agent_principal import (
@@ -11,12 +24,21 @@ from harnest.agent_principal import (
     resolve_nested_agent_principal,
     revoke_agent_principal,
 )
-from harnest.backends.langgraph import _langchain_tools, _project_principal_tools
+from harnest.agent import Agent
+from harnest.backends.langgraph import (
+    build_agent,
+    build_graph,
+    _graph_agent_principal_projection_complete,
+    _langchain_tools,
+    _project_principal_tools,
+)
+from harnest.application import CompiledApplication
 from harnest.approval import require_human_approval
 from harnest.client_tool import client_tool
 from harnest.context import context
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.mcp import MCPClient
+from harnest.graph import START, Edge, Graph
 from harnest.mcp_context import (
     MCPClientUnavailableError,
     MCPToolUnavailableError,
@@ -30,6 +52,8 @@ from harnest.neutral_runtime import (
     InvocationResult,
 )
 from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.runtime_adk import ADKRuntimeDriver
+from harnest.runtime_langgraph import LangGraphRuntimeDriver
 from harnest.tool import tool
 from harnest.tool_adk import _project_model_tools
 
@@ -46,6 +70,44 @@ def _request(principal=None):
     )
 
 
+class _ADKProjectionModel(BaseLlm):
+    """Capture the actual ADK model request produced by the managed runner."""
+
+    observed_tools: ClassVar[list[tuple[str, ...]]] = []
+
+    async def generate_content_async(self, llm_request, stream=False):
+        del stream
+        type(self).observed_tools.append(tuple(llm_request.tools_dict))
+        yield LlmResponse(
+            content=genai_types.Content(
+                role="model", parts=[genai_types.Part(text="complete")]
+            )
+        )
+
+
+class _LangGraphProjectionModel(BaseChatModel):
+    """Capture the invocation-local tools bound at the LangGraph model edge."""
+
+    observed_tools: ClassVar[list[tuple[str, ...]]] = []
+
+    @property
+    def _llm_type(self):
+        return "agent-principal-projection"
+
+    def bind_tools(self, tools, **kwargs):
+        del kwargs
+        type(self).observed_tools.append(
+            tuple(str(getattr(item, "name", "")) for item in tools)
+        )
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        del messages, stop, run_manager, kwargs
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="complete"))]
+        )
+
+
 class _RecordingDriver:
     def __init__(self):
         self.info = AgentInfo(
@@ -55,6 +117,7 @@ class _RecordingDriver:
             card={},
             framework="langgraph",
             mode="managed",
+            agent_principal_projection_complete=True,
         )
         self.seen = []
 
@@ -198,11 +261,54 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             mode="advanced",
         )
         wrapped = ExtensionRuntimeDriver(driver, [])
+        start_resources = AsyncMock()
+        wrapped._start_resources = start_resources
 
         with self.assertRaisesRegex(
             AgentRuntimePermissionError, "managed Harnest agent"
         ):
             await wrapped.invoke(_request(AgentRuntimePrincipal.create()))
+        start_resources.assert_not_awaited()
+
+    async def test_managed_runtime_rejects_incomplete_nested_projection(self):
+        native_builder = StateGraph(dict)
+        native_builder.add_node("complete", lambda state: state)
+        native_builder.add_edge(LANGGRAPH_START, "complete")
+        native = native_builder.compile()
+        graph = Graph(
+            name="mixed",
+            nodes={"native": native},
+            edges=(Edge(START, "native"),),
+        )
+        application = CompiledApplication(
+            name="mixed",
+            framework="langgraph",
+            mode="managed",
+            kind="graph",
+            target=build_graph(graph),
+        )
+        wrapped = ExtensionRuntimeDriver(LangGraphRuntimeDriver(application), [])
+        start_resources = AsyncMock()
+        wrapped._start_resources = start_resources
+
+        try:
+            with self.assertRaisesRegex(
+                AgentRuntimePermissionError, "complete tool projection"
+            ):
+                await wrapped.invoke(_request(AgentRuntimePrincipal.create()))
+        finally:
+            await wrapped.close()
+
+        start_resources.assert_not_awaited()
+
+    def test_native_langgraph_nodes_make_principal_projection_incomplete(self):
+        graph = SimpleNamespace(
+            nodes={"native": Agent.advanced(SimpleNamespace())}
+        )
+
+        self.assertFalse(
+            _graph_agent_principal_projection_complete(graph, type("Pregel", (), {}))
+        )
 
     async def test_stream_scope_does_not_leak_to_the_caller_between_events(self):
         driver = _RecordingDriver()
@@ -327,6 +433,73 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(tuple(adk_request.tools_dict), ("public",))
 
+    async def test_managed_adk_invocation_projects_tools_at_model_boundary(self):
+        @tool
+        def public():
+            """Return public data."""
+
+        @tool(permission="records.private")
+        def private():
+            """Return private data."""
+
+        _ADKProjectionModel.observed_tools.clear()
+        agent = LlmAgent(
+            name="projection",
+            model=_ADKProjectionModel(model="projection"),
+            instruction="Answer without calling a tool.",
+            tools=[public, private],
+        )
+        application = CompiledApplication(
+            name="projection",
+            framework="adk",
+            mode="managed",
+            target=agent,
+            native_app=App(name="projection", root_agent=agent),
+        )
+        driver = ExtensionRuntimeDriver(ADKRuntimeDriver(application), [])
+        try:
+            await driver.create_session(
+                session_id="session-1", user_id="user-1", state={}
+            )
+            await driver.invoke(_request(AgentRuntimePrincipal.create()))
+        finally:
+            await driver.close()
+
+        self.assertEqual(_ADKProjectionModel.observed_tools, [("public",)])
+
+    async def test_managed_langgraph_invocation_projects_tools_at_model_boundary(self):
+        @tool
+        def public():
+            """Return public data."""
+
+        @tool(permission="records.private")
+        def private():
+            """Return private data."""
+
+        _LangGraphProjectionModel.observed_tools.clear()
+        definition = Agent(
+            name="projection",
+            model=_LangGraphProjectionModel(),
+            instruction="Answer without calling a tool.",
+            tools=(public, private),
+        )
+        application = CompiledApplication(
+            name="projection",
+            framework="langgraph",
+            mode="managed",
+            target=build_agent(definition, checkpointer=MemorySaver()),
+        )
+        driver = ExtensionRuntimeDriver(LangGraphRuntimeDriver(application), [])
+        try:
+            await driver.create_session(
+                session_id="session-1", user_id="user-1", state={}
+            )
+            await driver.invoke(_request(AgentRuntimePrincipal.create()))
+        finally:
+            await driver.close()
+
+        self.assertEqual(_LangGraphProjectionModel.observed_tools, [("public",)])
+
     async def test_adk_mcp_discovery_applies_client_and_tool_permissions(self):
         discovered = 0
 
@@ -335,8 +508,8 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
                 nonlocal discovered
                 discovered += 1
                 return [
-                    SimpleNamespace(name="remote_read"),
-                    SimpleNamespace(name="remote_write"),
+                    SimpleNamespace(name="read"),
+                    SimpleNamespace(name="write"),
                 ]
 
         client = MCPClient.sse(
@@ -360,7 +533,31 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             revoke_agent_principal(allowed)
 
         self.assertEqual(discovered, 1)
-        self.assertEqual([item.name for item in tools], ["remote_read"])
+        self.assertEqual([item.name for item in tools], ["read"])
+
+    async def test_adk_mcp_permissions_use_unprefixed_remote_names(self):
+        class Toolset:
+            async def get_tools(self, _readonly_context=None):
+                # ADK adds the configured prefix in get_tools_with_prefix(),
+                # after the governed get_tools() method returns.
+                return [SimpleNamespace(name="remote_write")]
+
+        client = MCPClient.sse(
+            "https://mcp.invalid/sse",
+            prefix="remote",
+            tool_permissions={"remote_write": "billing.write"},
+        )
+        governed = client._adk_toolset_type(Toolset)()
+        binding = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"billing.write"})
+        )
+        try:
+            with activate_agent_principal(binding):
+                tools = await governed.get_tools()
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual([item.name for item in tools], ["remote_write"])
 
     async def test_context_mcp_projects_tools_and_empty_clients(self):
         async def operation(arguments):

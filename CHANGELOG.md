@@ -8,6 +8,8 @@
   client-hosted, and MCP tools. Custom HTTP routes and local agent sessions can
   pass `agent_principal=` after application authentication; ADK and LangGraph
   omit unavailable capabilities from the model and recheck before execution.
+  Fail before session or resource startup when a topology cannot guarantee
+  complete projection, including managed LangGraph graphs with native nodes.
 
 ### Fixes
 
