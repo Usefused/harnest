@@ -2,9 +2,13 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "official-extensions/**"
   push:
     branches:
       - "**"
+    paths-ignore:
+      - "official-extensions/**"
 
 permissions:
   contents: read

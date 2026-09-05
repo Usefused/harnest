@@ -1,0 +1,9 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Extension
+metadata:
+  name: docker
+  version: 0.1.0
+runtime:
+  entrypoint: extension:extension
+capabilities:
+  - sandbox.provider
