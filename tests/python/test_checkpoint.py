@@ -5,10 +5,14 @@ from harnest.checkpoint import (
     CheckpointConflictError,
     CheckpointRecord,
     CheckpointWrite,
+    DurableRunResult,
     MemoryStore,
     PendingAction,
     RunScope,
+    get_durable_run_result,
+    put_durable_run_result,
 )
+from harnest.output import TokenUsage
 
 
 def _checkpoint(run_id: str, checkpoint_id: str = "checkpoint-1") -> CheckpointRecord:
@@ -117,6 +121,99 @@ class MemoryCheckpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             sum(isinstance(item, CheckpointConflictError) for item in results), 1
         )
+
+    async def test_completed_result_round_trips_through_reserved_checkpoint(self):
+        await self._begin()
+        result = DurableRunResult.capture(
+            "done",
+            (
+                {
+                    "type": "agent_metadata",
+                    "agent": "researcher",
+                    "framework": "langgraph",
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                    "model": "model-1",
+                    "raw": {"request_id": "provider-secret"},
+                    "_raw_provider_metadata": True,
+                },
+                {"type": "graph_output", "output": {"answer": 42}},
+            ),
+            {"answer": 42},
+            {"request": "caller-value"},
+        )
+
+        await put_durable_run_result(self.store, scope=self._scope(), result=result)
+        await self.store.transition(
+            scope=self._scope(), expected_status="running", status="completed"
+        )
+        restored = await get_durable_run_result(self.store, scope=self._scope())
+
+        self.assertEqual(restored, result)
+        self.assertEqual(restored.usage, TokenUsage(3, 2, 5))
+        self.assertEqual(
+            restored.agent_metadata[0]["usage"],
+            {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5},
+        )
+        self.assertNotIn("raw", restored.agent_metadata[0])
+        self.assertEqual(restored.metadata, {"request": "caller-value"})
+        self.assertEqual(
+            restored.output[-1], {"type": "output", "value": {"answer": 42}}
+        )
+        self.assertEqual(
+            restored.completed_payload("response-1", "session-1"),
+            {
+                "id": "response-1",
+                "sessionId": "session-1",
+                "status": "completed",
+                "outputText": "done",
+                "output": [dict(item) for item in restored.output],
+                "metadata": {"request": "caller-value"},
+                "usage": {
+                    "inputTokens": 3,
+                    "outputTokens": 2,
+                    "totalTokens": 5,
+                },
+                "result": {"answer": 42},
+            },
+        )
+
+    async def test_completed_result_raw_metadata_requires_explicit_opt_in(self):
+        event = {
+            "type": "agent_metadata",
+            "framework": "adk",
+            "raw": {"finish_message": "stop"},
+            "_raw_provider_metadata": True,
+        }
+
+        normalized = DurableRunResult.capture("done", (event,), None, {})
+        raw = DurableRunResult.capture(
+            "done", (event,), None, {}, persist_raw=True
+        )
+
+        self.assertNotIn("raw", normalized.agent_metadata[0])
+        self.assertEqual(
+            raw.agent_metadata[0]["raw"], {"finish_message": "stop"}
+        )
+
+    async def test_legacy_completed_run_without_result_returns_none(self):
+        await self._begin()
+        await self.store.transition(
+            scope=self._scope(), expected_status="running", status="completed"
+        )
+
+        self.assertIsNone(
+            await get_durable_run_result(self.store, scope=self._scope())
+        )
+
+    def test_completed_result_rejects_non_json_and_oversized_payloads(self):
+        with self.assertRaisesRegex(TypeError, "unsupported JSON value"):
+            DurableRunResult.capture("done", (), object(), {})
+        with self.assertRaisesRegex(ValueError, "exceeds 4194304 encoded bytes"):
+            DurableRunResult.capture("x" * (4 * 1024 * 1024), (), None, {})
 
     async def test_pending_writes_and_delete_cleanup(self):
         await self._begin()

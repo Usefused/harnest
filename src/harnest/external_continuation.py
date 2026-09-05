@@ -241,6 +241,19 @@ class ExternalContinuationRuntime:
             raise TypeError("continuation runtime driver must implement invoke")
         self._driver = driver
 
+    async def completed_run_result(self, run: RunRecord) -> Any | None:
+        """Read one owner-scoped public result when the store supports checkpoints."""
+
+        if not isinstance(run, RunRecord) or run.application_id != self._application_id:
+            return None
+        if not callable(getattr(self._store, "get_checkpoint", None)):
+            # Continuation-only custom stores retain the legacy transcript
+            # reconstruction path until they implement portable checkpoints.
+            return None
+        from .checkpoint import get_durable_run_result
+
+        return await get_durable_run_result(self._store, scope=run.scope)
+
     def register_schema(
         self, provider: str, schema_id: str, validate: ContinuationValidator
     ) -> None:

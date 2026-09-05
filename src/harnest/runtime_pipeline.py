@@ -80,7 +80,9 @@ def _with_storage(
     ):
         return driver
     return StorageRuntimeDriver(
-        driver, storage_registry=capabilities.storage_registry
+        driver,
+        storage_registry=capabilities.storage_registry,
+        output_policy=capabilities.output_policy,
     )
 
 

@@ -83,6 +83,7 @@ from .runtime_session_wire import (
     session_payload as _session_payload,
 )
 from .runtime_live import (
+    LiveSessionClosed,
     live_session as _live_session,
     serve_live_frame as _serve_live_frame,
     validated_live_frame as _validated_live_frame,
@@ -644,6 +645,7 @@ def create_neutral_router(
         if not stream:
             return await coordinator.invoke_json(run)
 
+        coordinator.begin_response(run)
         return StreamingResponse(
             _sse_approval_run(
                 store=approvals,
@@ -655,6 +657,7 @@ def create_neutral_router(
                 response_id=run.invocation_id,
                 session_id=run.session_id,
                 metadata=metadata,
+                response_statuses=coordinator.response_statuses,
                 external_continuations=external_continuations,
             ),
             media_type="text/event-stream",
@@ -666,7 +669,7 @@ def create_neutral_router(
         request: Request,
         session_id: str = Query(alias="sessionId"),
     ) -> dict[str, Any]:
-        """Poll one external wait without revealing cross-scope existence."""
+        """Poll one response without revealing cross-scope existence."""
 
         if not session_id.strip():
             raise HTTPException(status_code=400, detail="sessionId must be non-empty")
@@ -697,12 +700,18 @@ def create_neutral_router(
             deadline = asyncio.get_running_loop().time() + request_timeout
             async with semaphore:
                 kind, value = await _next_non_event(pending.run, deadline=deadline)
-            return _resumed_action_payload(
+            result = _resumed_action_payload(
                 kind,
                 value,
                 response_id=pending.call_id,
                 session_id=pending.session_id,
                 client_tool_id=pending.id,
+            )
+            return coordinator.record_response(
+                result,
+                response_id=pending.call_id,
+                user_id=pending.user_id,
+                session_id=pending.session_id,
             )
         except asyncio.TimeoutError as exc:
             approvals.cancel_run(pending.run)
@@ -721,6 +730,20 @@ def create_neutral_router(
             decision=decision,
         )
         if decision == "deny":
+            coordinator.record_response(
+                {
+                    "id": pending.call_id,
+                    "sessionId": pending.session_id,
+                    "status": "denied",
+                    "outputText": "",
+                    "output": [],
+                    "metadata": {},
+                    "approvalId": pending.id,
+                },
+                response_id=pending.call_id,
+                user_id=pending.user_id,
+                session_id=pending.session_id,
+            )
             return {"id": pending.id, "status": "denied"}
         approval_run = approvals.run_for(pending)
         if approval_run is None:
@@ -740,11 +763,22 @@ def create_neutral_router(
                     session_id=pending.session_id,
                 )
                 required["approvalId"] = value.id
-                return required
+                return coordinator.record_response(
+                    required,
+                    response_id=pending.call_id,
+                    user_id=pending.user_id,
+                    session_id=pending.session_id,
+                )
             if kind == "client_tool":
-                return _json_client_requires_action(
+                required = _json_client_requires_action(
                     value,
                     response_id=pending.call_id,
+                    session_id=pending.session_id,
+                )
+                return coordinator.record_response(
+                    required,
+                    response_id=pending.call_id,
+                    user_id=pending.user_id,
                     session_id=pending.session_id,
                 )
             if kind == "error":
@@ -774,7 +808,12 @@ def create_neutral_router(
         completed.pop("sequence")
         completed["id"] = completed.pop("responseId")
         completed["approvalId"] = pending.id
-        return completed
+        return coordinator.record_response(
+            completed,
+            response_id=pending.call_id,
+            user_id=pending.user_id,
+            session_id=pending.session_id,
+        )
 
     async def live(websocket: WebSocket) -> None:
         """Serve live frames through the coordinator's shared request contract."""
@@ -832,10 +871,11 @@ def create_neutral_router(
                     driver=driver,
                     approval_store=approvals,
                     client_tool_store=client_tools,
+                    response_statuses=coordinator.response_statuses,
                     external_continuations=external_continuations,
                     request_timeout=request_timeout,
                 )
-        except WebSocketDisconnect:
+        except (asyncio.CancelledError, LiveSessionClosed, WebSocketDisconnect):
             pass
 
     # Do not register a live endpoint unless its transport is enabled.

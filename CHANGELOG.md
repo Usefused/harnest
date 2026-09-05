@@ -13,7 +13,11 @@
   Carry these events and optional agent attribution through local responses,
   JSON, SSE, WebSocket, streaming A2A tasks, privacy-safe traces, and the
   playground without treating reasoning as final answer text. Raw metadata is
-  excluded from traces and remains disabled by default.
+  excluded from traces and remains disabled by default. Persist a bounded,
+  versioned public completion snapshot before a durable run becomes terminal so
+  any replica can return the same per-call metadata, aggregate usage, caller
+  metadata, and structured result. Raw provider metadata remains ephemeral
+  unless `persist_raw_agent_metadata=True` is also explicitly selected.
 
 * Add invocation-scoped, default-deny `AgentRuntimePrincipal` grants for server,
   client-hosted, and MCP tools. When a principal is active, capabilities without
@@ -26,6 +30,14 @@
   execution. Managed topologies fail before startup when Harnest cannot
   guarantee complete projection; advanced-mode enforcement is best effort and
   does not rewrite user-owned graph or tool wiring.
+
+* Make every neutral HTTP, SSE, and WebSocket response pollable through
+  `GET /responses/{id}` within its exact user and session scope. Live clients
+  can now submit `approval.decision` on the active WebSocket and receive an
+  `approval.resolved` acknowledgement before execution resumes; the existing
+  HTTP approval endpoint remains available as a fallback. Managed runtimes
+  retain completed response envelopes durably when backed by `HarnestStore`,
+  while advanced custom runtimes provide best-effort process-local recovery.
 
 * Add provider-enforced sandbox network policies for no-network,
   unrestricted, and exact-host allowlist modes, with optional destination-port

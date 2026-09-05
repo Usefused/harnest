@@ -225,6 +225,7 @@ class OutputPolicy:
 
     subagent_messages: SubagentMessageMode = "suppress"
     agent_metadata: AgentMetadataMode = "normalized"
+    persist_raw_agent_metadata: bool = False
 
     def __post_init__(self) -> None:
         """Reject misspelled policy values before the application can start."""
@@ -236,6 +237,12 @@ class OutputPolicy:
         if self.agent_metadata not in {"normalized", "raw"}:
             raise ValueError(
                 "agent_metadata must be either 'normalized' or 'raw'"
+            )
+        if not isinstance(self.persist_raw_agent_metadata, bool):
+            raise TypeError("persist_raw_agent_metadata must be a boolean")
+        if self.persist_raw_agent_metadata and self.agent_metadata != "raw":
+            raise ValueError(
+                "persist_raw_agent_metadata requires agent_metadata='raw'"
             )
 
     def includes_intermediate_message(self, *, has_tool_calls: bool) -> bool:

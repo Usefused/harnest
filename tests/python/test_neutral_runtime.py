@@ -932,6 +932,18 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(request.user_id, NEUTRAL_USER_ID)
         self.assertEqual(request.metadata, {"source": "test"})
 
+        polled = self.client.get(
+            f"/responses/{body['id']}", params={"sessionId": "json"}
+        )
+        self.assertEqual(polled.status_code, 200)
+        self.assertEqual(polled.json(), body)
+        self.assertEqual(
+            self.client.get(
+                f"/responses/{body['id']}", params={"sessionId": "other"}
+            ).status_code,
+            404,
+        )
+
         transcript = self.client.get("/sessions/json/messages")
         self.assertEqual(transcript.status_code, 200)
         self.assertEqual(
@@ -1174,6 +1186,12 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(payloads[-1]["outputText"], "hello")
         self.assertEqual(payloads[-1]["result"], 42)
+        polled = self.client.get(
+            f"/responses/{payloads[-1]['responseId']}",
+            params={"sessionId": "stream"},
+        ).json()
+        self.assertEqual(polled["status"], "completed")
+        self.assertEqual(polled["outputText"], "hello")
 
         self.driver.fail_stream = True
         failed = self.client.post(
@@ -1182,6 +1200,17 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertIn("event: error", failed.text)
         self.assertIn('"error": "driver failed"', failed.text)
+        failed_payloads = [
+            __import__("json").loads(line[6:])
+            for line in failed.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        failed_status = self.client.get(
+            f"/responses/{failed_payloads[0]['responseId']}",
+            params={"sessionId": "stream"},
+        ).json()
+        self.assertEqual(failed_status["status"], "failed")
+        self.assertEqual(failed_status["error"], {"code": "invocation_failed"})
         stream_traces = self.client.get(
             "/_harnest/traces", params={"sessionId": "stream"}
         ).json()["traces"]
@@ -1822,6 +1851,13 @@ class ApprovalTransportTests(unittest.TestCase):
         self.assertEqual(required["status"], "requires_action")
         self.assertEqual(required["requiredAction"]["type"], "human_approval")
         approval_id = required["requiredAction"]["id"]
+        self.assertEqual(
+            self.client.get(
+                f"/responses/{required['id']}",
+                params={"sessionId": "approval-session"},
+            ).json(),
+            required,
+        )
 
         resumed = self.client.post(
             f"/approvals/{approval_id}", json={"decision": "approve"}
@@ -1829,6 +1865,13 @@ class ApprovalTransportTests(unittest.TestCase):
         self.assertEqual(resumed.status_code, 200)
         self.assertEqual(resumed.json()["status"], "completed")
         self.assertEqual(resumed.json()["outputText"], "sent:record")
+        self.assertEqual(
+            self.client.get(
+                f"/responses/{required['id']}",
+                params={"sessionId": "approval-session"},
+            ).json(),
+            resumed.json(),
+        )
         self.assertEqual(
             self.client.post(
                 f"/approvals/{approval_id}", json={"decision": "approve"}
@@ -1944,6 +1987,83 @@ class ApprovalTransportTests(unittest.TestCase):
             )
             websocket.send_json({"type": "session.close"})
 
+    def test_live_approval_resumes_and_is_pollable_on_the_same_socket(self):
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json(
+                {"type": "connect", "sessionId": "approval-session"}
+            )
+            websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "input": "live-approved",
+                    "requestId": "browser-request",
+                }
+            )
+            created = websocket.receive_json()
+            requested = websocket.receive_json()
+            suspended = websocket.receive_json()
+
+            self.assertEqual(requested["type"], "approval.requested")
+            self.assertEqual(suspended["status"], "requires_action")
+            websocket.send_json(
+                {
+                    "type": "approval.decision",
+                    "responseId": created["responseId"],
+                    "approvalId": requested["approval"]["id"],
+                    "decision": "approve",
+                }
+            )
+            resolved = websocket.receive_json()
+            delta = websocket.receive_json()
+            completed = websocket.receive_json()
+            websocket.send_json({"type": "session.close"})
+
+        self.assertEqual(resolved["type"], "approval.resolved")
+        self.assertEqual(resolved["decision"], "approve")
+        self.assertLess(resolved["sequence"], delta["sequence"])
+        self.assertEqual(delta["type"], "response.text.delta")
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["outputText"], "sent:live-approved")
+        polled = self.client.get(
+            f"/responses/{created['responseId']}",
+            params={"sessionId": "approval-session"},
+        )
+        self.assertEqual(polled.status_code, 200)
+        self.assertEqual(polled.json()["outputText"], "sent:live-approved")
+        self.assertEqual(polled.json()["requestId"], "browser-request")
+
+    def test_live_approval_denial_is_acknowledged_before_completion(self):
+        with self.client.websocket_connect("/live") as websocket:
+            websocket.send_json(
+                {"type": "connect", "sessionId": "approval-session"}
+            )
+            websocket.receive_json()
+            websocket.send_json({"type": "response.create", "input": "live-denied"})
+            created = websocket.receive_json()
+            requested = websocket.receive_json()
+            websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "approval.decision",
+                    "responseId": created["responseId"],
+                    "approvalId": requested["approval"]["id"],
+                    "decision": "deny",
+                }
+            )
+            resolved = websocket.receive_json()
+            denied = websocket.receive_json()
+            websocket.send_json({"type": "session.close"})
+
+        self.assertEqual(resolved["type"], "approval.resolved")
+        self.assertEqual(denied["type"], "response.completed")
+        self.assertEqual(denied["status"], "denied")
+        polled = self.client.get(
+            f"/responses/{created['responseId']}",
+            params={"sessionId": "approval-session"},
+        ).json()
+        self.assertEqual(polled["status"], "denied")
+
     def test_approval_decision_is_scoped_to_authenticated_principal(self):
         app = create_neutral_app(
             ApprovalDriver(), authenticator=HeaderAuthenticator()
@@ -1957,6 +2077,14 @@ class ApprovalTransportTests(unittest.TestCase):
                 headers=alice,
                 json={"input": "private", "sessionId": "alice-session"},
             ).json()
+            self.assertEqual(
+                client.get(
+                    f"/responses/{required['id']}",
+                    headers=bob,
+                    params={"sessionId": "alice-session"},
+                ).status_code,
+                404,
+            )
             endpoint = f"/approvals/{required['requiredAction']['id']}"
             self.assertEqual(
                 client.post(

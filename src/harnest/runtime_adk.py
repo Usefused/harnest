@@ -39,6 +39,7 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
+from .runtime_session import durable_completion_deferred
 from .output import AgentMetadata, OutputPolicy, _reported_token_usage
 from .structured import (
     framework_metadata_field,
@@ -776,6 +777,12 @@ class ADKRuntimeDriver(RuntimeDriver):
     ) -> None:
         """Release portable run ownership after ADK reaches a terminal outcome."""
 
+        if status == "completed" and durable_completion_deferred(
+            request.invocation_id
+        ):
+            # The outer storage wrapper must first persist the lifecycle-final
+            # public result, then make terminal completion visible atomically.
+            return
         store = self._portable_checkpoints()
         if store is None:
             return

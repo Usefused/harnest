@@ -141,7 +141,10 @@ readable reasoning text, Harnest emits it as portable `thinking` activity while
 leaving final answer text and multi-turn continuity separate. Provider-reported
 model, provider, finish reason, and exact token counts use the shared
 `agent_metadata` event. Declare `OutputPolicy(agent_metadata="raw")` only when
-the application deliberately exposes native provider metadata.
+the application deliberately exposes native provider metadata. Harnest-owned
+checkpoints retain normalized metadata for cross-replica result polling; add
+`persist_raw_agent_metadata=True` only when that native payload may also be
+stored for the checkpoint retention period.
 
 For a team model gateway, pass a `LiteLLMLifecycle` to `LiteLLMModel`. Use
 `create_transport` to return a LiteLLM-supported provider SDK client configured

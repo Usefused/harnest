@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, AsyncIterator, Iterator, Mapping, Sequence
 
 from ._exception_notes import add_exception_note
+from .checkpoint import HarnestStore, RunScope
+from .output import OutputPolicy
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -19,6 +23,11 @@ from .session import SessionStore
 from .storage_registry import StorageRegistry
 
 
+_DURABLE_COMPLETION_OWNER: ContextVar[str | None] = ContextVar(
+    "harnest_durable_completion_owner", default=None
+)
+
+
 class StorageRuntimeDriver(RuntimeDriver):
     """Start and close session/checkpoint resources around a runtime driver."""
 
@@ -30,6 +39,7 @@ class StorageRuntimeDriver(RuntimeDriver):
         asset_store: Any | None = None,
         *asset_stores: Any,
         storage_registry: StorageRegistry | None = None,
+        output_policy: OutputPolicy | None = None,
     ) -> None:
         """Deduplicate shared resources so each is started and closed once."""
 
@@ -42,6 +52,12 @@ class StorageRuntimeDriver(RuntimeDriver):
             if storage_registry is not None
             else _unique_resources(*legacy)
         )
+        self._checkpoint_store = _harnest_checkpoint_store(
+            store, checkpoint_provider, storage_registry
+        )
+        self._output_policy = output_policy or OutputPolicy()
+        if not isinstance(self._output_policy, OutputPolicy):
+            raise TypeError("output_policy must be OutputPolicy")
         self._start_lock = asyncio.Lock()
         self._started = False
         self._start_failed = False
@@ -169,14 +185,92 @@ class StorageRuntimeDriver(RuntimeDriver):
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         await self.start()
-        return await self._driver.invoke(request)
+        if self._checkpoint_store is None:
+            return await self._driver.invoke(request)
+        try:
+            with _defer_durable_completion(request.invocation_id):
+                result = await self._driver.invoke(request)
+            await self._complete_run(request, result)
+            return result
+        except BaseException:
+            await self._fail_run(request)
+            raise
 
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[RuntimeEvent]:
         await self.start()
-        async for event in self._driver.stream(request):
-            yield event
+        if self._checkpoint_store is None:
+            async for event in self._driver.stream(request):
+                yield event
+            return
+        events: list[RuntimeEvent] = []
+        iterator = self._driver.stream(request).__aiter__()
+        try:
+            while True:
+                try:
+                    event = await _next_owned(iterator, request.invocation_id)
+                except StopAsyncIteration:
+                    break
+                events.append(event)
+                yield event
+            await self._complete_run(
+                request, _stream_invocation_result(request, events)
+            )
+        except BaseException:
+            await self._fail_run(request)
+            raise
+        finally:
+            await _close_owned(iterator, request.invocation_id)
+
+    async def _complete_run(
+        self, request: InvocationRequest, result: InvocationResult
+    ) -> None:
+        """Persist public completion data before publishing terminal run state."""
+
+        from .checkpoint import DurableRunResult, put_durable_run_result
+
+        store = self._checkpoint_store
+        if store is None:
+            return
+        scope = self._run_scope(request, result.session_id)
+        current = await store.get_run(scope=scope)
+        if current is None or current.status != "running":
+            return
+        durable = DurableRunResult.capture(
+            result.text,
+            result.events,
+            result.result,
+            result.metadata,
+            persist_raw=self._output_policy.persist_raw_agent_metadata,
+        )
+        await put_durable_run_result(store, scope=scope, result=durable)
+        await store.transition(
+            scope=scope, expected_status="running", status="completed"
+        )
+
+    async def _fail_run(self, request: InvocationRequest) -> None:
+        """Release a still-running durable run after outer finalization fails."""
+
+        store = self._checkpoint_store
+        if store is None:
+            return
+        scope = self._run_scope(request, request.session_id)
+        current = await store.get_run(scope=scope)
+        if current is not None and current.status == "running":
+            await store.transition(
+                scope=scope, expected_status="running", status="failed"
+            )
+
+    def _run_scope(self, request: InvocationRequest, session_id: str) -> RunScope:
+        """Use stable application and caller ownership for the result checkpoint."""
+
+        return RunScope(
+            self.info.id,
+            request.user_id,
+            session_id,
+            request.invocation_id,
+        )
 
     async def close(self) -> None:
         """Close framework work first, then unwind owned storage in reverse order."""
@@ -239,6 +333,93 @@ def _unique_resources(*values: Any) -> tuple[Any, ...]:
         if value is not None and all(value is not item for item in result):
             result.append(value)
     return tuple(result)
+
+
+def durable_completion_deferred(invocation_id: str) -> bool:
+    """Report whether the outer storage wrapper owns this run's completion."""
+
+    return _DURABLE_COMPLETION_OWNER.get() == invocation_id
+
+
+@contextmanager
+def _defer_durable_completion(invocation_id: str) -> Iterator[None]:
+    """Delegate only one invocation's terminal transition to the outer wrapper."""
+
+    token = _DURABLE_COMPLETION_OWNER.set(invocation_id)
+    try:
+        yield
+    finally:
+        _DURABLE_COMPLETION_OWNER.reset(token)
+
+
+async def _next_owned(iterator: Any, invocation_id: str) -> RuntimeEvent:
+    """Advance a backend only while its matching durable owner is active."""
+
+    with _defer_durable_completion(invocation_id):
+        return await iterator.__anext__()
+
+
+async def _close_owned(iterator: Any, invocation_id: str) -> None:
+    """Close a backend iterator under the same invocation-scoped ownership."""
+
+    close = getattr(iterator, "aclose", None)
+    if callable(close):
+        with _defer_durable_completion(invocation_id):
+            await close()
+
+
+def _stream_invocation_result(
+    request: InvocationRequest, events: Sequence[RuntimeEvent]
+) -> InvocationResult:
+    """Rebuild the public stream result for durable completion persistence."""
+
+    text = "".join(
+        str(event.get("text", ""))
+        for event in events
+        if event.get("type") == "message"
+    )
+    result = next(
+        (
+            _output_event_value(event)
+            for event in reversed(events)
+            if event.get("type") in {"graph_output", "output"}
+        ),
+        None,
+    )
+    return InvocationResult(
+        text=text,
+        events=tuple(events),
+        result=result,
+        session_id=request.session_id,
+        metadata=dict(request.metadata),
+    )
+
+
+def _output_event_value(event: Mapping[str, Any]) -> Any:
+    """Read the final structured value from either portable output event."""
+
+    if "result" in event:
+        return event["result"]
+    if event.get("type") == "graph_output":
+        return event.get("output")
+    return event.get("value")
+
+
+def _harnest_checkpoint_store(
+    session_store: Any,
+    checkpoint_provider: Any,
+    registry: StorageRegistry | None,
+) -> HarnestStore | None:
+    """Select only a portable store that can own invocation-result checkpoints."""
+
+    candidates = (
+        registry.checkpoints if registry is not None else None,
+        checkpoint_provider,
+        session_store,
+    )
+    return next(
+        (item for item in candidates if isinstance(item, HarnestStore)), None
+    )
 
 
 __all__ = ["StorageRuntimeDriver"]

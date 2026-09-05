@@ -6,7 +6,12 @@ import unittest
 
 from harnest.approval import ApprovalRun
 from harnest.agent import AgentRuntimePrincipal
-from harnest.checkpoint import MemoryStore, RunScope
+from harnest.checkpoint import (
+    DurableRunResult,
+    MemoryStore,
+    RunScope,
+    put_durable_run_result,
+)
 from harnest.continuation import ContinuationConflictError
 from harnest.durable import (
     NativeDurableSuspended,
@@ -265,8 +270,43 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.application_port("hatchet").complete(
             "provider-run-poll", {"report": "ready"}
         )
+        scope = RunScope("consumer", "user-1", "session-1", "run-poll")
+        durable = DurableRunResult.capture(
+            "external report is ready",
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "external report is ready",
+                },
+                {
+                    "type": "agent_metadata",
+                    "framework": "adk",
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                    "raw": {"provider_request_id": "provider-1"},
+                    "_raw_provider_metadata": True,
+                },
+                {
+                    "type": "agent_metadata",
+                    "framework": "adk",
+                    "usage": {
+                        "input_tokens": 4,
+                        "output_tokens": 1,
+                        "total_tokens": 5,
+                    },
+                },
+            ),
+            {"report": "ready"},
+            {"request": "metadata"},
+            persist_raw=True,
+        )
+        await put_durable_run_result(self.store, scope=scope, result=durable)
         terminal = await self.store.transition(
-            scope=RunScope("consumer", "user-1", "session-1", "run-poll"),
+            scope=scope,
             expected_status="running",
             status="completed",
         )
@@ -331,6 +371,16 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["outputText"], "external report is ready")
+        self.assertEqual(payload["result"], {"report": "ready"})
+        self.assertEqual(payload["metadata"], {"request": "metadata"})
+        self.assertEqual(
+            payload["usage"],
+            {"inputTokens": 7, "outputTokens": 3, "totalTokens": 10},
+        )
+        self.assertEqual(
+            payload["output"][1]["raw"],
+            {"provider_request_id": "provider-1"},
+        )
         self.assertEqual(repeated, payload)
 
     async def test_capacity_rejects_before_second_run_becomes_waiting(self):

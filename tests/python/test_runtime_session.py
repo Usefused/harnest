@@ -5,14 +5,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.application import CompiledApplication
-from harnest.checkpoint import ADKStore
+from harnest.checkpoint import (
+    ADKStore,
+    MemoryStore,
+    RunScope,
+    get_durable_run_result,
+)
 from harnest.neutral_runtime import AgentInfo, SessionRecord
+from harnest.output import OutputPolicy, TokenUsage
 from harnest.runtime import (
     AgentRuntimeError,
     _attach_driver_lifecycle,
     _runtime_driver,
 )
 from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
 from harnest.storage_registry import StorageRegistry
@@ -79,6 +86,75 @@ def _driver():
         create_session=AsyncMock(return_value=record),
         close=AsyncMock(),
     )
+
+
+class _DurableBackend:
+    """Begin one portable run and return deterministic public model metadata."""
+
+    def __init__(self, store: MemoryStore) -> None:
+        self.store = store
+        self.info = AgentInfo(
+            id="root",
+            name="root",
+            description="",
+            card={},
+            framework="langgraph",
+            mode="managed",
+            extra_endpoints={},
+        )
+
+    async def invoke(self, request):
+        """Create the active run normally owned by the framework adapter."""
+
+        await self._begin(request)
+        return InvocationResult(
+            text="done",
+            events=self._events(),
+            result={"answer": 42},
+            session_id=request.session_id,
+            metadata={"caller": "metadata"},
+        )
+
+    async def stream(self, request):
+        """Yield the same events so stream finalization exercises one contract."""
+
+        await self._begin(request)
+        for event in self._events():
+            yield event
+
+    async def close(self):
+        """Expose the runtime driver lifecycle without owning the shared store."""
+
+    async def _begin(self, request):
+        """Claim a portable run using the backend's stable application identity."""
+
+        await self.store.begin_run(
+            application_id=self.info.id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=request.invocation_id,
+            framework="langgraph",
+        )
+
+    @staticmethod
+    def _events():
+        """Return one final answer and one raw-capable provider metadata event."""
+
+        return (
+            {"type": "message", "role": "assistant", "text": "done"},
+            {
+                "type": "agent_metadata",
+                "framework": "langgraph",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "total_tokens": 5,
+                },
+                "raw": {"provider_request_id": "request-secret"},
+                "_raw_provider_metadata": True,
+            },
+            {"type": "graph_output", "output": {"answer": 42}},
+        )
 
 
 class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -182,6 +258,75 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(store.started, 1)
         self.assertEqual(store.closed, 1)
+
+    async def test_invoke_persists_normalized_result_before_terminal_status(self):
+        """Keep raw provider fields ephemeral unless persistence is opted in."""
+
+        store = MemoryStore()
+        registry = StorageRegistry(sessions=store, checkpoints=store)
+        driver = StorageRuntimeDriver(
+            _DurableBackend(store),
+            storage_registry=registry,
+            output_policy=OutputPolicy(agent_metadata="raw"),
+        )
+        request = InvocationRequest(
+            input="hello",
+            user_id="user",
+            session_id="session",
+            invocation_id="run-invoke",
+            metadata={},
+            state_delta={},
+        )
+
+        result = await driver.invoke(request)
+        scope = RunScope("root", "user", "session", "run-invoke")
+        run = await store.get_run(scope=scope)
+        durable = await get_durable_run_result(store, scope=scope)
+
+        self.assertEqual(result.result, {"answer": 42})
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(durable.usage, TokenUsage(3, 2, 5))
+        self.assertEqual(durable.metadata, {"caller": "metadata"})
+        self.assertNotIn("raw", durable.agent_metadata[0])
+
+    async def test_stream_can_explicitly_persist_raw_provider_metadata(self):
+        """Retain raw metadata only under the separate durable-data opt-in."""
+
+        store = MemoryStore()
+        registry = StorageRegistry(sessions=store, checkpoints=store)
+        driver = StorageRuntimeDriver(
+            _DurableBackend(store),
+            storage_registry=registry,
+            output_policy=OutputPolicy(
+                agent_metadata="raw", persist_raw_agent_metadata=True
+            ),
+        )
+        request = InvocationRequest(
+            input="hello",
+            user_id="user",
+            session_id="session",
+            invocation_id="run-stream",
+            metadata={"request": "metadata"},
+            state_delta={},
+        )
+
+        events = [event async for event in driver.stream(request)]
+        scope = RunScope("root", "user", "session", "run-stream")
+        durable = await get_durable_run_result(store, scope=scope)
+
+        self.assertEqual(len(events), 3)
+        self.assertEqual(
+            durable.agent_metadata[0]["raw"],
+            {"provider_request_id": "request-secret"},
+        )
+        self.assertEqual(
+            durable.completed_payload("run-stream", "session")["usage"],
+            {
+                "inputTokens": 3,
+                "outputTokens": 2,
+                "totalTokens": 5,
+            },
+        )
 
 
 class NativeADKLifespanOwnershipTests(unittest.TestCase):

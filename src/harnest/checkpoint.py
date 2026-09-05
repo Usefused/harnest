@@ -6,9 +6,16 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+import json
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from ._json import json_value
 from .logging import get_logger
+from .output import (
+    AgentMetadata,
+    TokenUsage,
+    _agent_metadata_from_runtime_event,
+)
 from .session import InMemorySessionStore
 
 try:
@@ -23,6 +30,10 @@ CheckpointOwner = Literal["harnest", "langgraph", "adk"]
 
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
 _AUDIT = get_logger("checkpoint.audit")
+_DURABLE_RUN_RESULT_SCHEMA = "harnest.invocation-result/v1"
+_DURABLE_RUN_RESULT_NAMESPACE = "harnest.invocation-result"
+_DURABLE_RUN_RESULT_CHECKPOINT_ID = "final"
+_MAX_DURABLE_RUN_RESULT_BYTES = 4 * 1024 * 1024
 
 
 class CheckpointError(RuntimeError):
@@ -130,6 +141,130 @@ class PendingAction:
     type: Literal["human_approval", "client_tool", "external_continuation"]
     action_id: str
     capability: str
+
+
+@dataclass(frozen=True, slots=True)
+class DurableRunResult:
+    """Versioned, bounded public result retained beside a completed run."""
+
+    text: str
+    result: Any
+    metadata: Mapping[str, Any]
+    output: tuple[Mapping[str, Any], ...] = ()
+    agent_metadata: tuple[Mapping[str, Any], ...] = ()
+    usage: TokenUsage | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize JSON values and reject inconsistent aggregate usage."""
+
+        _validate_durable_run_result_types(self)
+        metadata = json_value(self.metadata)
+        output = tuple(_normalize_public_output_item(item) for item in self.output)
+        events = tuple(
+            _normalize_agent_metadata_event(item) for item in self.agent_metadata
+        )
+        _validate_durable_metadata(events, output, self.usage)
+        object.__setattr__(self, "result", json_value(self.result))
+        object.__setattr__(self, "metadata", metadata)
+        object.__setattr__(self, "output", output)
+        object.__setattr__(self, "agent_metadata", events)
+        _encode_durable_run_result(self.as_dict())
+
+    @classmethod
+    def capture(
+        cls,
+        text: str,
+        events: Sequence[Mapping[str, Any]],
+        result: Any,
+        metadata: Mapping[str, Any],
+        *,
+        persist_raw: bool = False,
+    ) -> DurableRunResult:
+        """Capture normalized per-call metadata with an explicit raw-data policy."""
+
+        if not isinstance(persist_raw, bool):
+            raise TypeError("persist_raw must be a boolean")
+        output = _capture_public_output(events, persist_raw=persist_raw)
+        captured = tuple(
+            item for item in output if item.get("type") == "agent_metadata"
+        )
+        return cls(
+            text=text,
+            result=result,
+            metadata=metadata,
+            output=output,
+            agent_metadata=captured,
+            usage=_aggregate_durable_usage(captured),
+        )
+
+    def completed_payload(
+        self, response_id: str, session_id: str
+    ) -> dict[str, Any]:
+        """Return the stable non-streaming JSON body for a completed response."""
+
+        _require_fields(response_id, session_id)
+        payload: dict[str, Any] = {
+            "id": response_id,
+            "sessionId": session_id,
+            "status": "completed",
+            "outputText": self.text,
+            "output": [dict(item) for item in self.output],
+            "metadata": dict(self.metadata),
+        }
+        if self.usage is not None:
+            payload["usage"] = self.usage.as_dict()
+        if self.result is not None:
+            payload["result"] = self.result
+        return payload
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the stable JSON document stored by every checkpoint backend."""
+
+        return {
+            "schema_id": _DURABLE_RUN_RESULT_SCHEMA,
+            "text": self.text,
+            "result": self.result,
+            "metadata": dict(self.metadata),
+            "output": [dict(item) for item in self.output],
+            "agent_metadata": [dict(event) for event in self.agent_metadata],
+            "usage": None if self.usage is None else self.usage.as_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> DurableRunResult:
+        """Decode one strictly versioned durable result document."""
+
+        if not isinstance(value, Mapping):
+            raise TypeError("durable run result must be a mapping")
+        expected = {
+            "schema_id",
+            "text",
+            "result",
+            "metadata",
+            "output",
+            "agent_metadata",
+            "usage",
+        }
+        if set(value) != expected:
+            raise ValueError("durable run result fields do not match its schema")
+        if value.get("schema_id") != _DURABLE_RUN_RESULT_SCHEMA:
+            raise ValueError("unsupported durable run result schema")
+        events = value.get("agent_metadata")
+        if not isinstance(events, list):
+            raise TypeError("durable run result agent_metadata must be a list")
+        output = value.get("output")
+        if not isinstance(output, list):
+            raise TypeError("durable run result output must be a list")
+        usage_value = value.get("usage")
+        usage = None if usage_value is None else TokenUsage.from_dict(usage_value)
+        return cls(
+            text=value.get("text"),
+            result=value.get("result"),
+            metadata=value.get("metadata"),
+            output=tuple(output),
+            agent_metadata=tuple(events),
+            usage=usage,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +443,54 @@ class CheckpointStore(Protocol):
         """Release resources owned by the checkpoint store."""
 
         ...
+
+
+async def put_durable_run_result(
+    store: CheckpointStore,
+    *,
+    scope: RunScope,
+    result: DurableRunResult,
+) -> DurableRunResult:
+    """Write the reserved final-result checkpoint while its run is active."""
+
+    if not isinstance(result, DurableRunResult):
+        raise TypeError("result must be DurableRunResult")
+    run = await store.get_run(scope=scope)
+    if run is None:
+        raise KeyError("checkpoint run not found")
+    checkpoint = CheckpointRecord(
+        run_id=scope.run_id,
+        checkpoint_id=_DURABLE_RUN_RESULT_CHECKPOINT_ID,
+        namespace=_DURABLE_RUN_RESULT_NAMESPACE,
+        framework=run.framework,
+        type_name="json",
+        payload=_durable_run_result_bytes(result),
+        metadata_type="json",
+        metadata=json.dumps(
+            {"schema_id": _DURABLE_RUN_RESULT_SCHEMA}, separators=(",", ":")
+        ).encode("utf-8"),
+        versions_type="json",
+        versions=b"{}",
+    )
+    await store.put(checkpoint, scope=scope, expected_revision=None)
+    return result
+
+
+async def get_durable_run_result(
+    store: CheckpointStore, *, scope: RunScope
+) -> DurableRunResult | None:
+    """Read a final result while treating pre-feature runs as having no result."""
+
+    checkpoint = await store.get_checkpoint(
+        scope=scope,
+        checkpoint_id=_DURABLE_RUN_RESULT_CHECKPOINT_ID,
+        namespace=_DURABLE_RUN_RESULT_NAMESPACE,
+    )
+    if checkpoint is None:
+        return None
+    if checkpoint.type_name != "json":
+        raise ValueError("durable run result checkpoint must contain JSON")
+    return _durable_run_result_from_bytes(checkpoint.payload)
 
 
 class CheckpointAuthority:
@@ -1413,6 +1596,224 @@ def _a2a_cursor_offset(
         if record.task_id == cursor_task_id:
             return index
     raise A2ATaskCursorError("A2A task cursor is not valid for this list")
+
+
+def _validate_durable_run_result_types(value: DurableRunResult) -> None:
+    """Keep direct construction as strict as decoded durable documents."""
+
+    if not isinstance(value.text, str):
+        raise TypeError("durable run result text must be a string")
+    if not isinstance(value.metadata, Mapping):
+        raise TypeError("durable run result metadata must be a mapping")
+    if not isinstance(value.output, tuple):
+        raise TypeError("durable run result output must be a tuple")
+    if not isinstance(value.agent_metadata, tuple):
+        raise TypeError("durable run result agent_metadata must be a tuple")
+    if value.usage is not None and not isinstance(value.usage, TokenUsage):
+        raise TypeError("durable run result usage must be TokenUsage")
+
+
+def _validate_durable_metadata(
+    events: tuple[Mapping[str, Any], ...],
+    output: tuple[Mapping[str, Any], ...],
+    usage: TokenUsage | None,
+) -> None:
+    """Reject drift between duplicated per-call and aggregate projections."""
+
+    projected = tuple(
+        item for item in output if item.get("type") == "agent_metadata"
+    )
+    if events != projected:
+        raise ValueError(
+            "durable agent metadata must match metadata entries in output"
+        )
+    if usage != _aggregate_durable_usage(events):
+        raise ValueError("durable run result usage must match its metadata events")
+
+
+def _captured_runtime_event(
+    event: Mapping[str, Any], *, persist_raw: bool
+) -> dict[str, Any]:
+    """Canonicalize metadata before public projection and preserve other events."""
+
+    if event.get("type") != "agent_metadata":
+        return dict(event)
+    model = _agent_metadata_from_runtime_event(event)
+    if not persist_raw and model.raw is not None:
+        model = replace(model, raw=None)
+    return model._as_runtime_event(agent=_agent_metadata_agent(event))
+
+
+def _capture_public_output(
+    events: Sequence[Mapping[str, Any]], *, persist_raw: bool
+) -> tuple[dict[str, Any], ...]:
+    """Create the stable output projection after applying the raw-data policy."""
+
+    if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
+        raise TypeError("durable run result events must be a sequence")
+    captured: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            raise TypeError("durable run result events must be mappings")
+        captured.append(_captured_runtime_event(event, persist_raw=persist_raw))
+    # The transport projector is imported lazily to avoid a module cycle: it
+    # imports checkpoint contracts for continuation state.
+    from .runtime_continuation import public_output
+
+    return tuple(public_output(captured))
+
+
+def _normalize_public_output_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Require stored output entries to remain typed JSON objects."""
+
+    if not isinstance(item, Mapping):
+        raise TypeError("durable run result output items must be mappings")
+    normalized = json_value(item)
+    item_type = normalized.get("type")
+    if not isinstance(item_type, str) or not item_type:
+        raise ValueError("durable run result output items require a type")
+    if item_type == "agent_metadata":
+        return _normalize_agent_metadata_event(normalized)
+    return normalized
+
+
+def _normalize_agent_metadata_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a stored per-call event and discard unrecognized fields."""
+
+    if not isinstance(event, Mapping):
+        raise TypeError("durable agent metadata events must be mappings")
+    if event.get("type") != "agent_metadata":
+        raise ValueError("durable agent metadata events must use agent_metadata type")
+    allowed = {
+        "type",
+        "agent",
+        "framework",
+        "usage",
+        "model",
+        "provider",
+        "finishReason",
+        "raw",
+    }
+    if not set(event) <= allowed:
+        raise ValueError("durable agent metadata event has unknown fields")
+    framework = event.get("framework")
+    if not isinstance(framework, str) or not framework:
+        raise ValueError("durable agent metadata framework must be non-empty")
+    usage_value = event.get("usage")
+    raw = event.get("raw")
+    model = AgentMetadata(
+        framework=framework,
+        usage=None if usage_value is None else TokenUsage.from_dict(usage_value),
+        model=_optional_durable_text(event.get("model"), "model"),
+        provider=_optional_durable_text(event.get("provider"), "provider"),
+        finish_reason=_optional_durable_text(
+            event.get("finishReason"), "finishReason"
+        ),
+        raw=None if raw is None else _durable_raw_metadata(raw),
+    )
+    return _public_agent_metadata_event(model, agent=_agent_metadata_agent(event))
+
+
+def _public_agent_metadata_event(
+    model: AgentMetadata, *, agent: str | None
+) -> dict[str, Any]:
+    """Store only the stable public projection of one model call."""
+
+    event = {"type": "agent_metadata", **model.as_dict()}
+    if agent is not None:
+        event["agent"] = agent
+    return event
+
+
+def _optional_durable_text(value: Any, field_name: str) -> str | None:
+    """Reject malformed stored labels instead of silently dropping corruption."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"durable agent metadata {field_name} must be non-empty")
+    return value
+
+
+def _durable_raw_metadata(value: Any) -> Mapping[str, Any]:
+    """Require raw provider metadata to remain a JSON object."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("raw agent metadata must be a mapping")
+    normalized = json_value(value)
+    return normalized
+
+
+def _aggregate_durable_usage(
+    events: Sequence[Mapping[str, Any]],
+) -> TokenUsage | None:
+    """Sum public per-call usage while retaining the stored aggregate contract."""
+
+    values = [
+        TokenUsage.from_dict(usage)
+        for event in events
+        if isinstance((usage := event.get("usage")), Mapping)
+    ]
+    if not values:
+        return None
+    return TokenUsage(
+        input_tokens=sum(value.input_tokens for value in values),
+        output_tokens=sum(value.output_tokens for value in values),
+        total_tokens=sum(value.total_tokens for value in values),
+    )
+
+
+def _agent_metadata_agent(event: Mapping[str, Any]) -> str | None:
+    """Preserve an optional non-empty agent label on a per-call event."""
+
+    agent = event.get("agent")
+    if agent is None:
+        return None
+    if not isinstance(agent, str) or not agent:
+        raise ValueError("durable agent metadata agent must be non-empty")
+    return agent
+
+
+def _durable_run_result_bytes(result: DurableRunResult) -> bytes:
+    """Encode one deterministic result document after enforcing its byte cap."""
+
+    return _encode_durable_run_result(result.as_dict())
+
+
+def _encode_durable_run_result(value: Mapping[str, Any]) -> bytes:
+    """Encode one JSON object and enforce the shared durable-result byte cap."""
+
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(encoded) > _MAX_DURABLE_RUN_RESULT_BYTES:
+        raise ValueError(
+            "durable run result exceeds "
+            f"{_MAX_DURABLE_RUN_RESULT_BYTES} encoded bytes"
+        )
+    return encoded
+
+
+def _durable_run_result_from_bytes(payload: bytes) -> DurableRunResult:
+    """Reject oversized, malformed, or non-object checkpoint documents."""
+
+    if not isinstance(payload, bytes):
+        raise TypeError("durable run result payload must be bytes")
+    if len(payload) > _MAX_DURABLE_RUN_RESULT_BYTES:
+        raise ValueError(
+            "durable run result exceeds "
+            f"{_MAX_DURABLE_RUN_RESULT_BYTES} encoded bytes"
+        )
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("durable run result checkpoint is not valid JSON") from exc
+    if not isinstance(value, Mapping):
+        raise TypeError("durable run result checkpoint must contain an object")
+    return DurableRunResult.from_dict(value)
 
 
 def _a2a_task_key(record: A2ATaskRecord) -> tuple[str, str, str]:

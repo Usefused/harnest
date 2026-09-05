@@ -35,6 +35,7 @@ from .runtime_contract import (
     require_customer_facing_output,
 )
 from .output import _agent_metadata_from_runtime_event
+from .response_status import InMemoryResponseStatusStore
 
 
 def stream_frame(
@@ -203,6 +204,7 @@ async def sse_approval_run(
     response_id: str,
     session_id: str,
     metadata: Mapping[str, Any],
+    response_statuses: InMemoryResponseStatusStore | None = None,
     external_continuations: Any | None = None,
 ) -> AsyncIterator[str]:
     """Stream one invocation through shared approval and client-tool state."""
@@ -238,14 +240,50 @@ async def sse_approval_run(
                 session_id=session_id,
                 start_sequence=sequence,
                 metadata=metadata,
+                user_id=request.user_id,
+                response_statuses=response_statuses,
             ):
                 yield frame
     except asyncio.CancelledError:
         store.cancel_run(run)
+        _record_response_status(
+            response_statuses,
+            {
+                "type": "response.completed",
+                "sequence": sequence,
+                "responseId": response_id,
+                "sessionId": session_id,
+                "status": "cancelled",
+                "outputText": "",
+                "output": [],
+                "metadata": dict(metadata),
+            },
+            response_id=response_id,
+            user_id=request.user_id,
+            session_id=session_id,
+        )
         raise
     except Exception as exc:
         if isinstance(exc, asyncio.TimeoutError):
             store.cancel_run(run)
+        failed = {
+            "type": "response.completed",
+            "sequence": sequence,
+            "responseId": response_id,
+            "sessionId": session_id,
+            "status": "failed",
+            "error": {"code": "invocation_failed"},
+            "outputText": "",
+            "output": [],
+            "metadata": dict(metadata),
+        }
+        _record_response_status(
+            response_statuses,
+            failed,
+            response_id=response_id,
+            user_id=request.user_id,
+            session_id=session_id,
+        )
         yield sse(
             "error",
             {
@@ -270,6 +308,8 @@ async def _sse_run_frames(
     session_id: str,
     start_sequence: int,
     metadata: Mapping[str, Any],
+    user_id: str,
+    response_statuses: InMemoryResponseStatusStore | None,
 ) -> AsyncIterator[str]:
     """Yield incremental frames until the run completes or suspends."""
 
@@ -293,6 +333,19 @@ async def _sse_run_frames(
                 sequence += 1
             continue
         if kind == "approval":
+            status = requires_action_payload(
+                value,
+                response_id=response_id,
+                session_id=session_id,
+                sequence=sequence + 1,
+            )
+            _record_response_status(
+                response_statuses,
+                status,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
             yield sse(
                 "approval.requested",
                 approval_payload(
@@ -304,15 +357,23 @@ async def _sse_run_frames(
             )
             yield sse(
                 "response.completed",
-                requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                ),
+                status,
             )
             return
         if kind == "client_tool":
+            status = client_requires_action_payload(
+                value,
+                response_id=response_id,
+                session_id=session_id,
+                sequence=sequence + 1,
+            )
+            _record_response_status(
+                response_statuses,
+                status,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
             yield sse(
                 "client_tool.requested",
                 client_tool_payload(
@@ -324,23 +385,26 @@ async def _sse_run_frames(
             )
             yield sse(
                 "response.completed",
-                client_requires_action_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence + 1,
-                ),
+                status,
             )
             return
         if kind == "external_continuation":
+            status = external_in_progress_payload(
+                value,
+                response_id=response_id,
+                session_id=session_id,
+                sequence=sequence,
+            )
+            _record_response_status(
+                response_statuses,
+                status,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
             yield sse(
                 "response.in_progress",
-                external_in_progress_payload(
-                    value,
-                    response_id=response_id,
-                    session_id=session_id,
-                    sequence=sequence,
-                ),
+                status,
             )
             return
         if kind == "error":
@@ -348,19 +412,46 @@ async def _sse_run_frames(
         if kind != "result":
             raise RuntimeError("unexpected approval run notification")
         require_customer_facing_output(value.text, value.result)
+        status = completed_payload(
+            response_id=response_id,
+            session_id=session_id,
+            sequence=sequence,
+            events=events,
+            text=value.text,
+            metadata=metadata,
+            result=value.result,
+        )
+        _record_response_status(
+            response_statuses,
+            status,
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
         yield sse(
             "response.completed",
-            completed_payload(
-                response_id=response_id,
-                session_id=session_id,
-                sequence=sequence,
-                events=events,
-                text=value.text,
-                metadata=metadata,
-                result=value.result,
-            ),
+            status,
         )
         return
+
+
+def _record_response_status(
+    store: InMemoryResponseStatusStore | None,
+    payload: Mapping[str, Any],
+    *,
+    response_id: str,
+    user_id: str,
+    session_id: str,
+) -> None:
+    """Publish a transport result only when the host exposes status polling."""
+
+    if store is not None:
+        store.record(
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+            payload=payload,
+        )
 
 
 async def resume_approval_run(

@@ -635,7 +635,10 @@ portable fields and additionally exposes JSON-safe ADK or LangGraph metadata.
 It affects Harnest neutral JSON, SSE, WebSocket, A2A streaming, local responses,
 and playground events; direct native endpoints are not projected. Raw provider
 metadata may contain sensitive or high-cardinality values, so enable it only
-for callers authorized to receive the native payload.
+for callers authorized to receive the native payload. Harnest-owned
+checkpoints persist the normalized completion snapshot for replica-safe polling.
+Raw metadata remains ephemeral unless raw mode is combined with
+`persist_raw_agent_metadata=True`.
 
 ## Logging, tracing, and sandboxing
 

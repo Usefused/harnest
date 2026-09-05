@@ -12,15 +12,22 @@ class OutputPolicyTests(unittest.TestCase):
 
     def test_include_mode_and_invalid_values_are_explicit(self):
         policy = OutputPolicy(
-            subagent_messages="include", agent_metadata="raw"
+            subagent_messages="include",
+            agent_metadata="raw",
+            persist_raw_agent_metadata=True,
         )
 
         self.assertTrue(policy.includes_intermediate_message(has_tool_calls=True))
         self.assertEqual(policy.agent_metadata, "raw")
+        self.assertTrue(policy.persist_raw_agent_metadata)
         with self.assertRaisesRegex(ValueError, "subagent_messages"):
             OutputPolicy(subagent_messages="unexpected")
         with self.assertRaisesRegex(ValueError, "agent_metadata"):
             OutputPolicy(agent_metadata="hidden")
+        with self.assertRaisesRegex(TypeError, "persist_raw_agent_metadata"):
+            OutputPolicy(agent_metadata="raw", persist_raw_agent_metadata=1)
+        with self.assertRaisesRegex(ValueError, "requires agent_metadata='raw'"):
+            OutputPolicy(persist_raw_agent_metadata=True)
 
     def test_agent_metadata_has_one_typed_portable_shape(self):
         metadata = AgentMetadata(

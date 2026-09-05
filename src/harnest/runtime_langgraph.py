@@ -65,6 +65,7 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
+from .runtime_session import durable_completion_deferred
 from .output import AgentMetadata, OutputPolicy, TokenUsage, _reported_token_usage
 from .session import InMemorySessionStore, SessionLease, SessionStore
 from .structured import validate_runtime_output
@@ -697,6 +698,12 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     ) -> None:
         """Release portable run ownership after the graph becomes terminal."""
 
+        if status == "completed" and durable_completion_deferred(
+            request.invocation_id
+        ):
+            # The outer storage wrapper persists lifecycle-final metadata before
+            # publishing terminal completion to another replica.
+            return
         store = self._portable_checkpoints()
         if store is None:
             return

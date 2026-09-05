@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import uuid
@@ -40,6 +40,10 @@ from .runtime_contract import (
     RuntimeDriver,
     SessionMessage,
     require_customer_facing_output,
+)
+from .response_status import (
+    InMemoryResponseStatusStore,
+    ResponseStatusCapacityError,
 )
 from .server_config import format_byte_size
 
@@ -81,6 +85,9 @@ class InvocationCoordinator:
     semaphore: asyncio.Semaphore
     request_timeout: float
     max_request_bytes: int
+    response_statuses: InMemoryResponseStatusStore = field(
+        default_factory=InMemoryResponseStatusStore
+    )
     external_continuations: Any | None = None
 
     async def resolve_session(self, *, user_id: str, session_id: str | None) -> Any:
@@ -231,6 +238,7 @@ class InvocationCoordinator:
     async def invoke_json(self, request: InvocationRequest) -> dict[str, Any]:
         """Run one JSON invocation through shared continuation state."""
 
+        self.begin_response(request)
         run = start_approval_run(
             self.approvals,
             self.client_tools,
@@ -250,23 +258,126 @@ class InvocationCoordinator:
                 )
                 response = self._boundary_response(kind, value, request=request)
                 if response is not None:
-                    return response
+                    return self.record_response(response, request=request)
                 result = value
                 require_customer_facing_output(result.text, result.result)
         except asyncio.TimeoutError as exc:
             self.approvals.cancel_run(run)
+            self.record_failed_response(request)
             raise HTTPException(status_code=504, detail="Response timed out") from exc
+        except asyncio.CancelledError:
+            self.approvals.cancel_run(run)
+            self.record_cancelled_response(request)
+            raise
         except NoCustomerFacingOutputError as exc:
+            self.record_failed_response(request)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return self._completed_json(result, request=request)
+        except Exception:
+            self.approvals.cancel_run(run)
+            self.record_failed_response(request)
+            raise
+        return self.record_response(
+            self._completed_json(result, request=request), request=request
+        )
+
+    def begin_response(
+        self, request: InvocationRequest, *, request_id: str | None = None
+    ) -> dict[str, Any]:
+        """Reserve a scoped polling receipt before exposing a response id."""
+
+        try:
+            return self.response_statuses.begin(
+                response_id=request.invocation_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                metadata=request.metadata,
+                request_id=request_id,
+            )
+        except ResponseStatusCapacityError as exc:
+            raise HTTPException(
+                status_code=503, detail="Response status capacity is exhausted"
+            ) from exc
+
+    def record_response(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request: InvocationRequest | None = None,
+        response_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Publish one wire-safe status under the exact invocation owner scope."""
+
+        if request is not None:
+            response_id = request.invocation_id
+            user_id = request.user_id
+            session_id = request.session_id
+        if response_id is None or user_id is None or session_id is None:
+            raise ValueError("response owner scope is required")
+        return self.response_statuses.record(
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+            payload=payload,
+        )
+
+    def record_failed_response(self, request: InvocationRequest) -> dict[str, Any]:
+        """Retain a payload-free failure receipt after a transport error."""
+
+        return self.record_response(
+            self._failed_json(
+                RuntimeError("invocation failed"),
+                request.invocation_id,
+                request.session_id,
+            ),
+            request=request,
+        )
+
+    def record_cancelled_response(self, request: InvocationRequest) -> dict[str, Any]:
+        """Release a cancelled invocation's active receipt as terminal state."""
+
+        return self.record_response(
+            {
+                "id": request.invocation_id,
+                "sessionId": request.session_id,
+                "status": "cancelled",
+                "outputText": "",
+                "output": [],
+                "metadata": dict(request.metadata),
+            },
+            request=request,
+        )
 
     async def poll_json(
         self, *, response_id: str, user_id: str, session_id: str
     ) -> dict[str, Any]:
-        """Read one principal/session-scoped external continuation response."""
+        """Read one principal/session-scoped response across every wait type."""
 
+        local = self._local_response(response_id, user_id, session_id)
+        if local is not None and not _polls_external_continuation(local):
+            return local
         if self.external_continuations is None:
+            if local is not None:
+                return local
             raise HTTPException(status_code=404, detail="Response not found")
+        return await self._poll_external_response(
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+            local=local,
+        )
+
+    async def _poll_external_response(
+        self,
+        *,
+        response_id: str,
+        user_id: str,
+        session_id: str,
+        local: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Resolve and record one external continuation boundary."""
+
         try:
             kind, value = await self.external_continuations.response_boundary(
                 response_id=response_id,
@@ -274,24 +385,47 @@ class InvocationCoordinator:
                 session_id=session_id,
             )
         except KeyError as exc:
+            if local is not None:
+                return local
             raise HTTPException(status_code=404, detail="Response not found") from exc
         if kind == "final":
-            return value
-        if kind == "durable_terminal":
-            return await self._durable_terminal_json(
+            return self.record_response(
                 value,
                 response_id=response_id,
                 user_id=user_id,
                 session_id=session_id,
             )
+        if kind == "durable_terminal":
+            payload = await self._durable_terminal_json(
+                value,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            return self.record_response(
+                payload,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
         if kind == "external_continuation":
-            return self._external_in_progress(
-                value, response_id=response_id, session_id=session_id
+            return self.record_response(
+                self._external_in_progress(
+                    value, response_id=response_id, session_id=session_id
+                ),
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
             )
         if kind == "error":
             payload = self._failed_json(value, response_id, session_id)
             self._retain_final(payload, response_id, user_id, session_id)
-            return payload
+            return self.record_response(
+                payload,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
         boundary = self._boundary_response(
             kind,
             value,
@@ -305,7 +439,12 @@ class InvocationCoordinator:
             ),
         )
         if boundary is not None:
-            return boundary
+            return self.record_response(
+                boundary,
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
         require_customer_facing_output(value.text, value.result)
         payload = self._completed_json(
             value,
@@ -319,7 +458,26 @@ class InvocationCoordinator:
             ),
         )
         self._retain_final(payload, response_id, user_id, session_id)
-        return payload
+        return self.record_response(
+            payload,
+            response_id=response_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+    def _local_response(
+        self, response_id: str, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Read local status while preserving indistinguishable ownership misses."""
+
+        try:
+            return self.response_statuses.get(
+                response_id=response_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except KeyError:
+            return None
 
     async def _durable_terminal_json(
         self,
@@ -331,6 +489,22 @@ class InvocationCoordinator:
     ) -> dict[str, Any]:
         """Rebuild a terminal response when another replica owned execution."""
 
+        try:
+            durable = await self.external_continuations.completed_run_result(run)
+        except (TypeError, ValueError) as error:
+            # Corrupt or future-schema payloads fail closed without exposing
+            # stored provider metadata in the transport error.
+            payload = self._failed_json(error, response_id, session_id)
+            self._retain_final_if_present(
+                payload, response_id, user_id, session_id
+            )
+            return payload
+        if durable is not None:
+            payload = durable.completed_payload(response_id, session_id)
+            self._retain_final_if_present(
+                payload, response_id, user_id, session_id
+            )
+            return payload
         result = (
             await self._reconstruct_result(run, user_id=user_id)
             if run.status == "completed"
@@ -521,6 +695,17 @@ def _timestamp_after(left: str | None, right: str | None) -> bool:
         return datetime.fromisoformat(left) > datetime.fromisoformat(right)
     except (TypeError, ValueError):
         return True
+
+
+def _polls_external_continuation(payload: Mapping[str, Any]) -> bool:
+    """Refresh an external wait while returning every other local state directly."""
+
+    pending = payload.get("pendingAction")
+    return bool(
+        payload.get("status") == "in_progress"
+        and isinstance(pending, Mapping)
+        and pending.get("type") == "external_continuation"
+    )
 
 
 def _result_from_final_message(

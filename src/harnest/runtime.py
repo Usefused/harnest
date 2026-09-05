@@ -249,7 +249,7 @@ def _plugin_runtime_manager(
 
 
 def _external_continuation_runtime(application: Any) -> Any | None:
-    """Require portable Harnest checkpoint ownership for declared plugin waits."""
+    """Attach durable response recovery whenever Harnest owns checkpoints."""
 
     plugin_declared = any(
         "context.continuations" in item.descriptor.capabilities
@@ -258,18 +258,18 @@ def _external_continuation_runtime(application: Any) -> Any | None:
     from .checkpoint import HarnestStore
 
     store = application.runtime_capabilities.checkpointer
-    if not plugin_declared and (not application.tasks or not isinstance(store, HarnestStore)):
-        return None
-    if not isinstance(store, HarnestStore):
+    if isinstance(store, HarnestStore):
+        from .external_continuation import ExternalContinuationRuntime
+
+        return ExternalContinuationRuntime(store, application_id=application.name)
+    if plugin_declared:
         # Native framework persistence cannot atomically own Harnest's portable
         # waiting state, so advanced mode fails closed for this capability.
         raise AgentRuntimeError(
             "runtime plugins declaring context.continuations require a "
             "HarnestStore checkpoint provider"
         )
-    from .external_continuation import ExternalContinuationRuntime
-
-    return ExternalContinuationRuntime(store, application_id=application.name)
+    return None
 
 
 def _a2a_task_store(application: Any) -> Any | None:
