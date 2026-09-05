@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import yaml
+from packaging.requirements import Requirement
 from packaging.version import Version
 
 try:
@@ -28,6 +29,16 @@ def load_yaml(relative_path: str):
 def workflow_events(workflow):
     # PyYAML follows YAML 1.1 and may decode GitHub's `on` key as boolean true.
     return workflow.get("on", workflow.get(True))
+
+
+def distribution_requirements(metadata: str) -> dict[str, str]:
+    """Return normalized dependency constraints from wheel metadata."""
+    requirements = {}
+    for line in metadata.splitlines():
+        if line.startswith("Requires-Dist: "):
+            requirement = Requirement(line.removeprefix("Requires-Dist: "))
+            requirements[requirement.name] = str(requirement.specifier)
+    return requirements
 
 
 def write_executable(path: Path, source: str):
@@ -188,6 +199,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "lib/payloads.py",
             },
         }
+        expected_requirements = {
+            "docker": {"docker": "<8,>=7.1", "harnest": "<0.15,>=0.14"},
+            "hatchet": {
+                "harnest": "<0.15,>=0.13",
+                "hatchet-sdk": "<2,>=1.38",
+            },
+        }
         for slug in ("docker", "hatchet"):
             with (
                 self.subTest(extension=slug),
@@ -253,6 +271,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn("not an Agent Plugin", readme)
                 self.assertIn("Description-Content-Type: text/markdown", metadata)
                 self.assertIn("not an Agent Plugin", metadata)
+                self.assertEqual(
+                    distribution_requirements(metadata),
+                    expected_requirements[slug],
+                )
                 self.assertIn("[harnest.extensions]", entry_points)
                 self.assertIn(
                     f"{slug} = {package}.extension:extension", entry_points

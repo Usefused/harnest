@@ -65,12 +65,14 @@
   while preserving standard environment proxy inheritance. Keep proxy URLs and
   credentials out of client-construction diagnostics.
 
+## [0.13.0](https://github.com/Usefused/harnest/compare/v0.12.1...v0.13.0) (2026-09-04)
+
+### Fixes
+
 * Group public Python imports under their domains: authentication, HTTP, server
   configuration, tools, MCP, models, lifecycle, context, runtime, assets, and
   storage. Preserve existing imports and type identity; add `lifecycle.coverage`
-  and update authoring examples to avoid implementation-module imports. Snapshot
-  the exact reviewed export surface to enforce the documented `0.x` stability
-  and deprecation policy.
+  and update authoring examples to avoid implementation-module imports.
 
 * Expose sandbox scopes through `from harnest.sandbox import control`, with
   `control.execute(...)`, `control.cleanup(...)`, and `control.current()`.
@@ -86,6 +88,10 @@
 
 * Add a hardened Chrome browsing sandbox example with an explicit host allowlist,
   pinned Playwright image, fresh-container scope, and bounded resources.
+
+### Features
+
+* expose stable public APIs and scoped sandbox cleanup ([c85daed](https://github.com/Usefused/harnest/commit/c85daed65ea7ec6490391870462744d4e734aafe))
 
 ## [0.12.1](https://github.com/Usefused/harnest/compare/v0.12.0...v0.12.1) (2026-09-04)
 
