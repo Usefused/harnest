@@ -276,6 +276,11 @@ func scaffoldFilesForMode(
 	adkIdentifier := adkName(name)
 	title := displayName(name)
 	files := map[string]string{
+		".gitignore": `.harnest/
+.venv
+__pycache__/
+.pytest_cache/
+`,
 		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
 projectSchema: 3

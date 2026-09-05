@@ -39,7 +39,7 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
-from .output import OutputPolicy
+from .output import AgentMetadata, OutputPolicy, _reported_token_usage
 from .structured import (
     framework_metadata_field,
     validate_runtime_output,
@@ -588,7 +588,7 @@ class ADKRuntimeDriver(RuntimeDriver):
                             public = output.accept(item)
                             if public is not None:
                                 yield public
-                for item in normalizer.finish():
+                for item in normalizer.finish(complete_agents=not unresolved_tools):
                     public = output.accept(item)
                     if public is not None:
                         yield public
@@ -817,27 +817,49 @@ class _ADKEventNormalizer:
         self._output_policy = output_policy or OutputPolicy()
         self._root_agent_name = root_agent_name
         self._text = ""
+        self._thinking = ""
         self._author: str | None = None
+        self._active_agents: list[str] = []
         self._pending_subagent_text = ""
         self._pending_subagent_author: str | None = None
 
     def feed(self, event: Any) -> list[dict[str, Any]]:
         """Normalize one event and apply the portable intermediate-output policy."""
 
-        self._start_event(event)
+        activities = self._start_event(event)
         normalized = self._normalize_event(event)
+        self._finish_event_agents(normalized)
         self._replace_pending_subagent_message(event, normalized)
         if not self._filters_subagent_event(event):
-            return normalized
-        return self._filter_subagent_messages(event, normalized)
+            return [*activities, *normalized]
+        return [*activities, *self._filter_subagent_messages(event, normalized)]
 
-    def _start_event(self, event: Any) -> None:
-        """Reset cumulative state when native event authorship changes."""
+    def _start_event(self, event: Any) -> list[dict[str, Any]]:
+        """Reset cumulative text and announce newly active native agents."""
 
-        author = getattr(event, "author", None)
+        author = _event_agent(event)
         if author != self._author:
             self._text = ""
+            self._thinking = ""
             self._author = author
+        if author is None or author in self._active_agents:
+            return []
+        self._active_agents.append(author)
+        return [_agent_activity(author, "started")]
+
+    def _finish_event_agents(self, events: list[dict[str, Any]]) -> None:
+        """Stop tracking agents when ADK explicitly reports a terminal activity."""
+
+        for item in events:
+            if item.get("type") != "agent_activity" or item.get("activity") not in {
+                "completed",
+                "failed",
+                "interrupted",
+            }:
+                continue
+            agent = item.get("agent")
+            if agent in self._active_agents:
+                self._active_agents.remove(agent)
 
     def _replace_pending_subagent_message(
         self, event: Any, normalized: list[dict[str, Any]]
@@ -858,17 +880,22 @@ class _ADKEventNormalizer:
         """Convert content, output, and tool payloads into neutral deltas."""
 
         normalized: list[dict[str, Any]] = []
-        for item in _event_items(event):
-            if item["type"] != "message":
-                normalized.append(item)
+        for item in _event_items(event, self._output_policy):
+            event_type = item["type"]
+            if event_type == "thinking":
+                delta = self._thinking_delta(event, str(item["text"]))
+            elif event_type == "message":
+                delta = self._message_delta(event, str(item["text"]))
+            else:
+                normalized.append(_event_with_agent(item, event))
                 continue
-            delta = self._message_delta(event, str(item["text"]))
             if delta:
-                normalized.append(
-                    {"type": "message", "role": "assistant", "text": delta}
-                )
+                normalized.append(_event_with_agent({**item, "text": delta}, event))
             if not getattr(event, "partial", False):
-                self._text = ""
+                if event_type == "thinking":
+                    self._thinking = ""
+                else:
+                    self._text = ""
         return normalized
 
     def _message_delta(self, event: Any, text: str) -> str:
@@ -882,6 +909,19 @@ class _ADKEventNormalizer:
         if not partial and self._text == text:
             return ""
         self._text = self._text + text if partial else text
+        return text
+
+    def _thinking_delta(self, event: Any, text: str) -> str:
+        """Deduplicate cumulative ADK reasoning without mixing it into answer text."""
+
+        partial = bool(getattr(event, "partial", False))
+        if self._thinking and text.startswith(self._thinking):
+            delta = text[len(self._thinking) :]
+            self._thinking = text
+            return delta
+        if not partial and self._thinking == text:
+            return ""
+        self._thinking = self._thinking + text if partial else text
         return text
 
     def _filters_subagent_event(self, event: Any) -> bool:
@@ -917,22 +957,39 @@ class _ADKEventNormalizer:
         # following tool-call event can then still classify it as narration.
         return visible
 
-    def finish(self) -> list[dict[str, Any]]:
-        """Release a terminal child answer once no later tool call can follow it."""
+    def finish(self, *, complete_agents: bool = True) -> list[dict[str, Any]]:
+        """Release held output and optionally close agents active at stream end."""
 
         text = self._pending_subagent_text
+        author = self._pending_subagent_author
         self._pending_subagent_text = ""
         self._pending_subagent_author = None
-        if not text:
-            return []
-        return [{"type": "message", "role": "assistant", "text": text}]
+        events = []
+        if text:
+            message = {"type": "message", "role": "assistant", "text": text}
+            events.append({**message, **({"agent": author} if author else {})})
+        if complete_agents:
+            # Child activity is nested beneath its caller, so close the most
+            # recently observed agent first when ADK has no explicit end marker.
+            events.extend(
+                _agent_activity(agent, "completed")
+                for agent in reversed(self._active_agents)
+            )
+        self._active_agents.clear()
+        return events
 
 
-def _event_items(event: Any) -> list[dict[str, Any]]:
+def _event_items(
+    event: Any, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Collect public event projections in provider response order."""
+
     items, text = _content_items(event)
     items.extend(_output_items(event, text))
     items.extend(_function_call_items(event))
     items.extend(_function_response_items(event))
+    items.extend(_agent_metadata_items(event, output_policy))
+    items.extend(_agent_action_items(event))
     return items
 
 
@@ -940,6 +997,14 @@ def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
     items: list[dict[str, Any]] = []
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) if content is not None else None
+    thinking = "".join(
+        part.text
+        for part in parts or ()
+        if getattr(part, "thought", False)
+        and isinstance(getattr(part, "text", None), str)
+    )
+    if thinking:
+        items.append({"type": "thinking", "text": thinking})
     text = "".join(
         part.text
         for part in _customer_facing_parts(parts)
@@ -948,6 +1013,116 @@ def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
     if text:
         items.append({"type": "message", "role": "assistant", "text": text})
     return items, text
+
+
+def _event_agent(event: Any) -> str | None:
+    """Return ADK's public author identity while excluding synthetic user events."""
+
+    author = getattr(event, "author", None)
+    return author if isinstance(author, str) and author and author != "user" else None
+
+
+def _event_with_agent(item: dict[str, Any], event: Any) -> dict[str, Any]:
+    """Attribute normalized activity without retaining the native event object."""
+
+    agent = _event_agent(event)
+    return {**item, **({"agent": agent} if agent else {})}
+
+
+def _agent_activity(agent: str, activity: str, **details: Any) -> dict[str, Any]:
+    """Create one provider-neutral agent lifecycle event."""
+
+    return {
+        "type": "agent_activity",
+        "agent": agent,
+        "activity": activity,
+        **details,
+    }
+
+
+def _agent_metadata_items(
+    event: Any, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Normalize ADK model metadata under the configured disclosure policy."""
+
+    usage_metadata = getattr(event, "usage_metadata", None)
+    usage = _reported_token_usage(
+        getattr(usage_metadata, "prompt_token_count", None),
+        getattr(usage_metadata, "candidates_token_count", None),
+        getattr(usage_metadata, "total_token_count", None),
+    )
+    model = _nonempty_adk_string(getattr(event, "model_version", None))
+    finish_reason = _nonempty_adk_string(getattr(event, "finish_reason", None))
+    raw = (
+        _raw_adk_metadata(event)
+        if output_policy.agent_metadata == "raw"
+        else None
+    )
+    if usage is None and model is None and finish_reason is None and not raw:
+        return []
+    metadata = AgentMetadata(
+        framework="adk",
+        usage=usage,
+        model=model,
+        finish_reason=finish_reason,
+        raw=raw,
+    )
+    return [metadata._as_runtime_event()]
+
+
+def _nonempty_adk_string(value: Any) -> str | None:
+    """Normalize ADK strings and string enums without inventing labels."""
+
+    candidate = getattr(value, "value", value)
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
+def _raw_adk_metadata(event: Any) -> Mapping[str, Any] | None:
+    """Return JSON-normalized LlmResponse fields without generated content."""
+
+    try:
+        from google.adk.models import LlmResponse
+    except ImportError:  # pragma: no cover - ADK driver requires this package
+        return None
+    fields = set(LlmResponse.model_fields) - {"content"}
+    dump = getattr(event, "model_dump", None)
+    if not callable(dump):
+        return None
+    # Restrict by the base response contract so Event actions, state, branch,
+    # invocation identifiers, and workflow internals cannot enter raw metadata.
+    value = dump(
+        mode="python",
+        by_alias=False,
+        include=fields,
+        exclude_none=True,
+    )
+    normalized = json_value(value, unsupported="string")
+    return dict(normalized) if isinstance(normalized, Mapping) and normalized else None
+
+
+def _agent_action_items(event: Any) -> list[dict[str, Any]]:
+    """Project ADK lifecycle actions without exposing state or provider metadata."""
+
+    agent = _event_agent(event)
+    if agent is None:
+        return []
+    actions = getattr(event, "actions", None)
+    items: list[dict[str, Any]] = []
+    target = getattr(actions, "transfer_to_agent", None)
+    if isinstance(target, str) and target:
+        items.append(_agent_activity(agent, "handoff", target=target))
+    if getattr(actions, "escalate", False):
+        items.append(_agent_activity(agent, "escalated"))
+    if getattr(event, "turn_complete", False):
+        items.append(_agent_activity(agent, "turn_completed"))
+    error_code = getattr(event, "error_code", None)
+    if isinstance(error_code, str) and error_code:
+        items.append(_agent_activity(agent, "failed", code=error_code))
+    elif getattr(event, "interrupted", False):
+        items.append(_agent_activity(agent, "interrupted"))
+    elif getattr(actions, "end_of_agent", False):
+        items.append(_agent_activity(agent, "completed"))
+    return items
 
 
 def _customer_facing_parts(parts: Any) -> tuple[Any, ...]:

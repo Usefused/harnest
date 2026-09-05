@@ -9,6 +9,7 @@
     "AgentContext",
     "AgentDefinition",
     "AgentInvoker",
+    "AgentMetadata",
     "AgentResponse",
     "AgentRuntimePermissionError",
     "AgentRuntimePrincipal",
@@ -119,6 +120,7 @@
     "TaskUnavailableError",
     "TelemetryExporter",
     "TelemetryExporterError",
+    "TokenUsage",
     "Tracer",
     "bundle_agent",
     "cleanup_control",
@@ -408,8 +410,11 @@
     "resolve_model_for"
   ],
   "harnest.output": [
+    "AgentMetadata",
+    "AgentMetadataMode",
     "OutputPolicy",
-    "SubagentMessageMode"
+    "SubagentMessageMode",
+    "TokenUsage"
   ],
   "harnest.plugins": [
     "ActivatedPlugin",

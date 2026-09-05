@@ -12,10 +12,12 @@ from harnest import AgentRuntimePrincipal
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.http_routes import (
     AgentInvoker,
+    AgentResponse,
     HTTPRouteError,
     create_http_route_extension,
     validate_http_route_extensions,
 )
+from harnest.output import TokenUsage
 from harnest.neutral_runtime import create_neutral_app
 from test_neutral_runtime import ApprovalDriver, FakeDriver, HeaderAuthenticator
 
@@ -144,6 +146,29 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
 
 
 class AgentInvokerTests(unittest.TestCase):
+    def test_typed_response_preserves_aggregate_token_usage(self):
+        response = AgentResponse._from_payload(
+            {
+                "id": "response-1",
+                "sessionId": "session-1",
+                "status": "completed",
+                "outputText": "done",
+                "output": [],
+                "metadata": {},
+                "usage": {
+                    "inputTokens": 8,
+                    "outputTokens": 2,
+                    "totalTokens": 10,
+                },
+            }
+        )
+
+        self.assertEqual(
+            response.usage,
+            TokenUsage(input_tokens=8, output_tokens=2, total_tokens=10),
+        )
+        self.assertEqual(response.as_dict()["usage"]["outputTokens"], 2)
+
     def test_custom_route_passes_application_authorized_runtime_principal(self):
         driver = FakeDriver()
         driver.info = replace(

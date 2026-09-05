@@ -43,6 +43,7 @@ from starlette.exceptions import HTTPException
 
 from .approval import ApprovalDenied, ApprovalRun, PendingApproval
 from .client_tool import PendingClientTool
+from .output import _agent_metadata_from_runtime_event, _aggregate_token_usage
 from .runtime_auth import (
     AuthPrincipal,
     _activate_task_principal,
@@ -944,9 +945,26 @@ async def _initial_task(
 async def _publish_runtime_event(
     published: _PublishedTask, event: Mapping[str, Any]
 ) -> None:
-    """Expose customer-facing text while keeping tool traces private."""
+    """Project answer and agent activity through A2A without exposing tool data."""
 
-    if event.get("type") != "message":
+    event_type = event.get("type")
+    if event_type == "thinking":
+        text = event.get("text")
+        if isinstance(text, str) and text:
+            await published.updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                helpers.new_text_message(text, role=Role.ROLE_AGENT),
+                metadata=_a2a_activity_metadata(event),
+            )
+        return
+    if event_type in {"agent_activity", "agent_metadata"}:
+        await published.updater.update_status(
+            TaskState.TASK_STATE_WORKING,
+            metadata=_a2a_activity_metadata(event),
+        )
+        return
+    if event_type != "message":
+        # Tool arguments and results remain inside the executing agent boundary.
         return
     text = event.get("text")
     if not isinstance(text, str) or not text:
@@ -955,9 +973,45 @@ async def _publish_runtime_event(
         [helpers.new_text_part(text, media_type="text/plain")],
         artifact_id=f"{published.task.id}-response",
         name="response",
+        metadata=_a2a_message_metadata(event),
         append=published.text_started,
     )
     published.text_started = True
+
+
+def _a2a_activity_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the namespaced A2A extension metadata for portable activity."""
+
+    if event.get("type") == "agent_metadata":
+        return {
+            "harnest": {
+                "type": "agent_metadata",
+                **_a2a_agent(event),
+                **_agent_metadata_from_runtime_event(event).as_dict(),
+            }
+        }
+    activity: dict[str, Any] = {"type": event.get("type")}
+    for key in ("agent", "activity", "target", "code"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            activity[key] = value
+    return {"harnest": activity}
+
+
+def _a2a_agent(event: Mapping[str, Any]) -> dict[str, str]:
+    """Return an optional validated agent label for A2A extension metadata."""
+
+    agent = event.get("agent")
+    return {"agent": agent} if isinstance(agent, str) and agent else {}
+
+
+def _a2a_message_metadata(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Attribute an A2A answer artifact when the framework named its agent."""
+
+    agent = event.get("agent")
+    if not isinstance(agent, str) or not agent:
+        return None
+    return {"harnest": {"agent": agent}}
 
 
 async def _publish_final_result(
@@ -970,12 +1024,14 @@ async def _publish_final_result(
         parts.append(helpers.new_text_part(result.text, media_type="text/plain"))
     if result.result is not None:
         parts.append(helpers.new_data_part(result.result, media_type="application/json"))
-    if not parts:
+    metadata = _a2a_result_metadata(result)
+    if not parts and metadata is None:
         return
     await published.updater.add_artifact(
         parts,
         artifact_id=f"{published.task.id}-response",
         name="response",
+        metadata=metadata,
         append=published.text_started,
         last_chunk=True,
     )
@@ -989,7 +1045,20 @@ def _result_message(result: InvocationResult, context_id: str) -> Message:
         parts.append(helpers.new_text_part(result.text, media_type="text/plain"))
     if result.result is not None:
         parts.append(helpers.new_data_part(result.result, media_type="application/json"))
-    return helpers.new_message(parts=parts, context_id=context_id, role=Role.ROLE_AGENT)
+    message = helpers.new_message(
+        parts=parts, context_id=context_id, role=Role.ROLE_AGENT
+    )
+    metadata = _a2a_result_metadata(result)
+    if metadata is not None:
+        json_format.ParseDict(metadata, message.metadata)
+    return message
+
+
+def _a2a_result_metadata(result: InvocationResult) -> dict[str, Any] | None:
+    """Persist aggregate usage without copying per-call raw provider metadata."""
+
+    usage = _aggregate_token_usage(result.events)
+    return {"harnest": {"usage": usage.as_dict()}} if usage is not None else None
 
 
 def _action_message(kind: str, value: Mapping[str, Any], task: Task) -> Message:
@@ -1077,9 +1146,15 @@ def _task_from_poll_payload(task: Task, payload: Mapping[str, Any]) -> Task:
     if state == TaskState.TASK_STATE_COMPLETED and not _has_response_artifact(task):
         parts = _poll_result_parts(payload)
         if parts:
-            refreshed.artifacts.append(
-                helpers.new_artifact(parts, name="response", artifact_id=f"{task.id}-response")
+            artifact = helpers.new_artifact(
+                parts, name="response", artifact_id=f"{task.id}-response"
             )
+            usage = payload.get("usage")
+            if isinstance(usage, Mapping):
+                json_format.ParseDict(
+                    {"harnest": {"usage": dict(usage)}}, artifact.metadata
+                )
+            refreshed.artifacts.append(artifact)
     return refreshed
 
 

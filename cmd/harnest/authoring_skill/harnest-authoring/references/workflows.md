@@ -47,7 +47,10 @@ fingerprinted environment below `.harnest/environments/`. It resolves
 the embedded release wheel, framework, project, extension, and task dependencies
 as one hash-verified `harnest-runtime.lock`; commit the lock after reviewing it. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
-adapters as agent dependencies. Upgrade Harnest to change framework versions.
+adapters as agent dependencies. The explicit sync command maintains a `.venv`
+link for IDE discovery when that path is absent or already Harnest-owned. It
+preserves user-owned `.venv` paths and prints the exact managed interpreter as a
+fallback. Upgrade Harnest to change framework versions.
 Harnest Extensions use this same interpreter and dependency set. Agent Plugin
 MCP servers may use separate runtimes; their mutable dependencies and caches
 belong in client-managed `PLUGIN_DATA`, not the immutable plugin source.

@@ -65,7 +65,7 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
-from .output import OutputPolicy
+from .output import AgentMetadata, OutputPolicy, TokenUsage, _reported_token_usage
 from .session import InMemorySessionStore, SessionLease, SessionStore
 from .structured import validate_runtime_output
 from .transient_media import (
@@ -105,6 +105,9 @@ class _StreamState:
     final_state: Any = None
     text: str = ""
     tools: set[tuple[Any, ...]] = field(default_factory=set)
+    active_agents: set[str] = field(default_factory=set)
+    active_task_counts: dict[str, int] = field(default_factory=dict)
+    metadata: set[tuple[Any, ...]] = field(default_factory=set)
 
 
 class LangGraphRuntimeDriver(RuntimeDriver):
@@ -1335,7 +1338,7 @@ async def _target_stream(
     stream = target.astream(
         graph_input,
         config=config,
-        stream_mode=["messages", "values"],
+        stream_mode=["messages", "tasks", "values"],
         **_durability_options(target.astream),
     )
     async with aclosing(stream):
@@ -1344,25 +1347,193 @@ async def _target_stream(
             if mode == "values":
                 state.final_state = value
                 continue
-            message = value[0] if isinstance(value, tuple) else value
-            tool_events = _message_tool_events(message)
-            for event in tool_events:
-                identity = _event_identity(event)
-                if identity not in state.tools:
-                    state.tools.add(identity)
+            if mode == "tasks":
+                event = _langgraph_task_activity(value, state)
+                if event is not None:
                     yield event
-            content = _message_text(message)
-            has_tool_calls = any(
-                event.get("type") == "tool_call" for event in tool_events
-            )
-            if content and output_policy.includes_intermediate_message(
-                has_tool_calls=has_tool_calls
+                continue
+            for event in _langgraph_stream_message_events(
+                value, state, output_policy
             ):
-                # Included narration is public but is not part of the canonical
-                # reply used to reconcile the graph's final values event.
-                if not has_tool_calls:
-                    state.text += content
-                yield {"type": "message", "role": "assistant", "text": content}
+                yield event
+
+
+def _langgraph_stream_message_events(
+    value: Any, state: _StreamState, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Normalize one message-mode item and update streaming reconciliation state."""
+
+    message, metadata = (
+        value if isinstance(value, tuple) and len(value) == 2 else (value, {})
+    )
+    agent = _langgraph_agent(message, metadata)
+    events = _start_langgraph_agent(agent, state)
+    events.extend(
+        _langgraph_message_items(
+            message, agent, include_message=False, include_tools=False
+        )
+    )
+    tool_events = _message_tool_events(message)
+    for event in tool_events:
+        identity = _event_identity(event)
+        if identity not in state.tools:
+            state.tools.add(identity)
+            events.append(_with_langgraph_agent(event, agent))
+    content = _message_text(message)
+    has_tool_calls = any(
+        event.get("type") == "tool_call" for event in tool_events
+    )
+    if content and output_policy.includes_intermediate_message(
+        has_tool_calls=has_tool_calls
+    ):
+        # Included narration is public but is not part of the canonical reply
+        # used to reconcile the graph's final values event.
+        if not has_tool_calls:
+            state.text += content
+        events.append(
+            _with_langgraph_agent(
+                {"type": "message", "role": "assistant", "text": content}, agent
+            )
+        )
+    _append_stream_metadata(
+        events,
+        state,
+        message,
+        metadata,
+        output_policy,
+        agent=agent,
+    )
+    return events
+
+
+def _append_stream_metadata(
+    events: list[dict[str, Any]],
+    state: _StreamState,
+    message: Any,
+    stream_metadata: Any,
+    output_policy: OutputPolicy,
+    *,
+    agent: str | None,
+) -> None:
+    """Append a new metadata projection once across repeated message chunks."""
+
+    event = _langgraph_metadata_event(
+        message, stream_metadata, output_policy, agent=agent
+    )
+    if event is None:
+        return
+    identity = _metadata_event_identity(message, event)
+    if identity in state.metadata:
+        return
+    state.metadata.add(identity)
+    events.append(event)
+
+
+def _metadata_event_identity(
+    message: Any, event: Mapping[str, Any]
+) -> tuple[Any, ...]:
+    """Deduplicate chunks without collapsing equal usage from separate model calls."""
+
+    native_id = getattr(message, "id", None)
+    call_identity = (
+        native_id
+        if isinstance(native_id, str) and native_id
+        else id(message)
+    )
+    return (call_identity, *_event_identity(event))
+
+
+def _start_langgraph_agent(
+    agent: str | None, state: _StreamState
+) -> list[dict[str, Any]]:
+    """Open one graph-node lifecycle span at its first observable activity."""
+
+    if agent is None or agent in state.active_agents:
+        return []
+    state.active_agents.add(agent)
+    return [_langgraph_activity(agent, "started")]
+
+
+def _langgraph_agent(message: Any, metadata: Any) -> str | None:
+    """Read the executing node identity supplied by LangGraph's message stream."""
+
+    if isinstance(metadata, Mapping):
+        for key in ("langgraph_node", "node"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+    if not _is_ai_message(message):
+        # ToolMessage.name identifies the invoked tool, not the agent or graph
+        # node that owns it. Only AI messages can carry a fallback agent name.
+        return None
+    name = getattr(message, "name", None)
+    return name if isinstance(name, str) and name else None
+
+
+def _with_langgraph_agent(
+    event: dict[str, Any], agent: str | None
+) -> dict[str, Any]:
+    """Attach a graph node identity without retaining native stream metadata."""
+
+    return {**event, **({"agent": agent} if agent else {})}
+
+
+def _langgraph_activity(agent: str, activity: str) -> dict[str, Any]:
+    """Create one framework-neutral graph-node lifecycle event."""
+
+    return {"type": "agent_activity", "agent": agent, "activity": activity}
+
+
+def _langgraph_task_activity(
+    task: Any, state: _StreamState
+) -> dict[str, Any] | None:
+    """Project an authoritative task lifecycle without its data or identifiers."""
+
+    if not isinstance(task, Mapping):
+        return None
+    agent = task.get("name")
+    if not isinstance(agent, str) or not agent or agent.startswith("__"):
+        return None
+    if "input" in task:
+        message_fallback = (
+            agent in state.active_agents
+            and agent not in state.active_task_counts
+        )
+        state.active_task_counts[agent] = (
+            state.active_task_counts.get(agent, 0) + 1
+        )
+        state.active_agents.add(agent)
+        if message_fallback:
+            return None
+        return _langgraph_activity(agent, "started")
+    activity = _langgraph_task_terminal_activity(task)
+    if activity is None:
+        return None
+    _finish_langgraph_task(agent, state)
+    return _langgraph_activity(agent, activity)
+
+
+def _langgraph_task_terminal_activity(task: Mapping[str, Any]) -> str | None:
+    """Classify only documented task terminal fields without exposing their values."""
+
+    if not {"error", "interrupts", "result"}.issubset(task):
+        return None
+    if task.get("error"):
+        return "failed"
+    if task.get("interrupts"):
+        return "interrupted"
+    return "completed"
+
+
+def _finish_langgraph_task(agent: str, state: _StreamState) -> None:
+    """Close one same-named task while preserving concurrent task activity."""
+
+    count = state.active_task_counts.get(agent)
+    if count is not None and count > 1:
+        state.active_task_counts[agent] = count - 1
+        return
+    state.active_task_counts.pop(agent, None)
+    state.active_agents.discard(agent)
 
 
 def _final_stream_events(
@@ -1382,12 +1553,25 @@ def _final_stream_events(
             else final_text
         )
         if delta:
-            events.append({"type": "message", "role": "assistant", "text": delta})
-    for event in _tool_events(state.final_state):
+            events.append(
+                _with_langgraph_agent(
+                    {"type": "message", "role": "assistant", "text": delta},
+                    _reconciled_stream_agent(
+                        state, turn_start=turn_start
+                    ),
+                )
+            )
+    for event in _tool_events(state.final_state, turn_start=turn_start):
         identity = _event_identity(event)
         if identity not in state.tools:
             state.tools.add(identity)
             events.append(event)
+    events.extend(
+        _unstreamed_metadata_events(application, state, turn_start=turn_start)
+    )
+    # A missing node update is treated as completion only after the caller has
+    # ruled out a durable interrupt and reconciled any final answer text.
+    events.extend(_complete_stream_agents(state))
     if public_result is not None:
         events.append(
             {
@@ -1397,6 +1581,50 @@ def _final_stream_events(
             }
         )
     return events
+
+
+def _unstreamed_metadata_events(
+    application: CompiledApplication,
+    state: _StreamState,
+    *,
+    turn_start: int,
+) -> list[dict[str, Any]]:
+    """Fall back to final messages only when no metadata streamed directly."""
+
+    if state.metadata:
+        return []
+    return _turn_metadata_events(
+        state.final_state,
+        turn_start=turn_start,
+        output_policy=application.output_policy,
+    )
+
+
+def _complete_stream_agents(state: _StreamState) -> list[dict[str, Any]]:
+    """Close remaining successful tasks after final output reconciliation."""
+
+    events: list[dict[str, Any]] = []
+    for agent in sorted(state.active_agents):
+        count = max(state.active_task_counts.get(agent, 1), 1)
+        events.extend(
+            _langgraph_activity(agent, "completed") for _ in range(count)
+        )
+    state.active_agents.clear()
+    state.active_task_counts.clear()
+    return events
+
+
+def _reconciled_stream_agent(
+    state: _StreamState, *, turn_start: int
+) -> str | None:
+    """Attribute final reconciliation only when its agent identity is unambiguous."""
+
+    agent = _last_turn_agent(state.final_state, turn_start=turn_start)
+    if agent is not None:
+        return agent
+    if len(state.active_agents) == 1:
+        return next(iter(state.active_agents))
+    return None
 
 
 def _mcp_client_type() -> Any:
@@ -2061,8 +2289,7 @@ def _visible_value(value: Any) -> str:
 
 
 def _message_text(message: Any) -> str:
-    message_type = getattr(message, "type", None)
-    if message_type not in {None, "ai", "AIMessage", "AIMessageChunk"}:
+    if not _is_ai_message(message):
         return ""
     content = getattr(message, "content", message)
     if isinstance(content, str):
@@ -2078,6 +2305,209 @@ def _message_text(message: Any) -> str:
         ):
             parts.append(block["text"])
     return "".join(parts)
+
+
+def _is_ai_message(message: Any) -> bool:
+    """Accept AI envelopes and untyped test/provider-compatible message values."""
+
+    return getattr(message, "type", None) in {
+        None,
+        "ai",
+        "AIMessage",
+        "AIMessageChunk",
+    }
+
+
+def _message_thinking(message: Any) -> str:
+    """Extract provider-emitted reasoning text without exposing signatures or metadata."""
+
+    if not _is_ai_message(message):
+        return ""
+    content = getattr(message, "content", message)
+    parts: list[str] = []
+    if isinstance(content, (list, tuple)):
+        for block in content:
+            text = _reasoning_block_text(block)
+            if text:
+                parts.append(text)
+    if parts:
+        return "".join(parts)
+    additional = getattr(message, "additional_kwargs", None)
+    reasoning = (
+        additional.get("reasoning_content")
+        if isinstance(additional, Mapping)
+        else None
+    )
+    return reasoning if isinstance(reasoning, str) else ""
+
+
+def _reasoning_block_text(block: Any) -> str:
+    """Project text from a reasoning block and discard provider-only fields."""
+
+    if not isinstance(block, Mapping) or block.get("type") not in {
+        "thinking",
+        "reasoning",
+    }:
+        return ""
+    for key in ("thinking", "reasoning", "text"):
+        value = block.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _langgraph_metadata_event(
+    message: Any,
+    stream_metadata: Any,
+    output_policy: OutputPolicy,
+    *,
+    agent: str | None,
+) -> dict[str, Any] | None:
+    """Normalize one AI message's reported metadata under the shared model."""
+
+    if not _is_ai_message(message):
+        return None
+    response = _message_mapping(message, "response_metadata")
+    usage_metadata = _message_mapping(message, "usage_metadata")
+    additional = _message_mapping(message, "additional_kwargs")
+    stream = stream_metadata if isinstance(stream_metadata, Mapping) else {}
+    usage = _langgraph_token_usage(usage_metadata, response)
+    model = _first_text(
+        stream,
+        ("ls_model_name", "model_name", "model"),
+        response,
+        ("model_name", "model", "model_id"),
+    )
+    provider = _first_text(
+        stream,
+        ("ls_provider", "model_provider", "provider"),
+        response,
+        ("model_provider", "provider", "provider_name"),
+    )
+    finish_reason = _first_text(
+        response,
+        ("finish_reason", "stop_reason"),
+        additional,
+        ("finish_reason", "stop_reason"),
+    )
+    raw = _langgraph_raw_metadata(
+        stream, response, usage_metadata, additional, output_policy
+    )
+    if all(value is None for value in (usage, model, provider, finish_reason, raw)):
+        return None
+    return AgentMetadata(
+        framework="langgraph",
+        usage=usage,
+        model=model,
+        provider=provider,
+        finish_reason=finish_reason,
+        raw=raw,
+    )._as_runtime_event(agent=agent)
+
+
+def _message_mapping(message: Any, name: str) -> Mapping[str, Any]:
+    """Read a LangChain mapping field without accepting arbitrary objects."""
+
+    value = getattr(message, name, None)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _langgraph_token_usage(
+    usage_metadata: Mapping[str, Any], response: Mapping[str, Any]
+) -> TokenUsage | None:
+    """Prefer standardized usage, then recognized response token-usage shapes."""
+
+    if usage := _token_usage_mapping(usage_metadata):
+        return usage
+    for key in ("token_usage", "usage"):
+        candidate = response.get(key)
+        if isinstance(candidate, Mapping) and (
+            usage := _token_usage_mapping(candidate)
+        ):
+            return usage
+    return _token_usage_mapping(response)
+
+
+def _token_usage_mapping(value: Mapping[str, Any]) -> TokenUsage | None:
+    """Normalize exact integer counts across common LangChain provider aliases."""
+
+    return _reported_token_usage(
+        _first_token_count(
+            value,
+            (
+                "input_tokens",
+                "prompt_tokens",
+                "input_token_count",
+                "prompt_token_count",
+            ),
+        ),
+        _first_token_count(
+            value,
+            (
+                "output_tokens",
+                "completion_tokens",
+                "output_token_count",
+                "completion_token_count",
+                "candidates_token_count",
+            ),
+        ),
+        _first_token_count(value, ("total_tokens", "total_token_count")),
+    )
+
+
+def _first_token_count(
+    source: Mapping[str, Any], names: Sequence[str]
+) -> int | None:
+    """Return the first exact non-negative integer among compatible aliases."""
+
+    for name in names:
+        value = source.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
+
+
+def _first_text(
+    primary: Mapping[str, Any],
+    primary_names: Sequence[str],
+    secondary: Mapping[str, Any],
+    secondary_names: Sequence[str],
+) -> str | None:
+    """Select the first non-empty provider-reported text label."""
+
+    for source, names in (
+        (primary, primary_names),
+        (secondary, secondary_names),
+    ):
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _langgraph_raw_metadata(
+    stream: Mapping[str, Any],
+    response: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    additional: Mapping[str, Any],
+    output_policy: OutputPolicy,
+) -> Mapping[str, Any] | None:
+    """Namespace native mappings only under the explicit raw-output policy."""
+
+    if output_policy.agent_metadata != "raw":
+        return None
+    raw = {
+        name: json_value(dict(value), unsupported="string")
+        for name, value in (
+            ("stream_metadata", stream),
+            ("response_metadata", response),
+            ("usage_metadata", usage),
+            ("additional_kwargs", additional),
+        )
+        if value
+    }
+    return raw or None
 
 
 async def _reference_safe_message(
@@ -2412,14 +2842,18 @@ def _message_tool_events(message: Any) -> list[dict[str, Any]]:
     return events
 
 
-def _tool_events(result: Any) -> list[dict[str, Any]]:
+def _tool_events(
+    result: Any, *, turn_start: int = 0
+) -> list[dict[str, Any]]:
+    """Return tool activity from the current turn without replaying session history."""
+
     if not isinstance(result, Mapping):
         return []
     messages = result.get("messages")
     if not isinstance(messages, (list, tuple)):
         return []
     events = []
-    for message in messages:
+    for message in _current_turn_messages(messages, turn_start=turn_start):
         events.extend(_message_tool_events(message))
     return events
 
@@ -2435,11 +2869,19 @@ def _result_events(
     """Project one invocation using the same policy as the streaming boundary."""
 
     if output_policy.subagent_messages == "include":
-        events = _included_message_events(result, turn_start=turn_start)
+        events = _included_message_events(
+            result, turn_start=turn_start, output_policy=output_policy
+        )
     else:
-        events = _tool_events(result)
+        events = _turn_activity_events(
+            result, turn_start=turn_start, output_policy=output_policy
+        )
     if text_value and not _events_end_with_text(events, text_value):
-        events.append({"type": "message", "role": "assistant", "text": text_value})
+        event = _with_langgraph_agent(
+            {"type": "message", "role": "assistant", "text": text_value},
+            _last_turn_agent(result, turn_start=turn_start),
+        )
+        _insert_final_message(events, event)
     if public_result is not None:
         events.append(
             {
@@ -2451,8 +2893,40 @@ def _result_events(
     return events
 
 
-def _included_message_events(result: Any, *, turn_start: int) -> list[dict[str, Any]]:
-    """Expose current-turn AI narration without replaying prior session messages."""
+def _included_message_events(
+    result: Any, *, turn_start: int, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Expose current-turn activity and narration without replaying session history."""
+
+    return _turn_message_events(
+        result,
+        turn_start=turn_start,
+        include_messages=True,
+        output_policy=output_policy,
+    )
+
+
+def _turn_activity_events(
+    result: Any, *, turn_start: int, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Collect reasoning and tools from only the current non-streaming graph turn."""
+
+    return _turn_message_events(
+        result,
+        turn_start=turn_start,
+        include_messages=False,
+        output_policy=output_policy,
+    )
+
+
+def _turn_message_events(
+    result: Any,
+    *,
+    turn_start: int,
+    include_messages: bool,
+    output_policy: OutputPolicy,
+) -> list[dict[str, Any]]:
+    """Project public current-turn events and bounded named-agent lifecycles."""
 
     if not isinstance(result, Mapping):
         return []
@@ -2460,12 +2934,129 @@ def _included_message_events(result: Any, *, turn_start: int) -> list[dict[str, 
     if not isinstance(messages, (list, tuple)):
         return []
     events: list[dict[str, Any]] = []
-    for message in messages[turn_start:]:
-        content = _message_text(message)
-        if content:
-            events.append({"type": "message", "role": "assistant", "text": content})
-        events.extend(_message_tool_events(message))
+    active_agents: list[str] = []
+    for message in _current_turn_messages(messages, turn_start=turn_start):
+        agent = _langgraph_agent(message, {})
+        if agent is not None and agent not in active_agents:
+            active_agents.append(agent)
+            events.append(_langgraph_activity(agent, "started"))
+        events.extend(
+            _langgraph_message_items(
+                message,
+                agent,
+                include_message=include_messages,
+                output_policy=output_policy,
+            )
+        )
+    events.extend(
+        _langgraph_activity(agent, "completed") for agent in active_agents
+    )
     return events
+
+
+def _turn_metadata_events(
+    result: Any, *, turn_start: int, output_policy: OutputPolicy
+) -> list[dict[str, Any]]:
+    """Project final-state metadata when a target omits message stream events."""
+
+    if not isinstance(result, Mapping):
+        return []
+    messages = result.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return []
+    events: list[dict[str, Any]] = []
+    for message in _current_turn_messages(messages, turn_start=turn_start):
+        event = _langgraph_metadata_event(
+            message,
+            {},
+            output_policy,
+            agent=_langgraph_agent(message, {}),
+        )
+        if event is not None:
+            events.append(event)
+    return events
+
+
+def _langgraph_message_items(
+    message: Any,
+    agent: str | None,
+    *,
+    include_message: bool,
+    include_tools: bool = True,
+    output_policy: OutputPolicy | None = None,
+) -> list[dict[str, Any]]:
+    """Project public reasoning, optional narration, and tool activity from a message."""
+
+    events: list[dict[str, Any]] = []
+    thinking = _message_thinking(message)
+    if thinking:
+        events.append(
+            _with_langgraph_agent({"type": "thinking", "text": thinking}, agent)
+        )
+    content = _message_text(message) if include_message else ""
+    if content:
+        events.append(
+            _with_langgraph_agent(
+                {"type": "message", "role": "assistant", "text": content}, agent
+            )
+        )
+    if include_tools:
+        events.extend(
+            _with_langgraph_agent(event, agent)
+            for event in _message_tool_events(message)
+        )
+    if output_policy is not None:
+        metadata = _langgraph_metadata_event(
+            message, {}, output_policy, agent=agent
+        )
+        if metadata is not None:
+            events.append(metadata)
+    return events
+
+
+def _current_turn_messages(
+    messages: Sequence[Any], *, turn_start: int
+) -> Sequence[Any]:
+    """Slice native history while tolerating advanced targets that return deltas."""
+
+    if turn_start <= 0 or turn_start > len(messages):
+        return messages
+    preceding_type = getattr(messages[turn_start - 1], "type", None)
+    # Managed LangGraph results retain the authored human message at the turn
+    # boundary. Advanced targets may instead return only their output delta.
+    return messages[turn_start:] if preceding_type in {"human", "user"} else messages
+
+
+def _last_turn_agent(result: Any, *, turn_start: int) -> str | None:
+    """Find the agent responsible for a non-streaming turn's canonical reply."""
+
+    if not isinstance(result, Mapping):
+        return None
+    messages = result.get("messages")
+    if not isinstance(messages, (list, tuple)):
+        return None
+    current = _current_turn_messages(messages, turn_start=turn_start)
+    return _langgraph_agent(current[-1], {}) if current else None
+
+
+def _insert_final_message(
+    events: list[dict[str, Any]], event: dict[str, Any]
+) -> None:
+    """Place a canonical reply before its metadata and lifecycle completion."""
+
+    index = len(events)
+    while (
+        index
+        and (
+            events[index - 1].get("type") == "agent_metadata"
+            or (
+                events[index - 1].get("type") == "agent_activity"
+                and events[index - 1].get("activity") == "completed"
+            )
+        )
+    ):
+        index -= 1
+    events.insert(index, event)
 
 
 def _events_end_with_text(events: Sequence[Mapping[str, Any]], text: str) -> bool:
@@ -2498,17 +3089,19 @@ def _message_count(graph_input: Any) -> int:
 
 
 def _event_identity(event: Mapping[str, Any]) -> tuple[Any, ...]:
+    portable = {key: value for key, value in event.items() if key != "agent"}
     return (
         event.get("type"),
         event.get("id"),
         event.get("name"),
-        json.dumps(json_value(event), sort_keys=True, ensure_ascii=False),
+        json.dumps(json_value(portable), sort_keys=True, ensure_ascii=False),
     )
 
 
 def _stream_item(item: Any) -> tuple[str, Any]:
     if isinstance(item, tuple) and len(item) == 2 and item[0] in {
         "messages",
+        "tasks",
         "values",
     }:
         return item[0], item[1]

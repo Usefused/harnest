@@ -17,6 +17,11 @@ from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_princip
 from .approval import InMemoryApprovalStore
 from .client_tool import InMemoryClientToolStore
 from .logging import get_logger
+from .output import (
+    TokenUsage,
+    _agent_metadata_from_runtime_event,
+    _aggregate_token_usage,
+)
 from .runtime_continuation import next_run_boundary, start_approval_run
 from .runtime_contract import (
     InvocationRequest,
@@ -68,20 +73,22 @@ class AgentResponse:
     session_id: str
     invocation_id: str
     metadata: Mapping[str, Any]
+    usage: TokenUsage | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return strict JSON without stringifying unsupported output objects."""
 
-        return json_value(
-            {
-                "outputText": self.output_text,
-                "result": self.result,
-                "events": self.events,
-                "sessionId": self.session_id,
-                "invocationId": self.invocation_id,
-                "metadata": self.metadata,
-            }
-        )
+        value = {
+            "outputText": self.output_text,
+            "result": self.result,
+            "events": tuple(_local_runtime_event(event) for event in self.events),
+            "sessionId": self.session_id,
+            "invocationId": self.invocation_id,
+            "metadata": self.metadata,
+        }
+        if self.usage is not None:
+            value["usage"] = self.usage.as_dict()
+        return json_value(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +140,7 @@ class AgentStreamItem:
             "sequence": self.sequence,
         }
         if self.kind == "event":
-            payload["event"] = self.event
+            payload["event"] = _local_runtime_event(self.event)  # type: ignore[arg-type]
         elif self.kind == "completed":
             payload["response"] = self.response.as_dict()  # type: ignore[union-attr]
         else:
@@ -640,7 +647,27 @@ def _agent_response(result: InvocationResult, invocation_id: str) -> AgentRespon
         session_id=result.session_id,
         invocation_id=invocation_id,
         metadata=MappingProxyType(dict(result.metadata)),
+        usage=_aggregate_token_usage(result.events),
     )
+
+
+def _local_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
+    """Serialize local events without leaking compiler-only disclosure markers."""
+
+    if event.get("type") == "agent_metadata":
+        return {
+            "type": "agent_metadata",
+            **_local_event_agent(event),
+            **_agent_metadata_from_runtime_event(event).as_dict(),
+        }
+    return {key: value for key, value in event.items() if not key.startswith("_")}
+
+
+def _local_event_agent(event: Mapping[str, Any]) -> dict[str, str]:
+    """Keep one optional agent label on a serialized local metadata event."""
+
+    agent = event.get("agent")
+    return {"agent": agent} if isinstance(agent, str) and agent else {}
 
 
 async def _next_before_deadline(run: Any, deadline: float) -> tuple[str, Any]:

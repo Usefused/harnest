@@ -222,12 +222,12 @@ class NoCustomerFacingOutputError(RuntimeError):
 
 
 def require_customer_facing_output(text: str, result: Any) -> None:
-    """Reject reasoning-only completions without exposing their hidden content."""
+    """Reject reasoning-only completions because activity is not an answer."""
 
     if text.strip() or result is not None:
         return
     # An empty success makes provider failures look like valid agent behavior.
-    # The neutral error also keeps hidden reasoning out of every transport.
+    # The neutral error does not repeat any reasoning already emitted separately.
     raise NoCustomerFacingOutputError(
         "Agent completed without customer-facing output"
     )

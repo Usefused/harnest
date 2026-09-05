@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from .agent_principal import AgentRuntimePrincipal, validate_agent_principal
+from .output import TokenUsage
 
 
 class HTTPRouteError(ValueError):
@@ -27,6 +28,7 @@ class AgentResponse:
     metadata: Mapping[str, Any]
     result: Any = None
     required_action: Mapping[str, Any] | None = None
+    usage: TokenUsage | None = None
 
     @classmethod
     def _from_payload(cls, payload: Mapping[str, Any]) -> AgentResponse:
@@ -41,6 +43,11 @@ class AgentResponse:
             metadata=dict(payload.get("metadata", {})),
             result=payload.get("result"),
             required_action=payload.get("requiredAction"),
+            usage=(
+                TokenUsage.from_dict(payload["usage"])
+                if isinstance(payload.get("usage"), Mapping)
+                else None
+            ),
         )
 
     @property
@@ -68,6 +75,8 @@ class AgentResponse:
             value["result"] = self.result
         if self.required_action is not None:
             value["requiredAction"] = dict(self.required_action)
+        if self.usage is not None:
+            value["usage"] = self.usage.as_dict()
         return value
 
 

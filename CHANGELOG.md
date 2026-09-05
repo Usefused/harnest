@@ -4,6 +4,17 @@
 
 ### Features
 
+* Emit provider-exposed ADK reasoning and LangGraph reasoning blocks as
+  portable `thinking` events, and normalize agent or graph-node lifecycle into
+  `agent_activity` events. Centralize provider-reported model, provider, finish
+  reason, and exact input/output/total token counts in typed `agent_metadata`
+  events, aggregate usage on completed responses, and allow an explicit
+  `OutputPolicy(agent_metadata="raw")` opt-in for JSON-safe native metadata.
+  Carry these events and optional agent attribution through local responses,
+  JSON, SSE, WebSocket, streaming A2A tasks, privacy-safe traces, and the
+  playground without treating reasoning as final answer text. Raw metadata is
+  excluded from traces and remains disabled by default.
+
 * Add invocation-scoped, default-deny `AgentRuntimePrincipal` grants for server,
   client-hosted, and MCP tools. When a principal is active, capabilities without
   a permission tag are unavailable. Custom HTTP routes and local agent sessions
@@ -44,6 +55,11 @@
   reject missing or source-stale locks before dependency installation.
 
 ### Changed
+
+* Make `harnest env sync` maintain an IDE-discoverable `.venv` link to the
+  current managed environment. Retarget the link atomically after dependency
+  changes, recreate it on cached syncs, and preserve user-owned `.venv` paths
+  with the exact managed interpreter as a fallback.
 
 * Declare the complete Python runtime as a PEP 561 typed distribution and add
   IDE-visible documentation and annotations to every reviewed public callable.

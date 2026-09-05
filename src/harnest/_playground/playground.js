@@ -81,6 +81,7 @@ const runtime = {
   busy: false,
   streamingBubble: null,
   typingBubble: null,
+  thinkingPanel: null,
   inspectorView: "state",
   traces: [],
   selectedTraceId: "",
@@ -187,7 +188,7 @@ function appendTurn(role, text = "") {
   return bubble;
 }
 
-/** Keep private reasoning private while making active processing unmistakable. */
+/** Show an activity indicator until the runtime supplies a concrete event. */
 function showTypingIndicator() {
   clearTypingIndicator();
   const bubble = appendTurn("assistant");
@@ -222,9 +223,72 @@ function clearTypingIndicator() {
   runtime.typingBubble = null;
 }
 
+/** Render provider-exposed reasoning separately from the assistant's answer. */
+function appendThinking(delta, agent = "") {
+  clearTypingIndicator();
+  const owner = agent || "Agent";
+  if (!runtime.thinkingPanel || runtime.thinkingPanel.dataset.agent !== owner) {
+    const panel = document.createElement("details");
+    panel.className = "thinking-event";
+    panel.dataset.agent = owner;
+    panel.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = owner === "Agent" ? "Thinking" : `Thinking · ${owner}`;
+    const contents = document.createElement("pre");
+    panel.append(summary, contents);
+    ui.conversation.append(panel);
+    runtime.thinkingPanel = panel;
+  }
+  runtime.thinkingPanel.querySelector("pre").textContent += delta;
+  scrollConversation();
+}
+
+/** Close one reasoning segment before a tool or answer begins. */
+function closeThinkingBoundary() {
+  if (!runtime.thinkingPanel) return;
+  runtime.thinkingPanel.open = false;
+  runtime.thinkingPanel = null;
+}
+
+/** Show portable agent/node lifecycle activity without exposing native state. */
+function appendAgentActivity(item) {
+  const panel = document.createElement("div");
+  panel.className = "agent-activity";
+  const activity = String(item.activity || "active").replaceAll("_", " ");
+  const owner = item.agent || "Agent";
+  panel.textContent = item.target
+    ? `${owner} · ${activity} → ${item.target}`
+    : `${owner} · ${activity}`;
+  ui.conversation.append(panel);
+  scrollConversation();
+}
+
+/** Show normalized model metadata and reveal raw provider values only when enabled. */
+function appendAgentMetadata(item) {
+  const hasRaw = item.raw && typeof item.raw === "object";
+  const panel = document.createElement(hasRaw ? "details" : "div");
+  panel.className = "agent-metadata";
+  const usage = item.usage || {};
+  const counts = [];
+  if (Number.isInteger(usage.inputTokens)) counts.push(`${usage.inputTokens} input`);
+  if (Number.isInteger(usage.outputTokens)) counts.push(`${usage.outputTokens} output`);
+  const labels = [item.agent || "Agent", item.model, item.finishReason, ...counts].filter(Boolean);
+  const label = document.createElement(hasRaw ? "summary" : "span");
+  label.textContent = labels.join(" · ") || "Agent metadata";
+  panel.append(label);
+  if (hasRaw) {
+    const contents = document.createElement("pre");
+    contents.textContent = pretty(item.raw);
+    panel.append(contents);
+  }
+  ui.conversation.append(panel);
+  scrollConversation();
+}
+
 /** Clear every visible and pending artifact owned by the previous session. */
 function resetConversation() {
   clearTypingIndicator();
+  runtime.thinkingPanel = null;
   runtime.streamingBubble = null;
   runtime.responseAssistantTurn = null;
   runtime.toolCards.clear();
@@ -424,18 +488,35 @@ function scrollConversation() {
 function renderOutput(items, fallback = "") {
   let displayedText = false;
   for (const item of items || []) displayedText = renderOutputItem(item) || displayedText;
+  closeThinkingBoundary();
   if (!displayedText && fallback) appendTurn("assistant", fallback);
 }
 
 function renderOutputItem(item) {
   if (item.type === "message") {
+    closeThinkingBoundary();
     const text = (item.content || []).map((part) => part.text || "").join("");
     if (text) appendTurn("assistant", text);
     return Boolean(text);
   }
-  if (item.type === "tool_call") appendToolCall(item.name, item.arguments, item.id);
-  if (item.type === "tool_result") appendToolResult(item.name, item.output, item.callId);
-  if (item.type === "output") appendResult(item.value);
+  if (item.type === "thinking") {
+    const text = (item.content || []).map((part) => part.text || "").join("");
+    if (text) appendThinking(text, item.agent);
+  }
+  if (item.type === "agent_activity") appendAgentActivity(item);
+  if (item.type === "agent_metadata") appendAgentMetadata(item);
+  if (item.type === "tool_call") {
+    closeThinkingBoundary();
+    appendToolCall(item.name, item.arguments, item.id);
+  }
+  if (item.type === "tool_result") {
+    closeThinkingBoundary();
+    appendToolResult(item.name, item.output, item.callId);
+  }
+  if (item.type === "output") {
+    closeThinkingBoundary();
+    appendResult(item.value);
+  }
   return false;
 }
 
@@ -1394,6 +1475,9 @@ function parseSseFrame(chunk) {
 
 function handleStreamFrame(frame) {
   if (frame.type === "response.created") beginStreamingOutput();
+  if (frame.type === "response.thinking.delta") appendThinking(frame.delta || "", frame.agent);
+  if (frame.type === "response.agent_activity") appendAgentActivity(frame);
+  if (frame.type === "response.agent_metadata") appendAgentMetadata(frame);
   if (frame.type === "response.text.delta") appendStreamingText(frame.delta || "");
   if (frame.type === "response.tool_call") {
     beginToolBoundary();
@@ -1414,16 +1498,19 @@ function handleStreamFrame(frame) {
 /** End the current text segment before rendering its tool activity. */
 function beginToolBoundary() {
   clearTypingIndicator();
+  closeThinkingBoundary();
   runtime.streamingBubble = null;
 }
 
 function beginStreamingOutput() {
   runtime.streamingBubble = null;
+  runtime.thinkingPanel = null;
   runtime.responseAssistantTurn = null;
 }
 
 /** Stream visible text into the assistant turn that will own tool metadata. */
 function appendStreamingText(delta) {
+  closeThinkingBoundary();
   if (!runtime.streamingBubble) runtime.streamingBubble = takeTypingBubble() || appendTurn("assistant");
   runtime.responseAssistantTurn = runtime.streamingBubble.closest(".turn");
   runtime.streamingBubble.textContent += delta;
@@ -1431,6 +1518,7 @@ function appendStreamingText(delta) {
 }
 
 function finishStreamingOutput(frame) {
+  closeThinkingBoundary();
   if (frame.status === "requires_action") {
     renderRequiredAction(frame.requiredAction, runtime.transport);
     runtime.streamingBubble = null;

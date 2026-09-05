@@ -9,6 +9,8 @@ from unittest.mock import patch
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events import Event as ADKEvent
+from google.adk.events import EventActions
 from google.adk.models import BaseLlm, LlmResponse
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -74,6 +76,33 @@ class DeterministicLlm(BaseLlm):
             content=types.Content(
                 role="model", parts=[types.Part(text="deterministic response")]
             )
+        )
+
+
+class ThinkingLlm(BaseLlm):
+    """Return provider-visible reasoning alongside a customer-facing answer."""
+
+    async def generate_content_async(self, llm_request, stream=False):
+        del llm_request, stream
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text="provider reasoning",
+                        thought=True,
+                        thought_signature=b"provider-signature",
+                    ),
+                    types.Part(text="customer answer"),
+                ],
+            ),
+            model_version="gemini-thinking",
+            finish_reason=types.FinishReason.STOP,
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=3,
+                candidates_token_count=4,
+                total_token_count=7,
+            ),
         )
 
 
@@ -377,6 +406,23 @@ def _application() -> CompiledApplication:
     )
 
 
+def _thinking_application() -> CompiledApplication:
+    """Build an ADK app that surfaces provider-authored reasoning."""
+
+    agent = LlmAgent(
+        name="thinker",
+        model=ThinkingLlm(model="thinking"),
+        instruction="Expose deterministic provider reasoning.",
+    )
+    return CompiledApplication(
+        name="thinker",
+        framework="adk",
+        mode="managed",
+        target=agent,
+        native_app=App(name="thinker", root_agent=agent),
+    )
+
+
 def _strict_tool_application(executions: list[int]) -> CompiledApplication:
     """Build a managed ADK app whose model invents one undeclared filter."""
 
@@ -627,7 +673,25 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.session_id, "invoke-session")
         self.assertEqual(result.metadata, {"request_kind": "test"})
         self.assertEqual(
-            [event["type"] for event in result.events], ["message"]
+            result.events,
+            (
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "started",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "deterministic response",
+                    "agent": "root",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "completed",
+                },
+            ),
         )
         session = await self.driver.get_session(
             session_id="invoke-session", user_id="test-user"
@@ -666,12 +730,74 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             events,
             [
                 {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "started",
+                },
+                {
                     "type": "message",
                     "role": "assistant",
                     "text": "deterministic response",
-                }
+                    "agent": "root",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "completed",
+                },
             ],
         )
+
+    async def test_invoke_keeps_thinking_out_of_customer_facing_text(self):
+        driver = ADKRuntimeDriver(_thinking_application())
+        try:
+            await driver.create_session(
+                session_id="thinking-session", user_id="test-user", state={}
+            )
+            result = await driver.invoke(_request("thinking-session"))
+        finally:
+            await driver.close()
+
+        self.assertEqual(result.text, "customer answer")
+        self.assertEqual(
+            result.events,
+            (
+                {
+                    "type": "agent_activity",
+                    "agent": "thinker",
+                    "activity": "started",
+                },
+                {
+                    "type": "thinking",
+                    "text": "provider reasoning",
+                    "agent": "thinker",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "customer answer",
+                    "agent": "thinker",
+                },
+                {
+                    "type": "agent_metadata",
+                    "framework": "adk",
+                    "agent": "thinker",
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 4,
+                        "total_tokens": 7,
+                    },
+                    "model": "gemini-thinking",
+                    "finish_reason": "STOP",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "thinker",
+                    "activity": "completed",
+                },
+            ),
+        )
+        self.assertNotIn("provider-signature", str(result.events))
 
     async def test_turn_history_root_runs_without_prior_session_contents(self):
         """Keep ADK's workflow-only single_turn mode away from app roots."""
@@ -1150,14 +1276,28 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "closed"):
             await self.driver.list_sessions(user_id="test-user")
 
-    async def test_normalizer_filters_thoughts_and_preserves_tool_trace(self):
+    async def test_normalizer_exposes_thinking_without_provider_metadata(self):
+        provider_state = object()
         event = python_types.SimpleNamespace(
+            author="researcher",
             partial=False,
             content=python_types.SimpleNamespace(
                 parts=[
-                    python_types.SimpleNamespace(text="hidden", thought=True),
+                    types.Part(
+                        text="reasoning",
+                        thought=True,
+                        thought_signature=b"provider-signature",
+                    ),
                     python_types.SimpleNamespace(text="visible", thought=False),
                 ]
+            ),
+            actions=python_types.SimpleNamespace(
+                state_delta={"secret": provider_state},
+                agent_state=provider_state,
+                requested_auth_configs={"secret": provider_state},
+                transfer_to_agent=None,
+                escalate=False,
+                end_of_agent=False,
             ),
             output={"route": "done"},
             node_info=None,
@@ -1175,23 +1315,41 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             _ADKEventNormalizer().feed(event),
             [
-                {"type": "message", "role": "assistant", "text": "visible"},
+                {
+                    "type": "agent_activity",
+                    "agent": "researcher",
+                    "activity": "started",
+                },
+                {
+                    "type": "thinking",
+                    "text": "reasoning",
+                    "agent": "researcher",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "visible",
+                    "agent": "researcher",
+                },
                 {
                     "type": "graph_output",
                     "output": {"route": "done"},
                     "result": {"route": "done"},
+                    "agent": "researcher",
                 },
                 {
                     "type": "tool_call",
                     "id": "call-1",
                     "name": "lookup",
                     "arguments": {"query": "safe"},
+                    "agent": "researcher",
                 },
                 {
                     "type": "tool_result",
                     "id": "call-1",
                     "name": "lookup",
                     "result": {"value": 3},
+                    "agent": "researcher",
                 },
             ],
         )
@@ -1204,7 +1362,314 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             get_function_calls=lambda: [],
             get_function_responses=lambda: [],
         )
-        self.assertEqual(_ADKEventNormalizer().feed(thought_only), [])
+        self.assertEqual(
+            _ADKEventNormalizer().feed(thought_only),
+            [{"type": "thinking", "text": "private"}],
+        )
+
+    async def test_normalizer_deduplicates_cumulative_thinking(self):
+        normalizer = _ADKEventNormalizer()
+        partial = python_types.SimpleNamespace(
+            partial=True,
+            content=python_types.SimpleNamespace(
+                parts=[python_types.SimpleNamespace(text="plan", thought=True)]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+        completed = python_types.SimpleNamespace(
+            partial=False,
+            content=python_types.SimpleNamespace(
+                parts=[
+                    python_types.SimpleNamespace(
+                        text="plan safely", thought=True
+                    )
+                ]
+            ),
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+
+        self.assertEqual(
+            [*normalizer.feed(partial), *normalizer.feed(completed)],
+            [
+                {"type": "thinking", "text": "plan"},
+                {"type": "thinking", "text": " safely"},
+            ],
+        )
+
+    async def test_normalizer_projects_normalized_adk_metadata_by_default(self):
+        event = ADKEvent(
+            author="researcher",
+            invocation_id="private-invocation",
+            branch="private.branch",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text="reasoning",
+                        thought=True,
+                        thought_signature=b"provider-signature",
+                    ),
+                    types.Part(text="answer"),
+                ],
+            ),
+            model_version="gemini-test",
+            finish_reason=types.FinishReason.STOP,
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=5,
+                candidates_token_count=7,
+                total_token_count=12,
+                thoughts_token_count=2,
+            ),
+            custom_metadata={"provider_trace": "private"},
+            avg_logprobs=-0.25,
+            actions=EventActions(state_delta={"private": object()}),
+        )
+
+        self.assertEqual(
+            _ADKEventNormalizer().feed(event),
+            [
+                {
+                    "type": "agent_activity",
+                    "agent": "researcher",
+                    "activity": "started",
+                },
+                {
+                    "type": "thinking",
+                    "text": "reasoning",
+                    "agent": "researcher",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "answer",
+                    "agent": "researcher",
+                },
+                {
+                    "type": "agent_metadata",
+                    "framework": "adk",
+                    "agent": "researcher",
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 7,
+                        "total_tokens": 12,
+                    },
+                    "model": "gemini-test",
+                    "finish_reason": "STOP",
+                },
+            ],
+        )
+
+    async def test_normalizer_raw_metadata_is_json_safe_and_content_free(self):
+        event = ADKEvent(
+            author="researcher",
+            invocation_id="private-invocation",
+            branch="private.branch",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        text="reasoning",
+                        thought=True,
+                        thought_signature=b"provider-signature",
+                    )
+                ],
+            ),
+            model_version="gemini-test",
+            partial=False,
+            turn_complete=True,
+            finish_reason=types.FinishReason.STOP,
+            error_code="PROVIDER_ERROR",
+            error_message="provider detail",
+            interrupted=False,
+            custom_metadata={"provider_trace": "trace-1"},
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=5,
+                candidates_token_count=7,
+                total_token_count=12,
+                thoughts_token_count=2,
+            ),
+            avg_logprobs=-0.25,
+            interaction_id="interaction-1",
+            environment_id="environment-1",
+            actions=EventActions(state_delta={"private": object()}),
+        )
+        events = _ADKEventNormalizer(
+            OutputPolicy(agent_metadata="raw")
+        ).feed(event)
+        metadata = next(item for item in events if item["type"] == "agent_metadata")
+
+        self.assertEqual(
+            metadata,
+            {
+                "type": "agent_metadata",
+                "framework": "adk",
+                "agent": "researcher",
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 7,
+                    "total_tokens": 12,
+                },
+                "model": "gemini-test",
+                "finish_reason": "STOP",
+                "raw": {
+                    "model_version": "gemini-test",
+                    "partial": False,
+                    "turn_complete": True,
+                    "finish_reason": "STOP",
+                    "error_code": "PROVIDER_ERROR",
+                    "error_message": "provider detail",
+                    "interrupted": False,
+                    "custom_metadata": {"provider_trace": "trace-1"},
+                    "usage_metadata": {
+                        "candidates_token_count": 7,
+                        "prompt_token_count": 5,
+                        "thoughts_token_count": 2,
+                        "total_token_count": 12,
+                    },
+                    "avg_logprobs": -0.25,
+                    "interaction_id": "interaction-1",
+                    "environment_id": "environment-1",
+                },
+                "_raw_provider_metadata": True,
+            },
+        )
+        self.assertEqual(json.loads(json.dumps(metadata)), metadata)
+        self.assertNotIn("content", metadata["raw"])
+        self.assertNotIn("actions", metadata["raw"])
+        self.assertNotIn("invocation_id", metadata["raw"])
+        self.assertNotIn("branch", metadata["raw"])
+        self.assertNotIn("provider-signature", str(metadata))
+
+    async def test_normalizer_projects_agent_lifecycle_without_native_state(self):
+        native_state = object()
+        normalizer = _ADKEventNormalizer()
+
+        def native_event(author: str, **fields: Any) -> Any:
+            """Build a native-shaped event carrying deliberately private state."""
+
+            actions = python_types.SimpleNamespace(
+                transfer_to_agent=fields.pop("transfer_to_agent", None),
+                escalate=fields.pop("escalate", False),
+                end_of_agent=fields.pop("end_of_agent", False),
+                state_delta={"private": native_state},
+                agent_state=native_state,
+            )
+            return python_types.SimpleNamespace(
+                author=author,
+                actions=actions,
+                partial=False,
+                content=None,
+                output=None,
+                get_function_calls=lambda: [],
+                get_function_responses=lambda: [],
+                **fields,
+            )
+
+        events = [
+            *normalizer.feed(native_event("root", transfer_to_agent="worker")),
+            *normalizer.feed(native_event("worker", escalate=True)),
+            *normalizer.feed(native_event("worker", end_of_agent=True)),
+            *normalizer.feed(
+                native_event(
+                    "observer", turn_complete=True, interrupted=True
+                )
+            ),
+            *normalizer.feed(
+                native_event(
+                    "root",
+                    turn_complete=True,
+                    interrupted=True,
+                    error_code="MODEL_ERROR",
+                    error_message="private provider detail",
+                )
+            ),
+            *normalizer.finish(),
+        ]
+
+        self.assertEqual(
+            events,
+            [
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "started",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "handoff",
+                    "target": "worker",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "worker",
+                    "activity": "started",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "worker",
+                    "activity": "escalated",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "worker",
+                    "activity": "completed",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "observer",
+                    "activity": "started",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "observer",
+                    "activity": "turn_completed",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "observer",
+                    "activity": "interrupted",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "turn_completed",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "root",
+                    "activity": "failed",
+                    "code": "MODEL_ERROR",
+                },
+            ],
+        )
+
+    async def test_normalizer_does_not_complete_suspended_agents(self):
+        normalizer = _ADKEventNormalizer()
+        event = python_types.SimpleNamespace(
+            author="worker",
+            partial=False,
+            content=None,
+            output=None,
+            get_function_calls=lambda: [],
+            get_function_responses=lambda: [],
+        )
+
+        self.assertEqual(
+            normalizer.feed(event),
+            [
+                {
+                    "type": "agent_activity",
+                    "agent": "worker",
+                    "activity": "started",
+                }
+            ],
+        )
+        self.assertEqual(normalizer.finish(complete_agents=False), [])
 
     async def test_subagent_pre_tool_narration_is_configurable(self):
         partial = python_types.SimpleNamespace(
@@ -1262,9 +1727,11 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(
-            [event["type"] for event in suppressed_events], ["tool_call", "message"]
+            [event["type"] for event in suppressed_events],
+            ["agent_activity", "tool_call", "agent_activity", "message"],
         )
         self.assertEqual(suppressed_events[-1]["text"], "Done")
+        self.assertEqual(suppressed_events[-1]["agent"], "root")
         self.assertEqual(
             "".join(
                 event["text"]
@@ -1286,10 +1753,31 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             get_function_calls=lambda: [],
             get_function_responses=lambda: [],
         )
-        self.assertEqual(terminal_child.feed(terminal), [])
+        self.assertEqual(
+            terminal_child.feed(terminal),
+            [
+                {
+                    "type": "agent_activity",
+                    "agent": "researcher",
+                    "activity": "started",
+                }
+            ],
+        )
         self.assertEqual(
             terminal_child.finish(),
-            [{"type": "message", "role": "assistant", "text": "Final answer"}],
+            [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "Final answer",
+                    "agent": "researcher",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "researcher",
+                    "activity": "completed",
+                },
+            ],
         )
 
 

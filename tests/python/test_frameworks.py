@@ -651,8 +651,15 @@ class FrameworkArtifactTests(unittest.TestCase):
                         {"type": "response.create", "requestId": "one", "input": "hello"}
                     )
                     created = websocket.receive_json()
-                    delta = websocket.receive_json()
-                    completed = websocket.receive_json()
+                    frames = []
+                    while not frames or frames[-1]["type"] != "response.completed":
+                        frames.append(websocket.receive_json())
+                    delta = next(
+                        frame
+                        for frame in frames
+                        if frame["type"] == "response.text.delta"
+                    )
+                    completed = frames[-1]
 
             self.assertEqual(manifest["harnestVersion"], current_harnest_version())
             self.assertEqual(manifest["framework"]["name"], "langgraph")
@@ -664,10 +671,14 @@ class FrameworkArtifactTests(unittest.TestCase):
             self.assertEqual(direct["text"], "compiled-graph")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["outputText"], "compiled-graph")
+            self.assertIn("event: response.agent_activity", stream.text)
             self.assertIn("event: response.text.delta", stream.text)
             self.assertIn("event: response.completed", stream.text)
             self.assertEqual(connected["type"], "session.connected")
             self.assertEqual(created["type"], "response.created")
+            self.assertTrue(
+                any(frame["type"] == "response.agent_activity" for frame in frames)
+            )
             self.assertEqual(delta["delta"], "compiled-graph")
             self.assertEqual(completed["status"], "completed")
 

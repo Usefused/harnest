@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ._json import json_value
+from .output import _agent_metadata_from_runtime_event
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -34,13 +35,33 @@ def _now() -> str:
 
 
 def _event_detail(event: RuntimeEvent) -> dict[str, Any]:
+    """Summarize runtime activity without retaining generated content or state."""
+
     event_type = event.get("type")
     if event_type == "message":
-        return {"characters": len(str(event.get("text", "")))}
+        return {
+            "characters": len(str(event.get("text", ""))),
+            **_trace_agent(event),
+        }
+    if event_type == "thinking":
+        # Reasoning is public on the response stream but remains content-free in
+        # the longer-lived diagnostic trace, just like answer and tool payloads.
+        return {
+            "characters": len(str(event.get("text", ""))),
+            **_trace_agent(event),
+        }
+    if event_type == "agent_activity":
+        return {
+            "activity": event.get("activity"),
+            **_trace_agent(event),
+        }
+    if event_type == "agent_metadata":
+        return _agent_metadata_trace(event)
     if event_type == "tool_call":
         return {
             "name": event.get("name"),
             "argumentFields": _mapping_field_count(event.get("arguments")),
+            **_trace_agent(event),
         }
     if event_type == "tool_result":
         return {
@@ -48,8 +69,30 @@ def _event_detail(event: RuntimeEvent) -> dict[str, Any]:
             "outputType": _value_shape(
                 event.get("result", event.get("output"))
             ),
+            **_trace_agent(event),
         }
     return {"kind": event_type}
+
+
+def _agent_metadata_trace(event: RuntimeEvent) -> dict[str, Any]:
+    """Retain normalized diagnostics while never copying opt-in raw metadata."""
+
+    metadata = _agent_metadata_from_runtime_event(event).as_dict()
+    usage = metadata.pop("usage", None)
+    metadata.pop("raw", None)
+    detail = {**metadata, **_trace_agent(event)}
+    if isinstance(usage, Mapping):
+        detail.update(usage)
+    if "raw" in event:
+        detail["rawAvailable"] = True
+    return detail
+
+
+def _trace_agent(event: Mapping[str, Any]) -> dict[str, str]:
+    """Keep only a non-empty normalized agent label in trace details."""
+
+    agent = event.get("agent")
+    return {"agent": agent} if isinstance(agent, str) and agent else {}
 
 
 def _mapping_field_count(value: Any) -> int | None:

@@ -91,7 +91,7 @@ from .http_lifecycle import (
 from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
 from .model_lifecycle import LiteLLMContext
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
-from .output import OutputPolicy
+from .output import AgentMetadata, OutputPolicy, TokenUsage
 from .runtime_contract import ResponseRequest
 from .structured import FrameworkMetadata, StructuredOutputError
 from .telemetry import TelemetryExporter, TelemetryExporterError
@@ -129,6 +129,7 @@ __all__ = [
     "AgentRuntimePermissionError",
     "AgentRuntimePrincipal",
     "AgentInvoker",
+    "AgentMetadata",
     "AgentResponse",
     "AgentContext",
     "AgentSource",
@@ -243,6 +244,7 @@ __all__ = [
     "Stored",
     "TelemetryExporter",
     "TelemetryExporterError",
+    "TokenUsage",
     "TaskHandle",
     "TaskUnavailableError",
     "Tracer",

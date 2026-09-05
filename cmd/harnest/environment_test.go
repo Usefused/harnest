@@ -26,7 +26,10 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
 	sys := environmentTestSystem(t, root)
 
-	mustSyncAgentEnvironment(t, sys, agent)
+	firstOutput := mustSyncAgentEnvironment(t, sys, agent)
+	assertContainsAll(t, "sync output", firstOutput, []string{
+		"Agent environment ready:", "IDE environment ready:",
+	})
 	firstCalls := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "uv calls", firstCalls, []string{
 		"venv --python 3.12 --managed-python --clear",
@@ -49,11 +52,9 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	if strings.Contains(lock, root) {
 		t.Fatalf("committed runtime lock retained a machine-local path:\n%s", lock)
 	}
-
-	mustSyncAgentEnvironment(t, sys, agent)
-	if secondCalls := string(mustReadTestFile(t, calls)); secondCalls != firstCalls {
-		t.Fatalf("cached sync invoked uv again:\n%s", secondCalls)
-	}
+	idePath := filepath.Join(agent, ".venv")
+	firstTarget := mustReadIDEEnvironmentLink(t, idePath)
+	mustRecreateCachedIDEEnvironment(t, sys, agent, idePath, calls, firstCalls, firstTarget)
 
 	pyproject := filepath.Join(agent, "pyproject.toml")
 	mustWriteEnvironmentFixture(
@@ -61,7 +62,37 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 		pyproject,
 		string(mustReadTestFile(t, pyproject))+"# dependency change\n",
 	)
-	_, _, err = executeForTest(t, sys, "env", "sync", agent, "--frozen")
+	assertFrozenSyncPreservesIDEEnvironment(t, sys, agent, idePath, calls, firstCalls, firstTarget)
+	mustRetargetIDEEnvironment(t, sys, agent, idePath, firstTarget)
+}
+
+// mustRecreateCachedIDEEnvironment proves editor setup does not invalidate dependency caching.
+func mustRecreateCachedIDEEnvironment(
+	t *testing.T,
+	sys system,
+	agent, idePath, calls, firstCalls, firstTarget string,
+) {
+	t.Helper()
+	if err := os.Remove(idePath); err != nil {
+		t.Fatal(err)
+	}
+	mustSyncAgentEnvironment(t, sys, agent)
+	if secondCalls := string(mustReadTestFile(t, calls)); secondCalls != firstCalls {
+		t.Fatalf("cached sync invoked uv again:\n%s", secondCalls)
+	}
+	if cachedTarget := mustReadIDEEnvironmentLink(t, idePath); cachedTarget != firstTarget {
+		t.Fatalf("cached sync linked %q, want %q", cachedTarget, firstTarget)
+	}
+}
+
+// assertFrozenSyncPreservesIDEEnvironment keeps failed resolution from changing editor state.
+func assertFrozenSyncPreservesIDEEnvironment(
+	t *testing.T,
+	sys system,
+	agent, idePath, calls, firstCalls, firstTarget string,
+) {
+	t.Helper()
+	_, _, err := executeForTest(t, sys, "env", "sync", agent, "--frozen")
 	if err == nil || !strings.Contains(err.Error(), "runtime dependency lock is stale") {
 		t.Fatalf("expected stale frozen lock, got %v", err)
 	}
@@ -69,12 +100,26 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	if strings.Contains(updatedCalls[len(firstCalls):], "pip sync") {
 		t.Fatalf("stale frozen lock reached dependency installation:\n%s", updatedCalls)
 	}
+	if frozenTarget := mustReadIDEEnvironmentLink(t, idePath); frozenTarget != firstTarget {
+		t.Fatalf("failed frozen sync changed IDE link from %q to %q", firstTarget, frozenTarget)
+	}
+}
+
+// mustRetargetIDEEnvironment checks that editor discovery follows a new dependency resolution.
+func mustRetargetIDEEnvironment(
+	t *testing.T, sys system, agent, idePath, firstTarget string,
+) {
+	t.Helper()
+	mustSyncAgentEnvironment(t, sys, agent)
+	if updatedTarget := mustReadIDEEnvironmentLink(t, idePath); updatedTarget == firstTarget {
+		t.Fatalf("dependency change did not retarget IDE link %q", updatedTarget)
+	}
 }
 
 // mustSyncAgentEnvironment keeps command plumbing out of cache-policy assertions.
 func mustSyncAgentEnvironment(
 	t *testing.T, sys system, agent string, arguments ...string,
-) {
+) string {
 	t.Helper()
 	command := append([]string{"env", "sync", agent}, arguments...)
 	stdout, _, err := executeForTest(t, sys, command...)
@@ -84,6 +129,97 @@ func mustSyncAgentEnvironment(
 	if !strings.Contains(stdout, "Agent environment ready:") {
 		t.Fatalf("unexpected sync output %q", stdout)
 	}
+	return stdout
+}
+
+// mustReadIDEEnvironmentLink verifies that editors see a relative, usable .venv link.
+func mustReadIDEEnvironmentLink(t *testing.T, path string) string {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("IDE environment %s is not a symlink", path)
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(target) || !strings.HasPrefix(
+		target,
+		filepath.Join(".harnest", "environments")+string(os.PathSeparator),
+	) {
+		t.Fatalf("IDE environment has unsafe target %q", target)
+	}
+	if info, err := os.Stat(filepath.Join(path, "bin", "python")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("IDE Python is unavailable through %s: %v", path, err)
+	}
+	return target
+}
+
+// TestEnvironmentSyncPreservesUserOwnedIDEDirectory keeps local virtual environments intact.
+func TestEnvironmentSyncPreservesUserOwnedIDEDirectory(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	idePath := filepath.Join(agent, ".venv")
+	if err := os.Mkdir(idePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEnvironmentFixture(t, filepath.Join(idePath, "owned.txt"), "keep\n")
+	mustSyncWithUserOwnedIDEEnvironment(t, root, agent)
+	if contents := string(mustReadTestFile(t, filepath.Join(idePath, "owned.txt"))); contents != "keep\n" {
+		t.Fatalf("user-owned IDE environment changed: %q", contents)
+	}
+}
+
+// TestEnvironmentSyncPreservesExternalIDEEnvironmentLink avoids claiming arbitrary links.
+func TestEnvironmentSyncPreservesExternalIDEEnvironmentLink(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	external := filepath.Join(root, "external-environment")
+	if err := os.Mkdir(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idePath := filepath.Join(agent, ".venv")
+	if err := os.Symlink(external, idePath); err != nil {
+		t.Fatal(err)
+	}
+	mustSyncWithUserOwnedIDEEnvironment(t, root, agent)
+	if target, err := os.Readlink(idePath); err != nil || target != external {
+		t.Fatalf("user-owned IDE link changed to %q: %v", target, err)
+	}
+}
+
+// scaffoldIDEEnvironmentTestAgent creates an isolated project for link ownership tests.
+func scaffoldIDEEnvironmentTestAgent(t *testing.T) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	agent := filepath.Join(root, "owned-agent")
+	if err := createScaffold(agent, "owned-agent"); err != nil {
+		t.Fatal(err)
+	}
+	return root, agent
+}
+
+// mustSyncWithUserOwnedIDEEnvironment verifies the non-fatal fallback contract.
+func mustSyncWithUserOwnedIDEEnvironment(t *testing.T, root, agent string) {
+	t.Helper()
+	t.Setenv("HARNEST_ENV_TEST_CALLS", filepath.Join(root, "calls.txt"))
+	stdout, stderr, err := executeForTest(
+		t, environmentTestSystem(t, root), "env", "sync", agent,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "Agent environment ready:") ||
+		strings.Contains(stdout, "IDE environment ready:") {
+		t.Fatalf("unexpected sync output %q", stdout)
+	}
+	assertContainsAll(t, "IDE warning", stderr, []string{
+		"IDE environment unchanged:",
+		"is not managed by Harnest",
+		"select ",
+		" manually",
+	})
 }
 
 func TestFrozenEnvironmentSyncRejectsMissingRuntimeLockBeforeUV(t *testing.T) {

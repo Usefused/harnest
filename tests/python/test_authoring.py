@@ -89,6 +89,15 @@ def _deterministic_adk_source(*, advanced):
     )
 
 
+def _event_of_type(events, event_type):
+    """Return one event by type so integration tests stay order-independent."""
+
+    for event in events:
+        if event.get("type") == event_type:
+            return event
+    raise AssertionError(f"missing event type {event_type!r}")
+
+
 def _fake_adk_modules(*, public_mcp_exports=True):
     """Isolate every supported ADK import path from previously loaded real modules."""
     google = types.ModuleType("google")
@@ -1219,8 +1228,11 @@ class AuthoringTests(unittest.TestCase):
                 neutral_body = neutral_run.json()
                 self.assertEqual(neutral_body["status"], "completed")
                 self.assertEqual(neutral_body["outputText"], "official response")
+                neutral_message = _event_of_type(
+                    neutral_body["output"], "message"
+                )
                 self.assertEqual(
-                    neutral_body["output"][0]["content"][0],
+                    neutral_message["content"][0],
                     {"type": "output_text", "text": "official response"},
                 )
 
@@ -1238,6 +1250,7 @@ class AuthoringTests(unittest.TestCase):
                 )
                 self.assertEqual(neutral_stream.status_code, 200)
                 self.assertIn("event: response.created", neutral_stream.text)
+                self.assertIn("event: response.agent_activity", neutral_stream.text)
                 self.assertIn("event: response.text.delta", neutral_stream.text)
                 self.assertIn("event: response.completed", neutral_stream.text)
                 self.assertNotIn('"modelVersion"', neutral_stream.text)
@@ -1271,6 +1284,7 @@ class AuthoringTests(unittest.TestCase):
                         if live_event["type"] == "response.completed":
                             break
                     self.assertEqual(live_events[0]["type"], "response.created")
+                    _event_of_type(live_events, "response.agent_activity")
                     self.assertTrue(
                         any(
                             item["type"] == "response.text.delta"

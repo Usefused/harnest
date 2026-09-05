@@ -135,9 +135,13 @@ Both managed frameworks use the same model mode contract. `thinking=True`
 requests reasoning, `thinking=False` requests no reasoning, and omission uses
 the provider default. LiteLLM maps the non-thinking mode to Ollama's
 `think: false`. Use `reasoning_effort` directly when a specific supported level
-is required. Harnest filters native ADK thought parts and LangGraph thinking
-blocks at its public boundary while leaving them available to the framework for
-multi-turn continuity.
+is required. Harnest filters native ADK and LangGraph reasoning signatures,
+state, and raw metadata at its public boundary. When the framework provides
+readable reasoning text, Harnest emits it as portable `thinking` activity while
+leaving final answer text and multi-turn continuity separate. Provider-reported
+model, provider, finish reason, and exact token counts use the shared
+`agent_metadata` event. Declare `OutputPolicy(agent_metadata="raw")` only when
+the application deliberately exposes native provider metadata.
 
 For a team model gateway, pass a `LiteLLMLifecycle` to `LiteLLMModel`. Use
 `create_transport` to return a LiteLLM-supported provider SDK client configured

@@ -73,6 +73,8 @@ harnest test support-agent
 ```
 
 `compile`, `test`, and `serve` also synchronize the environment automatically.
+The explicit `env sync` command also maintains an IDE-detectable `.venv` link
+unless that path already belongs to the user.
 Add only agent-owned provider, tool, and library packages to the generated
 `pyproject.toml`; Harnest owns the selected framework dependency.
 

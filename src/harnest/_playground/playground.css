@@ -412,6 +412,14 @@ body.eval-mode .topbar { grid-template-columns: minmax(180px, 1fr) auto; }
 @keyframes typing-glow { 0%, 100% { border-color: var(--line); } 50% { border-color: var(--line-strong); } }
 @media (prefers-reduced-motion: reduce) { .typing-bubble, .typing-dot { animation: none; } .typing-dot { opacity: 0.75; } }
 
+.thinking-event { width: min(640px, 82%); margin: -8px 0 18px; overflow: hidden; color: var(--muted); background: var(--panel-deep); border: 1px solid var(--line); border-radius: 12px; }
+.thinking-event summary { padding: 9px 12px; cursor: pointer; font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+.thinking-event pre { max-height: 240px; margin: 0; padding: 0 12px 11px; overflow: auto; color: var(--muted); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-activity { width: fit-content; max-width: min(640px, 82%); margin: -8px 0 14px; padding: 5px 9px; color: var(--muted); background: var(--panel-soft); border: 1px solid var(--line); border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: 0.01em; text-transform: capitalize; }
+.agent-metadata { width: fit-content; max-width: min(640px, 82%); margin: -8px 0 14px; padding: 5px 9px; color: var(--muted); background: var(--panel-deep); border: 1px solid var(--line); border-radius: 10px; font-size: 10px; }
+.agent-metadata summary { cursor: pointer; font-weight: 600; }
+.agent-metadata pre { max-height: 240px; margin: 8px 0 0; overflow: auto; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .tool-event { min-width: 0; max-width: min(680px, 100%); margin: -10px 0 20px; overflow: hidden; background: linear-gradient(145deg, rgba(136, 169, 255, 0.08), var(--panel-glass)); border: 1px solid var(--line-strong); border-radius: 16px; }
 .tool-event summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 13px; cursor: pointer; list-style: none; }
 .tool-event summary::-webkit-details-marker { display: none; }

@@ -266,8 +266,12 @@ resolve a `ModelConnector` lazily without contacting the model during compile.
 Set `thinking=True` to enable model reasoning, `thinking=False` to disable it,
 or omit the option for the provider default. Use `reasoning_effort="low"`,
 `"medium"`, or `"high"` instead when the provider supports explicit levels; do
-not combine it with `thinking`. Hidden thought parts never belong in tools,
-customer responses, streams, or eval expectations. Treat
+not combine it with `thinking`. Provider-exposed reasoning text is emitted as
+separate `thinking` activity, never as a tool input, transcript message, final
+answer, or eval expectation. Harnest keeps native signatures, state, and
+raw metadata private by default. It emits provider-reported model, provider,
+finish reason, and exact input/output/total token counts as normalized
+`agent_metadata` activity. Treat
 `Agent completed without customer-facing output` as a provider/model completion
 failure: the model reasoned but did not emit a final answer or structured result.
 
@@ -624,12 +628,14 @@ def output_policy():
     return OutputPolicy(subagent_messages="include")
 ```
 
-The factory is synchronous, zero-argument, root-only, and unique. Accepted
-values are `"suppress"` (default) and `"include"`. It affects Harnest neutral
-JSON, SSE, WebSocket, and playground events equally for ADK and LangGraph;
-direct native endpoints are not projected. It never enables hidden reasoning,
-hides tool calls/results, or removes a terminal answer. Prefer `"suppress"`
-unless the product intentionally displays provisional agent progress.
+The factory is synchronous, zero-argument, root-only, and unique.
+`subagent_messages` accepts `"suppress"` (default) or `"include"`.
+`agent_metadata` accepts `"normalized"` (default) or `"raw"`; raw mode keeps the
+portable fields and additionally exposes JSON-safe ADK or LangGraph metadata.
+It affects Harnest neutral JSON, SSE, WebSocket, A2A streaming, local responses,
+and playground events; direct native endpoints are not projected. Raw provider
+metadata may contain sensitive or high-cardinality values, so enable it only
+for callers authorized to receive the native payload.
 
 ## Logging, tracing, and sandboxing
 

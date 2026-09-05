@@ -28,6 +28,10 @@ from .runtime_contract import (
 )
 from .external_continuation import PendingExternalContinuation
 from .durable import NativeDurableSuspended
+from .output import (
+    _agent_metadata_from_runtime_event,
+    _aggregate_token_usage,
+)
 
 
 def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
@@ -39,6 +43,26 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
             "type": "message",
             "role": event.get("role", "assistant"),
             "content": [{"type": "output_text", "text": event.get("text", "")}],
+            **_public_event_agent(event),
+        }
+    if event_type == "thinking":
+        return {
+            "type": "thinking",
+            "content": [
+                {"type": "thinking_text", "text": event.get("text", "")}
+            ],
+            **_public_event_agent(event),
+        }
+    if event_type == "agent_activity":
+        return {
+            "type": "agent_activity",
+            **_public_activity_fields(event),
+        }
+    if event_type == "agent_metadata":
+        return {
+            "type": "agent_metadata",
+            **_public_event_agent(event),
+            **_agent_metadata_from_runtime_event(event).as_dict(),
         }
     if event_type == "tool_call":
         return {
@@ -46,6 +70,7 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
             "id": event.get("id"),
             "name": event.get("name"),
             "arguments": event.get("arguments"),
+            **_public_event_agent(event),
         }
     if event_type == "tool_result":
         return {
@@ -53,6 +78,7 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
             "callId": event.get("id", event.get("callId")),
             "name": event.get("name"),
             "output": event.get("result", event.get("output")),
+            **_public_event_agent(event),
         }
     if event_type == "graph_output":
         return {"type": "output", "value": event.get("output")}
@@ -61,17 +87,48 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
     raise ValueError(f"unsupported runtime event type: {event_type!r}")
 
 
+def _public_event_agent(event: Mapping[str, Any]) -> dict[str, str]:
+    """Return a validated optional agent attribution for public output."""
+
+    agent = event.get("agent")
+    return {"agent": agent} if isinstance(agent, str) and agent else {}
+
+
+def _public_activity_fields(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Project lifecycle fields while excluding native framework metadata."""
+
+    fields: dict[str, Any] = {
+        **_public_event_agent(event),
+        "activity": event.get("activity"),
+    }
+    for key in ("target", "code"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            fields[key] = value
+    return fields
+
+
 def public_output(events: Sequence[RuntimeEvent]) -> list[dict[str, Any]]:
-    """Render events while preserving the established adjacent-text folding."""
+    """Render events and fold only adjacent text from the same attributed agent."""
 
     output: list[dict[str, Any]] = []
     for event in events:
         item = public_output_item(event)
-        if item["type"] == "message" and output and output[-1]["type"] == "message":
+        if output and _foldable_messages(output[-1], item):
             output[-1]["content"][0]["text"] += item["content"][0]["text"]
         else:
             output.append(item)
     return output
+
+
+def _foldable_messages(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """Keep streamed chunks together without erasing agent or role boundaries."""
+
+    return bool(
+        previous.get("type") == current.get("type") == "message"
+        and previous.get("role") == current.get("role")
+        and previous.get("agent") == current.get("agent")
+    )
 
 
 def completed_payload(
@@ -99,6 +156,9 @@ def completed_payload(
     }
     if request_id is not None:
         payload["requestId"] = request_id
+    usage = _aggregate_token_usage(events)
+    if usage is not None:
+        payload["usage"] = usage.as_dict()
     if result is not None:
         payload["result"] = result
     return payload

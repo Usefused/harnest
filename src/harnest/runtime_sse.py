@@ -16,6 +16,8 @@ from .approval import (
 )
 from .client_tool import InMemoryClientToolStore, PendingClientTool
 from .runtime_continuation import (
+    _public_activity_fields,
+    _public_event_agent,
     client_requires_action_payload,
     completed_payload,
     external_in_progress_payload,
@@ -32,6 +34,7 @@ from .runtime_contract import (
     RuntimeEvent,
     require_customer_facing_output,
 )
+from .output import _agent_metadata_from_runtime_event
 
 
 def stream_frame(
@@ -55,12 +58,34 @@ def stream_frame(
     if event_type == "message":
         return "response.text.delta", {
             **common,
+            **_public_event_agent(event),
             "type": "response.text.delta",
             "delta": event.get("text", ""),
+        }
+    if event_type == "thinking":
+        return "response.thinking.delta", {
+            **common,
+            **_public_event_agent(event),
+            "type": "response.thinking.delta",
+            "delta": event.get("text", ""),
+        }
+    if event_type == "agent_activity":
+        return "response.agent_activity", {
+            **common,
+            "type": "response.agent_activity",
+            **_public_activity_fields(event),
+        }
+    if event_type == "agent_metadata":
+        return "response.agent_metadata", {
+            **common,
+            **_public_event_agent(event),
+            "type": "response.agent_metadata",
+            **_agent_metadata_from_runtime_event(event).as_dict(),
         }
     if event_type == "tool_call":
         return "response.tool_call", {
             **common,
+            **_public_event_agent(event),
             "type": "response.tool_call",
             "id": event.get("id"),
             "name": event.get("name"),
@@ -69,6 +94,7 @@ def stream_frame(
     if event_type == "tool_result":
         return "response.tool_result", {
             **common,
+            **_public_event_agent(event),
             "type": "response.tool_result",
             "callId": event.get("id", event.get("callId")),
             "name": event.get("name"),

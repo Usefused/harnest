@@ -55,6 +55,14 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 				"Agent environment ready: %s\n",
 				selection.Executable,
 			)
+			idePath, err := syncIDEEnvironmentLink(bundle.Directory, selection.Executable)
+			if err != nil {
+				// The managed runtime is still usable when an editor convenience
+				// link cannot be published, especially when the user owns .venv.
+				fmt.Fprintf(command.ErrOrStderr(), "IDE environment unchanged: %v\n", err)
+				return nil
+			}
+			fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
 			return nil
 		},
 	}
@@ -265,6 +273,92 @@ func containedEnvironmentDirectory(root, relative string) (string, bool) {
 		return "", false
 	}
 	return directory, true
+}
+
+// syncIDEEnvironmentLink exposes the selected managed runtime at the editor-standard .venv path.
+func syncIDEEnvironmentLink(projectRoot, python string) (string, error) {
+	managedRoot := filepath.Join(projectRoot, ".harnest", "environments")
+	environment := filepath.Dir(filepath.Dir(python))
+	if runtimePythonPath(environment) != python || !pathWithinDirectory(managedRoot, environment) {
+		return "", fmt.Errorf("managed Python is outside the agent environment store: %s", python)
+	}
+	info, err := os.Lstat(environment)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("managed Python environment is unavailable: %s", environment)
+	}
+	idePath := filepath.Join(projectRoot, ".venv")
+	available, err := ideEnvironmentPathAvailable(idePath, managedRoot)
+	if err != nil {
+		return "", err
+	}
+	if !available {
+		return "", fmt.Errorf(
+			"%s is not managed by Harnest; select %s manually",
+			idePath,
+			python,
+		)
+	}
+	target, err := filepath.Rel(projectRoot, environment)
+	if err != nil {
+		return "", fmt.Errorf("resolve IDE environment target: %w", err)
+	}
+	if err := replaceIDEEnvironmentLink(idePath, target); err != nil {
+		return "", err
+	}
+	return idePath, nil
+}
+
+// ideEnvironmentPathAvailable allows creation or replacement only for Harnest-owned links.
+func ideEnvironmentPathAvailable(path, managedRoot string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect IDE environment %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false, fmt.Errorf("inspect IDE environment link %s: %w", path, err)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return pathWithinDirectory(managedRoot, target), nil
+}
+
+// pathWithinDirectory performs a lexical containment check without following user-owned links.
+func pathWithinDirectory(root, candidate string) bool {
+	relative, err := filepath.Rel(root, filepath.Clean(candidate))
+	return err == nil && relative != "." && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(os.PathSeparator))
+}
+
+// replaceIDEEnvironmentLink publishes a relative link atomically beside the project path.
+func replaceIDEEnvironmentLink(path, target string) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".venv.harnest-*")
+	if err != nil {
+		return fmt.Errorf("prepare IDE environment link: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return fmt.Errorf("close IDE environment link placeholder: %w", err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return fmt.Errorf("prepare IDE environment link target: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+	if err := os.Symlink(target, temporaryPath); err != nil {
+		return fmt.Errorf("create IDE environment link: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish IDE environment link: %w", err)
+	}
+	return nil
 }
 
 func lockEnvironment(path string) (func(), error) {

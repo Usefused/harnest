@@ -38,7 +38,8 @@ from harnest.approval import (
     require_human_approval,
 )
 from harnest.client_tool import InMemoryClientToolStore, client_tool
-from harnest.runtime_sse import sse_approval_run
+from harnest.runtime_continuation import completed_payload, public_output
+from harnest.runtime_sse import sse_approval_run, stream_frame
 from harnest.tool import tool
 
 
@@ -718,6 +719,15 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn('.dataset.active = runtime.transport', javascript.text)
         self.assertIn("showTypingIndicator()", javascript.text)
         self.assertIn('label.textContent = "Thinking"', javascript.text)
+        self.assertIn("function appendThinking(delta, agent", javascript.text)
+        self.assertIn('frame.type === "response.thinking.delta"', javascript.text)
+        self.assertIn('frame.type === "response.agent_activity"', javascript.text)
+        self.assertIn('frame.type === "response.agent_metadata"', javascript.text)
+        self.assertIn("function appendAgentActivity(item)", javascript.text)
+        self.assertIn("function appendAgentMetadata(item)", javascript.text)
+        self.assertIn(".thinking-event", stylesheet.text)
+        self.assertIn(".agent-activity", stylesheet.text)
+        self.assertIn(".agent-metadata", stylesheet.text)
         self.assertIn(
             "if (runtime.streamingBubble) {\n    clearTypingIndicator();",
             javascript.text,
@@ -1181,6 +1191,297 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(
             all(trace["transport"] == "stream" for trace in stream_traces[:2])
+        )
+
+    def test_agent_activity_and_thinking_cross_public_transport_boundaries(self):
+        class ActivityDriver(FakeDriver):
+            def events(self):
+                return [
+                    {
+                        "type": "agent_activity",
+                        "agent": "planner",
+                        "activity": "started",
+                        "nativeState": {"secret": True},
+                    },
+                    {
+                        "type": "thinking",
+                        "agent": "planner",
+                        "text": "check constraints",
+                        "signature": "private-signature",
+                    },
+                    {
+                        "type": "agent_metadata",
+                        "framework": "adk",
+                        "agent": "planner",
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 4,
+                            "total_tokens": 17,
+                        },
+                        "model": "gemini-test",
+                        "finish_reason": "STOP",
+                        "raw": {"thoughts_token_count": 1},
+                        "_raw_provider_metadata": True,
+                        "nativeObject": "not-projected",
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "planner",
+                        "text": "hello",
+                    },
+                    {
+                        "type": "agent_activity",
+                        "agent": "planner",
+                        "activity": "completed",
+                    },
+                ]
+
+        driver = ActivityDriver()
+        with TestClient(create_neutral_app(driver)) as client:
+            client.post("/sessions", json={"id": "activity-json"})
+            response = client.post(
+                "/responses",
+                json={"input": "hello", "sessionId": "activity-json"},
+            )
+            body = response.json()
+            self.assertEqual(body["outputText"], "hello")
+            self.assertEqual(
+                [item["type"] for item in body["output"]],
+                [
+                    "agent_activity",
+                    "thinking",
+                    "agent_metadata",
+                    "message",
+                    "agent_activity",
+                ],
+            )
+            self.assertEqual(
+                body["output"][1]["content"][0]["text"], "check constraints"
+            )
+            self.assertEqual(
+                body["output"][2],
+                {
+                    "type": "agent_metadata",
+                    "agent": "planner",
+                    "framework": "adk",
+                    "usage": {
+                        "inputTokens": 12,
+                        "outputTokens": 4,
+                        "totalTokens": 17,
+                    },
+                    "model": "gemini-test",
+                    "finishReason": "STOP",
+                    "raw": {"thoughts_token_count": 1},
+                },
+            )
+            self.assertEqual(body["usage"], body["output"][2]["usage"])
+            self.assertNotIn("signature", body["output"][1])
+            self.assertNotIn("nativeState", body["output"][0])
+            self.assertNotIn("nativeObject", body["output"][2])
+
+            client.post("/sessions", json={"id": "activity-stream"})
+            streamed = client.post(
+                "/responses",
+                json={
+                    "input": "hello",
+                    "sessionId": "activity-stream",
+                    "stream": True,
+                },
+            )
+            self.assertIn("event: response.agent_activity", streamed.text)
+            self.assertIn("event: response.thinking.delta", streamed.text)
+            self.assertIn("event: response.agent_metadata", streamed.text)
+            trace = client.get(
+                "/_harnest/traces", params={"sessionId": "activity-stream"}
+            ).json()["traces"][0]
+            thinking = next(
+                entry for entry in trace["entries"] if entry["message"] == "Thinking"
+            )
+            self.assertEqual(
+                thinking["detail"], {"characters": 17, "agent": "planner"}
+            )
+            metadata = next(
+                entry
+                for entry in trace["entries"]
+                if entry["message"] == "Agent metadata"
+            )
+            self.assertEqual(
+                metadata["detail"],
+                {
+                    "framework": "adk",
+                    "model": "gemini-test",
+                    "finishReason": "STOP",
+                    "agent": "planner",
+                    "inputTokens": 12,
+                    "outputTokens": 4,
+                    "totalTokens": 17,
+                    "rawAvailable": True,
+                },
+            )
+            self.assertNotIn("check constraints", str(trace))
+            self.assertNotIn("thoughts_token_count", str(trace))
+
+    def test_event_projection_keeps_only_portable_activity_fields(self):
+        activity = {
+            "type": "agent_activity",
+            "agent": "researcher",
+            "activity": "handoff",
+            "target": "writer",
+            "state": {"credential": "hidden"},
+        }
+        event_name, frame = stream_frame(
+            activity,
+            sequence=3,
+            response_id="response-1",
+            session_id="session-1",
+        )
+        self.assertEqual(event_name, "response.agent_activity")
+        self.assertEqual(
+            frame,
+            {
+                "type": "response.agent_activity",
+                "sequence": 3,
+                "responseId": "response-1",
+                "sessionId": "session-1",
+                "agent": "researcher",
+                "activity": "handoff",
+                "target": "writer",
+            },
+        )
+        self.assertEqual(
+            public_output(
+                [
+                    {"type": "thinking", "agent": "researcher", "text": "why"},
+                    activity,
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "researcher",
+                        "text": "first",
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "writer",
+                        "text": "second",
+                    },
+                ]
+            ),
+            [
+                {
+                    "type": "thinking",
+                    "content": [{"type": "thinking_text", "text": "why"}],
+                    "agent": "researcher",
+                },
+                {
+                    "type": "agent_activity",
+                    "agent": "researcher",
+                    "activity": "handoff",
+                    "target": "writer",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "first"}],
+                    "agent": "researcher",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "second"}],
+                    "agent": "writer",
+                },
+            ],
+        )
+
+    def test_agent_metadata_frame_uses_the_central_public_shape(self):
+        event_name, frame = stream_frame(
+            {
+                "type": "agent_metadata",
+                "framework": "langgraph",
+                "agent": "writer",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+                "provider": "openai",
+                "finish_reason": "stop",
+                "raw": {"system_fingerprint": "fp-test"},
+                "_raw_provider_metadata": True,
+                "private": "dropped",
+            },
+            sequence=4,
+            response_id="response-1",
+            session_id="session-1",
+        )
+
+        self.assertEqual(event_name, "response.agent_metadata")
+        self.assertEqual(
+            frame,
+            {
+                "type": "response.agent_metadata",
+                "sequence": 4,
+                "responseId": "response-1",
+                "sessionId": "session-1",
+                "agent": "writer",
+                "framework": "langgraph",
+                "usage": {
+                    "inputTokens": 7,
+                    "outputTokens": 3,
+                    "totalTokens": 10,
+                },
+                "provider": "openai",
+                "finishReason": "stop",
+                "raw": {"system_fingerprint": "fp-test"},
+            },
+        )
+        projected = public_output(
+            [
+                {
+                    "type": "agent_metadata",
+                    "framework": "adk",
+                    "raw": {"secret": "must-not-leak"},
+                }
+            ]
+        )
+        self.assertEqual(projected, [{"type": "agent_metadata", "framework": "adk"}])
+
+    def test_completed_response_aggregates_each_reported_model_call(self):
+        events = [
+            {
+                "type": "agent_metadata",
+                "framework": "adk",
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 2,
+                    "total_tokens": 8,
+                },
+            },
+            {
+                "type": "agent_metadata",
+                "framework": "langgraph",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+            },
+        ]
+
+        payload = completed_payload(
+            response_id="response-1",
+            session_id="session-1",
+            sequence=3,
+            events=events,
+            text="done",
+            metadata={},
+        )
+
+        self.assertEqual(
+            payload["usage"],
+            {"inputTokens": 12, "outputTokens": 5, "totalTokens": 18},
         )
 
     def test_reasoning_only_completion_is_never_reported_as_success(self):

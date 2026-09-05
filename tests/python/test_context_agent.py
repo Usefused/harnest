@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from harnest.context_agent import (
     activate_context_agent,
 )
 from harnest.external_continuation import PendingExternalContinuation
+from harnest.output import TokenUsage
 from harnest.runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -150,6 +152,38 @@ def _compiled_task(function):
 
 
 class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_response_exposes_aggregate_token_usage(self):
+        class UsageDriver(_FakeDriver):
+            async def invoke(self, request):
+                result = await super().invoke(request)
+                metadata = {
+                    "type": "agent_metadata",
+                    "framework": "langgraph",
+                    "usage": {
+                        "input_tokens": 6,
+                        "output_tokens": 2,
+                        "total_tokens": 8,
+                    },
+                    "raw": {"provider_trace": "trace-1"},
+                    "_raw_provider_metadata": True,
+                }
+                return replace(result, events=(*result.events, metadata))
+
+        runtime = LocalAgentRuntime(UsageDriver(), user_id="user-1")
+        session = await runtime.create_session()
+
+        response = await session.invoke("hello")
+
+        self.assertEqual(
+            response.usage,
+            TokenUsage(input_tokens=6, output_tokens=2, total_tokens=8),
+        )
+        self.assertEqual(response.as_dict()["usage"]["inputTokens"], 6)
+        serialized = response.as_dict()["events"][-1]
+        self.assertEqual(serialized["usage"]["outputTokens"], 2)
+        self.assertEqual(serialized["raw"], {"provider_trace": "trace-1"})
+        self.assertNotIn("_raw_provider_metadata", str(serialized))
+
     async def test_local_session_invokes_final_driver_and_opens_existing_session(self):
         driver = _FakeDriver()
         runtime = LocalAgentRuntime(driver, user_id="user-1")

@@ -17,6 +17,7 @@ from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
 from harnest.context import context
 from harnest.checkpoint_langgraph import _decode_thread_id
+from harnest.durable import NativeDurableSuspended
 from harnest.graph import START, Edge, Graph
 from harnest.lifecycle import LifecycleListener
 from harnest.mcp_context import MCPContextUnavailableError
@@ -32,6 +33,7 @@ from harnest.runtime_langgraph import (
     LangGraphRuntimeDriver,
     _MODEL_ASSET_SCOPE,
     _langgraph_asset_middleware,
+    _message_thinking,
     _message_tool_events,
 )
 from harnest.runtime_extensions import ExtensionRuntimeDriver
@@ -68,12 +70,18 @@ class _Message:
         tool_calls=(),
         tool_call_id=None,
         name=None,
+        additional_kwargs=None,
+        response_metadata=None,
+        usage_metadata=None,
     ):
         self.content = content
         self.type = message_type
         self.tool_calls = list(tool_calls)
         self.tool_call_id = tool_call_id
         self.name = name
+        self.additional_kwargs = dict(additional_kwargs or {})
+        self.response_metadata = dict(response_metadata or {})
+        self.usage_metadata = dict(usage_metadata or {})
 
     def model_dump(self, **_kwargs):
         return {
@@ -82,6 +90,9 @@ class _Message:
             "tool_calls": self.tool_calls,
             "tool_call_id": self.tool_call_id,
             "name": self.name,
+            "additional_kwargs": self.additional_kwargs,
+            "response_metadata": self.response_metadata,
+            "usage_metadata": self.usage_metadata,
         }
 
 
@@ -164,7 +175,11 @@ class _Target:
                 ),
                 _Message(
                     [
-                        {"type": "thinking", "thinking": "private"},
+                        {
+                            "type": "thinking",
+                            "thinking": "considering",
+                            "signature": "private-signature",
+                        },
                         {"type": "text", "text": f"answer-{counter}"},
                     ]
                 ),
@@ -185,16 +200,109 @@ class _Target:
         self.inputs.append(graph_input)
         self.configs.append(config)
         self.durabilities.append(durability)
-        assert stream_mode == ["messages", "values"]
+        assert stream_mode == ["messages", "tasks", "values"]
         result = self._result(graph_input)
-        yield "messages", (_Message("answer-"), {"node": "reply"})
-        yield "messages", (result["messages"][0], {"node": "reply"})
-        yield "messages", (result["messages"][1], {"node": "tools"})
-        yield "messages", (_Message(str(result["counter"])), {"node": "reply"})
+        yield "tasks", {
+            "id": "private-reply-task-1",
+            "name": "reply",
+            "input": {"private": "node-input"},
+            "triggers": ["private-trigger"],
+        }
+        yield "messages", (
+            _Message("answer-"),
+            {"langgraph_node": "reply", "private": "metadata"},
+        )
+        yield "messages", (result["messages"][0], {"langgraph_node": "reply"})
+        yield "tasks", {
+            "id": "private-reply-task-1",
+            "name": "reply",
+            "error": None,
+            "interrupts": [],
+            "result": {"private": "node-result"},
+        }
+        yield "tasks", {
+            "id": "private-tools-task",
+            "name": "tools",
+            "input": {"private": "tool-input"},
+            "triggers": ["private-trigger"],
+        }
+        yield "messages", (result["messages"][1], {"langgraph_node": "tools"})
+        yield "tasks", {
+            "id": "private-tools-task",
+            "name": "tools",
+            "error": None,
+            "interrupts": [],
+            "result": {"private": "tool-result"},
+        }
+        yield "tasks", {
+            "id": "private-reply-task-2",
+            "name": "reply",
+            "input": {"private": "final-input"},
+            "triggers": ["private-trigger"],
+        }
+        yield "messages", (
+            _Message(
+                [
+                    {
+                        "type": "reasoning",
+                        "reasoning": "considering",
+                        "signature": "private-stream-signature",
+                    },
+                    {"type": "text", "text": str(result["counter"])},
+                ]
+            ),
+            {"langgraph_node": "reply"},
+        )
+        yield "tasks", {
+            "id": "private-reply-task-2",
+            "name": "reply",
+            "error": None,
+            "interrupts": [],
+            "result": {"private": "final-result"},
+        }
         yield "values", result
 
     async def aclose(self):
         self.closed += 1
+
+
+class _MetadataTarget(_Target):
+    """Return the same metadata-bearing AI message from invoke and stream."""
+
+    def __init__(self, message, stream_metadata):
+        super().__init__()
+        self.message = message
+        self.stream_metadata = stream_metadata
+
+    def _result(self, graph_input):
+        return {
+            "messages": [*graph_input.get("messages", ()), self.message],
+            "value": "answer",
+        }
+
+    async def astream(
+        self, graph_input, *, config, stream_mode, durability=None
+    ):
+        self.inputs.append(graph_input)
+        self.configs.append(config)
+        self.durabilities.append(durability)
+        assert stream_mode == ["messages", "tasks", "values"]
+        result = self._result(graph_input)
+        yield "tasks", {
+            "id": "private-task-id",
+            "name": "researcher",
+            "input": {"private": "task-input"},
+            "triggers": [],
+        }
+        yield "messages", (self.message, self.stream_metadata)
+        yield "tasks", {
+            "id": "private-task-id",
+            "name": "researcher",
+            "error": None,
+            "interrupts": [],
+            "result": {"private": "task-result"},
+        }
+        yield "values", result
 
 
 class _ContentRequest(BaseModel):
@@ -432,6 +540,189 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         await self.driver.close()
         self.langchain_modules.stop()
 
+    def test_reasoning_content_fallback_is_ai_only_and_text_only(self):
+        message = _Message(
+            "",
+            additional_kwargs={
+                "reasoning_content": "checking constraints",
+                "signature": "private-signature",
+            },
+        )
+        tool = _Message(
+            [{"type": "thinking", "thinking": "tool-internal"}],
+            message_type="tool",
+            name="inspect",
+        )
+
+        self.assertEqual(_message_thinking(message), "checking constraints")
+        self.assertEqual(_message_thinking(tool), "")
+        self.assertNotIn("private-signature", _message_thinking(message))
+
+    async def test_agent_metadata_is_normalized_with_stream_invoke_parity(self):
+        message = _Message(
+            "answer",
+            name="researcher",
+            usage_metadata={
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "total_tokens": 16,
+                "input_token_details": {"private": "usage-detail"},
+            },
+            response_metadata={
+                "model_name": "test-model",
+                "model_provider": "test-provider",
+                "finish_reason": "stop",
+                "private": "response-detail",
+            },
+            additional_kwargs={"private": "additional-detail"},
+        )
+        target = _MetadataTarget(
+            message,
+            {
+                "langgraph_node": "researcher",
+                "ls_model_name": "test-model",
+                "ls_provider": "test-provider",
+                "private": "stream-detail",
+            },
+        )
+        driver = LangGraphRuntimeDriver(_application(target))
+        await driver.create_session(
+            session_id="metadata-invoke", user_id="user-1", state={}
+        )
+        await driver.create_session(
+            session_id="metadata-stream", user_id="user-1", state={}
+        )
+        try:
+            invoked = await driver.invoke(_request("metadata-invoke"))
+            streamed = [
+                event
+                async for event in driver.stream(_request("metadata-stream"))
+            ]
+        finally:
+            await driver.close()
+
+        invoked_metadata = next(
+            event for event in invoked.events if event["type"] == "agent_metadata"
+        )
+        streamed_metadata = next(
+            event for event in streamed if event["type"] == "agent_metadata"
+        )
+        expected = {
+            "type": "agent_metadata",
+            "framework": "langgraph",
+            "agent": "researcher",
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "total_tokens": 16,
+            },
+            "model": "test-model",
+            "provider": "test-provider",
+            "finish_reason": "stop",
+        }
+        self.assertEqual(invoked_metadata, expected)
+        self.assertEqual(streamed_metadata, expected)
+        self.assertEqual(
+            [event["type"] for event in invoked.events[-4:]],
+            ["message", "agent_metadata", "agent_activity", "graph_output"],
+        )
+        rendered = repr((invoked.events, streamed))
+        self.assertNotIn("response-detail", rendered)
+        self.assertNotIn("usage-detail", rendered)
+        self.assertNotIn("additional-detail", rendered)
+        self.assertNotIn("stream-detail", rendered)
+
+    async def test_raw_agent_metadata_namespaces_native_langgraph_mappings(self):
+        message = _Message(
+            "answer",
+            name="researcher",
+            usage_metadata={
+                "input_token_details": {"cache_read": 3},
+            },
+            response_metadata={
+                "token_usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 4,
+                    "total_tokens": 11,
+                },
+                "model": "alias-model",
+                "provider_name": "alias-provider",
+                "stop_reason": "end_turn",
+                "private": "response-detail",
+            },
+            additional_kwargs={"private": "additional-detail"},
+        )
+        target = _MetadataTarget(
+            message,
+            {
+                "langgraph_node": "researcher",
+                "private": "stream-detail",
+            },
+        )
+        application = replace(
+            _application(target),
+            output_policy=OutputPolicy(agent_metadata="raw"),
+        )
+        driver = LangGraphRuntimeDriver(application)
+        await driver.create_session(
+            session_id="raw-metadata", user_id="user-1", state={}
+        )
+        try:
+            events = [
+                event
+                async for event in driver.stream(_request("raw-metadata"))
+            ]
+        finally:
+            await driver.close()
+
+        metadata = next(
+            event for event in events if event["type"] == "agent_metadata"
+        )
+        self.assertEqual(
+            metadata["usage"],
+            {"input_tokens": 7, "output_tokens": 4, "total_tokens": 11},
+        )
+        self.assertEqual(metadata["model"], "alias-model")
+        self.assertEqual(metadata["provider"], "alias-provider")
+        self.assertEqual(metadata["finish_reason"], "end_turn")
+        self.assertEqual(
+            set(metadata["raw"]),
+            {
+                "stream_metadata",
+                "response_metadata",
+                "usage_metadata",
+                "additional_kwargs",
+            },
+        )
+        self.assertEqual(
+            metadata["raw"]["stream_metadata"]["private"], "stream-detail"
+        )
+        self.assertEqual(
+            metadata["raw"]["response_metadata"]["private"], "response-detail"
+        )
+        self.assertEqual(
+            metadata["raw"]["additional_kwargs"]["private"], "additional-detail"
+        )
+
+    async def test_agent_metadata_does_not_estimate_unreported_tokens(self):
+        message = _Message(
+            "answer",
+            usage_metadata={"input_token_details": {"cache_read": 3}},
+        )
+        target = _MetadataTarget(message, {"langgraph_node": "researcher"})
+        driver = LangGraphRuntimeDriver(_application(target))
+        await driver.create_session(
+            session_id="unreported-usage", user_id="user-1", state={}
+        )
+        try:
+            result = await driver.invoke(_request("unreported-usage"))
+        finally:
+            await driver.close()
+
+        self.assertNotIn(
+            "agent_metadata", [event["type"] for event in result.events]
+        )
+
     async def test_session_map_is_user_scoped_and_supports_crud(self):
         created = await self.driver.create_session(
             session_id="session-1", user_id="user-1", state={"counter": 1}
@@ -495,12 +786,15 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata, {"source": "test"})
         self.assertEqual(
             [event["type"] for event in result.events],
-            ["tool_call", "tool_result", "message", "graph_output"],
+            ["tool_call", "tool_result", "thinking", "message", "graph_output"],
         )
         self.assertEqual(result.events[0]["arguments"], {"text": "ok"})
         self.assertEqual(result.events[1]["result"], "ok")
-        self.assertEqual(result.events[2]["text"], "answer-2")
-        self.assertNotIn("private", result.events[2]["text"])
+        self.assertEqual(result.events[2]["text"], "considering")
+        self.assertEqual(result.events[3]["text"], "answer-2")
+        self.assertNotIn("considering", result.text)
+        self.assertNotIn("private-signature", repr(result.events))
+        self.assertNotIn("private-signature", repr(result.result))
         self.assertEqual(result.result["counter"], 2)
         self.assertEqual(self.target.inputs[0]["request_flag"], "present")
         self.assertEqual(self.target.durabilities, ["sync"])
@@ -846,18 +1140,241 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [event["type"] for event in events],
-            ["message", "tool_call", "tool_result", "message", "graph_output"],
+            [
+                "agent_activity",
+                "message",
+                "tool_call",
+                "agent_activity",
+                "agent_activity",
+                "tool_result",
+                "agent_activity",
+                "agent_activity",
+                "thinking",
+                "message",
+                "agent_activity",
+                "graph_output",
+            ],
+        )
+        self.assertEqual(
+            [
+                (event["agent"], event["activity"])
+                for event in events
+                if event["type"] == "agent_activity"
+            ],
+            [
+                ("reply", "started"),
+                ("reply", "completed"),
+                ("tools", "started"),
+                ("tools", "completed"),
+                ("reply", "started"),
+                ("reply", "completed"),
+            ],
+        )
+        self.assertEqual(
+            events[8],
+            {"type": "thinking", "text": "considering", "agent": "reply"},
         )
         self.assertEqual(
             "".join(event["text"] for event in events if event["type"] == "message"),
             "answer-4",
         )
+        self.assertEqual(events[5]["agent"], "tools")
+        self.assertNotIn("node-input", repr(events))
+        self.assertNotIn("node-result", repr(events))
+        self.assertNotIn("private-reply-task", repr(events))
+        self.assertNotIn("private-stream-signature", repr(events))
         self.assertEqual(events[-1]["output"]["counter"], 4)
         session = await self.driver.get_session(
             session_id="session-1", user_id="user-1"
         )
         self.assertEqual(session.state["counter"], 4)
         self.assertEqual(self.target.durabilities, ["sync"])
+
+    async def test_stream_completes_after_reconciliation_but_not_on_interrupt(self):
+        class ReconciledTarget(_Target):
+            async def astream(
+                self, graph_input, *, config, stream_mode, durability=None
+            ):
+                del graph_input, config, stream_mode, durability
+                yield "messages", (
+                    _Message("com"),
+                    {"langgraph_node": "worker"},
+                )
+                yield "values", {
+                    "messages": [_Message("complete", name="worker")],
+                    "value": "complete",
+                }
+
+        class InterruptedTarget(_Target):
+            async def astream(
+                self, graph_input, *, config, stream_mode, durability=None
+            ):
+                del graph_input, config, stream_mode, durability
+                yield "messages", (
+                    _Message("waiting"),
+                    {"langgraph_node": "worker"},
+                )
+                yield "values", {
+                    "messages": [_Message("waiting", name="worker")],
+                    "__interrupt__": ("approval",),
+                }
+
+        reconciled = LangGraphRuntimeDriver(_application(ReconciledTarget()))
+        interrupted = LangGraphRuntimeDriver(_application(InterruptedTarget()))
+        await reconciled.create_session(
+            session_id="reconciled", user_id="user-1", state={}
+        )
+        await interrupted.create_session(
+            session_id="interrupted", user_id="user-1", state={}
+        )
+        interrupted_events = []
+        try:
+            events = [
+                event
+                async for event in reconciled.stream(_request("reconciled"))
+            ]
+            with self.assertRaises(NativeDurableSuspended):
+                async for event in interrupted.stream(_request("interrupted")):
+                    interrupted_events.append(event)
+        finally:
+            await reconciled.close()
+            await interrupted.close()
+
+        self.assertEqual(
+            [event["type"] for event in events[-3:]],
+            ["message", "agent_activity", "graph_output"],
+        )
+        self.assertEqual(events[-3]["text"], "plete")
+        self.assertEqual(events[-3]["agent"], "worker")
+        self.assertEqual(events[-2]["activity"], "completed")
+        self.assertEqual(
+            [event["activity"] for event in interrupted_events if "activity" in event],
+            ["started"],
+        )
+        self.assertNotIn("graph_output", [event["type"] for event in interrupted_events])
+
+    async def test_task_stream_projects_terminal_states_without_payloads(self):
+        class TaskActivityTarget(_Target):
+            async def astream(
+                self, graph_input, *, config, stream_mode, durability=None
+            ):
+                del graph_input, config, durability
+                self.modes = stream_mode
+                yield "tasks", {
+                    "id": "private-start-id",
+                    "name": "worker",
+                    "input": {"secret": "private-input"},
+                    "triggers": ["private-trigger"],
+                }
+                yield "tasks", {
+                    "id": "private-complete-id",
+                    "name": "worker",
+                    "error": None,
+                    "interrupts": [],
+                    "result": {"secret": "private-result"},
+                }
+                yield "tasks", {
+                    "id": "private-failed-start-id",
+                    "name": "worker",
+                    "input": "private-failed-input",
+                    "triggers": [],
+                }
+                yield "tasks", {
+                    "id": "private-failed-id",
+                    "name": "worker",
+                    "error": "private-error-text",
+                    "interrupts": [],
+                    "result": {},
+                }
+                yield "tasks", {
+                    "id": "private-interrupt-start-id",
+                    "name": "worker",
+                    "input": "private-interrupt-input",
+                    "triggers": [],
+                }
+                yield "tasks", {
+                    "id": "private-interrupt-id",
+                    "name": "worker",
+                    "error": None,
+                    "interrupts": [{"value": "private-interrupt-value"}],
+                    "result": {},
+                }
+                yield "tasks", {
+                    "id": "private-reserved-id",
+                    "name": "__interrupt__",
+                    "input": "private-reserved-input",
+                    "triggers": [],
+                }
+                yield "tasks", {
+                    "id": "private-parallel-1",
+                    "name": "parallel-worker",
+                    "input": {},
+                    "triggers": [],
+                }
+                yield "tasks", {
+                    "id": "private-parallel-2",
+                    "name": "parallel-worker",
+                    "input": {},
+                    "triggers": [],
+                }
+                yield "tasks", {
+                    "id": "private-parallel-1",
+                    "name": "parallel-worker",
+                    "error": None,
+                    "interrupts": [],
+                    "result": {},
+                }
+                yield "tasks", {
+                    "id": "private-parallel-2",
+                    "name": "parallel-worker",
+                    "error": None,
+                    "interrupts": [],
+                    "result": {},
+                }
+                yield "values", {
+                    "messages": [_Message("done")],
+                    "value": "done",
+                }
+
+        target = TaskActivityTarget()
+        driver = LangGraphRuntimeDriver(_application(target))
+        await driver.create_session(
+            session_id="task-activity", user_id="user-1", state={}
+        )
+        try:
+            events = [
+                event
+                async for event in driver.stream(_request("task-activity"))
+            ]
+        finally:
+            await driver.close()
+
+        self.assertEqual(target.modes, ["messages", "tasks", "values"])
+        self.assertEqual(
+            [event["activity"] for event in events if "activity" in event],
+            [
+                "started",
+                "completed",
+                "started",
+                "failed",
+                "started",
+                "interrupted",
+                "started",
+                "started",
+                "completed",
+                "completed",
+            ],
+        )
+        rendered = repr(events)
+        for private in (
+            "private-start-id",
+            "private-input",
+            "private-result",
+            "private-error-text",
+            "private-interrupt-value",
+            "private-reserved-input",
+        ):
+            self.assertNotIn(private, rendered)
 
     async def test_pre_tool_narration_is_suppressed_by_default_and_can_be_included(self):
         class NarratingTarget(_Target):
@@ -867,6 +1384,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                         *graph_input.get("messages", ()),
                         _Message(
                             "I'll inspect. ",
+                            name="researcher",
                             tool_calls=[
                                 {
                                     "id": "call-1",
@@ -881,7 +1399,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                             tool_call_id="call-1",
                             name="inspect",
                         ),
-                        _Message("Done."),
+                        _Message("Done.", name="researcher"),
                     ],
                     "value": "Done.",
                 }
@@ -917,6 +1435,18 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(suppressed.text, "Done.")
+        self.assertEqual(
+            (
+                suppressed.events[0]["agent"],
+                suppressed.events[0]["activity"],
+                suppressed.events[4]["agent"],
+                suppressed.events[4]["activity"],
+            ),
+            ("researcher", "started", "researcher", "completed"),
+        )
+        self.assertEqual(suppressed.events[2]["type"], "tool_result")
+        self.assertNotIn("agent", suppressed.events[2])
+        self.assertEqual(suppressed.events[3]["agent"], "researcher")
         self.assertNotIn(
             "I'll inspect.",
             "".join(

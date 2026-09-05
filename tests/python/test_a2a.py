@@ -194,6 +194,34 @@ def _sse_payloads(response):
     ]
 
 
+def _harnest_status_update(events, event_type):
+    """Find one namespaced Harnest activity update in an A2A stream."""
+
+    return next(
+        item["statusUpdate"]
+        for item in events
+        if item.get("statusUpdate", {})
+        .get("metadata", {})
+        .get("harnest", {})
+        .get("type")
+        == event_type
+    )
+
+
+def _usage_artifact_update(events):
+    """Find the final artifact chunk carrying aggregate token usage."""
+
+    return next(
+        item["artifactUpdate"]
+        for item in reversed(events)
+        if item.get("artifactUpdate", {})
+        .get("artifact", {})
+        .get("metadata", {})
+        .get("harnest", {})
+        .get("usage")
+    )
+
+
 class BlockingA2ADriver(FakeDriver):
     """Keep one streaming execution live until A2A cancellation reaches it."""
 
@@ -263,6 +291,108 @@ class A2AServerTests(unittest.TestCase):
         self.assertTrue(owned.json()["artifacts"])
         self.assertEqual(hidden.status_code, 404)
         self.assertEqual(page["tasks"][0].get("artifacts", []), [])
+
+    def test_streaming_send_projects_thinking_and_agent_activity(self):
+        class ActivityDriver(FakeDriver):
+            def events(self):
+                return [
+                    {
+                        "type": "agent_activity",
+                        "agent": "planner",
+                        "activity": "started",
+                        "nativeState": {"secret": True},
+                    },
+                    {
+                        "type": "thinking",
+                        "agent": "planner",
+                        "text": "check constraints",
+                        "signature": "private-signature",
+                    },
+                    {
+                        "type": "agent_metadata",
+                        "framework": "adk",
+                        "agent": "planner",
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 4,
+                            "total_tokens": 17,
+                        },
+                        "raw": {"thoughts_token_count": 1},
+                        "_raw_provider_metadata": True,
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "agent": "planner",
+                        "text": "hello",
+                    },
+                ]
+
+        with TestClient(
+            create_neutral_app(
+                _driver(ActivityDriver), playground_enabled=False
+            )
+        ) as client:
+            direct = client.post(
+                "/a2a/message:send",
+                json=_send_payload("direct"),
+                headers=_headers(),
+            )
+            response = client.post(
+                "/a2a/message:stream",
+                json=_send_payload(),
+                headers=_headers(),
+            )
+            events = _sse_payloads(response)
+
+        self.assertEqual(
+            direct.json()["message"]["metadata"]["harnest"]["usage"],
+            {
+                "inputTokens": 12,
+                "outputTokens": 4,
+                "totalTokens": 17,
+            },
+        )
+
+        activity = _harnest_status_update(events, "agent_activity")
+        thinking = _harnest_status_update(events, "thinking")
+        metadata = _harnest_status_update(events, "agent_metadata")
+        artifact = next(
+            item["artifactUpdate"] for item in events if "artifactUpdate" in item
+        )
+        usage_artifact = _usage_artifact_update(events)
+        self.assertEqual(activity["metadata"]["harnest"]["activity"], "started")
+        self.assertNotIn("nativeState", str(activity))
+        self.assertEqual(
+            thinking["status"]["message"]["parts"][0]["text"],
+            "check constraints",
+        )
+        self.assertNotIn("signature", str(thinking))
+        self.assertEqual(
+            metadata["metadata"]["harnest"],
+            {
+                "type": "agent_metadata",
+                "agent": "planner",
+                "framework": "adk",
+                "usage": {
+                    "inputTokens": 12,
+                    "outputTokens": 4,
+                    "totalTokens": 17,
+                },
+                "raw": {"thoughts_token_count": 1},
+            },
+        )
+        self.assertEqual(
+            usage_artifact["artifact"]["metadata"]["harnest"]["usage"],
+            {
+                "inputTokens": 12,
+                "outputTokens": 4,
+                "totalTokens": 17,
+            },
+        )
+        self.assertEqual(
+            artifact["artifact"]["metadata"]["harnest"]["agent"], "planner"
+        )
 
     def test_nonblocking_task_can_be_explicitly_canceled(self):
         driver = _driver(BlockingA2ADriver)
