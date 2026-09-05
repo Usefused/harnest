@@ -76,6 +76,25 @@
   while preserving standard environment proxy inheritance. Keep proxy URLs and
   credentials out of client-construction diagnostics.
 
+## [0.14.0](https://github.com/Usefused/harnest/compare/v0.13.0...v0.14.0) (2026-09-05)
+
+
+### Features
+
+* add agent runtime principals ([c88822d](https://github.com/Usefused/harnest/commit/c88822d8628af0245f63dd229a72af0c2cc1a69c))
+* complete Python SDK typing ([8cdd1f9](https://github.com/Usefused/harnest/commit/8cdd1f9ccfdea25abe8c1eaf7406753ad95d8066))
+* **extensions:** add official Hatchet extension ([3677e87](https://github.com/Usefused/harnest/commit/3677e87ff9c8535d8f8553701a46eb8972f095c4))
+* extract official sandbox extensions ([ecaf74f](https://github.com/Usefused/harnest/commit/ecaf74f8d33b6c6ff9e801a3b0e5fd6b1d6a173f))
+
+
+### Fixes
+
+* **extensions:** keep Hatchet install layout valid ([4174d1c](https://github.com/Usefused/harnest/commit/4174d1c6acce4522cd23c03dbcb7d189cef1250f))
+* harden agent principal projection ([c886212](https://github.com/Usefused/harnest/commit/c886212ac49c797855b45a77272af8c395235820))
+* isolate and serialize postgres session leases ([a65e8b4](https://github.com/Usefused/harnest/commit/a65e8b4458d8e72eb35f42fdc4429ca88d7ab3ec))
+* persist task grants and clarify extension limits ([382cd81](https://github.com/Usefused/harnest/commit/382cd81d17105132e68ff3b16690c2387b23e9f9))
+* propagate agent principal authority ([a728583](https://github.com/Usefused/harnest/commit/a7285836c447714958aaf0956eb9699530a974e2))
+
 ## [0.13.0](https://github.com/Usefused/harnest/compare/v0.12.1...v0.13.0) (2026-09-04)
 
 ### Fixes
