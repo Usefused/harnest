@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.14.0](https://github.com/Usefused/harnest/compare/v0.13.0...v0.14.0) (2026-09-05)
 
 ### Features
 
@@ -75,9 +75,6 @@
 * Support operator-configured SOCKS proxies in Harnest-owned MCP HTTP clients
   while preserving standard environment proxy inheritance. Keep proxy URLs and
   credentials out of client-construction diagnostics.
-
-## [0.14.0](https://github.com/Usefused/harnest/compare/v0.13.0...v0.14.0) (2026-09-05)
-
 
 ### Features
 
