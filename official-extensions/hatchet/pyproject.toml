@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "harnest-extension-hatchet"
 version = "0.1.0"
 description = "Official Hatchet durable-workflow extension for Harnest"
-readme = "README.md"
+readme = { text = "Official Hatchet durable-workflow integration for Harnest, built and maintained by Fused. It submits, inspects, waits for, and cancels work executed by a separately operated Hatchet runtime. See https://docs.usefused.com/harnest for installation and configuration.", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
