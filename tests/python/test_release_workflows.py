@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import yaml
+from packaging.requirements import Requirement
 from packaging.version import Version
 
 try:
@@ -89,6 +91,95 @@ def write_installer_fakes(directory: Path, version: str):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_hatchet_extension_publishes_with_trusted_publishing(self):
+        workflow = load_yaml(".github/workflows/publish-extensions.yml")
+        events = workflow_events(workflow)
+        build_job = workflow["jobs"]["build"]
+        publish_job = workflow["jobs"]["publish"]
+        publish_step = next(
+            step
+            for step in publish_job["steps"]
+            if step["name"] == "Publish extension to PyPI"
+        )
+        scripts = "\n".join(step.get("run", "") for step in build_job["steps"])
+
+        self.assertEqual(workflow["name"], "Publish Official Extensions")
+        self.assertEqual(
+            events["push"]["tags"], ["harnest-extension-hatchet-v*"]
+        )
+        self.assertEqual(
+            events["push"]["paths"],
+            [
+                "official-extensions/hatchet/**",
+                ".github/workflows/publish-extensions.yml",
+            ],
+        )
+        self.assertEqual(workflow["permissions"]["contents"], "read")
+        self.assertNotIn("id-token", workflow["permissions"])
+        self.assertEqual(publish_job["permissions"]["id-token"], "write")
+        self.assertEqual(publish_job["needs"], "build")
+        self.assertEqual(publish_job["environment"], "pypi")
+        self.assertEqual(
+            publish_step["uses"], "pypa/gh-action-pypi-publish@release/v1"
+        )
+        self.assertNotIn("password", publish_step.get("with", {}))
+        self.assertIn('GITHUB_REF}" != "refs/heads/main', scripts)
+        self.assertIn('tag_version}" != "${project_version}', scripts)
+        self.assertIn("official-extensions/hatchet", scripts)
+
+    def test_hatchet_extension_wheel_exposes_compatible_entry_point(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            source = temporary_root / "hatchet"
+            distribution = temporary_root / "dist"
+            shutil.copytree(ROOT / "official-extensions" / "hatchet", source)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "build",
+                    "--wheel",
+                    "--no-isolation",
+                    "--outdir",
+                    str(distribution),
+                    str(source),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            wheel = next(distribution.glob("*.whl"))
+            with zipfile.ZipFile(wheel) as archive:
+                names = archive.namelist()
+                entry_points_path = next(
+                    name
+                    for name in names
+                    if name.endswith(".dist-info/entry_points.txt")
+                )
+                metadata_path = next(
+                    name for name in names if name.endswith(".dist-info/METADATA")
+                )
+                entry_points = archive.read(entry_points_path).decode("utf-8")
+                metadata = archive.read(metadata_path).decode("utf-8")
+
+            requirements = {
+                Requirement(line.removeprefix("Requires-Dist: ")).name:
+                Requirement(line.removeprefix("Requires-Dist: ")).specifier
+                for line in metadata.splitlines()
+                if line.startswith("Requires-Dist: ")
+            }
+            self.assertIn("harnest_extension_hatchet/extension.py", names)
+            self.assertIn("harnest_extension_hatchet/extension.yaml", names)
+            self.assertIn("[harnest.extensions]", entry_points)
+            self.assertIn(
+                "hatchet = harnest_extension_hatchet.extension:extension",
+                entry_points,
+            )
+            self.assertEqual(str(requirements["harnest"]), "<0.15,>=0.13")
+            self.assertEqual(str(requirements["hatchet-sdk"]), "<2,>=1.38")
+
     def test_ci_only_validates_source_changes(self):
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]

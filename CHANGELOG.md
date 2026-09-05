@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add the Fused-maintained Hatchet Extension as a separately versioned Python
+  package with durable external-job continuation recovery, scoped credentials,
+  Hatchet SDK 1.x support, and token-free PyPI Trusted Publishing.
+
 ## [0.13.0](https://github.com/Usefused/harnest/compare/v0.12.1...v0.13.0) (2026-09-04)
 
 ### Fixes
