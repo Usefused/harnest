@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=82,<85"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harnest-extension-hatchet"
+version = "0.1.0"
+description = "Official Hatchet durable-workflow extension for Harnest"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "Fused" },
+]
+dependencies = [
+  "hatchet-sdk>=1.38,<2",
+  "harnest>=0.13,<0.15",
+]
+
+[project.urls]
+Documentation = "https://docs.usefused.com/harnest"
+Repository = "https://github.com/Usefused/harnest"
+
+[project.entry-points."harnest.extensions"]
+hatchet = "harnest_extension_hatchet.extension:extension"
+
+[tool.setuptools]
+packages = ["harnest_extension_hatchet", "harnest_extension_hatchet.lib"]
+package-dir = { harnest_extension_hatchet = ".", "harnest_extension_hatchet.lib" = "lib" }
+
+[tool.setuptools.package-data]
+harnest_extension_hatchet = ["extension.yaml"]

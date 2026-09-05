@@ -3,15 +3,15 @@ name: Publish Official Extensions
 on:
   pull_request:
     paths:
-      - "official-extensions/docker/**"
+      - "official-extensions/hatchet/**"
       - ".github/workflows/publish-extensions.yml"
   push:
     branches:
       - "**"
     tags:
-      - "harnest-extension-docker-v*"
+      - "harnest-extension-hatchet-v*"
     paths:
-      - "official-extensions/docker/**"
+      - "official-extensions/hatchet/**"
       - ".github/workflows/publish-extensions.yml"
   workflow_dispatch:
 
@@ -19,12 +19,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-extension-docker-${{ github.ref }}
+  group: publish-extension-hatchet-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build Docker extension
+    name: Build Hatchet extension
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -41,26 +41,26 @@ jobs:
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-              echo "Manual Docker extension publishing must run from main." >&2
+              echo "Manual Hatchet extension publishing must run from main." >&2
               exit 1
             fi
           fi
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#harnest-extension-docker-v}"
+            tag_version="${GITHUB_REF_NAME#harnest-extension-hatchet-v}"
           else
             tag_version=""
           fi
 
-          project="official-extensions/docker"
+          project="official-extensions/hatchet"
           project_version=$(python3 -c 'import pathlib, sys, tomllib; print(tomllib.loads((pathlib.Path(sys.argv[1]) / "pyproject.toml").read_text())["project"]["version"])' "${project}")
           manifest_version=$(sed -n 's/^  version: \([^ ]*\)$/\1/p' "${project}/extension.yaml")
           if [[ "${project_version}" != "${manifest_version}" ]]; then
-            echo "Docker project and manifest versions do not match." >&2
+            echo "Hatchet project and manifest versions do not match." >&2
             exit 1
           fi
           if [[ -n "${tag_version}" && "${tag_version}" != "${project_version}" ]]; then
-            echo "Tag version ${tag_version} does not match Docker ${project_version}." >&2
+            echo "Tag version ${tag_version} does not match Hatchet ${project_version}." >&2
             exit 1
           fi
 
@@ -68,20 +68,20 @@ jobs:
         run: python -m pip install --upgrade "build>=1.3,<2"
 
       - name: Build extension wheel
-        run: python -m build --wheel --outdir dist official-extensions/docker
+        run: python -m build --wheel --outdir dist official-extensions/hatchet
 
       - name: Preserve verified wheel
         uses: actions/upload-artifact@v4
         with:
-          name: harnest-extension-docker-wheel
+          name: harnest-extension-hatchet-wheel
           path: dist/*.whl
           if-no-files-found: error
 
   publish:
-    name: Publish Docker extension
+    name: Publish Hatchet extension
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/harnest-extension-docker-v')
+      startsWith(github.ref, 'refs/tags/harnest-extension-hatchet-v')
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
@@ -92,7 +92,7 @@ jobs:
       - name: Restore verified wheel
         uses: actions/download-artifact@v5
         with:
-          name: harnest-extension-docker-wheel
+          name: harnest-extension-hatchet-wheel
           path: dist
 
       - name: Publish extension to PyPI

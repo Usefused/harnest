@@ -1,0 +1,10 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Extension
+metadata:
+  name: hatchet
+  version: 0.1.0
+runtime:
+  entrypoint: extension:extension
+capabilities:
+  - context.continuations
+  - context.credentials
