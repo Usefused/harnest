@@ -1,5 +1,6 @@
 """Opt-in live database tests for built-in production stores."""
 
+import asyncio
 import os
 import unittest
 import uuid
@@ -288,6 +289,44 @@ class LivePostgresStoreTests(_LiveStoreContract, unittest.IsolatedAsyncioTestCas
     async def test_live_session_checkpoint_and_cas(self):
         self.store = PostgresStore(os.environ["HARNEST_TEST_POSTGRES_URL"])
         await self.exercise_store()
+
+    async def test_live_isolated_lease_pool_and_concurrent_lane_writes(self):
+        token = uuid.uuid4().hex
+        user_id = f"lease-user-{token}"
+        session_id = f"lease-session-{token}"
+        options = {"min_size": 1, "max_size": 1}
+        self.store = PostgresStore(
+            os.environ["HARNEST_TEST_POSTGRES_URL"],
+            pool_options=options,
+            lease_pool_options=options,
+        )
+        await self.store.start()
+        try:
+            await self.store.create(
+                session_id=session_id, user_id=user_id, state={"count": 1}
+            )
+            async with self.store.acquire(
+                session_id=session_id, user_id=user_id
+            ) as lease:
+                # The primary pool has one connection and must remain usable
+                # while the dedicated pool holds the long-lived advisory lock.
+                loaded = await asyncio.wait_for(
+                    self.store.get(session_id=session_id, user_id=user_id),
+                    timeout=2,
+                )
+                self.assertIsNotNone(loaded)
+                await asyncio.gather(
+                    lease.replace_state({"count": 2}),
+                    lease.replace_application_data({"wex": {"ready": True}}),
+                )
+            stored = await self.store.get(
+                session_id=session_id, user_id=user_id
+            )
+            self.assertEqual(stored.state, {"count": 2})
+            self.assertEqual(stored.application_data, {"wex": {"ready": True}})
+        finally:
+            await self.store.delete(session_id=session_id, user_id=user_id)
+            await self.store.close()
 
 
 @unittest.skipUnless(

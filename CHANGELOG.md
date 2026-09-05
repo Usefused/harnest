@@ -53,6 +53,11 @@
 
 ### Fixes
 
+* Serialize concurrent framework-state and application-data writes on each
+  PostgreSQL session lease so asyncpg never receives overlapping commands on
+  one connection. Add optional `lease_pool_options` to isolate long-lived
+  session lease connections from checkpoint and other short store operations.
+
 * Harden both official extensions and their release path. Bound Docker daemon
   calls by the all-in sandbox deadline, preserve phase-specific startup failures,
   use a separate bounded cleanup window, disable image-defined health checks,

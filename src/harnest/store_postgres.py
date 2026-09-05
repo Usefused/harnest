@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -96,23 +97,44 @@ class PostgresStore(HarnestStore):
         dsn: str,
         *,
         pool_options: Mapping[str, Any] | None = None,
+        lease_pool_options: Mapping[str, Any] | None = None,
         setup_schema: bool = True,
         _pool: Any = None,
+        _lease_pool: Any = None,
     ) -> None:
-        """Configure schema ownership and preserve ownership of injected pools."""
+        """Configure schema ownership and optional session-lease isolation."""
 
         _require_text(dsn, "dsn")
         self._dsn = dsn
         self._pool_options = dict(pool_options or {})
+        self._lease_pool_options = (
+            None if lease_pool_options is None else dict(lease_pool_options)
+        )
         self._setup_schema = setup_schema
         self._pool = _pool
         self._owns_pool = _pool is None
+        # Absence preserves the single-pool contract. Supplying options creates
+        # a dedicated lane so long model executions cannot starve short DB work.
+        self._lease_pool = (
+            _pool
+            if _lease_pool is None and lease_pool_options is None
+            else _lease_pool
+        )
+        self._owns_lease_pool = (
+            _lease_pool is None and lease_pool_options is not None
+        )
 
     async def start(self) -> None:
         """Open the pool and create or validate the Harnest-owned schema."""
 
         if self._pool is None:
             self._pool = await _create_pool(self._dsn, self._pool_options)
+        if self._lease_pool is None:
+            self._lease_pool = (
+                self._pool
+                if self._lease_pool_options is None
+                else await _create_pool(self._dsn, self._lease_pool_options)
+            )
         if self._setup_schema:
             await self._bootstrap_schema()
         else:
@@ -1053,9 +1075,18 @@ class PostgresStore(HarnestStore):
     async def close(self) -> None:
         """Close only pools created and owned by this store."""
 
+        lease_pool, self._lease_pool = self._lease_pool, None
         pool, self._pool = self._pool, None
-        if pool is not None and self._owns_pool:
-            await pool.close()
+        try:
+            if (
+                lease_pool is not None
+                and lease_pool is not pool
+                and self._owns_lease_pool
+            ):
+                await lease_pool.close()
+        finally:
+            if pool is not None and self._owns_pool:
+                await pool.close()
 
     async def _bootstrap_schema(self) -> None:
         """Serialize automatic schema bootstrap across concurrent replicas."""
@@ -1103,13 +1134,22 @@ class PostgresStore(HarnestStore):
             yield connection
 
     @asynccontextmanager
+    async def _lease_connection(self) -> AsyncIterator[Any]:
+        """Acquire the lane reserved for long-lived session execution leases."""
+
+        if self._lease_pool is None:
+            raise RuntimeError("PostgresStore.start() must be called first")
+        async with self._lease_pool.acquire() as connection:
+            yield connection
+
+    @asynccontextmanager
     async def _locked_session_connection(
         self, user_id: str, session_id: str
     ) -> AsyncIterator[Any]:
         """Keep the advisory lock and its owning connection at one boundary."""
 
         key = _lock_key(user_id, session_id)
-        async with self._connection() as connection:
+        async with self._lease_connection() as connection:
             # A dedicated connection keeps the advisory lock scoped to exactly
             # one invocation without holding a transaction open around a model.
             await connection.execute("SELECT pg_advisory_lock($1)", key)
@@ -1123,14 +1163,21 @@ class _PostgresLease:
     def __init__(self, connection: Any, record: SessionRecord) -> None:
         self._connection = connection
         self._record = record
+        # ADK event persistence and application session data can commit from
+        # sibling tasks. asyncpg permits only one in-flight command per connection.
+        self._operation_lock = asyncio.Lock()
 
     @property
     def record(self) -> SessionRecord:
         return self._record
 
     async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord:
-        state = {**dict(self._record.state), **json_value(delta)}
-        return await self.replace_state(state)
+        normalized = json_value(delta)
+        async with self._operation_lock:
+            # Derive under the same gate as the write so concurrent patches do
+            # not calculate replacements from the same stale record.
+            state = {**dict(self._record.state), **normalized}
+            return await self._replace_lane_locked("state", state)
 
     async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord:
         """Replace leased state on the already locked connection."""
@@ -1147,7 +1194,15 @@ class _PostgresLease:
     async def _replace_lane(
         self, column: str, value: Mapping[str, Any]
     ) -> SessionRecord:
-        """Share locked replacement behavior across protected session lanes."""
+        """Serialize one replacement on the lease-owned asyncpg connection."""
+
+        async with self._operation_lock:
+            return await self._replace_lane_locked(column, value)
+
+    async def _replace_lane_locked(
+        self, column: str, value: Mapping[str, Any]
+    ) -> SessionRecord:
+        """Write one lane while the caller owns the per-connection gate."""
 
         # Column selection is internal and closed over known literals; values
         # remain query parameters so application data cannot affect SQL shape.

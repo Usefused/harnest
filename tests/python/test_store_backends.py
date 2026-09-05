@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
 import json
@@ -88,6 +89,40 @@ class _PostgresConnection:
     async def fetchrow(self, query, *arguments):
         self.fetched.append((query, arguments))
         return self.rows.pop(0) if self.rows else None
+
+
+class _OverlappingPostgresConnection(_PostgresConnection):
+    """Hold the first lease write so a concurrent command would be observable."""
+
+    def __init__(self):
+        super().__init__()
+        self.row = _session_row()
+        self.first_write_started = asyncio.Event()
+        self.release_first_write = asyncio.Event()
+        self.second_write_started = asyncio.Event()
+        self.active_writes = 0
+        self.max_active_writes = 0
+        self.write_count = 0
+
+    async def fetchrow(self, query, *arguments):
+        self.fetched.append((query, arguments))
+        if "UPDATE harnest_sessions SET" not in query:
+            return dict(self.row)
+        self.write_count += 1
+        current_write = self.write_count
+        self.active_writes += 1
+        self.max_active_writes = max(self.max_active_writes, self.active_writes)
+        try:
+            if current_write == 1:
+                self.first_write_started.set()
+                await self.release_first_write.wait()
+            else:
+                self.second_write_started.set()
+            column = "application_data" if "application_data=" in query else "state"
+            self.row[column] = arguments[2]
+            return dict(self.row)
+        finally:
+            self.active_writes -= 1
 
 
 class _PostgresCheckpointConnection(_PostgresConnection):
@@ -446,6 +481,103 @@ class BuiltInStoreContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_start_reuses_one_pool_for_lease_connections(self):
+        pool = _Pool(_PostgresConnection())
+        store = PostgresStore("postgres://example", setup_schema=False)
+
+        with patch(
+            "harnest.store_postgres._create_pool", return_value=pool
+        ) as create_pool:
+            await store.start()
+            self.assertIs(store._lease_pool, pool)
+            await store.close()
+
+        self.assertEqual(create_pool.await_count, 1)
+        self.assertTrue(pool.closed)
+
+    async def test_separate_lease_pool_uses_independent_connection_lane(self):
+        operation_connection = _PostgresConnection()
+        operation_connection.rows = [_session_row()]
+        lease_connection = _PostgresConnection()
+        lease_connection.rows = [_session_row(), _session_row()]
+        store = PostgresStore(
+            "postgres://example",
+            _pool=_Pool(operation_connection),
+            _lease_pool=_Pool(lease_connection),
+            setup_schema=False,
+        )
+
+        await store.get(session_id="s-1", user_id="u-1")
+        async with store.acquire(session_id="s-1", user_id="u-1") as lease:
+            await lease.replace_state({"count": 2})
+
+        self.assertFalse(
+            any("pg_advisory_lock" in query for query, _ in operation_connection.executed)
+        )
+        self.assertTrue(
+            any("pg_advisory_lock" in query for query, _ in lease_connection.executed)
+        )
+        self.assertTrue(
+            any("UPDATE harnest_sessions" in query for query, _ in lease_connection.fetched)
+        )
+
+    async def test_lease_pool_options_create_and_close_an_isolated_pool(self):
+        operation_pool = _Pool(_PostgresConnection())
+        lease_pool = _Pool(_PostgresConnection())
+        store = PostgresStore(
+            "postgres://example",
+            pool_options={"min_size": 2, "max_size": 8},
+            lease_pool_options={"min_size": 1, "max_size": 4},
+            setup_schema=False,
+        )
+
+        with patch(
+            "harnest.store_postgres._create_pool",
+            side_effect=(operation_pool, lease_pool),
+        ) as create_pool:
+            await store.start()
+            await store.close()
+
+        self.assertEqual(
+            [item.args for item in create_pool.await_args_list],
+            [
+                (
+                    "postgres://example",
+                    {"min_size": 2, "max_size": 8},
+                ),
+                (
+                    "postgres://example",
+                    {"min_size": 1, "max_size": 4},
+                ),
+            ],
+        )
+        self.assertTrue(operation_pool.closed)
+        self.assertTrue(lease_pool.closed)
+
+    async def test_lease_serializes_concurrent_state_lane_writes(self):
+        connection = _OverlappingPostgresConnection()
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        async with store.acquire(session_id="s-1", user_id="u-1") as lease:
+            state_write = asyncio.create_task(lease.replace_state({"count": 2}))
+            await asyncio.wait_for(connection.first_write_started.wait(), timeout=1)
+            application_write = asyncio.create_task(
+                lease.replace_application_data({"wex": {"ready": True}})
+            )
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(connection.second_write_started.is_set())
+            finally:
+                connection.release_first_write.set()
+                await asyncio.gather(state_write, application_write)
+
+        self.assertTrue(connection.second_write_started.is_set())
+        self.assertEqual(connection.max_active_writes, 1)
+        self.assertEqual(lease.record.state, {"count": 2})
+        self.assertEqual(lease.record.application_data, {"wex": {"ready": True}})
+
     async def test_run_lookup_applies_complete_ownership_scope(self):
         connection = _PostgresConnection()
         store = PostgresStore(
