@@ -209,9 +209,16 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
                 ["memory:start", "request:1", "request:2", "memory:stop"],
             )
 
-    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
-    def test_adk_nested_managed_node_inherits_compiled_context(self):
-        self._assert_framework_context("adk")
+    def test_nested_managed_node_inherits_compiled_context(self):
+        cases = (
+            ("adk", ADK_AVAILABLE, "google-adk is not installed"),
+            ("langgraph", LANGGRAPH_AVAILABLE, "langgraph is not installed"),
+        )
+        for framework, available, reason in cases:
+            with self.subTest(framework=framework):
+                if not available:
+                    self.skipTest(reason)
+                self._assert_framework_context(framework)
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_adk_managed_subagent_inherits_compiled_context(self):
@@ -236,11 +243,6 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["outputText"], "child:shared:1")
-
-    @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
-    def test_langgraph_nested_managed_node_inherits_compiled_context(self):
-        self._assert_framework_context("langgraph")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,23 +66,24 @@ class ReleaseChangelogTests(unittest.TestCase):
         with self.assertRaisesRegex(ChangelogError, "immediately followed"):
             finalize_changelog(source, "1.2.3")
 
-    def test_release_validation_rejects_a_stale_first_heading(self):
-        source = (
-            "# Changelog\n\n## Unreleased\n\n"
-            "## [1.2.3](https://example.test)\n"
+    def test_release_validation_rejects_invalid_version_headings(self):
+        cases = (
+            (
+                "# Changelog\n\n## Unreleased\n\n"
+                "## [1.2.3](https://example.test)\n",
+                "must match tag version",
+            ),
+            (
+                "# Changelog\n\n## [1.2.3](https://example.test/new)\n\n"
+                "## [1.2.3](https://example.test/duplicate)\n",
+                "exactly one",
+            ),
         )
-
-        with self.assertRaisesRegex(ChangelogError, "must match tag version"):
-            validate_release_changelog(source, "1.2.3")
-
-    def test_release_validation_rejects_duplicate_version_headings(self):
-        source = (
-            "# Changelog\n\n## [1.2.3](https://example.test/new)\n\n"
-            "## [1.2.3](https://example.test/duplicate)\n"
-        )
-
-        with self.assertRaisesRegex(ChangelogError, "exactly one"):
-            validate_release_changelog(source, "1.2.3")
+        for source, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(
+                ChangelogError, message
+            ):
+                validate_release_changelog(source, "1.2.3")
 
     def test_command_derives_release_please_version_and_writes_once(self):
         with tempfile.TemporaryDirectory() as temporary:

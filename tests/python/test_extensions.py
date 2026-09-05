@@ -869,48 +869,42 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ExtensionDiscoveryError, "unsupported"):
             discover_extensions("missing", framework="other")
 
-    def test_opposite_framework_native_factory_fails_instead_of_being_ignored(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "extensions"
-            root.mkdir(parents=True)
-            self._session_store(root)
-            (root / "native.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+    def test_invalid_extension_declarations_fail_during_discovery(self):
+        cases = (
+            (
+                "native.py",
                 "@lifecycle.langgraph_middleware\n"
                 "def middleware(): return object()\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ExtensionDiscoveryError, "targets langgraph"):
-                discover_extensions(root, framework="adk")
-
-    def test_portable_listener_signature_is_validated_at_compile_time(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "extensions"
-            root.mkdir(parents=True)
-            self._session_store(root)
-            (root / "invalid.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "targets langgraph",
+            ),
+            (
+                "listener.py",
                 "@lifecycle.on_event\n"
                 "def event(context): return None\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ExtensionDiscoveryError, "exactly two"):
-                discover_extensions(root, framework="adk")
-
-    def test_decorated_function_alias_is_rejected_as_duplicate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "extensions"
-            root.mkdir(parents=True)
-            self._session_store(root)
-            (root / "duplicate.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "exactly two",
+            ),
+            (
+                "duplicate.py",
                 "@lifecycle.on_error\n"
                 "def notify(context, error): pass\n"
                 "also_notify = notify\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ExtensionDiscoveryError, "multiple names"):
-                discover_extensions(root, framework="adk")
+                "multiple names",
+            ),
+        )
+        for filename, source, message in cases:
+            with (
+                self.subTest(filename=filename),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory) / "extensions"
+                root.mkdir(parents=True)
+                self._session_store(root)
+                (root / filename).write_text(
+                    "from harnest.lifecycle import lifecycle\n" + source,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ExtensionDiscoveryError, message):
+                    discover_extensions(root, framework="adk")
 
     def test_requires_exactly_one_session_store_factory(self):
         with tempfile.TemporaryDirectory() as directory:

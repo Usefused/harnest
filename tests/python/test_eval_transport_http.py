@@ -227,12 +227,9 @@ class EvalTransportHTTPTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_adk_judge_and_simulator_borrow_authenticated_http_client(self):
-        """ADK evals retain gateway authentication and independent generation options."""
+    async def test_evaluators_borrow_authenticated_http_client(self):
+        """Every controller retains gateway auth and independent generation options."""
 
-        await self._assert_shared_gateway("adk")
-
-    async def test_langgraph_controller_borrows_into_authenticated_adk_evals(self):
-        """LangGraph's owned controller also serves both ADK evaluator callers."""
-
-        await self._assert_shared_gateway("langgraph")
+        for framework in ("adk", "langgraph"):
+            with self.subTest(framework=framework):
+                await self._assert_shared_gateway(framework)

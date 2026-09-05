@@ -165,11 +165,10 @@ class SandboxDeadlineTests(unittest.TestCase):
             self.assertEqual(result["stdout"], "outer work completed")
         self.assertIsNone(current_control())
 
-    def test_adk_provider_helpers_leave_time_for_outer_execution(self):
-        self._exercise_adapter("adk")
-
-    def test_langgraph_provider_helpers_leave_time_for_outer_execution(self):
-        self._exercise_adapter("langgraph")
+    def test_provider_helpers_leave_time_for_outer_execution(self):
+        for framework in ("adk", "langgraph"):
+            with self.subTest(framework=framework):
+                self._exercise_adapter(framework)
 
     def test_both_adapters_can_recover_from_missing_provider_resource(self):
         """Cross native adapters and runtime admission after a caught SDK error."""

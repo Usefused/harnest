@@ -283,54 +283,21 @@ class HarnestExtensionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlink"):
             discover_application_extensions(self.root)
 
-
-    def test_upgrade_package_collisions_are_non_mutating_extension_py(self):
-        tmp_path = self.root
-        collision = "extension.py"
-        agent(tmp_path, legacy=True)
-        directory = package(tmp_path, legacy=True)
-        write(directory / "extensions" / "audit.py", "# lifecycle\n")
-        write(directory / collision, "preserve this authored content\n")
-        before = (directory / "plugin.py").read_bytes()
-        plan = plan_upgrade(tmp_path)
-        assert plan.blockers
-        with self.assertRaisesRegex(UpgradeError, "blockers"):
-            apply_upgrade(plan)
-        assert (directory / "plugin.py").read_bytes() == before
-        assert not (tmp_path / ".harnest").exists()
-
-
-    def test_upgrade_package_collisions_are_non_mutating_extension_yaml(self):
-        tmp_path = self.root
-        collision = "extension.yaml"
-        agent(tmp_path, legacy=True)
-        directory = package(tmp_path, legacy=True)
-        write(directory / "extensions" / "audit.py", "# lifecycle\n")
-        write(directory / collision, "preserve this authored content\n")
-        before = (directory / "plugin.py").read_bytes()
-        plan = plan_upgrade(tmp_path)
-        assert plan.blockers
-        with self.assertRaisesRegex(UpgradeError, "blockers"):
-            apply_upgrade(plan)
-        assert (directory / "plugin.py").read_bytes() == before
-        assert not (tmp_path / ".harnest").exists()
-
-
-    def test_upgrade_package_collisions_are_non_mutating_lifecycle(self):
-        tmp_path = self.root
-        collision = "lifecycle"
-        agent(tmp_path, legacy=True)
-        directory = package(tmp_path, legacy=True)
-        write(directory / "extensions" / "audit.py", "# lifecycle\n")
-        write(directory / collision, "preserve this authored content\n")
-        before = (directory / "plugin.py").read_bytes()
-        plan = plan_upgrade(tmp_path)
-        assert plan.blockers
-        with self.assertRaisesRegex(UpgradeError, "blockers"):
-            apply_upgrade(plan)
-        assert (directory / "plugin.py").read_bytes() == before
-        assert not (tmp_path / ".harnest").exists()
-
+    def test_upgrade_package_collisions_are_non_mutating(self):
+        for collision in ("extension.py", "extension.yaml", "lifecycle"):
+            with self.subTest(collision=collision):
+                tmp_path = self.root / collision.replace(".", "-")
+                agent(tmp_path, legacy=True)
+                directory = package(tmp_path, legacy=True)
+                write(directory / "extensions" / "audit.py", "# lifecycle\n")
+                write(directory / collision, "preserve this authored content\n")
+                before = (directory / "plugin.py").read_bytes()
+                plan = plan_upgrade(tmp_path)
+                assert plan.blockers
+                with self.assertRaisesRegex(UpgradeError, "blockers"):
+                    apply_upgrade(plan)
+                assert (directory / "plugin.py").read_bytes() == before
+                assert not (tmp_path / ".harnest").exists()
 
     def test_upgrade_preserves_existing_extension_binding(self):
         tmp_path = self.root

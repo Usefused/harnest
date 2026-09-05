@@ -68,29 +68,29 @@ class BackendRegistryTests(unittest.TestCase):
             )
         )
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("google.adk") is not None,
-        "google-adk is not installed",
-    )
-    def test_advanced_adk_validation_rejects_non_adk_objects(self):
-        with self.assertRaisesRegex(
-            AdvancedBackendValidationError, "expects google.adk App"
-        ):
-            get_backend("adk").validate_advanced(
-                Agent.advanced(object()), fallback_name="fallback"
-            )
-
-    @unittest.skipUnless(
-        importlib.util.find_spec("langgraph") is not None,
-        "langgraph is not installed",
-    )
-    def test_advanced_langgraph_validation_rejects_non_pregel_objects(self):
-        with self.assertRaisesRegex(
-            AdvancedBackendValidationError, "compiled langgraph Pregel"
-        ):
-            get_backend("langgraph").validate_advanced(
-                Agent.advanced(object()), fallback_name="fallback"
-            )
+    def test_advanced_validation_rejects_objects_from_neither_framework(self):
+        cases = (
+            (
+                "adk",
+                importlib.util.find_spec("google.adk") is not None,
+                "google-adk is not installed",
+                "expects google.adk App",
+            ),
+            (
+                "langgraph",
+                importlib.util.find_spec("langgraph") is not None,
+                "langgraph is not installed",
+                "compiled langgraph Pregel",
+            ),
+        )
+        for framework, available, reason, message in cases:
+            with self.subTest(framework=framework):
+                if not available:
+                    self.skipTest(reason)
+                with self.assertRaisesRegex(AdvancedBackendValidationError, message):
+                    get_backend(framework).validate_advanced(
+                        Agent.advanced(object()), fallback_name="fallback"
+                    )
 
     def test_bundle_selects_backend_once_then_uses_its_lowering_boundary(self):
         target = SimpleNamespace(name="compiled")

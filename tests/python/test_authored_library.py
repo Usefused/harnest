@@ -441,41 +441,28 @@ class AuthoredLibraryTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
 
-    def test_nested_subagents_cannot_define_their_own_library(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "agent"
-            self._write_agent(root)
-            nested = root / "subagents" / "helper"
-            self._write(
-                nested / "agent.py",
-                "from harnest.agent import Agent\n"
-                "helper = Agent(name='helper', model='test/model')\n",
-            )
-            self._write(nested / "instructions.md", "Help.\n")
-            self._write(nested / "lib" / "private.py", "VALUE = 1\n")
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
-                with self.assertRaisesRegex(
-                    BundleConventionError, "authored libraries are root-only"
-                ):
-                    compile_application(root, entrypoint="agent:root_agent")
-
-    def test_nested_subagents_cannot_define_their_own_models(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "agent"
-            self._write_agent(root)
-            nested = root / "subagents" / "helper"
-            self._write(
-                nested / "agent.py",
-                "from harnest.agent import Agent\n"
-                "helper = Agent(name='helper', model='test/model')\n",
-            )
-            self._write(nested / "instructions.md", "Help.\n")
-            self._write(nested / "models" / "private.py", "VALUE = 1\n")
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
-                with self.assertRaisesRegex(
-                    BundleConventionError, "authored models are root-only"
-                ):
-                    compile_application(root, entrypoint="agent:root_agent")
+    def test_nested_subagents_cannot_define_root_owned_modules(self):
+        for folder, message in (
+            ("lib", "authored libraries are root-only"),
+            ("models", "authored models are root-only"),
+        ):
+            with (
+                self.subTest(folder=folder),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory) / "agent"
+                self._write_agent(root)
+                nested = root / "subagents" / "helper"
+                self._write(
+                    nested / "agent.py",
+                    "from harnest.agent import Agent\n"
+                    "helper = Agent(name='helper', model='test/model')\n",
+                )
+                self._write(nested / "instructions.md", "Help.\n")
+                self._write(nested / folder / "private.py", "VALUE = 1\n")
+                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                    with self.assertRaisesRegex(BundleConventionError, message):
+                        compile_application(root, entrypoint="agent:root_agent")
 
     def test_models_namespace_rejects_invalid_module_names(self):
         with tempfile.TemporaryDirectory() as directory:

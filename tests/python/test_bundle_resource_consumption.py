@@ -158,11 +158,10 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         )
         self.assertIsNotNone(compiled.target)
 
-    def test_adk_real_backend_lowers_folder_scoped_tools(self):
-        self._assert_real_backend_scope("adk")
-
-    def test_langgraph_real_backend_lowers_folder_scoped_tools(self):
-        self._assert_real_backend_scope("langgraph")
+    def test_real_backends_lower_folder_scoped_tools(self):
+        for framework in ("adk", "langgraph"):
+            with self.subTest(framework=framework):
+                self._assert_real_backend_scope(framework)
 
     def test_adk_graph_preserves_nested_folder_resource_scope(self):
         with tempfile.TemporaryDirectory() as temp:

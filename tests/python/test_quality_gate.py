@@ -15,14 +15,30 @@ class PythonComplexityGateTests(unittest.TestCase):
         path.write_text(contents, encoding="utf-8")
         return path
 
-    def test_reports_a_function_above_the_limit(self):
-        branches = "\n".join(f"    if value == {index}: pass" for index in range(10))
-        path = self._source(f"def too_complex(value):\n{branches}\n")
+    def test_reports_functions_and_methods_above_the_limit_once(self):
+        cases = (
+            (
+                "def too_complex(value):\n{branches}\n",
+                "too_complex has complexity 11 (max 10)",
+                "    ",
+            ),
+            (
+                "class Example:\n    def too_complex(self, value):\n{branches}\n",
+                "Example.too_complex",
+                "        ",
+            ),
+        )
+        for template, expected, indent in cases:
+            with self.subTest(expected=expected):
+                branches = "\n".join(
+                    f"{indent}if value == {index}: pass" for index in range(10)
+                )
+                path = self._source(template.format(branches=branches))
 
-        violations = _violations([path], 10)
+                violations = _violations([path], 10)
 
-        self.assertEqual(len(violations), 1)
-        self.assertIn("too_complex has complexity 11 (max 10)", violations[0])
+                self.assertEqual(len(violations), 1)
+                self.assertIn(expected, violations[0])
 
     def test_checks_methods_instead_of_class_aggregate(self):
         path = self._source(
@@ -36,20 +52,6 @@ class PythonComplexityGateTests(unittest.TestCase):
         )
 
         self.assertEqual(_violations([path], 10), [])
-
-    def test_reports_a_complex_method_once(self):
-        branches = "\n".join(
-            f"        if value == {index}: pass" for index in range(10)
-        )
-        path = self._source(
-            f"class Example:\n    def too_complex(self, value):\n{branches}\n"
-        )
-
-        violations = _violations([path], 10)
-
-        self.assertEqual(len(violations), 1)
-        self.assertIn("Example.too_complex", violations[0])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -276,37 +276,19 @@ class NamedSandboxFrameworkTests(unittest.TestCase):
         parent = _ADK_PARENT if framework == "adk" else _LANGGRAPH_PARENT
         return tools + model + parent
 
-    def test_adk_executes_only_explicitly_assigned_named_sandboxes(self):
-        """ADK business tools preserve independent providers and metadata."""
-        self._exercise("adk", ["calculations", "research"])
+    def test_framework_capability_assignment_matrix(self):
+        """Enforce explicit grants and node ownership across both framework loops."""
 
-    def test_langgraph_executes_only_explicitly_assigned_named_sandboxes(self):
-        """LangGraph business tools preserve independent providers and metadata."""
-        self._exercise("langgraph", ["calculations", "research"])
-
-    def test_adk_registry_without_assignment_exposes_no_sandbox(self):
-        """A populated registry alone grants no ADK provider access."""
-        self.assertEqual(self._exercise("adk", []), [])
-
-    def test_langgraph_registry_without_assignment_exposes_no_sandbox(self):
-        """A populated registry alone grants no LangGraph provider access."""
-        self.assertEqual(self._exercise("langgraph", []), [])
-
-    def test_adk_child_tool_uses_own_grant_and_denies_parent_grant(self):
-        """Native ADK transfer cannot let a child borrow its parent's sandbox."""
-        self._exercise("adk", ["research"], child=True)
-
-    def test_adk_child_without_grants_cannot_borrow_parent_sandbox(self):
-        """Native child tools with no grants are denied before provider startup."""
-        self.assertEqual(self._exercise("adk", [], child=True), [])
-
-    def test_langgraph_worker_tool_uses_own_grant_and_denies_other_node(self):
-        """A graph node cannot borrow the preceding agent node's capability."""
-        self._exercise("langgraph", ["research"], child=True)
-
-    def test_langgraph_worker_without_grants_cannot_borrow_other_node(self):
-        """An unassigned graph worker cannot inherit another node's sandbox."""
-        self.assertEqual(self._exercise("langgraph", [], child=True), [])
+        scenarios = (
+            ("assigned", ["calculations", "research"], False),
+            ("registry-only", [], False),
+            ("child-assigned", ["research"], True),
+            ("child-unassigned", [], True),
+        )
+        for framework in ("adk", "langgraph"):
+            for scenario, assigned, child in scenarios:
+                with self.subTest(framework=framework, scenario=scenario):
+                    self._exercise(framework, assigned, child=child)
 
 if __name__ == "__main__":
     unittest.main()

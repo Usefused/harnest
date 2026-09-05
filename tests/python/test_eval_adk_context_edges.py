@@ -132,11 +132,10 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 1)
         self.assertIsNone(optional_active_context())
 
-    def test_native_generator_early_close_revokes_context(self):
-        self._early_close(sequential=False)
-
-    def test_sequential_generator_early_close_revokes_context(self):
-        self._early_close(sequential=True)
+    def test_generator_early_close_revokes_context(self):
+        for sequential in (False, True):
+            with self.subTest(sequential=sequential):
+                self._early_close(sequential=sequential)
 
     def _early_close(self, *, sequential):
         """Exercise both ADK node execution and its legacy workflow runner."""
@@ -163,11 +162,10 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
         self._run(run())
         self._assert_revoked(plugin)
 
-    def test_native_cancellation_revokes_context(self):
-        self._cancel(sequential=False)
-
-    def test_sequential_cancellation_revokes_context(self):
-        self._cancel(sequential=True)
+    def test_cancellation_revokes_context(self):
+        for sequential in (False, True):
+            with self.subTest(sequential=sequential):
+                self._cancel(sequential=sequential)
 
     def _cancel(self, *, sequential):
         """Cancel while a native tool owns the managed invocation context."""

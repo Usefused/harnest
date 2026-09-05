@@ -194,41 +194,35 @@ class RepositoryUpgradeTests(unittest.TestCase):
             )
             self.assertFalse((root / ".harnest").exists())
 
-    def test_ambiguous_legacy_extension_is_a_manual_blocker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.legacy_agent(root)
-            path = root / "extensions" / "audit" / "lifecycle.py"
-            self.write(
-                path,
-                "from harnest.extension import Extension\n"
+    def test_unmappable_legacy_extensions_are_manual_blockers(self):
+        cases = (
+            (
                 "extension = Extension(name='first')\n"
                 "extension = Extension(name='second')\n",
-            )
-
-            plan = plan_upgrade(root)
-
-        self.assertTrue(
-            any("exactly one legacy Extension" in value for value in plan.blockers)
-        )
-
-    def test_positional_legacy_extension_is_not_guessed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.legacy_agent(root)
-            path = root / "extensions" / "audit" / "lifecycle.py"
-            self.write(
-                path,
-                "from harnest.extension import Extension\n"
+                "exactly one legacy Extension",
+            ),
+            (
                 "def before(context, request): return request\n"
                 "extension = Extension('audit', before_invoke=before)\n",
-            )
-
-            plan = plan_upgrade(root)
-
-        self.assertTrue(
-            any("positional Extension arguments" in value for value in plan.blockers)
+                "positional Extension arguments",
+            ),
         )
+        for declaration, message in cases:
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                self.legacy_agent(root)
+                path = root / "extensions" / "audit" / "lifecycle.py"
+                self.write(
+                    path,
+                    "from harnest.extension import Extension\n" + declaration,
+                )
+
+                plan = plan_upgrade(root)
+
+            self.assertTrue(any(message in value for value in plan.blockers))
 
     def test_nested_legacy_requirements_are_a_manual_blocker(self):
         with tempfile.TemporaryDirectory() as directory:
