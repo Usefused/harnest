@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import ModuleType
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -16,8 +17,7 @@ _LIVE = os.getenv("HARNEST_HATCHET_LIVE") == "1"
 _SDK_AVAILABLE = importlib.util.find_spec("hatchet_sdk") is not None
 _CLIENT_SOURCE = (
     Path(__file__).resolve().parents[2]
-    / "examples"
-    / "plugins"
+    / "official-extensions"
     / "hatchet"
     / "lib"
     / "client.py"
@@ -62,7 +62,18 @@ class HatchetPluginDockerLiveTests(unittest.IsolatedAsyncioTestCase):
 def _load_client_module():
     """Load the real reusable adapter without requiring an active plugin namespace."""
 
-    name = "_harnest_hatchet_live_client"
+    package_name = "_harnest_hatchet_live"
+    lib_name = f"{package_name}.lib"
+    # The published wheel remaps this source tree into a package. Recreate only
+    # that namespace so relative imports exercise the authored adapter unchanged.
+    for name, directory in (
+        (package_name, _CLIENT_SOURCE.parents[1]),
+        (lib_name, _CLIENT_SOURCE.parent),
+    ):
+        package = ModuleType(name)
+        package.__path__ = [str(directory)]
+        sys.modules[name] = package
+    name = f"{lib_name}.client"
     spec = importlib.util.spec_from_file_location(name, _CLIENT_SOURCE)
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load Hatchet extension client adapter")
