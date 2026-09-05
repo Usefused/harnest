@@ -58,9 +58,10 @@ installing this wheel does not install or start Docker.
 The extension provides lazy container startup, fresh execution-scoped
 containers, identity-bound invocation or session reuse, resource budgets,
 deadlines, bounded output, cleanup, and supported ADK parsing/retry options. It
-supports no-network and unrestricted Docker network modes. Daemon calls inherit
-the remaining all-in sandbox deadline across admission, image/container startup,
-and execution. Cleanup receives a separate bounded five-second window. Daemon
+supports no-network and unrestricted Docker network modes. SDK transport
+timeouts for image and container startup are constrained by the remaining
+deadline. A host watchdog and control checks enforce the execution deadline.
+Cleanup receives a separate bounded five-second window. Daemon
 errors and startup timeouts identify the failed phase without exposing Docker
 SDK details, image-defined health checks are disabled, and managed containers
 carry `dev.harnest.*` labels for operator inventory.

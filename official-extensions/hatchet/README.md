@@ -35,10 +35,14 @@ consumer-owned asynchronous tool can use the installed public API:
 
 ```python
 from harnest.extensions.hatchet import hatchet
+from harnest.tool import tool
 
 
-job = await hatchet.run("build-report", {"account_id": account_id})
-result = await hatchet.wait(job)
+@tool(durable=True)
+async def build_report(account_id: str) -> dict:
+    """Build one account report in the external workflow system."""
+    job = await hatchet.run("build-report", {"account_id": account_id})
+    return await hatchet.wait(job)
 ```
 
 `hatchet.status(job)` reads current state and `hatchet.cancel(job)` requests
@@ -67,6 +71,12 @@ while retaining pending waits across transient provider outages. The adapter
 does not deploy or supervise Hatchet, define workflows, manage workers, expose
 tools, or replace durable Harnest session/checkpoint storage. Cancellation is a
 provider request and does not imply immediate worker shutdown.
+
+An invocation carrying an Agent Runtime Principal cannot suspend an external
+continuation because another replica cannot reconstruct that opaque authority.
+In that case `wait` fails closed after `run` has submitted the Hatchet job.
+Poll it with `status` in the live invocation or avoid binding a runtime
+principal when cross-replica waiting is required.
 
 See the [Harnest documentation](https://docs.usefused.com/harnest) for agent
 configuration and operational guidance. Source and issue tracking live in the

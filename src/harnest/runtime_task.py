@@ -99,13 +99,16 @@ _PAYLOAD_MIGRATION_SQL = (
     "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
     "agent_permissions jsonb",
 )
+# Procrastinate adapts Python lists as PostgreSQL arrays rather than JSON. Keep
+# the in-memory contract as a list and convert it explicitly at the SQL boundary.
 _INSERT_PAYLOAD_SQL = """
 INSERT INTO harnest_task_payloads(
     payload_id, task_name, arguments, invocation, agent_permissions, trigger, status
 )
 VALUES (
     %(payload_id)s, %(task_name)s, %(arguments)s, %(invocation)s,
-    %(agent_permissions)s, %(trigger)s, 'pending'
+    to_jsonb(%(agent_permissions)s::text[]),
+    %(trigger)s, 'pending'
 )
 ON CONFLICT (payload_id) DO NOTHING
 RETURNING payload_id
