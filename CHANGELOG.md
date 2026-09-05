@@ -44,6 +44,12 @@
 
 ### Changed
 
+* Declare the complete Python runtime as a PEP 561 typed distribution and add
+  IDE-visible documentation and annotations to every reviewed public callable.
+  Ship editor stubs for the official Docker and Hatchet extension namespaces.
+  The release gate now verifies the typed marker, metadata, signatures, hover
+  documentation, and extension stubs in the embedded wheel's public API.
+
 * Remove the built-in `Sandbox.container()` API and Docker SDK dependency from
   Harnest core. Install `harnest-extension-docker` and use
   `harnest.extensions.docker.docker.sandbox(...)` instead. Docker extension

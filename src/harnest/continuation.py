@@ -124,15 +124,24 @@ class ContinuationStore(Protocol):
 
     async def suspend_continuation(
         self, *, record: ContinuationRecord, external_id: str
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationRecord:
+        """Persist a new provider wait and atomically suspend its run."""
+
+        ...
 
     async def get_continuation(
         self, *, scope: RunScope, continuation_id: str
-    ) -> ContinuationRecord | None: ...
+    ) -> ContinuationRecord | None:
+        """Read a continuation through its complete run ownership scope."""
+
+        ...
 
     async def get_continuation_by_external_id(
         self, *, application_id: str, provider: str, external_id: str
-    ) -> ProviderPendingContinuation | None: ...
+    ) -> ProviderPendingContinuation | None:
+        """Resolve one provider-owned external identifier."""
+
+        ...
 
     async def get_provider_continuation(
         self,
@@ -140,7 +149,10 @@ class ContinuationStore(Protocol):
         scope: RunScope,
         provider: str,
         continuation_id: str,
-    ) -> ProviderPendingContinuation | None: ...
+    ) -> ProviderPendingContinuation | None:
+        """Read one continuation together with its provider-private identity."""
+
+        ...
 
     async def list_pending_continuations(
         self,
@@ -149,7 +161,10 @@ class ContinuationStore(Protocol):
         provider: str,
         after: str | None = None,
         limit: int = 100,
-    ) -> Sequence[ProviderPendingContinuation]: ...
+    ) -> Sequence[ProviderPendingContinuation]:
+        """Return a bounded page of waits awaiting provider reconciliation."""
+
+        ...
 
     async def resolve_continuation(
         self,
@@ -160,7 +175,10 @@ class ContinuationStore(Protocol):
         schema_id: str,
         result: Any = None,
         failure: ContinuationFailure | None = None,
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationRecord:
+        """Commit a validated provider result or failure for a pending wait."""
+
+        ...
 
     async def claim_continuation(
         self,
@@ -169,7 +187,10 @@ class ContinuationStore(Protocol):
         provider: str,
         continuation_id: str,
         expected_revision: int,
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationRecord:
+        """Claim a pending wait using its expected revision."""
+
+        ...
 
     async def arm_continuation(
         self,
@@ -178,7 +199,10 @@ class ContinuationStore(Protocol):
         provider: str,
         continuation_id: str,
         expected_revision: int,
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationRecord:
+        """Mark a resolved wait ready to resume using revision-based CAS."""
+
+        ...
 
     async def cancel_continuation(
         self,
@@ -188,7 +212,10 @@ class ContinuationStore(Protocol):
         continuation_id: str,
         expected_revision: int,
         failure: ContinuationFailure,
-    ) -> ContinuationRecord: ...
+    ) -> ContinuationRecord:
+        """Cancel a wait with a durable failure using revision-based CAS."""
+
+        ...
 
 
 class ContinuationProvider:

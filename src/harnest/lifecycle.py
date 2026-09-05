@@ -94,6 +94,8 @@ class LifecycleListener:
 
     @property
     def identity(self) -> str:
+        """Return the stable identity used to order and deduplicate listeners."""
+
         return f"{self.relative_path}:{self.line}:{self.function_name}"
 
 

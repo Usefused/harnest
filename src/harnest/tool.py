@@ -45,7 +45,7 @@ def tool(
     output_schema: PydanticModel | None = None,
     durable: bool = False,
     permission: str | None = None,
-):
+) -> F | Callable[[F], F]:
     """Mark a typed Python function as a managed Harnest tool.
 
     Both managed backends wrap callables natively. This decorator preserves the

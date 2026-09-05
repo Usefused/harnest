@@ -68,6 +68,8 @@ class ApprovalPolicy:
             _validate_tool_names(self.tools)
 
     def applies_to(self, name: str) -> bool:
+        """Report whether this policy protects the named remote tool."""
+
         return self.tools is None or name in self.tools
 
 
@@ -107,6 +109,8 @@ class PendingApproval:
     _store: "InMemoryApprovalStore | None" = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
+        """Return the client-safe fields needed to present an approval prompt."""
+
         return {
             "id": self.id,
             "callId": self.call_id,
@@ -130,6 +134,8 @@ class ApprovalExecution:
     run: "ApprovalRun | None" = None
 
     async def authorize(self, challenge: ApprovalChallenge) -> PendingApproval | None:
+        """Authorize a challenge through a live store or supplied one-time grant."""
+
         if self.store is not None and self.run is not None:
             return await self.store.suspend(self.run, challenge)
         grant = self.grant
@@ -183,6 +189,8 @@ class InMemoryApprovalStore:
         self._lock = Lock()
 
     def create_run(self, *, user_id: str, session_id: str, call_id: str) -> ApprovalRun:
+        """Create an invocation-scoped approval suspension channel."""
+
         return ApprovalRun(
             id=f"approval_run_{uuid.uuid4().hex}",
             user_id=user_id,
@@ -199,6 +207,8 @@ class InMemoryApprovalStore:
         call_id: str,
         invocation: Any = None,
     ) -> PendingApproval:
+        """Register a bounded one-time approval challenge."""
+
         # ``invocation`` remains accepted for source compatibility, but retaining
         # request payloads in the approval store is intentionally forbidden.
         del invocation
@@ -224,6 +234,8 @@ class InMemoryApprovalStore:
     async def suspend(
         self, run: ApprovalRun, challenge: ApprovalChallenge
     ) -> PendingApproval:
+        """Suspend an invocation until its challenge is approved or rejected."""
+
         execution = ApprovalExecution(run.user_id, run.session_id, run.call_id)
         pending, future = self._request_waiter(run, challenge)
         run.notifications.put_nowait(("approval", pending))
@@ -264,6 +276,8 @@ class InMemoryApprovalStore:
         decision: Decision,
         deliver: bool = True,
     ) -> PendingApproval:
+        """Commit an approval decision for the matching user-owned challenge."""
+
         if decision not in {"approve", "deny"}:
             raise ValueError("approval decision must be approve or deny")
         with self._lock:
@@ -298,6 +312,8 @@ class InMemoryApprovalStore:
         return pending, waiter, False
 
     def deliver_decision(self, pending: PendingApproval, decision: Decision) -> None:
+        """Deliver a committed decision to its suspended invocation."""
+
         with self._lock:
             waiter = self._waiters.get(pending.id)
         if waiter is None or waiter.future.done():
@@ -308,17 +324,23 @@ class InMemoryApprovalStore:
             waiter.future.set_exception(ApprovalDenied("approval was denied"))
 
     def run_for(self, pending: PendingApproval) -> ApprovalRun | None:
+        """Return the live invocation associated with a pending challenge."""
+
         with self._lock:
             waiter = self._waiters.get(pending.id)
             return None if waiter is None else waiter.run
 
     def assert_consumed(self, pending: PendingApproval) -> None:
+        """Require resumed execution to have reached the approved action."""
+
         if not pending.consumed:
             raise ApprovalEnforcementError(
                 "approved action was not reached during resumed execution"
             )
 
     def executed(self, pending: PendingApproval) -> None:
+        """Mark an approved action as successfully executed."""
+
         with self._lock:
             pending.status = "executed"
             pending.finished_at = self._clock()
@@ -326,6 +348,8 @@ class InMemoryApprovalStore:
         self._release_waiter(pending.id)
 
     def failed(self, pending: PendingApproval) -> None:
+        """Mark an approved action as failed during execution."""
+
         with self._lock:
             pending.status = "execution_failed"
             pending.finished_at = self._clock()
@@ -333,6 +357,8 @@ class InMemoryApprovalStore:
         self._release_waiter(pending.id)
 
     def cancel_run(self, run: ApprovalRun) -> None:
+        """Cancel all unresolved challenges and work for one invocation."""
+
         cancelled: list[_ApprovalWaiter] = []
         with self._lock:
             for approval_id, waiter in tuple(self._waiters.items()):
@@ -351,6 +377,8 @@ class InMemoryApprovalStore:
 
     @property
     def retained_count(self) -> int:
+        """Return the number of live challenges and retained tombstones."""
+
         with self._lock:
             self._prune_locked()
             return len(self._items)
@@ -418,6 +446,8 @@ class InMemoryApprovalStore:
 
 @contextmanager
 def approval_execution(execution: ApprovalExecution) -> Iterator[None]:
+    """Activate approval authority for protected work in this context."""
+
     token = _CURRENT_EXECUTION.set(execution)
     try:
         yield
@@ -489,6 +519,8 @@ async def request_human_approval(
 
 
 def approval_policy(value: Any) -> ApprovalPolicy | None:
+    """Read the Harnest approval policy attached to a callable, if present."""
+
     policy = getattr(value, _POLICY_ATTRIBUTE, None)
     return policy if isinstance(policy, ApprovalPolicy) else None
 
@@ -538,6 +570,8 @@ async def authorize_mcp(
     arguments: Mapping[str, Any],
     policy: ApprovalPolicy,
 ) -> PendingApproval | None:
+    """Authorize one MCP tool call when the client policy selects it."""
+
     if not policy.applies_to(tool_name):
         return None
     return await _authorize(
@@ -546,10 +580,14 @@ async def authorize_mcp(
 
 
 def record_approved_execution(grant: PendingApproval | None) -> None:
+    """Record successful completion for an optional one-time approval grant."""
+
     _record_executed(grant)
 
 
 def record_approved_failure(grant: PendingApproval | None) -> None:
+    """Record failed execution for an optional one-time approval grant."""
+
     if grant is not None:
         if grant._store is not None:
             grant._store.failed(grant)
@@ -580,6 +618,8 @@ async def _authorize(
 def bind_tool_arguments(
     function: Callable[..., Any], args: tuple[Any, ...], kwargs: Mapping[str, Any]
 ) -> dict[str, Any]:
+    """Bind a tool call to canonical approval-safe argument values."""
+
     try:
         values = inspect.signature(function).bind(*args, **kwargs).arguments
     except TypeError as exc:

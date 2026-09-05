@@ -470,12 +470,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             wheel = next(Path(temporary).glob("harnest-*.whl"))
             with zipfile.ZipFile(wheel) as archive:
+                archived_paths = set(archive.namelist())
+                extension_stubs = {
+                    path: archive.read(path)
+                    for path in (
+                        "harnest/extensions/docker.pyi",
+                        "harnest/extensions/hatchet.pyi",
+                    )
+                    if path in archived_paths
+                }
                 metadata_path = next(
                     name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
                 )
                 metadata_text = archive.read(metadata_path).decode("utf-8")
 
         self.assertIn(f"Version: {snapshot_version}\n", metadata_text)
+        self.assertIn("Classifier: Typing :: Typed\n", metadata_text)
+        self.assertIn("harnest/py.typed", archived_paths)
+        self.assertIn("harnest/extensions/docker.pyi", archived_paths)
+        self.assertIn("harnest/extensions/hatchet.pyi", archived_paths)
+        for path, source in extension_stubs.items():
+            compile(source, path, "exec")
 
     def test_release_wheel_rejects_a_version_not_in_source(self):
         with tempfile.TemporaryDirectory() as temporary:

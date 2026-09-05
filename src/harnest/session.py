@@ -24,6 +24,8 @@ class ADKSessionStorage:
             raise ValueError("ADK session storage uri must be non-empty")
 
     def create_service(self, base_directory: str) -> Any:
+        """Create the native ADK session service for a compiled application."""
+
         from google.adk.cli.utils.service_factory import (
             create_session_service_from_options,
         )
@@ -41,15 +43,27 @@ class SessionLease(Protocol):
     """Exclusive session access held across one graph execution."""
 
     @property
-    def record(self) -> SessionRecord: ...
+    def record(self) -> SessionRecord:
+        """Return the current session snapshot held by this lease."""
 
-    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord: ...
+        ...
 
-    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord: ...
+    async def patch_state(self, delta: Mapping[str, Any]) -> SessionRecord:
+        """Merge a state delta and return the updated session snapshot."""
+
+        ...
+
+    async def replace_state(self, state: Mapping[str, Any]) -> SessionRecord:
+        """Replace framework-owned state and return the updated session."""
+
+        ...
 
     async def replace_application_data(
         self, data: Mapping[str, Any]
-    ) -> SessionRecord: ...
+    ) -> SessionRecord:
+        """Replace application-owned data and return the updated session."""
+
+        ...
 
 
 @runtime_checkable
@@ -61,13 +75,24 @@ class SessionStore(Protocol):
     repository's privacy-safe OTEL audit contract after commit.
     """
 
-    async def start(self) -> None: ...
+    async def start(self) -> None:
+        """Initialize resources required by the session store."""
+
+        ...
 
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
-    ) -> SessionRecord: ...
+    ) -> SessionRecord:
+        """Create one tenant-scoped session."""
 
-    async def get(self, *, session_id: str, user_id: str) -> SessionRecord | None: ...
+        ...
+
+    async def get(
+        self, *, session_id: str, user_id: str
+    ) -> SessionRecord | None:
+        """Read one tenant-scoped session when it exists."""
+
+        ...
 
     async def list(
         self,
@@ -75,7 +100,10 @@ class SessionStore(Protocol):
         user_id: str,
         after: str | None = None,
         limit: int | None = None,
-    ) -> Sequence[SessionRecord]: ...
+    ) -> Sequence[SessionRecord]:
+        """Return an ordered, optionally paginated session list for one user."""
+
+        ...
 
     async def update(
         self,
@@ -83,15 +111,27 @@ class SessionStore(Protocol):
         session_id: str,
         user_id: str,
         state_delta: Mapping[str, Any],
-    ) -> SessionRecord | None: ...
+    ) -> SessionRecord | None:
+        """Merge a state delta into an existing tenant-scoped session."""
 
-    async def delete(self, *, session_id: str, user_id: str) -> bool: ...
+        ...
+
+    async def delete(self, *, session_id: str, user_id: str) -> bool:
+        """Delete one tenant-scoped session and report whether it existed."""
+
+        ...
 
     def acquire(
         self, *, session_id: str, user_id: str
-    ) -> AsyncContextManager[SessionLease]: ...
+    ) -> AsyncContextManager[SessionLease]:
+        """Acquire exclusive execution access to one tenant-scoped session."""
 
-    async def close(self) -> None: ...
+        ...
+
+    async def close(self) -> None:
+        """Release resources owned by the session store."""
+
+        ...
 
 
 @dataclass(slots=True)
@@ -146,6 +186,8 @@ class InMemorySessionStore:
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
     ) -> SessionRecord:
+        """Create one process-local tenant-scoped session."""
+
         _require_text(session_id, "session_id")
         _require_text(user_id, "user_id")
         key = (user_id, session_id)
@@ -159,6 +201,8 @@ class InMemorySessionStore:
     async def get(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:
+        """Read one process-local tenant-scoped session."""
+
         stored = self._sessions.get((user_id, session_id))
         if stored is None:
             return None
@@ -195,6 +239,8 @@ class InMemorySessionStore:
         user_id: str,
         state_delta: Mapping[str, Any],
     ) -> SessionRecord | None:
+        """Merge a state delta into a process-local session."""
+
         stored = self._sessions.get((user_id, session_id))
         if stored is None:
             return None
@@ -204,6 +250,8 @@ class InMemorySessionStore:
             return _record(session_id, stored)
 
     async def delete(self, *, session_id: str, user_id: str) -> bool:
+        """Delete one process-local session after its active lease exits."""
+
         key = (user_id, session_id)
         stored = self._sessions.get(key)
         if stored is None:
@@ -221,6 +269,8 @@ class InMemorySessionStore:
     async def acquire(
         self, *, session_id: str, user_id: str
     ) -> AsyncIterator[SessionLease]:
+        """Hold exclusive access to one process-local session."""
+
         stored = self._sessions.get((user_id, session_id))
         if stored is None:
             raise KeyError("session not found")
@@ -228,6 +278,8 @@ class InMemorySessionStore:
             yield _InMemoryLease(session_id, stored)
 
     async def close(self) -> None:
+        """Discard all process-local session state."""
+
         async with self._lock:
             self._sessions.clear()
 

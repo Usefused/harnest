@@ -81,6 +81,8 @@ class PendingClientTool:
     submitting: bool = field(default=False, repr=False)
 
     def public(self) -> dict[str, Any]:
+        """Return the client-safe fields required to execute this tool call."""
+
         return {
             "id": self.id,
             "callId": self.call_id,
@@ -126,6 +128,8 @@ class InMemoryClientToolStore:
         output_schema: PydanticModel | None,
         timeout_seconds: int,
     ) -> Any:
+        """Suspend an invocation until the client submits a result or times out."""
+
         loop = asyncio.get_running_loop()
         pending = PendingClientTool(
             id=f"client_tool_{uuid.uuid4().hex}",
@@ -267,6 +271,8 @@ class InMemoryClientToolStore:
         task.add_done_callback(cleanup)
 
     def run_for(self, pending: PendingClientTool) -> ApprovalRun:
+        """Return the live invocation waiting for a client tool result."""
+
         return pending.run
 
 
@@ -285,6 +291,8 @@ class ClientToolExecution:
         output_schema: PydanticModel | None,
         timeout_seconds: int,
     ) -> Any:
+        """Request one client-hosted tool call and await its validated result."""
+
         return await self.store.suspend(
             self.run,
             name=name,
@@ -309,6 +317,8 @@ class ClientToolExecution:
 
 @contextmanager
 def client_tool_execution(execution: ClientToolExecution) -> Iterator[None]:
+    """Activate client-tool execution authority for the current context."""
+
     token = _CURRENT.set(execution)
     try:
         yield
@@ -344,7 +354,7 @@ def client_tool(
     timeout_seconds: int = 300,
     output_schema: PydanticModel | None = None,
     permission: str | None = None,
-):
+) -> F | Callable[[F], F]:
     """Declare an optionally permissioned tool implemented by the client."""
 
     if not isinstance(timeout_seconds, int) or timeout_seconds < 1:

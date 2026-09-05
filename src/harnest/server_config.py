@@ -35,6 +35,8 @@ class ServerConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class HTTPServerConfig:
+    """Configure the compiled agent's HTTP listener and request concurrency."""
+
     host: str = "127.0.0.1"
     port: int = 8080
     allow_remote: bool = False
@@ -44,16 +46,22 @@ class HTTPServerConfig:
 
 @dataclass(frozen=True, slots=True)
 class ServerLimits:
+    """Set transport-independent limits enforced by the agent server."""
+
     max_request_bytes: int = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class PlaygroundConfig:
+    """Control whether the local agent playground is exposed."""
+
     enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class ServerConfig:
+    """Group validated listener, limit, playground, and live-mode settings."""
+
     http: HTTPServerConfig = HTTPServerConfig()
     limits: ServerLimits = ServerLimits()
     playground: PlaygroundConfig = PlaygroundConfig()

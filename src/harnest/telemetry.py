@@ -136,6 +136,8 @@ class _JSONFormatter(logging.Formatter):
 
 @dataclass(slots=True)
 class TelemetryState:
+    """Own the providers and processors configured for one agent runtime."""
+
     service_name: str
     framework: str
     enabled: bool
@@ -639,6 +641,8 @@ def _shutdown_processors(processors: Sequence[Any]) -> None:
 
 
 def get_tracer(name: str, *, version: str | None = None) -> Any:
+    """Return a tracer from Harnest's configured or global telemetry provider."""
+
     state = _STATE
     if state is not None and state.tracer_provider is not None:
         return state.tracer_provider.get_tracer(name, version)

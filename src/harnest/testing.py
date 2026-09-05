@@ -345,6 +345,8 @@ class SmokeClient:
         session_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Invoke the neutral response endpoint and return its JSON object."""
+
         payload: dict[str, Any] = {"input": input}
         if session_id is not None:
             payload["sessionId"] = session_id
@@ -367,6 +369,8 @@ class SmokeClient:
         session_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        """Invoke the streaming endpoint and return parsed server-sent events."""
+
         payload: dict[str, Any] = {"input": input, "stream": True}
         if session_id is not None:
             payload["sessionId"] = session_id

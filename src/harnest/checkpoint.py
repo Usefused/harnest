@@ -88,11 +88,17 @@ class A2ATaskPage:
 class A2ATaskPersistence(Protocol):
     """Optional indexed A2A persistence implemented by built-in stores."""
 
-    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord: ...
+    async def put_a2a_task(self, record: A2ATaskRecord) -> A2ATaskRecord:
+        """Create or update one owner-scoped A2A task snapshot."""
+
+        ...
 
     async def get_a2a_task(
         self, *, application_id: str, user_id: str, task_id: str
-    ) -> A2ATaskRecord | None: ...
+    ) -> A2ATaskRecord | None:
+        """Read one A2A task through its complete ownership key."""
+
+        ...
 
     async def list_a2a_tasks(
         self,
@@ -104,11 +110,17 @@ class A2ATaskPersistence(Protocol):
         status_timestamp_after: str | None = None,
         cursor_task_id: str | None = None,
         limit: int = 51,
-    ) -> A2ATaskPage: ...
+    ) -> A2ATaskPage:
+        """Return a filtered, cursor-based page of owner-scoped A2A tasks."""
+
+        ...
 
     async def delete_a2a_task(
         self, *, application_id: str, user_id: str, task_id: str
-    ) -> bool: ...
+    ) -> bool:
+        """Delete one owner-scoped A2A task and report whether it existed."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +205,10 @@ class CheckpointRecord:
 class CheckpointStore(Protocol):
     """Storage contract for resumable, in-progress framework execution."""
 
-    async def start(self) -> None: ...
+    async def start(self) -> None:
+        """Initialize resources required by the checkpoint store."""
+
+        ...
 
     async def begin_run(
         self,
@@ -203,9 +218,15 @@ class CheckpointStore(Protocol):
         session_id: str,
         run_id: str,
         framework: Literal["adk", "langgraph"],
-    ) -> RunRecord: ...
+    ) -> RunRecord:
+        """Create or recover the active checkpoint run for a session."""
 
-    async def get_run(self, *, scope: RunScope) -> RunRecord | None: ...
+        ...
+
+    async def get_run(self, *, scope: RunScope) -> RunRecord | None:
+        """Read a checkpoint run through its complete ownership scope."""
+
+        ...
 
     async def get_checkpoint(
         self,
@@ -213,7 +234,10 @@ class CheckpointStore(Protocol):
         scope: RunScope,
         checkpoint_id: str | None = None,
         namespace: str = "",
-    ) -> CheckpointRecord | None: ...
+    ) -> CheckpointRecord | None:
+        """Read an exact or latest checkpoint within an owned run."""
+
+        ...
 
     def list_checkpoints(
         self,
@@ -222,7 +246,10 @@ class CheckpointStore(Protocol):
         namespace: str | None = None,
         before: str | None = None,
         limit: int = 20,
-    ) -> AsyncIterator[CheckpointRecord]: ...
+    ) -> AsyncIterator[CheckpointRecord]:
+        """Stream a bounded checkpoint history for an owned run."""
+
+        ...
 
     async def put(
         self,
@@ -230,7 +257,10 @@ class CheckpointStore(Protocol):
         *,
         scope: RunScope,
         expected_revision: int | None,
-    ) -> CheckpointRecord: ...
+    ) -> CheckpointRecord:
+        """Persist a checkpoint when its expected revision still matches."""
+
+        ...
 
     async def put_writes(
         self,
@@ -238,15 +268,24 @@ class CheckpointStore(Protocol):
         scope: RunScope,
         checkpoint_id: str,
         writes: Sequence[CheckpointWrite],
-    ) -> None: ...
+    ) -> None:
+        """Persist pending task writes for one checkpoint."""
+
+        ...
 
     async def get_writes(
         self, *, scope: RunScope, checkpoint_id: str
-    ) -> Sequence[CheckpointWrite]: ...
+    ) -> Sequence[CheckpointWrite]:
+        """Read pending writes for one owned checkpoint."""
+
+        ...
 
     async def get_writes_batch(
         self, *, scope: RunScope, checkpoint_ids: Sequence[str]
-    ) -> Mapping[str, Sequence[CheckpointWrite]]: ...
+    ) -> Mapping[str, Sequence[CheckpointWrite]]:
+        """Read pending writes for several owned checkpoints in one call."""
+
+        ...
 
     async def transition(
         self,
@@ -255,11 +294,20 @@ class CheckpointStore(Protocol):
         expected_status: RunStatus,
         status: RunStatus,
         pending_action: PendingAction | None = None,
-    ) -> RunRecord: ...
+    ) -> RunRecord:
+        """Apply one compare-and-swap run-state transition."""
 
-    async def delete_run(self, *, scope: RunScope) -> None: ...
+        ...
 
-    async def close(self) -> None: ...
+    async def delete_run(self, *, scope: RunScope) -> None:
+        """Delete an owned run and all of its checkpoint state."""
+
+        ...
+
+    async def close(self) -> None:
+        """Release resources owned by the checkpoint store."""
+
+        ...
 
 
 class CheckpointAuthority:
@@ -451,6 +499,8 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         return record
 
     async def get_run(self, *, scope: RunScope) -> RunRecord | None:
+        """Read one process-local run through its complete ownership scope."""
+
         async with self._lock:
             return _owned_run(self._state.runs.get(scope.run_id), scope)
 
@@ -568,6 +618,8 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
     async def get_writes(
         self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
+        """Read process-local pending writes for one owned checkpoint."""
+
         async with self._lock:
             if _owned_run(self._state.runs.get(scope.run_id), scope) is None:
                 return ()
@@ -1005,12 +1057,18 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
 
     @property
     def config_specs(self) -> list[Any]:
+        """Expose the wrapped saver configuration fields to LangGraph."""
+
         return self.checkpointer.config_specs
 
     def get_tuple(self, config: Any) -> Any:
+        """Delegate synchronous checkpoint lookup to the wrapped saver."""
+
         return self.checkpointer.get_tuple(config)
 
     def list(self, config: Any, **options: Any) -> Any:
+        """Delegate synchronous checkpoint listing to the wrapped saver."""
+
         return self.checkpointer.list(config, **options)
 
     def put(
@@ -1020,6 +1078,8 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
         metadata: Any,
         new_versions: Any,
     ) -> Any:
+        """Delegate synchronous checkpoint persistence to the wrapped saver."""
+
         return self.checkpointer.put(
             config, checkpoint, metadata, new_versions
         )
@@ -1031,15 +1091,23 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
         task_id: str,
         task_path: str = "",
     ) -> None:
+        """Delegate synchronous pending-write persistence to the wrapped saver."""
+
         self.checkpointer.put_writes(config, writes, task_id, task_path)
 
     def delete_thread(self, thread_id: str) -> None:
+        """Delete all checkpoints for a LangGraph thread."""
+
         self.checkpointer.delete_thread(thread_id)
 
     async def aget_tuple(self, config: Any) -> Any:
+        """Delegate asynchronous checkpoint lookup to the wrapped saver."""
+
         return await self.checkpointer.aget_tuple(config)
 
     async def alist(self, config: Any, **options: Any) -> AsyncIterator[Any]:
+        """Stream checkpoints from the wrapped asynchronous saver."""
+
         async for value in self.checkpointer.alist(config, **options):
             yield value
 
@@ -1050,6 +1118,8 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
         metadata: Any,
         new_versions: Any,
     ) -> Any:
+        """Delegate asynchronous checkpoint persistence to the wrapped saver."""
+
         return await self.checkpointer.aput(
             config, checkpoint, metadata, new_versions
         )
@@ -1061,14 +1131,20 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
         task_id: str,
         task_path: str = "",
     ) -> None:
+        """Delegate asynchronous pending-write persistence to the wrapped saver."""
+
         await self.checkpointer.aput_writes(
             config, writes, task_id, task_path
         )
 
     async def adelete_thread(self, thread_id: str) -> None:
+        """Asynchronously delete all checkpoints for a LangGraph thread."""
+
         await self.checkpointer.adelete_thread(thread_id)
 
     def get_next_version(self, current: Any, channel: Any) -> Any:
+        """Ask the wrapped saver to derive the next channel version."""
+
         return self.checkpointer.get_next_version(current, channel)
 
     def __getattr__(self, name: str) -> Any:
@@ -1077,9 +1153,13 @@ class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
         return getattr(self.checkpointer, name)
 
     async def start(self) -> None:
+        """Initialize the wrapped saver when it owns a start hook."""
+
         await _optional_async_call(self.checkpointer, "start")
 
     async def close(self) -> None:
+        """Release resources owned by the wrapped saver."""
+
         await _optional_async_call(self.checkpointer, "close")
 
 
@@ -1098,9 +1178,13 @@ class ADKStore(CheckpointAuthority):
         self.session_service = session_service
 
     async def start(self) -> None:
+        """Initialize the wrapped ADK session service when supported."""
+
         await _optional_async_call(self.session_service, "start")
 
     async def close(self) -> None:
+        """Release resources owned by the wrapped ADK session service."""
+
         await _optional_async_call(self.session_service, "close")
 
 

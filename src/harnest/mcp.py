@@ -98,6 +98,8 @@ class MCPClient:
         timeout_seconds: float = 30,
         lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
+        """Create an MCP client that starts and communicates with a subprocess."""
+
         return cls(
             "stdio",
             command=command,
@@ -125,6 +127,8 @@ class MCPClient:
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
+        """Create an MCP client using the Streamable HTTP transport."""
+
         return cls(
             "streamable-http",
             url=url,
@@ -152,6 +156,8 @@ class MCPClient:
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
     ) -> "MCPClient":
+        """Create an MCP client using the legacy HTTP/SSE transport."""
+
         return cls(
             "sse",
             url=url,
@@ -235,7 +241,7 @@ class MCPClient:
         if self.transport not in {"stdio", "sse", "streamable-http"}:
             raise ValueError(f"unsupported MCP transport: {self.transport}")
 
-    def to_adk_toolset(self):
+    def to_adk_toolset(self) -> Any:
         """Use native transport while preserving portable expansion and failure rules."""
 
         classes = _adk_mcp_classes()

@@ -151,6 +151,8 @@ class RedisStore(HarnestStore):
     async def get(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:
+        """Read one tenant-scoped session from Redis."""
+
         raw = await self._require_client().get(
             self._session_key(user_id, session_id)
         )
@@ -453,6 +455,8 @@ class RedisStore(HarnestStore):
         return stored
 
     async def get_run(self, *, scope: RunScope) -> RunRecord | None:
+        """Read one Redis checkpoint run through its ownership scope."""
+
         raw = await self._require_client().get(self._run_key(scope.run_id))
         if raw is None:
             return None
@@ -595,6 +599,8 @@ class RedisStore(HarnestStore):
     async def get_writes(
         self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
+        """Read pending writes for one owned Redis checkpoint."""
+
         if await self.get_run(scope=scope) is None:
             return ()
         values = await self._require_client().hvals(

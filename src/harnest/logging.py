@@ -75,27 +75,41 @@ class Logger:
         exc_info: Any = None,
         **attributes: Any,
     ) -> None:
+        """Emit a structured event at an explicit standard logging level."""
+
         if not isinstance(event, str) or not event:
             raise ValueError("log event must be a non-empty string")
         extra = _attributes({**dict(self._bound), **attributes})
         self.stdlib.log(level, event, *args, extra=extra, exc_info=exc_info)
 
     def debug(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit a structured debug event."""
+
         self.log(_logging.DEBUG, event, *args, **attributes)
 
     def info(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit a structured informational event."""
+
         self.log(_logging.INFO, event, *args, **attributes)
 
     def warning(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit a structured warning event."""
+
         self.log(_logging.WARNING, event, *args, **attributes)
 
     def error(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit a structured error event."""
+
         self.log(_logging.ERROR, event, *args, **attributes)
 
     def critical(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit a structured critical event."""
+
         self.log(_logging.CRITICAL, event, *args, **attributes)
 
     def exception(self, event: str, *args: Any, **attributes: Any) -> None:
+        """Emit an error event carrying the active exception traceback."""
+
         self.log(_logging.ERROR, event, *args, exc_info=True, **attributes)
 
 

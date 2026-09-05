@@ -50,9 +50,13 @@ class Tracer:
         self.version = version
 
     def start_as_current_span(self, name: str, **kwargs: Any) -> Any:
+        """Start and activate a span using the current telemetry provider."""
+
         return _tracer(self.name, self.version).start_as_current_span(name, **kwargs)
 
     def start_span(self, name: str, **kwargs: Any) -> Any:
+        """Start a span without making it current in this execution context."""
+
         return _tracer(self.name, self.version).start_span(name, **kwargs)
 
 

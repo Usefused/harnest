@@ -102,7 +102,12 @@ class ConnectionContext:
 class AuthenticationError(RuntimeError):
     """A request did not satisfy the deployment authentication policy."""
 
-    def __init__(self, detail: str = "Authentication required", *, status_code: int = 401):
+    def __init__(
+        self,
+        detail: str = "Authentication required",
+        *,
+        status_code: int = 401,
+    ) -> None:
         if status_code not in {401, 403}:
             raise ValueError("authentication status_code must be 401 or 403")
         super().__init__(detail)
@@ -114,13 +119,18 @@ class AuthenticationError(RuntimeError):
 class Authenticator(Protocol):
     """Resolve one HTTP or WebSocket connection to a verified principal."""
 
-    async def authenticate(self, connection: Any) -> AuthPrincipal: ...
+    async def authenticate(self, connection: Any) -> AuthPrincipal:
+        """Return the authenticated principal for one incoming connection."""
+
+        ...
 
 
 class AnonymousAuthenticator:
     """Development default that preserves the local single-user behavior."""
 
     async def authenticate(self, connection: Any) -> AuthPrincipal:
+        """Return the built-in anonymous principal for every connection."""
+
         del connection
         return AuthPrincipal(ANONYMOUS_USER_ID)
 

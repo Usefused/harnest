@@ -11,7 +11,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from threading import RLock
 from types import ModuleType
-from typing import Generic, Iterator, Sequence, TypeVar, cast
+from typing import Any, Generic, Iterator, Sequence, TypeVar, cast
 
 from harnest.plugin_runtime_context import PluginStartContext, plugin_mutation
 from harnest.runtime_plugins import (
@@ -81,7 +81,7 @@ class PluginContext:
         return self._lifetime.active
 
     @property
-    def continuations(self):
+    def continuations(self) -> Any:
         """Return provider-bound suspension authority for this invocation."""
 
         self._require_active()

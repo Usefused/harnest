@@ -9,6 +9,7 @@ description = "Filesystem-first Python authoring SDK for ADK and LangGraph agent
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
+classifiers = ["Typing :: Typed"]
 dependencies = [
   "a2a-sdk[http-server]>=1.1.2,<2",
   "litellm>=1.84,<2",

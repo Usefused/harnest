@@ -117,7 +117,10 @@ class AssetRecord:
 class AssetStore(Protocol):
     """Persist and retrieve binary assets behind scoped opaque references."""
 
-    async def start(self) -> None: ...
+    async def start(self) -> None:
+        """Initialize resources required by the asset store."""
+
+        ...
 
     async def save(
         self,
@@ -128,19 +131,37 @@ class AssetStore(Protocol):
         metadata: AssetMediaMetadata | None = None,
         retention_seconds: float | None = None,
         path: str | None = None,
-    ) -> AssetRecord: ...
+    ) -> AssetRecord:
+        """Persist streamed bytes and return their scoped asset record."""
+
+        ...
 
     async def stat(
         self, *, scope: AssetScope, asset_id: str
-    ) -> AssetRecord | None: ...
+    ) -> AssetRecord | None:
+        """Return metadata for an owned asset, or ``None`` when unavailable."""
 
-    def open(self, *, scope: AssetScope, asset_id: str) -> AsyncIterator[bytes]: ...
+        ...
 
-    async def delete(self, *, scope: AssetScope, asset_id: str) -> bool: ...
+    def open(self, *, scope: AssetScope, asset_id: str) -> AsyncIterator[bytes]:
+        """Stream the bytes for an asset owned by the supplied scope."""
 
-    async def delete_scope(self, *, scope: AssetScope) -> int: ...
+        ...
 
-    async def close(self) -> None: ...
+    async def delete(self, *, scope: AssetScope, asset_id: str) -> bool:
+        """Delete an owned asset and report whether one was removed."""
+
+        ...
+
+    async def delete_scope(self, *, scope: AssetScope) -> int:
+        """Delete every asset in a scope and return the removal count."""
+
+        ...
+
+    async def close(self) -> None:
+        """Release resources owned by the asset store."""
+
+        ...
 
 
 # Keep the shipped name source-compatible while making ``AssetStorage`` the
@@ -158,7 +179,10 @@ class AssetURLStorage(Protocol):
         scope: AssetScope,
         asset_id: str,
         expires_in: float,
-    ) -> str: ...
+    ) -> str:
+        """Create a short-lived URL for an asset owned by the supplied scope."""
+
+        ...
 
 
 @dataclass(slots=True)

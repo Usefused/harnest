@@ -177,6 +177,8 @@ class PostgresStore(HarnestStore):
     async def get(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:
+        """Read one tenant-scoped session from PostgreSQL."""
+
         async with self._connection() as connection:
             row = await connection.fetchrow(
                 "SELECT * FROM harnest_sessions WHERE user_id=$1 AND session_id=$2",
@@ -457,6 +459,8 @@ class PostgresStore(HarnestStore):
         return record
 
     async def get_run(self, *, scope: RunScope) -> RunRecord | None:
+        """Read one PostgreSQL checkpoint run through its ownership scope."""
+
         async with self._connection() as connection:
             row = await connection.fetchrow(
                 """
@@ -628,6 +632,8 @@ class PostgresStore(HarnestStore):
     async def get_writes(
         self, *, scope: RunScope, checkpoint_id: str
     ) -> Sequence[CheckpointWrite]:
+        """Read pending writes for one owned PostgreSQL checkpoint."""
+
         async with self._connection() as connection:
             rows = await connection.fetch(
                 """
