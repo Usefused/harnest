@@ -4,14 +4,15 @@
 
 ### Features
 
-* Add invocation-scoped `AgentRuntimePrincipal` grants for permissioned server,
-  client-hosted, and MCP tools. Custom HTTP routes and local agent sessions can
-  pass `agent_principal=` after application authentication; nested calls inherit
-  or narrow grants, queued tasks reconstruct them from private durable state,
-  and cron-originated agent calls without explicit authority start with no
-  permissioned capabilities. ADK and LangGraph omit unavailable capabilities
-  where Harnest owns the model boundary and recheck Harnest-owned capabilities
-  before execution. Managed topologies fail before startup when Harnest cannot
+* Add invocation-scoped, default-deny `AgentRuntimePrincipal` grants for server,
+  client-hosted, and MCP tools. When a principal is active, capabilities without
+  a permission tag are unavailable. Custom HTTP routes and local agent sessions
+  can pass `agent_principal=` after application authentication; nested calls
+  inherit or narrow grants, queued tasks reconstruct them from private durable
+  state, and cron-originated agent calls without explicit authority start with
+  no capabilities. ADK and LangGraph omit unavailable capabilities where Harnest
+  owns the model boundary and recheck Harnest-owned capabilities before
+  execution. Managed topologies fail before startup when Harnest cannot
   guarantee complete projection; advanced-mode enforcement is best effort and
   does not rewrite user-owned graph or tool wiring.
 

@@ -358,10 +358,17 @@ def _managed_mcp_tool(
     # ToolLifecycle derives the public tool identity from __name__. Assigning the
     # discovered stable name prevents an internal helper name entering policy.
     approved.__name__ = name
+    governed = wrap_lifecycle_tool(approved)
+    if required_permissions:
+        from .agent_principal import attach_required_permissions
+
+        # The lifecycle wrapper performs its own execution-time principal check,
+        # so it must retain the same requirements as the outer MCP marker.
+        attach_required_permissions(governed, tuple(required_permissions))
     return _GovernedMCPTool(
         client_name,
         name,
-        wrap_lifecycle_tool(approved),
+        governed,
         frozenset(required_permissions),
     )
 

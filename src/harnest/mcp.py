@@ -280,8 +280,6 @@ class MCPClient:
         policy = self.approval
         required_permission = self.permission
         tool_permissions = dict(self.tool_permissions)
-        if policy is None and required_permission is None and not tool_permissions:
-            return base
         client_name = self._client_name()
         public_name = self.identity or self.tool_name_prefix or client_name
 
@@ -304,7 +302,16 @@ class MCPClient:
                 client_requirements = (
                     () if required_permission is None else (required_permission,)
                 )
-                if not permissions_are_available(client_requirements):
+                # Even an otherwise ungoverned client must cross principal
+                # projection so an active principal cannot discover untagged tools.
+                untagged_client = not client_requirements and not tool_permissions
+                if (
+                    untagged_client
+                    and not permissions_are_available(())
+                ) or (
+                    client_requirements
+                    and not permissions_are_available(client_requirements)
+                ):
                     return []
                 tools = await super().get_tools(readonly_context)
                 names = tuple(

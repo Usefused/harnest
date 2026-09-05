@@ -185,6 +185,23 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await charge(), "charged")
 
+    async def test_untagged_tool_is_denied_with_an_active_principal(self):
+        """Treat principal presence as an explicit default-deny boundary."""
+
+        @tool
+        async def inspect_account():
+            """Inspect one account."""
+
+            return "inspected"
+
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                with self.assertRaises(AgentRuntimePermissionError):
+                    await inspect_account()
+        finally:
+            revoke_agent_principal(binding)
+
     async def test_permissioned_tool_rechecks_the_active_principal(self):
         @tool(permission="billing.write")
         async def charge():
@@ -376,7 +393,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             revoke_agent_principal(binding)
 
-        self.assertEqual([item.name for item in projected.tools], ["public", "read"])
+        self.assertEqual([item.name for item in projected.tools], ["read"])
 
     def test_adk_projects_matching_tool_declarations(self):
         public = SimpleNamespace(name="public")
@@ -400,9 +417,9 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             revoke_agent_principal(binding)
 
-        self.assertEqual(tuple(request.tools_dict), ("public",))
+        self.assertEqual(tuple(request.tools_dict), ())
         self.assertEqual(
-            [item.name for item in group.function_declarations], ["public"]
+            [item.name for item in group.function_declarations], []
         )
 
     def test_real_framework_wrappers_retain_permission_metadata(self):
@@ -436,10 +453,8 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             revoke_agent_principal(binding)
 
-        self.assertEqual(
-            [item.name for item in langgraph_projected.tools], ["public"]
-        )
-        self.assertEqual(tuple(adk_request.tools_dict), ("public",))
+        self.assertEqual([item.name for item in langgraph_projected.tools], [])
+        self.assertEqual(tuple(adk_request.tools_dict), ())
 
     async def test_managed_adk_invocation_projects_tools_at_model_boundary(self):
         @tool
@@ -473,7 +488,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await driver.close()
 
-        self.assertEqual(_ADKProjectionModel.observed_tools, [("public",)])
+        self.assertEqual(_ADKProjectionModel.observed_tools, [()])
 
     async def test_managed_langgraph_invocation_projects_tools_at_model_boundary(self):
         @tool
@@ -506,7 +521,29 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await driver.close()
 
-        self.assertEqual(_LangGraphProjectionModel.observed_tools, [("public",)])
+        self.assertEqual(_LangGraphProjectionModel.observed_tools, [])
+
+    async def test_adk_mcp_untagged_client_is_not_discovered_with_principal(self):
+        """Deny an untagged MCP client before making its discovery request."""
+
+        discovered = 0
+
+        class Toolset:
+            async def get_tools(self, _readonly_context=None):
+                nonlocal discovered
+                discovered += 1
+                return [SimpleNamespace(name="read")]
+
+        client = MCPClient.sse("https://mcp.invalid/sse")
+        governed = client._adk_toolset_type(Toolset)()
+        binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(binding):
+                self.assertEqual(await governed.get_tools(), [])
+        finally:
+            revoke_agent_principal(binding)
+
+        self.assertEqual(discovered, 0)
 
     async def test_adk_mcp_discovery_applies_client_and_tool_permissions(self):
         discovered = 0

@@ -355,7 +355,7 @@ def client_tool(
     output_schema: PydanticModel | None = None,
     permission: str | None = None,
 ) -> F | Callable[[F], F]:
-    """Declare an optionally permissioned tool implemented by the client."""
+    """Declare a client tool with an optional runtime-principal permission tag."""
 
     if not isinstance(timeout_seconds, int) or timeout_seconds < 1:
         raise ValueError("client tool timeout_seconds must be a positive integer")

@@ -21,7 +21,7 @@ class AgentRuntimePermissionError(PermissionError):
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimePrincipal:
-    """Identify one invocation and the permission identifiers it carries."""
+    """Identify one default-deny invocation and its permission grants."""
 
     permissions: frozenset[str] = field(default_factory=frozenset)
     id: str = field(default_factory=lambda: f"arp_{uuid.uuid4().hex}", init=False)
@@ -210,11 +210,15 @@ def capability_is_available(value: Any) -> bool:
 
 
 def permissions_are_available(required: Sequence[str] | frozenset[str]) -> bool:
-    """Apply one normalized requirement set to the private active principal."""
+    """Default-deny untagged capabilities when a principal is active."""
 
     required_set = frozenset(required)
     principal = active_agent_principal()
-    return not required_set or principal is None or required_set <= principal.permissions
+    if principal is None:
+        # Omitting a root principal preserves the pre-principal capability
+        # surface; supplying one deliberately opts the invocation into policy.
+        return True
+    return bool(required_set) and required_set <= principal.permissions
 
 
 def require_capability(value: Any, *, name: str) -> None:
