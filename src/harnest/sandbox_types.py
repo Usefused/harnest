@@ -9,6 +9,8 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 from enum import Enum
 
+from .sandbox_policy import SandboxNetworkPolicy, SandboxProviderCapabilities
+
 
 @dataclass(frozen=True, slots=True)
 class SandboxFile:
@@ -56,6 +58,7 @@ class SandboxRequest:
     input_files: tuple[SandboxFile, ...] = field(default=(), repr=False)
     execution_id: str | None = field(default=None, repr=False)
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    network_policy: SandboxNetworkPolicy | None = None
 
     def __post_init__(self) -> None:
         """Freeze caller-owned containers and reject invalid provider inputs."""
@@ -64,6 +67,10 @@ class SandboxRequest:
         validate_timeout(self.timeout_seconds)
         if not isinstance(self.context, SandboxContext):
             raise TypeError("sandbox context must be SandboxContext")
+        if self.network_policy is not None and not isinstance(
+            self.network_policy, SandboxNetworkPolicy
+        ):
+            raise TypeError("sandbox network_policy must be SandboxNetworkPolicy or None")
         object.__setattr__(self, "input_files", _files(self.input_files))
         object.__setattr__(self, "metadata", freeze_sandbox_metadata(self.metadata))
 
@@ -114,6 +121,13 @@ class SandboxBackend(Protocol):
     def execute(self, request: SandboxRequest) -> SandboxResult:
         """Execute Python under provider-enforced policy and return its output."""
         ...
+
+
+@runtime_checkable
+class SandboxProvider(SandboxBackend, Protocol):
+    """A portable backend that declares its enforceable sandbox policy."""
+
+    sandbox_capabilities: SandboxProviderCapabilities
 
 
 def validate_timeout(value: int | None) -> None:

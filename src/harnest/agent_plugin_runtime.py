@@ -103,12 +103,22 @@ def portable_http_factory(url: str):
             raise AgentPluginError("Agent Plugin MCP request attempted a different origin")
 
     def create_client(headers=None, timeout=None, auth=None):
-        """Preserve MCP authentication while enforcing the package origin boundary."""
+        """Preserve MCP authentication and redact proxy construction failures."""
         options = {"headers": headers, "auth": auth, "follow_redirects": False,
                    "event_hooks": {"request": [same_origin]}}
         if timeout is not None:
             options["timeout"] = timeout
-        return httpx.AsyncClient(**options)
+        try:
+            # Preserve HTTPX's environment-proxy support for managed egress;
+            # the base Harnest install includes its optional SOCKS transport.
+            return httpx.AsyncClient(**options)
+        except Exception as error:
+            failure = AgentPluginError(
+                "Agent Plugin MCP HTTP client construction failed with "
+                f"{type(error).__name__}"
+            )
+        # Keep proxy URLs and credentials out of retained exception context.
+        raise failure
 
     return create_client
 

@@ -85,8 +85,12 @@ normal, portable `harnest ...` workflow.
 That private CLI runtime is not shared with authored agents. Released
 `compile`, `test`, and `serve` commands use the embedded `uv` and wheel to
 synchronize each agent's `pyproject.toml` into a fingerprinted environment
-below its `.harnest/` directory. Commit the resulting `uv.lock`. CI should run
-`harnest env sync AGENT_DIR --frozen` to reject a missing or stale lock.
+below its `.harnest/` directory. It writes `harnest-runtime.lock`, one
+hash-verified resolution covering the embedded Harnest release wheel, selected
+framework, authored project dependencies, Harnest Extension dependencies,
+optional task runtime, and every transitive dependency. Commit that lock after
+review. CI should run `harnest env sync AGENT_DIR --frozen` to reject a missing
+or stale lock before dependency installation.
 
 Rerunning the installer upgrades the managed runtime from the new executable
 before atomically replacing the installed executable. For a review-first
@@ -203,3 +207,20 @@ starts `.github/workflows/release.yml`, which verifies the tag, source versions,
 and existing release before GoReleaser attaches platform archives and checksums.
 A manual dispatch reruns packaging without moving the tag or replacing Release
 Please's release notes.
+
+Official Harnest Extensions publish independently through
+`.github/workflows/publish-extensions.yml`. Configure a PyPI Trusted Publisher
+for each of `harnest-extension-docker` and `harnest-extension-hatchet`, using
+owner `Usefused`, repository `harnest`, workflow `publish-extensions.yml`, and
+GitHub environment `pypi`. One PyPI account may own both projects, but each
+project keeps its own Trusted Publisher binding. The workflow uses OIDC and
+therefore must not receive a PyPI API token.
+
+Tag Docker as `harnest-extension-docker-v<version>` and Hatchet as
+`harnest-extension-hatchet-v<version>`. A manual dispatch from `main` requires
+selecting exactly one extension. Before building, the workflow rejects a
+mismatch between that extension's tag, `pyproject.toml`, and `extension.yaml`.
+Branch and pull-request runs build, install-check, test, and complexity-check
+both official extensions without publishing them. Extension-only changes
+do not start the main or framework-compatibility CI workflows; branch protection
+should require the corresponding isolated extension build check.

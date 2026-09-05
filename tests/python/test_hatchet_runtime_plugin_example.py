@@ -23,8 +23,7 @@ from harnest.runtime_plugins import discover_application_extensions
 
 _SOURCE = (
     Path(__file__).resolve().parents[2]
-    / "examples"
-    / "extensions"
+    / "official-extensions"
     / "hatchet"
 )
 
@@ -72,7 +71,7 @@ class _ProviderContinuations:
         self.list_calls = []
 
     def register_schema(self, schema_id, validate) -> None:
-        """Retain the restart-stable validator registered during plugin startup."""
+        """Retain the restart-stable validator registered at extension startup."""
 
         self.schemas[schema_id] = validate
 
@@ -105,9 +104,11 @@ class _ProviderContinuations:
 
 
 class _Transport:
-    def __init__(self, module, statuses=()) -> None:
+    def __init__(self, module, statuses=(), result=None, close_error=None) -> None:
         self.module = module
         self.statuses = list(statuses)
+        self.result_value = {"report": "ready"} if result is None else result
+        self.close_error = close_error
         self.closed = 0
         self.cancelled = 0
         self.run_calls = []
@@ -131,13 +132,16 @@ class _Transport:
         """Return deterministic states for the plugin-owned monitor."""
 
         del job
-        return self.statuses.pop(0)
+        status = self.statuses.pop(0)
+        if isinstance(status, BaseException):
+            raise status
+        return status
 
     async def result(self, job):
         """Return the external worker's terminal workflow result."""
 
         del job
-        return {"report": "ready"}
+        return self.result_value
 
     async def cancel(self, job) -> None:
         """Record a provider request without coupling it to plugin shutdown."""
@@ -149,6 +153,8 @@ class _Transport:
         """Record release of client-owned resources."""
 
         self.closed += 1
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
@@ -299,25 +305,81 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             ["continuation.complete"] * 3,
         )
 
-    async def test_startup_recovery_failure_never_exposes_service_token(self):
-        """Reduce application credential failures to a stable continuation code."""
+    async def test_startup_recovery_retries_without_exposing_service_token(self):
+        """Keep durable waits pending across a transient credential outage."""
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
         provider.pending = [_pending("continuation-a", "run-a", "invocation-a")]
         fixture = self._active_plugin(provider)
         async with fixture as (module, plugin):
-            with patch.object(
-                module,
-                "open_hatchet_recovery_transport",
-                side_effect=RuntimeError("private-service-token"),
+            transport = _Transport(
+                module, (module.HatchetRunStatus.COMPLETED,)
+            )
+            with (
+                patch.object(
+                    module,
+                    "open_hatchet_recovery_transport",
+                    side_effect=(
+                        RuntimeError("private-service-token"),
+                        transport,
+                    ),
+                ),
+                patch.object(module.asyncio, "sleep", AsyncMock()),
             ):
                 await asyncio.gather(*tuple(plugin._monitors.values()))
 
-        self.assertEqual(provider.failed, [("run-a", "provider_unavailable")])
+        self.assertEqual(provider.failed, [])
+        self.assertEqual(provider.completed[0][0], "run-a")
         self.assertNotIn("private-service-token", repr(provider.failed))
-        with self.assertRaisesRegex(RuntimeError, "provider_unavailable"):
-            await invocation.suspended.result()
+        self.assertEqual(await invocation.suspended.result(), {"report": "ready"})
+
+    async def test_monitor_retries_transient_status_failure(self):
+        """Do not turn a temporary Hatchet read outage into a terminal wait."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, plugin):
+            transport = _Transport(
+                module,
+                (
+                    RuntimeError("temporary private endpoint detail"),
+                    module.HatchetRunStatus.COMPLETED,
+                ),
+            )
+            job = module.HatchetRun("run-a", "report", "invocation-a")
+            with patch.object(module.asyncio, "sleep", AsyncMock()) as sleep:
+                await plugin._monitor(job, transport, provider)
+
+        self.assertEqual(provider.failed, [])
+        self.assertEqual(provider.completed[0][0], "run-a")
+        sleep.assert_awaited_once_with(1.0)
+
+    async def test_invalid_or_oversized_results_fail_without_persistence(self):
+        """Reject provider objects and oversized JSON before durable storage."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, plugin):
+            for result in ({"unsafe": object()}, {"data": "x" * 1_048_576}):
+                transport = _Transport(
+                    module,
+                    (module.HatchetRunStatus.COMPLETED,),
+                    result=result,
+                )
+                job = module.HatchetRun(
+                    f"run-{len(provider.failed)}", "report", "invocation-a"
+                )
+                await plugin._monitor(job, transport, provider)
+
+        self.assertEqual(provider.completed, [])
+        self.assertEqual(
+            provider.failed,
+            [
+                ("run-0", "invalid_external_result"),
+                ("run-1", "invalid_external_result"),
+            ],
+        )
 
     async def test_replica_losing_completion_cas_exits_without_failing_wait(self):
         """Treat another replica's completion as successful monitor convergence."""
@@ -339,6 +401,53 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.failed, [])
         self.assertEqual(transport.closed, 1)
 
+    async def test_recovery_replica_losing_completion_cas_converges_cleanly(self):
+        """Consume the expected recovery conflict when another replica commits first."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, plugin):
+            transport = _Transport(
+                module, (module.HatchetRunStatus.COMPLETED,)
+            )
+            provider.complete = AsyncMock(
+                side_effect=ContinuationConflictError(
+                    "continuation state changed"
+                )
+            )
+            job = module.HatchetRun("run-a", "report", "invocation-a")
+            with patch.object(
+                module,
+                "open_hatchet_recovery_transport",
+                return_value=transport,
+            ):
+                await plugin._recover_monitor(job, provider)
+
+        self.assertEqual(provider.failed, [])
+        self.assertEqual(transport.closed, 1)
+
+    async def test_transport_cleanup_failure_does_not_override_success(self):
+        """Keep secret-bearing cleanup errors outside successful call results."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, plugin):
+            transport = _Transport(
+                module,
+                (module.HatchetRunStatus.RUNNING,),
+                close_error=RuntimeError("private cleanup detail"),
+            )
+            job = module.HatchetRun("run-a", "report", "invocation-a")
+            with patch.object(
+                module,
+                "open_hatchet_transport",
+                return_value=transport,
+            ):
+                status = await plugin._status(job)
+
+        self.assertIs(status, module.HatchetRunStatus.RUNNING)
+        self.assertEqual(transport.closed, 1)
+
     async def test_sdk_failures_are_detached_from_secret_messages(self):
         """Keep provider exception content out of the plugin error boundary."""
 
@@ -357,7 +466,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             transport._client = SimpleNamespace(runs=_Runs())
             job = client_module.HatchetRun("run-3", "report", "invoke-1")
 
-            with self.assertRaises(client_module.HatchetPluginError) as captured:
+            with self.assertRaises(client_module.HatchetExtensionError) as captured:
                 await transport.status(job)
 
             self.assertIn("RuntimeError", str(captured.exception))
@@ -426,10 +535,76 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 calls[1][1].additional_metadata,
                 {
                     "harnest.correlation_id": "invoke-1",
-                    "harnest.plugin": "hatchet",
+                    "harnest.extension": "hatchet",
                 },
             )
             self.assertFalse(transport._client.stubs.last_workflow.wait_for_result)
+
+    async def test_sdk_payloads_are_bounded_deep_json_snapshots(self):
+        """Prevent caller mutation and native objects crossing into Hatchet."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, _plugin):
+            client_module = __import__(
+                f"{module.__name__}.lib.client", fromlist=["HatchetSDKTransport"]
+            )
+            transport = object.__new__(client_module.HatchetSDKTransport)
+            transport._submit = AsyncMock(return_value="run-json")
+            payload = {"nested": ["original"]}
+            await transport.run(
+                "consumer-report", payload, correlation_id="invoke-1"
+            )
+            payload["nested"].append("mutated")
+            submitted = transport._submit.await_args.args[1]
+            self.assertEqual(submitted, {"nested": ["original"]})
+            with self.assertRaisesRegex(TypeError, "only JSON"):
+                await transport.run(
+                    "consumer-report",
+                    {"unsafe": object()},
+                    correlation_id="invoke-1",
+                )
+            with self.assertRaisesRegex(TypeError, "only JSON"):
+                await transport.run(
+                    "consumer-report",
+                    {"nested": [{1: "coerced-key"}]},
+                    correlation_id="invoke-1",
+                )
+            with self.assertRaisesRegex(ValueError, "byte limit"):
+                await transport.run(
+                    "consumer-report",
+                    {"data": "x" * 1_048_576},
+                    correlation_id="invoke-1",
+                )
+
+    async def test_sdk_client_disables_dotenv_discovery(self):
+        """Accept deployment environment config without reading cwd dotenv files."""
+
+        invocation = _InvocationContinuations()
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, _plugin):
+            client_module = __import__(
+                f"{module.__name__}.lib.client", fromlist=["_create_sdk_client"]
+            )
+            calls = []
+
+            class _ClientConfig:
+                def __init__(self, **kwargs):
+                    calls.append(kwargs)
+
+            sdk = ModuleType("hatchet_sdk")
+            sdk.Hatchet = lambda *, config: config
+            config = ModuleType("hatchet_sdk.config")
+            config.ClientConfig = _ClientConfig
+            with patch.dict(
+                "sys.modules", {"hatchet_sdk": sdk, "hatchet_sdk.config": config}
+            ):
+                created, failure = client_module._create_sdk_client("test-token")
+
+            self.assertIsNone(failure)
+            self.assertIsNotNone(created)
+            self.assertEqual(set(calls[0]), {"token", "_env_file"})
+            self.assertIsNone(calls[0]["_env_file"])
 
     async def test_recovery_transport_uses_application_service_credential(self):
         """Keep startup recovery independent from invocation credential context."""

@@ -578,6 +578,9 @@ content is disposable and must not be edited or committed. VCS data, virtual
 environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode are
 excluded. Source symlinks are rejected, keeping artifacts self-contained and
 preventing credentials or external files from being pulled in accidentally.
+Canonical Harnest Extension packages may include one regular root `README.md`;
+the compiler preserves it with the extension source, while the closed package
+layout continues to reject other unrecognized, linked, or special root entries.
 
 Before importing authored Python, the compiler validates the optional root
 `server` section in `config.yaml` and fills omitted fields with safe defaults.

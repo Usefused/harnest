@@ -112,8 +112,8 @@ The compiled artifact runs without the Go provisioner. After running
 make serve-example
 ```
 
-`serve-example` compiles first and reads host, port, timeout, concurrency,
-request size, and playground policy from the example's `server.yaml`. In
+`serve-example` compiles first and reads the authored server overrides from the
+root `server:` section of the example's `config.yaml`. In
 another terminal, inspect the agent, create a session, and run an agent turn
 through Harnest's neutral API:
 

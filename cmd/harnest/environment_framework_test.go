@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,11 +39,22 @@ func TestEnvironmentSyncAppliesFrameworkPinAndRecordsInstalledVersion(t *testing
 	calls := filepath.Join(root, "calls.txt")
 	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
 	sys := environmentTestSystem(t, root)
+	mustSyncAgentEnvironment(t, sys, agent)
+	if !strings.Contains(string(mustReadTestFile(t, calls)), "google-adk==2.8.0") {
+		t.Fatal("runtime resolution input omitted the committed framework pin")
+	}
+	if err := os.Remove(filepath.Join(agent, ".harnest", environmentStateFile)); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEnvironmentFixture(t, calls, "")
 	mustSyncAgentEnvironment(t, sys, agent, "--frozen")
 	assertContainsAll(t, "framework sync process calls", string(mustReadTestFile(t, calls)), []string{
-		"google-adk==2.8.0",
+		"pip sync --python",
 		"pip check --python",
 		"-m harnest.project_lock",
 		"adk --frozen",
 	})
+	if strings.Contains(string(mustReadTestFile(t, calls)), "pip compile") {
+		t.Fatal("frozen sync unexpectedly resolved dependencies")
+	}
 }

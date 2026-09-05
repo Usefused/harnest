@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest extensions search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -132,7 +132,7 @@ func assertManagedFolderExamples(t *testing.T, target string) {
 		"plugins/_example_agent/plugin.json":                      "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 		"plugins/_example_agent/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"skills/_example/SKILL.md":                                "name: getting-started",
-		"sandbox/_example.py":                                     "network=False",
+		"sandbox/_example.py":                                     "SandboxNetworkPolicy.none()",
 		"evals/_example.evalset.json":                             "answers_greeting",
 		"tests/unit/_example.py":                                  "tools[\"echo\"]",
 		"tests/smoke/_example.py":                                 "def test_health(client)",

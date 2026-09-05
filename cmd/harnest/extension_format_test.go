@@ -38,7 +38,7 @@ func TestExtensionWheelUsesCanonicalIdentity(t *testing.T) {
 	}
 }
 
-// TestExtensionSearchCommandPreservesLegacyCatalog proves the command alias is functional.
+// TestExtensionSearchCommandPreservesLegacyCatalog proves the command is functional.
 func TestExtensionSearchCommandPreservesLegacyCatalog(t *testing.T) {
 	var catalogs, metadata, wheels int
 	sys := pluginSearchTestSystem(pluginCatalogFixture(t, &catalogs, &metadata, &wheels), t.TempDir())

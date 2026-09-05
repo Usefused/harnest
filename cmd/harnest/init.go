@@ -434,11 +434,20 @@ description: Answer clearly, distinguish verified facts from assumptions, and id
 		"sandbox/_README.md": `# Optional sandboxes
 
 Add one Python file per named sandbox. The variable must match the filename.
-For example, calculations.py contains:
+Install a provider extension first. For Docker:
 
-    from harnest.sandbox import Sandbox
+    harnest extensions install docker --project <agent-root>
+    harnest env sync <agent-root>
 
-    calculations = Sandbox.container(image="your-sandbox-image")
+Then calculations.py contains:
+
+    from harnest.extensions.docker import docker
+    from harnest.sandbox import SandboxNetworkPolicy
+
+    calculations = docker.sandbox(
+        image="your-sandbox-image",
+        network_policy=SandboxNetworkPolicy.none(),
+    )
 
 Then add sandboxes=["calculations"] to the Agent(...) declaration of each agent
 allowed to use it. Add more files and names for more sandboxes. A populated
@@ -449,13 +458,10 @@ or await context.sandboxes["calculations"].aexecute(code), importing context
 from harnest. This returns SandboxResult; check status and exit_code, and return only the
 output fields the model needs. Assignment never creates a model tool.
 
-Supported by managed ADK and LangGraph. Harnest supplies the Docker SDK; Docker is required only on execution. A third-party provider can
-use Sandbox.provider(factory, name="provider-name") instead.
-The default execution scope uses a fresh container with bounded CPU, memory,
-process count, output, and writable scratch space. Scratch is cleared after
-every call; explicit invocation/session scopes reuse only owned containers.
-The container backend enforces host-side deadlines and a 1 MiB combined output
-limit. Aborted executions discard their container and its files.
+Supported by managed ADK and LangGraph. Core Harnest defines the provider-neutral
+Sandbox.provider(factory, name="provider-name") contract. Installed extensions
+own provider SDKs and enforcement details. The Docker extension requires Docker
+only when a sandbox executes and defaults to no network access.
 `,
 		"sandbox/_example.py": `"""Rename to calculations.py, then assign sandboxes=["calculations"] on Agent.
 
@@ -463,16 +469,18 @@ From an authored tool, use context.sandboxes["calculations"].execute(code)
 or await its aexecute(code). Import context from harnest; check result.stderr
 and choose which output to return. No model tool is created automatically.
 
-Docker is required on execution. Harnest does not add per-session filesystem
-isolation or CPU/memory limits; the provider owns those guarantees.
+Install first with harnest extensions install docker --project <agent-root>,
+then run harnest env sync <agent-root>. Docker is required only on execution;
+the extension owns its isolation and resource enforcement.
 """
 
-from harnest.sandbox import Sandbox
+from harnest.extensions.docker import docker
+from harnest.sandbox import SandboxNetworkPolicy
 
 
-calculations = Sandbox.container(
+calculations = docker.sandbox(
     image="python:3.12-slim",
-    network=False,
+    network_policy=SandboxNetworkPolicy.none(),
     timeout_seconds=120,
     max_output_bytes=1_048_576,
 )

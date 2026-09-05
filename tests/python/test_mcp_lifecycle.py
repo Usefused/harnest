@@ -1,4 +1,5 @@
 import asyncio
+import os
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -131,6 +132,53 @@ def _binding(
 
 
 class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_client_supports_environment_socks_proxies(self):
+        """Default MCP sessions inherit uppercase and lowercase SOCKS proxies."""
+
+        lifecycle = MCPClientLifecycle()
+        options = MCPHTTPClientOptions(headers={})
+        context = MCPClientContext(
+            name="catalog",
+            transport="streamable-http",
+            framework="adk",
+            url="https://gateway.example/mcp",
+        )
+        for variable in ("ALL_PROXY", "all_proxy"):
+            with self.subTest(variable=variable), patch.dict(
+                os.environ,
+                {variable: "socks5h://proxy-user:proxy-secret@127.0.0.1:1080"},
+                clear=True,
+            ):
+                client = lifecycle.create_http_client(options, context)
+                self.assertIsInstance(client, httpx.AsyncClient)
+                await client.aclose()
+
+    async def test_default_client_redacts_proxy_construction_failures(self):
+        """Provider diagnostics cannot disclose credentials embedded in proxy URLs."""
+
+        options = MCPHTTPClientOptions(headers={})
+        context = MCPClientContext(
+            name="catalog",
+            transport="streamable-http",
+            framework="adk",
+            url="https://gateway.example/mcp",
+        )
+        with patch(
+            "mcp.shared._httpx_utils.create_mcp_http_client",
+            side_effect=ValueError(
+                "invalid socks5://proxy-user:proxy-secret@127.0.0.1:1080"
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                MCPClientLifecycle().create_http_client(options, context)
+
+        self.assertEqual(
+            str(caught.exception),
+            "MCP HTTP client construction failed with ValueError",
+        )
+        self.assertNotIn("proxy-secret", str(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
+
     async def test_lifecycle_requires_a_remote_http_transport(self):
         with self.assertRaisesRegex(ValueError, "requires an HTTP transport"):
             MCPClient.stdio("python", "server.py", lifecycle=MCPClientLifecycle())

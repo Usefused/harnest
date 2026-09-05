@@ -44,7 +44,8 @@ framework APIs.
 
 `env sync` uses the embedded `uv` and Harnest wheel to create an isolated,
 fingerprinted environment below `.harnest/environments/`. It resolves
-`pyproject.toml` and updates `uv.lock`; commit the lock after reviewing it. Do
+the embedded release wheel, framework, project, extension, and task dependencies
+as one hash-verified `harnest-runtime.lock`; commit the lock after reviewing it. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. Upgrade Harnest to change framework versions.
 Harnest Extensions use this same interpreter and dependency set. Agent Plugin

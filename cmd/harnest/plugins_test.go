@@ -32,7 +32,7 @@ func TestPluginsSearchFiltersPyPIAndReusesFreshCatalog(t *testing.T) {
 
 	cacheRoot := t.TempDir()
 	sys := pluginSearchTestSystem(transport, cacheRoot)
-	stdout, _, err := executeForTest(t, sys, "plugins", "search", "postgres")
+	stdout, _, err := executeForTest(t, sys, "extensions", "search", "postgres")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestPluginsSearchFiltersPyPIAndReusesFreshCatalog(t *testing.T) {
 		t.Fatalf("search leaked unmatched packages:\n%s", stdout)
 	}
 
-	if _, _, err := executeForTest(t, sys, "plugins", "search", "postgres"); err != nil {
+	if _, _, err := executeForTest(t, sys, "extensions", "search", "postgres"); err != nil {
 		t.Fatal(err)
 	}
 	if catalogRequests != 1 || metadataRequests != 6 || wheelRequests != 3 {
@@ -114,11 +114,11 @@ func TestPluginsSearchRefreshesWithETagAndSupportsJSON(t *testing.T) {
 	transport := pluginRefreshFixture(t, &catalogRequests, wheel)
 
 	sys := pluginSearchTestSystem(transport, t.TempDir())
-	if _, _, err := executeForTest(t, sys, "plugins", "search", "slack"); err != nil {
+	if _, _, err := executeForTest(t, sys, "extensions", "search", "slack"); err != nil {
 		t.Fatal(err)
 	}
 	stdout, _, err := executeForTest(
-		t, sys, "plugins", "search", "slack", "--refresh", "--json",
+		t, sys, "extensions", "search", "slack", "--refresh", "--json",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestPluginsSearchUsesStaleCacheWhenPyPIIsUnavailable(t *testing.T) {
 
 	stdout, stderr, err := executeForTest(
 		t, pluginSearchTestSystem(transport, cacheRoot),
-		"plugins", "search", "offline",
+		"extensions", "search", "offline",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestPluginSearchValidationAndRanking(t *testing.T) {
 	); trust != "official" {
 		t.Fatalf("explicit Fused policy returned %q", trust)
 	}
-	_, _, err := executeForTest(t, defaultSystem(), "plugins", "search", "x", "--limit", "0")
+	_, _, err := executeForTest(t, defaultSystem(), "extensions", "search", "x", "--limit", "0")
 	if err == nil || !strings.Contains(err.Error(), "between 1 and 50") {
 		t.Fatalf("limit validation error = %v", err)
 	}

@@ -2211,7 +2211,7 @@ def _validate_runtime_plugin_entries(plugin: RuntimePluginDescriptor) -> None:
     entries = _RUNTIME_PLUGIN_ENTRIES
     if plugin.entrypoint == "extension:extension":
         entries = (entries - {"plugin.yaml", "plugin.py", "extensions"}) | {
-            "extension.yaml", "extension.py", "lifecycle"
+            "README.md", "extension.yaml", "extension.py", "lifecycle"
         }
     for path in sorted(plugin.directory.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
@@ -2225,7 +2225,12 @@ def _validate_runtime_plugin_entries(plugin: RuntimePluginDescriptor) -> None:
                 f"unexpected runtime plugin resource: {path}"
             )
         expected_file = path.name in {
-            "plugin.yaml", "plugin.py", "extension.yaml", "extension.py", "pyproject.toml"
+            "README.md",
+            "plugin.yaml",
+            "plugin.py",
+            "extension.yaml",
+            "extension.py",
+            "pyproject.toml",
         }
         if expected_file != path.is_file():
             expected = "file" if expected_file else "directory"
@@ -2395,8 +2400,10 @@ def _load_sandbox_declaration(path: Path) -> Sandbox:
             authoring_guidance(
                 f"sandbox module {path} must export Sandbox {name!r}; got {type(value).__name__}",
                 expected=f"a variable named {name} whose value is a Harnest Sandbox declaration",
-                fix=f"Import Sandbox from harnest.sandbox, then assign {name} = Sandbox.container(image='python:3.12-slim') "
-                f"or {name} = Sandbox.provider(your_factory). Add {name!r} to the sandboxes=[...] list of each agent allowed to use it.",
+                fix=f"Import Sandbox from harnest.sandbox, then assign {name} = "
+                f"Sandbox.provider(your_factory). Provider extensions may expose a "
+                f"higher-level declaration helper. Add {name!r} to the sandboxes=[...] "
+                "list of each agent allowed to use it.",
             )
         )
     _reject_extra_exports(

@@ -35,7 +35,7 @@ Produce agents. Never edit `.harnest/`.
 7. Put agent dependencies in root `pyproject.toml`; Harnest Extensions may own a
    matching PEP 621 project but never add Harnest/framework packages. Put deployment and optional `server` settings in `config.yaml`; use exact `${NAME}` references
    for startup environment values. Put public identity in `agent-card.yaml`.
-   Run `harnest env sync`; commit `uv.lock`. Upgrade Harnest for frameworks.
+   Run `harnest env sync`; commit `harnest-runtime.lock`. Upgrade Harnest for frameworks.
 
 ## Load guidance
 

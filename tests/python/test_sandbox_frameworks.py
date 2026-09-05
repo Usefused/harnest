@@ -24,8 +24,8 @@ class SandboxFrameworkTests(unittest.TestCase):
                 with self.assertRaisesRegex(BundleImportError, "unexpected keyword argument.*sandbox"):
                     compile_application(root, entrypoint="agent:root_agent", framework=framework)
 
-    def test_container_provider_imports_no_framework_executor(self):
-        """A fresh process proves portable Docker setup does not transitively import ADK."""
+    def test_portable_provider_imports_no_framework_executor(self):
+        """A fresh process proves provider setup does not import a framework."""
         code = '''
 import importlib.abc
 import sys
@@ -35,7 +35,11 @@ class NoFramework(importlib.abc.MetaPathFinder):
             raise ModuleNotFoundError("framework deliberately unavailable: " + fullname)
 sys.meta_path.insert(0, NoFramework())
 from harnest.sandbox import Sandbox
-backend = Sandbox.container(image="python:3.12-slim").build()
+from harnest.sandbox import SandboxResult
+class Backend:
+    def execute(self, request):
+        return SandboxResult(stdout="ok")
+backend = Sandbox.provider(Backend).build()
 assert backend is not None
 assert not any(name.startswith(("google.adk", "langgraph", "langchain")) for name in sys.modules)
 '''

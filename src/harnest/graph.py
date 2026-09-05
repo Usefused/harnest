@@ -274,4 +274,4 @@ class Graph:
         return lower_graph(self)
 
 
-__all__ = ["START", "Edge", "Event", "Graph", "Join"]
+__all__ = ["START", "Edge", "Event", "Graph", "GraphContext", "Join"]

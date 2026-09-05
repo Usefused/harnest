@@ -29,3 +29,8 @@ spec:
   secrets:
     - environmentVariable: OPENAI_API_KEY
       secretRef: projects/example/secrets/openai-api-key/latest
+server:
+  live: false
+  http:
+    port: 8081
+    maxConcurrentRequests: 4

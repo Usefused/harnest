@@ -15,12 +15,62 @@
   guarantee complete projection; advanced-mode enforcement is best effort and
   does not rewrite user-owned graph or tool wiring.
 
+* Add provider-enforced sandbox network policies for no-network,
+  unrestricted, and exact-host allowlist modes, with optional destination-port
+  and private-network controls. Require portable providers to declare typed
+  enforcement capabilities and fail closed before execution when a requested
+  guarantee is unavailable. Add `sandbox.provider` authority for Harnest
+  Extensions that implement these providers.
+
+* Add `harnest plugins install SOURCE --project AGENT_DIR` for safely installing
+  reviewed local Agent Plugins 1.0 packages. Validate manifests without running
+  package code, reject links and special files, stage copies atomically, and
+  require `--force` for explicit replacement. Keep Harnest Extension discovery
+  under the separate `harnest extensions` namespace.
+
+* Add `harnest extensions init NAME` and `harnest extensions install SOURCE
+  --project AGENT_DIR` workflows for local source trees or verified public PyPI
+  wheels. Validate and materialize packages without importing their code, pin
+  downloaded releases through extension-owned dependency metadata, preserve
+  packaged root READMEs, and install through staged replacement. Collect the
+  Fused-maintained Docker and Hatchet packages under `official-extensions/`,
+  with substantive PyPI descriptions, isolated tests, buildable wheels,
+  explicit official-project detection, and token-free PyPI Trusted Publishing.
+
+* Resolve the embedded Harnest wheel, framework, project, Harnest Extension,
+  task, and transitive dependencies into one committed, hash-verified
+  `harnest-runtime.lock`. Install only from that resolution and make frozen sync
+  reject missing or source-stale locks before dependency installation.
+
+### Changed
+
+* Remove the built-in `Sandbox.container()` API and Docker SDK dependency from
+  Harnest core. Install `harnest-extension-docker` and use
+  `harnest.extensions.docker.docker.sandbox(...)` instead. Docker extension
+  `0.2.0` now owns container startup, identity-scoped reuse, budgets, network
+  modes, deadlines, bounded output, and cleanup behind the provider-neutral
+  `Sandbox.provider(...)` contract.
+
 ### Fixes
+
+* Harden both official extensions and their release path. Bound Docker daemon
+  calls by the all-in sandbox deadline, preserve phase-specific startup failures,
+  use a separate bounded cleanup window, disable image-defined health checks,
+  and label managed containers. Bound Hatchet JSON payloads, disable implicit
+  dotenv discovery, cap recovery-client concurrency, and retain durable waits
+  with backoff across transient provider outages. Pin publishing actions to
+  reviewed commits and reject extension release tags outside `main` history.
+
+* Support operator-configured SOCKS proxies in Harnest-owned MCP HTTP clients
+  while preserving standard environment proxy inheritance. Keep proxy URLs and
+  credentials out of client-construction diagnostics.
 
 * Group public Python imports under their domains: authentication, HTTP, server
   configuration, tools, MCP, models, lifecycle, context, runtime, assets, and
   storage. Preserve existing imports and type identity; add `lifecycle.coverage`
-  and update authoring examples to avoid implementation-module imports.
+  and update authoring examples to avoid implementation-module imports. Snapshot
+  the exact reviewed export surface to enforce the documented `0.x` stability
+  and deprecation policy.
 
 * Expose sandbox scopes through `from harnest.sandbox import control`, with
   `control.execute(...)`, `control.cleanup(...)`, and `control.current()`.

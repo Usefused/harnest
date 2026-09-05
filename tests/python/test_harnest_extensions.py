@@ -1,18 +1,21 @@
 """Canonical extension layout, compiler ownership, and upgrade regressions."""
 
+import os
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tempfile
-import unittest
-
 from harnest.application_layout import ApplicationLayoutError, lifecycle_directory
-from harnest.bundle import compile_application, BundleConventionError
+from harnest.bundle import BundleConventionError, compile_application, compile_artifact
 from harnest.extensions import Extension, ExtensionContext, ExtensionImportError
 from harnest.plugins import release_runtime_plugins, activate_runtime_plugins
-from harnest.runtime_plugins import discover_application_extensions
+from harnest.runtime_plugins import (
+    RUNTIME_PLUGIN_CAPABILITIES,
+    discover_application_extensions,
+)
 from harnest.upgrade import plan_upgrade, apply_upgrade, UpgradeError
 from _session_store_fixture import write_session_store
 
@@ -72,6 +75,47 @@ class HarnestExtensionTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text())
         jsonschema.validate(yaml.safe_load((directory / "extension.yaml").read_text()), schema)
 
+    def test_canonical_distribution_name_is_prefixed(self):
+        """Separate extension identity from potentially colliding provider SDKs."""
+
+        directory = package(self.root, name="docker")
+        write(
+            directory / "pyproject.toml",
+            "[project]\n"
+            "name = 'harnest-extension-docker'\n"
+            "version = '1.0.0'\n"
+            "dependencies = ['docker>=7.1,<8']\n",
+        )
+
+        descriptor = discover_application_extensions(self.root)[0]
+
+        self.assertEqual(descriptor.name, "docker")
+        self.assertEqual(descriptor.dependencies, ("docker<8,>=7.1",))
+
+    def test_canonical_distribution_rejects_unprefixed_name(self):
+        """Prevent an extension distribution from impersonating its provider SDK."""
+
+        directory = package(self.root, name="docker")
+        write(
+            directory / "pyproject.toml",
+            "[project]\nname = 'docker'\nversion = '1.0.0'\n",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "must be 'harnest-extension-docker'"
+        ):
+            discover_application_extensions(self.root)
+
+    def test_manifest_schema_uses_runtime_capability_vocabulary(self):
+        """Keep extension validation and runtime authority checks synchronized."""
+        import json
+
+        schema_path = Path(__file__).resolve().parents[2] / "schemas" / "extension.schema.json"
+        schema = json.loads(schema_path.read_text())
+        declared = schema["properties"]["capabilities"]["items"]["enum"]
+
+        self.assertEqual(set(declared), set(RUNTIME_PLUGIN_CAPABILITIES))
+
     def test_incomplete_package_does_not_become_lifecycle_code(self):
         write(self.root / "extensions" / "broken" / "extension.py", "raise AssertionError('must not import')\n")
         with self.assertRaisesRegex(ValueError, "needs extension.yaml"):
@@ -120,6 +164,60 @@ class HarnestExtensionTests(unittest.TestCase):
             assert any(item.relative_path == "extensions/clock/lifecycle/audit.py" for item in application.extensions)
         finally:
             release_runtime_plugins(discover_application_extensions(tmp_path))
+
+    def test_compile_preserves_regular_extension_readme(self):
+        """Keep package-facing documentation inside the compiled source tree."""
+
+        agent(self.root)
+        directory = package(self.root)
+        write(directory / "README.md", "# Clock extension\n")
+        backend = SimpleNamespace(
+            lower_managed=lambda value, **kwargs: value,
+            wrap_managed=lambda *args, **kwargs: None,
+        )
+        with patch("harnest.bundle.get_backend", return_value=backend):
+            manifest = compile_artifact(
+                self.root,
+                self.root.parent / "artifact",
+                entrypoint="agent:root_agent",
+            )
+        paths = {item["path"] for item in manifest["files"]}
+        self.assertIn("source/extensions/clock/README.md", paths)
+        self.assertEqual(
+            (
+                self.root.parent
+                / "artifact/source/extensions/clock/README.md"
+            ).read_text("utf-8"),
+            "# Clock extension\n",
+        )
+
+    def test_extension_layout_allows_only_a_regular_root_readme(self):
+        """Keep the README exception narrow within the closed extension root."""
+
+        for kind in ("directory", "symlink", "special", "unexpected"):
+            with self.subTest(kind=kind):
+                root = self.root / kind
+                root.mkdir()
+                agent(root)
+                directory = package(root)
+                readme = directory / "README.md"
+                if kind == "directory":
+                    readme.mkdir()
+                elif kind == "symlink":
+                    readme.symlink_to(self.root / "outside.md")
+                elif kind == "special":
+                    os.mkfifo(readme)
+                else:
+                    write(directory / "NOTES.md", "unexpected\n")
+                backend = SimpleNamespace(
+                    lower_managed=lambda value, **kwargs: value,
+                    wrap_managed=lambda *args, **kwargs: None,
+                )
+                with (
+                    patch("harnest.bundle.get_backend", return_value=backend),
+                    self.assertRaisesRegex(BundleConventionError, "resource"),
+                ):
+                    compile_application(root, entrypoint="agent:root_agent")
 
 
     def test_mixed_layout_rejected_before_import(self):

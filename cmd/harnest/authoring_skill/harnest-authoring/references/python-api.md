@@ -681,9 +681,24 @@ types, `harnest.runtime` for runtime contracts, `harnest.assets` for `Stored`, a
 `harnest.store` for storage contracts. Query lifecycle guarantees with
 `lifecycle.coverage(...)`. Avoid implementation-module paths in new examples.
 
-`harnest.sandbox.Sandbox.container(...)` and `Sandbox.provider(...)` define lazy
-framework-neutral executors. Define `sandbox/<name>.py` with a matching variable
-and explicitly assign `Agent(sandboxes=["<name>"])` on every allowed agent.
+`harnest.sandbox.Sandbox.provider(...)` defines a lazy, framework-neutral
+executor contract. Concrete providers are Harnest Extensions. For Docker, run
+`harnest extensions install docker --project <agent-root>` and then
+`harnest env sync <agent-root>`. Define `sandbox/<name>.py` with a matching
+variable and explicitly assign `Agent(sandboxes=["<name>"])` on every allowed
+agent. A Docker definition uses the installed public namespace:
+
+```python
+from harnest.extensions.docker import docker
+from harnest.sandbox import SandboxNetworkPolicy
+
+
+calculations = docker.sandbox(
+    image="python:3.12-slim",
+    network_policy=SandboxNetworkPolicy.none(),
+)
+```
+
 Names are 1–47 ASCII identifier characters. Named assignments do not expose
 model tools. Inside an authored tool, import `context` from `harnest` and call
 `context.sandboxes["<name>"].execute(code, input_files=())` or await `aexecute`

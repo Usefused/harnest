@@ -51,15 +51,23 @@ class MCPClientLifecycle:
     def create_http_client(
         self, options: MCPHTTPClientOptions, context: MCPClientContext
     ) -> Any:
-        """Return the ``httpx.AsyncClient`` used by one MCP session."""
+        """Return a proxy-aware ``httpx.AsyncClient`` with safe diagnostics."""
 
         from mcp.shared._httpx_utils import create_mcp_http_client
 
-        return create_mcp_http_client(
-            headers=dict(options.headers),
-            timeout=options.timeout,
-            auth=options.auth,
-        )
+        try:
+            # HTTPX's default trust_env=True is intentional: deployments may
+            # require HTTP(S) or SOCKS egress proxies configured by operators.
+            return create_mcp_http_client(
+                headers=dict(options.headers),
+                timeout=options.timeout,
+                auth=options.auth,
+            )
+        except Exception as error:
+            failure = _http_client_construction_failure(error)
+        # Raise outside the active handler so secret-bearing provider details
+        # are not retained through the exception context chain.
+        raise failure
 
     def close(self, context: MCPClientContext) -> MCPLifecycleValue:
         """Release application-level resources created by ``start``."""
@@ -364,6 +372,14 @@ def _sanitized_hook_failure(hook: str, error: BaseException) -> BaseException:
         return asyncio.CancelledError()
     return RuntimeError(
         f"MCP lifecycle {hook} failed with {type(error).__name__}"
+    )
+
+
+def _http_client_construction_failure(error: Exception) -> RuntimeError:
+    """Describe client construction without exposing proxy URLs or credentials."""
+
+    return RuntimeError(
+        f"MCP HTTP client construction failed with {type(error).__name__}"
     )
 
 

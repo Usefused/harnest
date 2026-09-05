@@ -47,6 +47,7 @@ RUNTIME_PLUGIN_CAPABILITIES = frozenset(
         "native.adk",
         "native.langgraph",
         "policy.output",
+        "sandbox.provider",
         "storage.assets",
         "storage.checkpoints",
         "storage.custom",
@@ -355,7 +356,10 @@ def _descriptor_from_document(
     _validate_entrypoint(directory, filename=entrypoint.partition(":")[0] + ".py")
     try:
         project = load_runtime_plugin_project(
-            directory, expected_name=name, expected_version=version
+            directory,
+            expected_name=name,
+            expected_version=version,
+            canonical_extension=canonical,
         )
     except RuntimePluginProjectError as exc:
         raise RuntimePluginConventionError(str(exc)) from exc

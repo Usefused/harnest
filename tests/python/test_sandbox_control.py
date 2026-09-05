@@ -44,7 +44,7 @@ class QueuedBackend:
         self.executed = False
 
     def execute(self, request):
-        """Honor the shared control exactly as the built-in container does."""
+        """Honor the shared control exactly as a conforming provider does."""
         self.entered.set()
         try:
             with current_control().acquire(self.lock):

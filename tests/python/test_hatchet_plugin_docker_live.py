@@ -65,7 +65,7 @@ def _load_client_module():
     name = "_harnest_hatchet_live_client"
     spec = importlib.util.spec_from_file_location(name, _CLIENT_SOURCE)
     if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load Hatchet plugin client adapter")
+        raise RuntimeError("cannot load Hatchet extension client adapter")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)

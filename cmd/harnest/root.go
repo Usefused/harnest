@@ -42,6 +42,10 @@ definition, discovered tools and subagents, evaluations, and authored tests:
 Typical workflow:
 
   harnest skills install
+  harnest plugins install ./portable-plugin --project my-agent
+  harnest extensions init postgres --project my-agent
+  harnest extensions install ./harnest-extension-postgres --project my-agent
+  harnest extensions install docker --project my-agent
   harnest extensions search postgres
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
@@ -60,9 +64,11 @@ Typical workflow:
   harnest serve my-agent --reload
 
 Released compile, test, and serve commands use an isolated environment derived
-from config.yaml, pyproject.toml, uv.lock, and the embedded Harnest wheel.
-Runtime plugins declare plugin.yaml kind RuntimePlugin, export plugin from
-plugin.py, and share that interpreter; their module is harnest.plugins.<name>.
+from config.yaml, authored dependency metadata, the committed
+harnest-runtime.lock, and the embedded Harnest wheel.
+Harnest Extensions declare extension.yaml kind Extension, export extension
+from extension.py, and share that interpreter; their module is
+harnest.extensions.<name>. Legacy RuntimePlugin packages remain readable.
 CLI Python is selected from --python, HARNEST_PYTHON, the private Harnest
 runtime, or python3 on PATH.
 
@@ -130,7 +136,8 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newRuntimeCommand(),
 		app.newEnvironmentCommand(),
 		app.newSkillsCommand(),
-		app.newPluginsCommand(),
+		app.newAgentPluginsCommand(),
+		app.newExtensionsCommand(),
 		app.newModeCommand(),
 		app.newUpgradeCommand(),
 	)

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from harnest.plugins import release_runtime_plugins
 
 
 _ROOT = Path(__file__).resolve().parents[2]
+_DOCKER_EXTENSION = _ROOT / "official-extensions" / "docker"
 
 
 class InitExampleTests(unittest.TestCase):
@@ -70,6 +72,7 @@ class InitExampleTests(unittest.TestCase):
             with self.subTest(framework=framework):
                 root = self._scaffold(framework)
                 self._activate_samples(root)
+                self._install_docker_extension(root)
                 application = compile_application(root, entrypoint="agent:root_agent", framework=framework)
                 try:
                     self._assert_activated_samples(root, application)
@@ -80,7 +83,7 @@ class InitExampleTests(unittest.TestCase):
 
     def _assert_activated_samples(self, root, application):
         """Check actual task linkage and runtime-plugin/eval discovery."""
-        self.assertEqual(len(application.plugins), 1)
+        self.assertEqual(len(application.plugins), 2)
         self.assertEqual(len(application.tasks), 1)
         self.assertEqual(len(application.crons), 1)
         self.assertIs(application.crons[0].task, application.tasks[0])
@@ -111,3 +114,11 @@ class InitExampleTests(unittest.TestCase):
             + "root_agent = replace(root_agent, sandboxes=['calculations'])\n",
             encoding="utf-8",
         )
+
+    def _install_docker_extension(self, root):
+        """Stage the optional provider exactly where the install command materializes it."""
+        installed = root / "extensions" / "docker"
+        installed.mkdir(parents=True)
+        for name in ("extension.py", "extension.yaml", "pyproject.toml"):
+            shutil.copy2(_DOCKER_EXTENSION / name, installed / name)
+        shutil.copytree(_DOCKER_EXTENSION / "lib", installed / "lib")

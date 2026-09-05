@@ -171,15 +171,16 @@ class SandboxDeadlineTests(unittest.TestCase):
     def test_langgraph_provider_helpers_leave_time_for_outer_execution(self):
         self._exercise_adapter("langgraph")
 
-    def test_both_adapters_can_recover_from_missing_container(self):
-        """Cross native adapters and runtime admission after a caught Docker error."""
-        from docker.errors import NotFound
+    def test_both_adapters_can_recover_from_missing_provider_resource(self):
+        """Cross native adapters and runtime admission after a caught SDK error."""
+        class ResourceNotFound(Exception):
+            """Represent an extension SDK losing a previously owned resource."""
 
         def execute(_request):
             try:
                 with execution_control(5):
-                    raise NotFound("container no longer exists")
-            except NotFound:
+                    raise ResourceNotFound("sandbox resource no longer exists")
+            except ResourceNotFound:
                 pass
             with execution_control(5) as recovery:
                 recovery.check()

@@ -54,18 +54,18 @@ type pypiProjectMetadata struct {
 	URLs []pypiReleaseFile `json:"urls"`
 }
 
-// newPluginsCommand exposes discovery without making Harnest a package registry.
-func (a *application) newPluginsCommand() *cobra.Command {
+// newExtensionsCommand owns local authoring and public package discovery.
+func (a *application) newExtensionsCommand() *cobra.Command {
 	command := &cobra.Command{
-		Use:     "extensions",
-		Aliases: []string{"plugins"},
-		Short:   "Discover Harnest Extensions published on PyPI",
-		Long: `Discover Harnest Extensions on public PyPI without importing package code.
+		Use:   "extensions",
+		Short: "Create, install, and discover Harnest Extensions",
+		Long: `Discover Harnest Extensions on public PyPI, or create and install an
+application-local package, without importing package code during the CLI operation.
 
 Publish harnest-extension-* packages with one harnest.extensions entry point,
 such as "postgres = harnest_extension_postgres.extension:extension", and include
-extension.yaml plus extension.py. The plugins command remains an alias, and
-the legacy distribution contract below is still supported. Search does not
+extension.yaml plus extension.py. The legacy distribution contract below is
+still supported. Search does not
 install packages or convert their layouts. Use harnest upgrade to migrate.
 
 The harnest-plugin-* name is only a candidate namespace. Search results must
@@ -80,7 +80,11 @@ Trust is reported separately: community packages satisfy the bundle contract,
 while official packages are names explicitly owned and approved by Fused.
 Neither label is a security review of the plugin's code.`,
 	}
-	command.AddCommand(a.newPluginSearchCommand())
+	command.AddCommand(
+		a.newExtensionInitCommand(),
+		a.newExtensionInstallCommand(),
+		a.newPluginSearchCommand(),
+	)
 	return command
 }
 
@@ -110,7 +114,7 @@ func (a *application) newPluginSearchCommand() *cobra.Command {
 			if stale {
 				fmt.Fprintln(
 					command.ErrOrStderr(),
-					"harnest: PyPI unavailable; using cached plugin catalog",
+					"harnest: PyPI unavailable; using cached extension catalog",
 				)
 			}
 			return renderPluginSearch(command.OutOrStdout(), results, jsonOutput)
@@ -200,7 +204,7 @@ func (a *application) fetchPyPIPluginCatalog(
 	}
 	response, err := a.pluginHTTPClient().Do(request)
 	if err != nil {
-		return pluginCatalogCache{}, fmt.Errorf("query PyPI plugin catalog: %w", err)
+		return pluginCatalogCache{}, fmt.Errorf("query PyPI extension catalog: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotModified && hasCache {
@@ -209,19 +213,19 @@ func (a *application) fetchPyPIPluginCatalog(
 	}
 	if response.StatusCode != http.StatusOK {
 		return pluginCatalogCache{}, fmt.Errorf(
-			"query PyPI plugin catalog: HTTP %d", response.StatusCode,
+			"query PyPI extension catalog: HTTP %d", response.StatusCode,
 		)
 	}
 	if response.ContentLength > maxPluginCatalogBytes {
 		return pluginCatalogCache{}, fmt.Errorf(
-			"PyPI plugin catalog exceeds %d bytes", maxPluginCatalogBytes,
+			"PyPI extension catalog exceeds %d bytes", maxPluginCatalogBytes,
 		)
 	}
 	projects, err := decodePyPIPluginProjects(
 		io.LimitReader(response.Body, maxPluginCatalogBytes+1),
 	)
 	if err != nil {
-		return pluginCatalogCache{}, fmt.Errorf("decode PyPI plugin catalog: %w", err)
+		return pluginCatalogCache{}, fmt.Errorf("decode PyPI extension catalog: %w", err)
 	}
 	return pluginCatalogCache{
 		Version: pluginCatalogCacheVersion, FetchedAt: time.Now().UTC(),
@@ -564,7 +568,7 @@ func renderPluginSearch(
 		return encoder.Encode(results)
 	}
 	if len(results) == 0 {
-		_, err := fmt.Fprintln(output, "No compatible Harnest plugins found on PyPI.")
+		_, err := fmt.Fprintln(output, "No compatible Harnest Extensions found on PyPI.")
 		return err
 	}
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)

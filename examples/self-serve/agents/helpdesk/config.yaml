@@ -44,3 +44,8 @@ spec:
         - /app
       readWrite:
         - /tmp
+server:
+  live: false
+  http:
+    port: 8080
+    maxConcurrentRequests: 8

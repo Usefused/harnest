@@ -5,11 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from .sandbox_policy import SandboxBudget
+from .sandbox_policy import (
+    SandboxBudget,
+    SandboxNetworkMode,
+    SandboxNetworkPolicy,
+    SandboxPolicyUnsupportedError,
+    SandboxProviderCapabilities,
+)
 from .sandbox_control import SandboxCancelledError, cleanup_control, control
-from .sandbox_runtime import SandboxExecutionError, validate_backend
+from .sandbox_runtime import (
+    SandboxExecutionError,
+    SandboxInputFilesUnsupportedError,
+    validate_backend,
+)
 from .sandbox_types import (
-    SandboxBackend, SandboxContext, SandboxFile, SandboxRequest, SandboxResult, SandboxStatus,
+    SandboxBackend, SandboxContext, SandboxFile, SandboxProvider, SandboxRequest,
+    SandboxResult, SandboxStatus,
     freeze_sandbox_metadata, validate_timeout,
 )
 
@@ -21,13 +32,16 @@ class Sandbox:
     A sandbox is a code-execution boundary, not a policy label. The backend
     returned by ``factory`` implements ``SandboxBackend.execute`` and owns the
     actual isolation guarantees. Legacy ADK executors remain ADK-only providers.
-    Compilation never connects to Docker or a remote sandbox service.
+    Compilation never connects to provider infrastructure.
     """
 
     factory: Callable[[], Any] = field(repr=False)
     backend: str = "custom"
     timeout_seconds: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    # Keep this additive contract keyword-only so existing positional
+    # construction cannot reinterpret private adapter options as network policy.
+    network_policy: SandboxNetworkPolicy | None = field(default=None, kw_only=True)
     _executor_options: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -38,6 +52,10 @@ class Sandbox:
             raise ValueError("sandbox backend name is required")
         object.__setattr__(self, "backend", self.backend.strip())
         validate_timeout(self.timeout_seconds)
+        if self.network_policy is not None and not isinstance(
+            self.network_policy, SandboxNetworkPolicy
+        ):
+            raise TypeError("sandbox network_policy must be SandboxNetworkPolicy or None")
         object.__setattr__(self, "metadata", freeze_sandbox_metadata(self.metadata))
         object.__setattr__(self, "_executor_options", freeze_sandbox_metadata(self._executor_options))
 
@@ -49,11 +67,15 @@ class Sandbox:
         name: str = "custom",
         timeout_seconds: int | None = None,
         metadata: Mapping[str, Any] | None = None,
+        network_policy: SandboxNetworkPolicy | None = None,
+        adapter_options: Mapping[str, Any] | None = None,
     ) -> "Sandbox":
         """Configure a portable provider; native ADK factories remain compatible.
 
-        Provider-specific SDK settings belong in the factory. JSON metadata is
-        forwarded unchanged to each request, never exposed as model arguments.
+        Provider-specific SDK settings belong in the factory. ``adapter_options``
+        configures only the native framework adapter, while JSON metadata and an
+        optional network policy are forwarded to each request. A policy requires
+        provider capability declarations.
         """
 
         return cls(
@@ -61,54 +83,8 @@ class Sandbox:
             backend=name,
             timeout_seconds=timeout_seconds,
             metadata={} if metadata is None else metadata,
-        )
-
-    @classmethod
-    def container(
-        cls,
-        *,
-        image: str | None = None,
-        docker_path: str | None = None,
-        base_url: str | None = None,
-        network: bool = False,
-        timeout_seconds: int = 300,
-        options: Mapping[str, Any] | None = None,
-        metadata: Mapping[str, Any] | None = None,
-        max_output_bytes: int = 1_048_576,
-        scope: str = "execution",
-        budget: SandboxBudget | None = None,
-        max_scopes: int = 8,
-    ) -> "Sandbox":
-        """Run with explicit filesystem scope and Docker-enforced resource budgets.
-
-        Each execution gets a fresh container by default. Invocation/session
-        scopes reuse containers only within the same authenticated identity tuple;
-        least-recently-used containers are removed at max_scopes. All scopes
-        stop background processes and clear scratch files after each call.
-        Docker execution is shared and does not import either framework.
-        """
-
-        from .sandbox_container import create_container_backend
-
-        # Pure configuration is validated now; the backend starts Docker only
-        # inside execute(), so compile/test inspection remains infrastructure-free.
-        provider = create_container_backend(
-            image=image, docker_path=docker_path, base_url=base_url,
-            network=network, timeout_seconds=timeout_seconds, options=options,
-            max_output_bytes=max_output_bytes, scope=scope, budget=budget,
-            max_scopes=max_scopes,
-        )
-
-        def build_container() -> Any:
-            """Give each native adapter its own lazily initialized provider."""
-            return provider.new_backend()
-
-        return cls(
-            factory=build_container,
-            backend="container",
-            timeout_seconds=timeout_seconds,
-            metadata={} if metadata is None else metadata,
-            _executor_options={} if options is None else options,
+            network_policy=network_policy,
+            _executor_options={} if adapter_options is None else adapter_options,
         )
 
     def to_adk_executor(self) -> Any:
@@ -125,11 +101,13 @@ class Sandbox:
 
     def build(self) -> Any:
         """Construct and validate a provider only when explicitly requested."""
-        return validate_backend(self.factory())
+        return validate_backend(self.factory(), network_policy=self.network_policy)
 
 
 __all__ = [
     "control", "cleanup_control", "SandboxCancelledError",
     "Sandbox", "SandboxBudget", "SandboxBackend", "SandboxContext", "SandboxExecutionError",
-    "SandboxFile", "SandboxRequest", "SandboxResult", "SandboxStatus",
+    "SandboxFile", "SandboxInputFilesUnsupportedError", "SandboxNetworkMode",
+    "SandboxNetworkPolicy", "SandboxPolicyUnsupportedError", "SandboxProvider",
+    "SandboxProviderCapabilities", "SandboxRequest", "SandboxResult", "SandboxStatus",
 ]

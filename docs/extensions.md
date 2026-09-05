@@ -5,6 +5,49 @@ adding tools, agents, MCP clients, or skills. Files and nested directories may
 have any valid public Python name. Harnest ignores ordinary helper functions and
 discovers only functions decorated through `harnest.lifecycle`.
 
+## Application-local Harnest Extensions
+
+Create a canonical extension package without importing its code:
+
+```bash
+harnest extensions init temporal --project ./my-agent
+harnest extensions init isolated_runner --project ./my-agent \
+  --capability sandbox.provider
+```
+
+The scaffold writes `extension.yaml`, `extension.py`, and `pyproject.toml`
+below `extensions/<name>/`. Its distribution identity is
+`harnest-extension-<name>`, which lets an extension depend on a same-named
+provider SDK without becoming a self-dependency. Add its SDK requirements to
+that project and refresh the application lock with the command printed by the
+CLI.
+
+Install an existing local source tree atomically by manifest identity:
+
+```bash
+harnest extensions install ../harnest-extension-temporal --project ./my-agent
+```
+
+Install a published extension by its PyPI project name or short slug:
+
+```bash
+harnest extensions install harnest-extension-docker --project ./my-agent
+# Equivalent: harnest extensions install docker --project ./my-agent
+harnest env sync ./my-agent
+```
+
+Installation validates the closed manifest, required regular entrypoint,
+optional project identity, and compiler-supported layout. A regular root
+`README.md` is allowed as package documentation and is copied by local and PyPI
+installation; other unexpected root entries, links, and special files remain
+invalid. For PyPI sources, Harnest downloads the selected wheel with a bounded
+transfer, verifies its published digest and package identity, extracts only the
+permitted extension tree, and preserves both its dependency metadata and
+packaged README for the agent's runtime lock and local inspection. Installation
+never executes or imports extension code and refuses replacement unless
+`--force` is explicit. Use `harnest extensions search QUERY` to discover
+compatible PyPI distributions.
+
 Every agent declares one session-store and one checkpointer factory. `harnest
 init` keeps both in `lifecycle/storage.py` and returns the shared development
 store from `lib/storage.py`:

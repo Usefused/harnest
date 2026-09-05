@@ -12,13 +12,43 @@ from harnest.bundle import (
     BundleExportError,
     compile_agent,
 )
-from harnest.sandbox import Sandbox
+from harnest.sandbox import (
+    Sandbox,
+    SandboxBudget,
+    SandboxNetworkMode,
+    SandboxNetworkPolicy,
+    SandboxPolicyUnsupportedError,
+    SandboxProviderCapabilities,
+    SandboxResult,
+    SandboxStatus,
+)
 from _session_store_fixture import write_session_store
 
 
 class _RecordingExecutor(BaseCodeExecutor):
     def execute_code(self, invocation_context, code_execution_input):
         return (invocation_context, code_execution_input)
+
+
+class _PolicyProvider:
+    """Record requests while declaring only the controls exercised by tests."""
+
+    sandbox_capabilities = SandboxProviderCapabilities(
+        network_modes=frozenset(
+            {SandboxNetworkMode.NONE, SandboxNetworkMode.ALLOWLIST}
+        ),
+        host_allowlist=True,
+        port_allowlist=True,
+        private_network_blocking=True,
+    )
+
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request):
+        """Return a typed result after retaining the immutable request."""
+        self.requests.append(request)
+        return SandboxResult(stdout="ok")
 
 
 class SandboxTests(unittest.TestCase):
@@ -62,24 +92,113 @@ class SandboxTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "SandboxBackend or ADK BaseCodeExecutor"):
             invalid.build()
 
-    def test_container_contract_is_secure_by_default(self):
-        """Retain explicit native network/deadline policy without starting Docker."""
-        sandbox = Sandbox.container(image="example/sandbox:latest")
-        self.assertEqual(sandbox.backend, "container")
-        self.assertEqual(sandbox.timeout_seconds, 300)
-        with self.assertRaisesRegex(ValueError, "exactly one"):
-            Sandbox.container()
-        with self.assertRaisesRegex(ValueError, "exactly one"):
-            Sandbox.container(image="one", docker_path="Dockerfile")
-        with self.assertRaisesRegex(TypeError, "network must be a boolean"):
-            Sandbox.container(image="one", network="yes")
-        with self.assertRaisesRegex(ValueError, "unsupported container sandbox options"):
-            Sandbox.container(image="one", options={"network_enabled": True})
+    def test_portable_provider_enforces_and_receives_network_policy(self):
+        """Validate policy capability before forwarding it below agent code."""
+        provider = _PolicyProvider()
+        policy = SandboxNetworkPolicy.allowlist(
+            "Playwright.dev.", "203.0.113.8", ports=(443, 443),
+        )
+        definition = Sandbox.provider(
+            lambda: provider, name="policy", network_policy=policy,
+        )
+
+        result = definition.to_langchain_tool().invoke({"code": "print('ok')"})
+
+        self.assertEqual(result["stdout"], "ok")
+        self.assertIs(provider.requests[0].network_policy, policy)
+        self.assertEqual(policy.allow_hosts, ("playwright.dev", "203.0.113.8"))
+        self.assertEqual(policy.allow_ports, (443,))
+
+    def test_network_policy_fails_closed_on_unsupported_provider(self):
+        """Never treat an application-level URL check as provider enforcement."""
+        policy = SandboxNetworkPolicy.allowlist("example.com", ports=(443,))
+        missing = Sandbox.provider(
+            lambda: type(
+                "MissingProvider",
+                (),
+                {"execute": lambda self, request: SandboxResult()},
+            )(),
+            network_policy=policy,
+        )
+        with self.assertRaisesRegex(
+            SandboxPolicyUnsupportedError, "must declare SandboxProviderCapabilities",
+        ):
+            missing.build()
+
+        native = Sandbox.provider(lambda: _RecordingExecutor(), network_policy=policy)
+        with self.assertRaisesRegex(
+            SandboxPolicyUnsupportedError, "native ADK.*cannot declare",
+        ):
+            native.build()
+
+        class PartialProvider:
+            sandbox_capabilities = SandboxProviderCapabilities(
+                network_modes=frozenset({SandboxNetworkMode.ALLOWLIST}),
+                host_allowlist=True,
+            )
+
+            def execute(self, request):
+                return SandboxResult()
+
+        unsupported = Sandbox.provider(lambda: PartialProvider(), network_policy=policy)
+        with self.assertRaisesRegex(
+            SandboxPolicyUnsupportedError, "destination port allowlists",
+        ):
+            unsupported.build()
+
+    def test_network_policy_rejects_ambiguous_allowlist_entries(self):
+        """Keep provider rules exact and independent of URL-parser behavior."""
+        with self.assertRaisesRegex(ValueError, "exact hosts"):
+            SandboxNetworkPolicy.allowlist("https://example.com")
+        with self.assertRaisesRegex(ValueError, "requires allow_hosts"):
+            SandboxNetworkPolicy(mode="allowlist")
+        with self.assertRaisesRegex(ValueError, "integers from 1 to 65535"):
+            SandboxNetworkPolicy.allowlist("example.com", ports=(True,))
+        with self.assertRaisesRegex(ValueError, "exact hosts"):
+            SandboxNetworkPolicy.allowlist("fe80::1%en0")
+
+    def test_network_policy_keeps_direct_sandbox_construction_compatible(self):
+        """Adding policy cannot reinterpret the existing positional options field."""
+        options = {"error_retry_attempts": 2}
+        definition = Sandbox(lambda: _RecordingExecutor(), "legacy", 7, {}, options)
+
+        self.assertIsNone(definition.network_policy)
+        self.assertEqual(definition._executor_options, options)
+
+    def test_portable_budget_rejects_unbounded_values(self):
+        """Providers receive finite budget values without core SDK translation."""
+        budget = SandboxBudget(
+            cpu=0.5,
+            memory_bytes=64 * 1024 * 1024,
+            pids=16,
+            scratch_bytes=4096,
+        )
+        self.assertEqual(budget.cpu, 0.5)
+        for values in (
+            {"cpu": 0},
+            {"cpu": True},
+            {"cpu": float("inf")},
+            {"memory_bytes": 0},
+            {"pids": True},
+            {"scratch_bytes": -1},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                SandboxBudget(**values)
+
+    def test_result_status_is_independent_of_stderr(self):
+        """Warnings remain successful while nonzero exits require failure status."""
+        result = SandboxResult(stderr="warning", exit_code=0)
+        self.assertEqual(result.status, SandboxStatus.SUCCEEDED)
+        with self.assertRaises(ValueError):
+            SandboxResult(exit_code=2)
+        failed = SandboxResult(status="failed", exit_code=2)
+        self.assertEqual(failed.status, SandboxStatus.FAILED)
 
     def test_native_parsing_options_reach_adk_adapter(self):
-        """ADK reads retry and delimiter settings from the adapter itself."""
-        definition = Sandbox.container(
-            image="example/python", options={
+        """Extensions can configure ADK parsing without private constructor fields."""
+        definition = Sandbox.provider(
+            lambda: _RecordingExecutor(),
+            adapter_options={
                 "error_retry_attempts": 3,
                 "code_block_delimiters": [("<python>", "</python>")],
             },

@@ -23,8 +23,8 @@ by repository tests.
   `execute(code, *, input_files=())` or async `aexecute` to receive a
   `SandboxResult`. Its author chooses code, input validation, and which result
   fields to return to the model. Both frameworks retain their native tool loop.
-  Neither path starts Docker or calls a provider factory during compilation.
-  The built-in backend executes through the framework-independent Docker provider.
+  Neither path starts provider infrastructure or calls a provider factory during
+  compilation.
 - Unassigned lookup raises `ContextResourceError`. Access outside a managed
   invocation, or reuse of a handle in another or revoked invocation, raises
   `ContextUnavailableError`. Handles do not transfer authority between agents.
@@ -36,8 +36,9 @@ by repository tests.
   `execute(SandboxRequest) -> SandboxResult`. Legacy ADK `BaseCodeExecutor`
   factories remain compatible only with ADK; LangGraph rejects them explicitly.
 - Requests carry code, deadline, invocation identity, input files, execution ID,
-  and metadata. Identity can be absent outside a Harnest invocation. Providers
-  requiring identity must reject such requests rather than invent a tenant.
+  metadata, and the optional `SandboxNetworkPolicy`. Identity can be absent
+  outside a Harnest invocation. Providers requiring identity must reject such
+  requests rather than invent a tenant.
 - `SandboxFile` carries bytes or base64 text, never host filesystem access.
   Provider implementations own file-path validation and artifact handling.
 
@@ -59,33 +60,40 @@ envelope with `stdout` and `metadata` keys. Empty metadata preserves the origina
 stdout. Stderr retains ADK's native error behavior. Providers must not return
 secrets or private identifiers as result metadata.
 
-## Built-in container boundary
+## Provider-owned network policy
 
-`Sandbox.container()` uses Harnest's Docker provider. It never imports ADK or
-LangGraph to execute code. Both agent frameworks call it through the same
-`SandboxRequest` / `SandboxResult` contract.
+`Sandbox.provider(..., network_policy=...)` makes Harnest the source of network
+authority while leaving enforcement below agent code. The immutable policy has
+three modes: `none`, `unrestricted`, and an exact host `allowlist`; allowlists
+can additionally restrict destination ports and require private-network
+blocking. Exact hosts deliberately exclude URL, wildcard, path, and embedded
+port syntax. Providers must reapply hostname and resolved-address decisions to
+every connection, including redirects and repeated DNS resolutions.
 
-- Default `scope="execution"` owns a fresh container and removes it after every
-  execution. `invocation` and `session` scopes key reuse by agent/user/session,
-  with invocation ID additionally required for invocation scope. Missing
-  identities fail before provider startup. An LRU cap (`max_scopes=8`) bounds
-  retained containers per grant; eviction requires confirmed cleanup.
-- Reuse does not provide durable files. The read-only root and tmpfs `/tmp`
-  prohibit persistent writes. Stopping the container after every call kills
-  detached children and clears scratch. New or different identities never
-  obtain a previous identity's container. Application shutdown closes all
-  initialized scopes and keeps failed cleanup handles available for retry.
-- `SandboxBudget` defaults: one CPU, 512MiB memory with no extra swap, 64 PIDs,
-  and 64MiB scratch. Docker creation enforces limits before any Python probe.
-  Containers use UID/GID 65534, drop all capabilities, deny privilege escalation,
-  and have no network unless explicitly enabled. Images declaring Docker volumes
-  are rejected because implicit volumes would bypass the scratch budget.
-- The host guard enforces deadlines including queue admission, raw streaming
-  stdout/stderr bounds, cancellation, and removal. It cannot be disabled by
-  signals within executed code. `timeout_seconds=300` and 1MiB combined output
-  are defaults. Docker control-plane operations retain finite SDK I/O timeouts;
-  admission is rechecked after they return. Docker availability is needed to
-  confirm actual cleanup; ambiguous creation without an ID blocks retry.
+A portable provider accepting this policy exposes `sandbox_capabilities` as a
+`SandboxProviderCapabilities` value. Harnest validates the requested mode, host
+and port filtering, and private-network blocking before the first execution.
+Missing or partial guarantees raise `SandboxPolicyUnsupportedError`; application
+checks are never counted as provider enforcement. Omitting `network_policy`
+retains the existing provider-owned contract for compatibility. Native ADK
+executors cannot accept Harnest network policy because they have no capability
+declaration boundary.
+
+Reusable Harnest Extensions that implement a provider declare the closed
+`sandbox.provider` extension capability. This grants trusted same-process
+provider integration; it does not weaken the runtime capability validation.
+
+## Provider execution boundary
+
+Core Harnest does not ship a container daemon client or a built-in container
+factory. `Sandbox.provider()` is the provider-neutral declaration boundary, and
+Harnest Extensions own their SDK dependency, configuration helper, isolation
+mechanism, and provider-specific conformance tests. Extensions return the same
+`SandboxRequest` / `SandboxResult` contract to both frameworks.
+
+- `SandboxBudget` is a portable resource request. A provider must translate it
+  into controls it genuinely enforces and fail when it cannot satisfy the
+  requested ceiling; core does not translate budgets into SDK-specific options.
 - Nested execution controls own local deadlines capped by every ancestor's
   absolute deadline. Returning from a shorter helper does not shrink or restart
   the outer budget. Copied worker contexts retain their helper's limit, while
@@ -103,28 +111,26 @@ LangGraph to execute code. Both agent frameworks call it through the same
   contexts. Execution controls reject cleanup contexts before provider admission.
   Cleanup is cooperative: check admission before each operation and pass
   `remaining()` to SDK transport timeouts. It cannot stop arbitrary blocking
-  Python. Built-in Docker removal uses this scope and a bounded transport call;
-  failed removal retains ownership for retry.
+  Python. Provider cleanup should use this scope and bounded transport calls;
+  failed cleanup must retain ownership for retry.
 - Results include explicit `SandboxStatus` and optional `exit_code`. Successful
   stderr warnings remain successful; nonzero process exits fail even without
   stderr. Timeouts and output overflow have distinct statuses. Provider SDK
   failures remain sanitized exceptions with a status field.
-- Container file transfer is unsupported and rejected before startup. Custom
-  providers own file validation and output artifacts. `options` parsing fields
-  are retained for direct `to_adk_executor()` embedding only, not named grants.
-
-Real Docker integration tests exercise resource settings, non-root/read-only
-execution, cleared scratch, timeouts, output overflow, and explicit exit status.
-The compatibility CI runs these alongside both frameworks' named-grant and
-shared evaluation tests. Docker is a shared-kernel boundary, not VM isolation.
+- Providers own file validation and output artifacts. An extension that cannot
+  accept input files raises the public `SandboxInputFilesUnsupportedError`, which
+  the runtime converts to a stable sanitized execution error.
+- `adapter_options` are retained only by the native adapter. They let an
+  extension configure supported ADK parsing or retry fields without using
+  Harnest's private dataclass fields; named grants do not expose them to models.
 
 ## Custom provider responsibility
 
-Custom backends own filesystem and tenant isolation, CPU/memory limits,
+Provider backends own filesystem and tenant isolation, CPU/memory limits,
 execution termination, bounded SDK output, network and credential policy,
 concurrency, and cleanup. Harnest rejects revoked managed contexts instead of
 silently using anonymous identity and checks admission before provider calls;
 it cannot interrupt an arbitrary third-party SDK once that SDK starts running.
-Harnest cannot apply the built-in Docker budgets to arbitrary third-party providers.
+Harnest cannot apply a portable resource budget to arbitrary providers.
 `config.yaml` permissions describe deployment intent and cannot replace an
 enforcing sandbox implementation.

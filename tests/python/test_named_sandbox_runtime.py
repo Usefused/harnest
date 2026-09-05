@@ -14,6 +14,12 @@ from harnest.context import (
     activate_context, create_agent_context, revoke_context,
 )
 from harnest.context_sandboxes import SandboxRegistry
+from harnest.sandbox import (
+    SandboxInputFilesUnsupportedError,
+    SandboxNetworkMode,
+    SandboxNetworkPolicy,
+    SandboxProviderCapabilities,
+)
 from harnest.sandbox_runtime import SandboxExecutionError
 from test_sandbox_control import QueuedBackend
 
@@ -52,8 +58,17 @@ class SandboxCapabilityTests(unittest.IsolatedAsyncioTestCase):
     """Exercise real scoped lookup and synchronous/asynchronous entrypoints."""
     def setUp(self):
         self.backend = RecordingBackend()
+        self.policy = SandboxNetworkPolicy.none()
+        self.backend.sandbox_capabilities = SandboxProviderCapabilities(
+            network_modes=frozenset({SandboxNetworkMode.NONE}),
+        )
         self.factory = Mock(return_value=self.backend)
-        self.sandbox = Sandbox.provider(self.factory, timeout_seconds=7, metadata={"region": "eu"})
+        self.sandbox = Sandbox.provider(
+            self.factory,
+            timeout_seconds=7,
+            metadata={"region": "eu"},
+            network_policy=self.policy,
+        )
         self.registry = SandboxRegistry({"root": {"calculations": self.sandbox}, "child": {}})
 
     async def test_sync_and_async_preserve_policy_identity_files_and_results(self):
@@ -70,6 +85,7 @@ class SandboxCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.input_files[0].content, b"ok")
         self.assertEqual(request.timeout_seconds, 7)
         self.assertEqual(request.metadata, {"region": "eu"})
+        self.assertIs(request.network_policy, self.policy)
         self.assertEqual(request.context.agent_name, "root")
         self.assertEqual(request.context.user_id, "alice")
         self.assertEqual(request.context.session_id, "session")
@@ -150,15 +166,21 @@ class SandboxCapabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await asyncio.to_thread(backend.finished.wait, 2))
         self.assertFalse(backend.executed)
 
-    async def test_container_input_files_error_explains_supported_alternatives(self):
-        """Unsupported file transfer fails helpfully without contacting Docker."""
-        from unittest.mock import patch
+    async def test_provider_input_files_error_explains_supported_alternatives(self):
+        """Extensions can report unsupported file transfer without leaking details."""
+        backend = RecordingBackend()
 
-        registry = SandboxRegistry({"root": {"container": Sandbox.container(image="example/python")}})
-        with activate_context(managed(registry)), patch("harnest.sandbox_container._create_executor") as factory:
+        def unsupported(_request):
+            """Use the public provider signal consumed by the shared runtime."""
+            raise SandboxInputFilesUnsupportedError("private provider detail")
+
+        backend.execute = unsupported
+        registry = SandboxRegistry({"root": {"limited": Sandbox.provider(lambda: backend)}})
+        with activate_context(managed(registry)):
             with self.assertRaisesRegex(SandboxExecutionError, "does not support input_files; omit"):
-                context.sandboxes["container"].execute("pass", input_files=(SandboxFile("input.txt", b"ok"),))
-            factory.assert_not_called()
+                context.sandboxes["limited"].execute(
+                    "pass", input_files=(SandboxFile("input.txt", b"ok"),),
+                )
 
     async def test_registry_close_is_lazy_idempotent_and_revokes_admission(self):
         """Shutdown closes used providers without constructing unused declarations."""

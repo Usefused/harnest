@@ -42,7 +42,7 @@ REAL_LIVE_READY = REAL_MODEL_LIVE and all(
 )
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer"
 _REAL_FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer_real"
-_PRODUCER_PLUGIN = Path(__file__).parents[2] / "examples" / "extensions" / "hatchet"
+_PRODUCER_PLUGIN = Path(__file__).parents[2] / "official-extensions" / "hatchet"
 
 
 def _install_hatchet_plugin(source: Path) -> Path:
@@ -76,7 +76,7 @@ class _HeaderAuthenticator:
 
 
 class _FakeHatchetService:
-    """Independently owned deterministic runtime behind the real plugin policy."""
+    """Independently owned deterministic runtime behind the extension policy."""
 
     def __init__(self, module) -> None:
         """Retain only bounded evidence needed by the consumer contract."""
@@ -381,9 +381,9 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
         self.assertNotIn("plugins.hatchet.plugin", tool_source)
         self.assertIn("await hatchet.run(", tool_source)
         self.assertIn("await hatchet.wait(", tool_source)
-        project = (_FIXTURE / "pyproject.toml").read_text("utf-8")
+        project = (_PRODUCER_PLUGIN / "pyproject.toml").read_text("utf-8")
+        self.assertIn('name = "harnest-extension-hatchet"', project)
         self.assertIn('"hatchet-sdk>=1.38,<2"', project)
-        self.assertNotIn('"harnest', project)
 
     def test_real_overlay_compiles_without_model_or_database_io(self):
         """Keep the gated provider/PostgreSQL variant statically verifiable."""

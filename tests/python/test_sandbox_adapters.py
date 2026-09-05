@@ -13,7 +13,12 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionInput, F
 from harnest.context import activate_context, create_agent_context
 from harnest.agent import Agent
 from harnest.backends.langgraph import _agent_tools
-from harnest.sandbox import Sandbox
+from harnest.sandbox import (
+    Sandbox,
+    SandboxNetworkMode,
+    SandboxNetworkPolicy,
+    SandboxProviderCapabilities,
+)
 from harnest.sandbox_runtime import SandboxExecutionError
 from harnest.sandbox_types import SandboxFile, SandboxResult
 
@@ -55,8 +60,20 @@ class SandboxAdapterTests(unittest.TestCase):
         backend = RecordingBackend(SandboxResult(
             stdout="42", stderr="", output_files=(SandboxFile("out.txt", b"ok"),),
         ))
+        policy = SandboxNetworkPolicy.allowlist("example.com", ports=(443,))
+        backend.sandbox_capabilities = SandboxProviderCapabilities(
+            network_modes=frozenset({SandboxNetworkMode.ALLOWLIST}),
+            host_allowlist=True,
+            port_allowlist=True,
+            private_network_blocking=True,
+        )
         factory = Mock(return_value=backend)
-        sandbox = Sandbox.provider(factory, timeout_seconds=9, metadata={"region": "eu"})
+        sandbox = Sandbox.provider(
+            factory,
+            timeout_seconds=9,
+            metadata={"region": "eu"},
+            network_policy=policy,
+        )
         executor = sandbox.to_adk_executor()
         factory.assert_not_called()
         native = SimpleNamespace(
@@ -76,6 +93,7 @@ class SandboxAdapterTests(unittest.TestCase):
         self.assertEqual(request.context.agent_name, "native-agent")
         self.assertEqual(request.context.invocation_id, "native-call")
         self.assertEqual(request.metadata, {"region": "eu"})
+        self.assertIs(request.network_policy, policy)
         self.assertEqual(request.input_files[0].content, b"input")
         self.assertEqual(result.output_files[0].content, b"ok")
         self.assertEqual(result.stdout, "42")
@@ -133,7 +151,12 @@ class SandboxAdapterTests(unittest.TestCase):
         """Models cannot override session identity, metadata, or provider policy."""
         factory = Mock(return_value=RecordingBackend())
         tool = Sandbox.provider(factory).to_langchain_tool()
-        for arguments in ({"code": 42}, {"code": "ok", "metadata": {}}, {"code": "ok", "user_id": "bob"}):
+        for arguments in (
+            {"code": 42},
+            {"code": "ok", "metadata": {}},
+            {"code": "ok", "network_policy": {}},
+            {"code": "ok", "user_id": "bob"},
+        ):
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
                 tool.invoke(arguments)
         factory.assert_not_called()

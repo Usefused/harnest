@@ -2,8 +2,12 @@ name: Framework compatibility
 
 on:
   pull_request:
+    paths-ignore:
+      - "official-extensions/**"
   push:
     branches: [main]
+    paths-ignore:
+      - "official-extensions/**"
   schedule:
     - cron: '23 6 * * *'
   workflow_dispatch:
@@ -33,6 +37,7 @@ jobs:
             minimum) python -m pip install '.[all,quality]' -c requirements/frameworks-minimum.txt ;;
             latest) python -m pip install --upgrade '.[all,quality]' ;;
           esac
+          python -m pip install 'docker>=7.1,<8'
           python -m pip check
           python -m pip freeze
       - name: Test both framework contracts without model calls
@@ -45,11 +50,14 @@ jobs:
           tests/python/test_named_sandbox_frameworks.py
           tests/python/test_named_sandbox_runtime.py
           tests/python/test_sandbox_frameworks.py
-          tests/python/test_sandbox_container.py
-          tests/python/test_sandbox_guard.py
           tests/python/test_sandbox_control.py
           tests/python/test_sandbox_deadlines.py
           tests/python/test_sandbox_cleanup.py
+          tests/python/test_docker_extension.py
+          official-extensions/docker/_tests/test_backend.py
+          official-extensions/docker/_tests/test_extension.py
+          official-extensions/docker/_tests/test_guard.py
+          official-extensions/docker/_tests/test_runtime.py
           tests/python/test_eval_langgraph.py
           tests/python/test_eval_adk_context.py
           tests/python/test_eval_adk_context_edges.py
@@ -59,4 +67,4 @@ jobs:
       - name: Verify actual container limits and cleanup
         env:
           HARNEST_TEST_DOCKER: '1'
-        run: python -m pytest -q tests/python/test_sandbox_docker_integration.py
+        run: python -m pytest -q official-extensions/docker/_tests/test_docker_live.py

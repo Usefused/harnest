@@ -41,9 +41,10 @@ The worker accepts `consumer-report` jobs. It records only a Harnest correlation
 identifier and Hatchet run ID. `GET http://localhost:8099/evidence/<id>` proves
 the job started; `POST http://localhost:8099/release/<id>` lets it complete.
 
-The Harnest Extension source is `examples/extensions/hatchet`. Copy it to the
-ADK consumer agent as `extensions/hatchet` and add `hatchet-sdk>=1.38,<2` to the
-root agent `pyproject.toml`. The plugin has no `tools/` directory by design.
+The Harnest Extension source is `official-extensions/hatchet`. Install it into
+the ADK consumer agent as `extensions/hatchet`, then run `harnest env sync` so
+its `hatchet-sdk>=1.38,<2` requirement joins the agent runtime lock. The
+Extension has no `tools/` directory by design.
 
 After installing the SDK, exercise the provider-only live boundary with:
 

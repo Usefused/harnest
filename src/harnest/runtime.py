@@ -1328,5 +1328,29 @@ def main(argv: list[str] | None = None) -> int:
     return _serve_command(args)
 
 
+# Keep the authored runtime contract narrower than this process-bootstrap module.
+# Generated artifacts may call ``main`` directly, but it is not a library API.
+__all__ = [
+    "AgentExecutionTimeout",
+    "AgentInfo",
+    "AgentRuntimeError",
+    "InvocationRequest",
+    "InvocationResult",
+    "NoCustomerFacingOutputError",
+    "ResponseRequest",
+    "RuntimeDriver",
+    "RuntimeEvent",
+    "SessionConflictError",
+    "SessionMessage",
+    "SessionRecord",
+    "create_fastapi_app",
+    "load_agent_card",
+    "load_compiled_agent",
+    "load_compiled_app",
+    "load_compiled_application",
+    "run_agent_message",
+]
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

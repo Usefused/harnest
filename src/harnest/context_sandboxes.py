@@ -129,6 +129,7 @@ class SandboxHandle:
             request = SandboxRequest(
                 code=code, input_files=input_files, metadata=definition.metadata,
                 timeout_seconds=definition.timeout_seconds,
+                network_policy=definition.network_policy,
                 context=SandboxContext(
                     agent_name=active.agent_name, invocation_id=active.invocation_id,
                     user_id=active.user_id, session_id=active.session_id,

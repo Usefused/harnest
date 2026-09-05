@@ -1,6 +1,7 @@
 """Keep public domain imports compatible with the existing implementation types."""
 
 import importlib
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -34,13 +35,56 @@ CONTRACTS = {
         "context_agent": ["AgentResponse", "AgentInvocationTimeout", "LocalAgentRuntime"],
         "context_assets": ["ScopedAssets"],
     },
-    "runtime": {"runtime_contract": ["ResponseRequest", "RuntimeDriver", "InvocationRequest", "InvocationResult"]},
+    "runtime": {
+        "runtime_contract": [
+            "AgentInfo",
+            "InvocationRequest",
+            "InvocationResult",
+            "NoCustomerFacingOutputError",
+            "ResponseRequest",
+            "RuntimeDriver",
+            "RuntimeEvent",
+            "SessionConflictError",
+            "SessionMessage",
+            "SessionRecord",
+        ]
+    },
+    "sandbox": {
+        "sandbox_runtime": [
+            "SandboxExecutionError",
+            "SandboxInputFilesUnsupportedError",
+        ],
+    },
     "assets": {"asset_policy": ["Stored"]},
     "store": {"storage_registry": ["CustomStorage", "StorageRegistry"]},
 }
 
 
+PUBLIC_API_SNAPSHOT = Path(__file__).resolve().parents[1] / "fixtures/public-api.json"
+
+
+def _public_api_snapshot() -> dict[str, list[str]]:
+    """Load the reviewed API surface without importing implementation paths."""
+
+    return json.loads(PUBLIC_API_SNAPSHOT.read_text(encoding="utf-8"))
+
+
 class PublicImportTests(unittest.TestCase):
+    def test_public_exports_match_reviewed_snapshot(self):
+        """Require every public export addition, removal, or rename to be reviewed."""
+
+        for module_name, expected in _public_api_snapshot().items():
+            module = importlib.import_module(module_name)
+            exported = getattr(module, "__all__", None)
+            with self.subTest(module=module_name):
+                self.assertIsInstance(exported, list)
+                self.assertEqual(len(exported), len(set(exported)), "duplicate export")
+                self.assertTrue(all(isinstance(name, str) for name in exported))
+                self.assertTrue(all(not name.startswith("_") for name in exported))
+                self.assertEqual(sorted(exported), expected)
+                for name in exported:
+                    self.assertTrue(hasattr(module, name), f"missing export {name!r}")
+
     def test_public_contracts_preserve_type_and_exception_identity(self):
         """Old instances, decorators, and exception handlers survive an import migration."""
         for domain, implementations in CONTRACTS.items():
@@ -51,15 +95,15 @@ class PublicImportTests(unittest.TestCase):
                     with self.subTest(domain=domain, symbol=name):
                         self.assertIs(getattr(public, name), getattr(original, name))
 
-    def test_public_exports_import_without_optional_frameworks(self):
-        """Fresh-process imports expose cycles and accidental framework dependencies."""
+    def test_public_exports_import_without_optional_frameworks_or_provider_sdks(self):
+        """Fresh imports expose cycles and accidental optional dependencies."""
         code = '''
 import importlib
 import importlib.abc
 import sys
 class Unavailable(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(('google.adk', 'langgraph', 'langchain')):
+        if fullname.startswith(('google.adk', 'langgraph', 'langchain', 'docker')):
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, Unavailable())
 for name in sys.argv[1:]:
@@ -67,7 +111,17 @@ for name in sys.argv[1:]:
     for symbol in getattr(module, '__all__', []):
         getattr(module, symbol)
 '''
-        result = subprocess.run([sys.executable, "-c", code, *reversed(CONTRACTS)], capture_output=True, text=True, timeout=30)
+        modules = [
+            name.removeprefix("harnest.")
+            for name in _public_api_snapshot()
+            if name != "harnest"
+        ]
+        result = subprocess.run(
+            [sys.executable, "-c", code, *modules],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_context_contracts_are_discoverable_and_unknown_names_fail(self):

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,15 +29,26 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	mustSyncAgentEnvironment(t, sys, agent)
 	firstCalls := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "uv calls", firstCalls, []string{
-		"sync --project " + resolvedAgent,
-		"--python 3.12 --managed-python",
-		"pip install --python",
-		"harnest-test.whl[adk]",
+		"venv --python 3.12 --managed-python --clear",
+		"pip compile --python",
+		filepath.Join(resolvedAgent, "pyproject.toml"),
+		"pip sync --python",
+		"--require-hashes",
 	})
-	if strings.Contains(firstCalls, "pip compile") || strings.Contains(firstCalls, procrastinateRequirement) {
-		t.Fatalf("task-free agent installed optional runtime dependencies:\n%s", firstCalls)
+	if strings.Contains(firstCalls, procrastinateRequirement) {
+		t.Fatalf("task-free agent installed optional task dependencies:\n%s", firstCalls)
 	}
-	assertFilesExist(t, agent, []string{"uv.lock", ".harnest/environment.json"})
+	assertFilesExist(t, agent, []string{runtimeRequirementsLockFile, ".harnest/environment.json"})
+	lock := string(mustReadTestFile(t, filepath.Join(agent, runtimeRequirementsLockFile)))
+	assertContainsAll(t, "committed runtime lock", lock, []string{
+		runtimeLockFormatLine,
+		runtimeLockDigest,
+		runtimeWheelMarker,
+		"--hash=sha256:",
+	})
+	if strings.Contains(lock, root) {
+		t.Fatalf("committed runtime lock retained a machine-local path:\n%s", lock)
+	}
 
 	mustSyncAgentEnvironment(t, sys, agent)
 	if secondCalls := string(mustReadTestFile(t, calls)); secondCalls != firstCalls {
@@ -49,10 +61,13 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 		pyproject,
 		string(mustReadTestFile(t, pyproject))+"# dependency change\n",
 	)
-	mustSyncAgentEnvironment(t, sys, agent, "--frozen")
+	_, _, err = executeForTest(t, sys, "env", "sync", agent, "--frozen")
+	if err == nil || !strings.Contains(err.Error(), "runtime dependency lock is stale") {
+		t.Fatalf("expected stale frozen lock, got %v", err)
+	}
 	updatedCalls := string(mustReadTestFile(t, calls))
-	if !strings.Contains(updatedCalls[len(firstCalls):], "--frozen") {
-		t.Fatalf("frozen resync did not reach uv:\n%s", updatedCalls)
+	if strings.Contains(updatedCalls[len(firstCalls):], "pip sync") {
+		t.Fatalf("stale frozen lock reached dependency installation:\n%s", updatedCalls)
 	}
 }
 
@@ -68,6 +83,61 @@ func mustSyncAgentEnvironment(
 	}
 	if !strings.Contains(stdout, "Agent environment ready:") {
 		t.Fatalf("unexpected sync output %q", stdout)
+	}
+}
+
+func TestFrozenEnvironmentSyncRejectsMissingRuntimeLockBeforeUV(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "missing-lock-agent")
+	if err := createScaffold(agent, "missing-lock-agent"); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+	_, _, err := executeForTest(
+		t, environmentTestSystem(t, root), "env", "sync", agent, "--frozen",
+	)
+	if err == nil || !strings.Contains(err.Error(), "frozen runtime dependency lock is unavailable") {
+		t.Fatalf("expected missing frozen lock error, got %v", err)
+	}
+	if _, statErr := os.Stat(calls); !os.IsNotExist(statErr) {
+		t.Fatalf("uv ran before frozen lock validation: %v", statErr)
+	}
+}
+
+func TestRuntimeLockNormalizesMachineLocalWheelAndProjectPaths(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "portable-lock-agent")
+	if err := createScaffold(agent, "portable-lock-agent"); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := loadAgentBundle(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := inspectRuntimeDependencyPlan(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wheelPath := filepath.Join(root, "release", "harnest-test.whl")
+	candidate := filepath.Join(agent, "candidate.lock")
+	mustWriteEnvironmentFixture(t, candidate, fmt.Sprintf(
+		"harnest @ %s --hash=sha256:00\nhelper @ %s/vendor/helper.whl --hash=sha256:11\n",
+		runtimeWheelURI(wheelPath), strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/"),
+	))
+	document, err := normalizeRuntimeLock(
+		bundle, runtimewheel.Artifact{Name: "harnest-test.whl", Contents: []byte("wheel")},
+		plan, candidate, wheelPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(document)
+	assertContainsAll(t, "portable runtime lock", text, []string{
+		runtimeWheelMarker, runtimeProjectMarker + "/vendor/helper.whl",
+	})
+	if strings.Contains(text, runtimeWheelURI(wheelPath)) || strings.Contains(text, runtimeWheelURI(bundle.Directory)) {
+		t.Fatalf("runtime lock retained machine-local paths:\n%s", text)
 	}
 }
 
@@ -106,11 +176,11 @@ dependencies = ["httpx>=0.28,<1"]
 	assertContainsAll(t, "joint dependency calls", contents, []string{
 		"pip compile --python",
 		filepath.Join(resolvedAgent, "plugins", "clock", "pyproject.toml"),
-		filepath.Join(resolvedAgent, ".harnest", runtimeTaskInputFile),
-		"pip install --python",
-		"--require-hashes -r " + filepath.Join(resolvedAgent, ".harnest", runtimeRequirementsLockFile),
+		procrastinateRequirement,
+		"pip sync --python",
+		"--require-hashes",
 	})
-	lock := string(mustReadTestFile(t, filepath.Join(agent, ".harnest", runtimeRequirementsLockFile)))
+	lock := string(mustReadTestFile(t, filepath.Join(agent, runtimeRequirementsLockFile)))
 	if !strings.Contains(lock, "resolved-runtime-dependencies") {
 		t.Fatalf("unexpected generated runtime lock %q", lock)
 	}
@@ -146,8 +216,9 @@ func TestCompileUsesSynchronizedAgentPython(t *testing.T) {
 
 	contents := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "environment compile calls", contents, []string{
-		"sync --project " + resolvedAgent,
-		"pip install --python",
+		"venv --python 3.12",
+		filepath.Join(resolvedAgent, "pyproject.toml"),
+		"pip sync --python",
 		"PYTHON -m harnest.cli compile " + resolvedAgent,
 	})
 }
@@ -156,23 +227,23 @@ func environmentTestSystem(t *testing.T, root string) system {
 	t.Helper()
 	script := `#!/bin/sh
 printf 'UV %s\n' "$*" >> "$HARNEST_ENV_TEST_CALLS"
-if [ "$1" = "sync" ]; then
-  shift
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--project" ]; then project="$2"; shift 2; continue; fi
-    shift
-  done
-  mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
-  printf '#!/bin/sh\nprintf '\''PYTHON %%s\\n'\'' "$*" >> "$HARNEST_ENV_TEST_CALLS"\n' > "$UV_PROJECT_ENVIRONMENT/bin/python"
-  chmod +x "$UV_PROJECT_ENVIRONMENT/bin/python"
-  printf 'version = 1\n' > "$project/uv.lock"
+if [ "$1" = "venv" ]; then
+	for directory in "$@"; do :; done
+	mkdir -p "$directory/bin"
+	printf '#!/bin/sh\nprintf '\''PYTHON %%s\\n'\'' "$*" >> "$HARNEST_ENV_TEST_CALLS"\n' > "$directory/bin/python"
+	chmod +x "$directory/bin/python"
 fi
 if [ "$1" = "pip" ] && [ "$2" = "compile" ]; then
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--output-file" ]; then output="$2"; shift 2; continue; fi
-    shift
-  done
-  printf 'resolved-runtime-dependencies\n' > "$output"
+	input=""
+	while [ "$#" -gt 0 ]; do
+		if [ "$1" = "--output-file" ]; then output="$2"; input="$3"; shift 2; continue; fi
+		shift
+	done
+	wheel_uri=$(sed -n 's/^harnest\[[^]]*\] @ //p' "$input")
+	printf 'INPUT ' >> "$HARNEST_ENV_TEST_CALLS"
+	tr '\n' ' ' < "$input" >> "$HARNEST_ENV_TEST_CALLS"
+	printf '\n' >> "$HARNEST_ENV_TEST_CALLS"
+	printf 'harnest @ %s \\\n    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000\nresolved-runtime-dependencies\n' "$wheel_uri" > "$output"
 fi
 `
 	sys := defaultSystem()

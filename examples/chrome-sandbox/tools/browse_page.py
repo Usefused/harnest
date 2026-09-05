@@ -13,10 +13,11 @@ ALLOWED_HOSTS = frozenset({"example.com", "playwright.dev"})
 
 def _browser_code(url: str) -> str:
     """Serialize the URL as data and bound the page content returned over stdout."""
-    payload = json.dumps({"url": url})
+    payload = json.dumps({"url": url, "allowed_hosts": sorted(ALLOWED_HOSTS)})
     return f'''\
 import json
 import os
+from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 
 request = json.loads({payload!r})
@@ -27,7 +28,14 @@ with sync_playwright() as playwright:
         chromium_sandbox=False,
         args=["--disable-dev-shm-usage"],
     )
-    page = browser.new_page()
+    browser_context = browser.new_context(service_workers="block")
+
+    def admit(route):
+        host = (urlsplit(route.request.url).hostname or "").lower()
+        route.continue_() if host in request["allowed_hosts"] else route.abort()
+
+    browser_context.route("**/*", admit)
+    page = browser_context.new_page()
     response = page.goto(
         request["url"], wait_until="domcontentloaded", timeout=15_000
     )
@@ -37,6 +45,7 @@ with sync_playwright() as playwright:
         "title": page.title(),
         "text": page.locator("body").inner_text(timeout=5_000)[:4_000],
     }}
+    browser_context.close()
     browser.close()
 print(json.dumps(result))
 '''

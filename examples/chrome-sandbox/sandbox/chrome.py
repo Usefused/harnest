@@ -1,13 +1,12 @@
-"""Build a pinned Playwright image only when the Chrome sandbox first runs."""
+"""Run browser work through the application-installed Docker extension."""
 
-from pathlib import Path
+from harnest.extensions.docker import docker
+from harnest.sandbox import SandboxBudget, SandboxNetworkPolicy
 
-from harnest.sandbox import Sandbox, SandboxBudget
 
-
-chrome = Sandbox.container(
-    docker_path=str(Path(__file__).with_name("_chrome_image")),
-    network=True,
+chrome = docker.sandbox(
+    image="harnest-chrome-sandbox:1.61.0",
+    network_policy=SandboxNetworkPolicy.unrestricted(),
     timeout_seconds=45,
     max_output_bytes=32_768,
     budget=SandboxBudget(

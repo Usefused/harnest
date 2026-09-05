@@ -147,6 +147,10 @@ Copy _example_agent/ to starter/ to enable this skills-only Agent Plugin.
 Its plugin.json manifest follows Agent Plugins 1.0. Skills and MCP servers are
 optional components: a plugin can provide either or both.
 
+Install a local portable package atomically by running:
+
+    harnest plugins install ./path/to/plugin --project ./path/to/agent
+
 To add an MCP server, create starter/mcp.json after replacing the HTTPS
 placeholder endpoint with your server's address:
 

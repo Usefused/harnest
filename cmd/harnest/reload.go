@@ -130,7 +130,7 @@ func (a *application) reloadBundleAndPython(
 	if refreshed.Digest == bundle.Digest {
 		return refreshed, python, nil
 	}
-	// Environment synchronization may update uv.lock. Resolve once more so the
+	// Environment synchronization may update harnest-runtime.lock. Resolve once more so the
 	// compiled generation and interpreter share the final dependency identity.
 	python, err = a.agentPython(command, refreshed)
 	if err != nil {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,8 +15,7 @@ import (
 const procrastinateRequirement = "procrastinate==3.9.0"
 
 const (
-	runtimeRequirementsLockFile = "runtime-requirements.lock"
-	runtimeTaskInputFile        = "runtime-tasks.in"
+	runtimeRequirementsLockFile = "harnest-runtime.lock"
 	maxDependencyFileBytes      = 16 * 1024 * 1024
 )
 
@@ -25,11 +23,6 @@ const (
 type runtimeDependencyPlan struct {
 	ProjectFiles []string
 	HasTasks     bool
-}
-
-// needsJointResolution reports whether dependencies exist outside the root project.
-func (p runtimeDependencyPlan) needsJointResolution() bool {
-	return len(p.ProjectFiles) > 1 || p.HasTasks
 }
 
 // inspectRuntimeDependencyPlan joins agent, plugin, and optional task requirements.
@@ -244,24 +237,13 @@ func containsString(values []string, expected string) bool {
 	return false
 }
 
-// jointResolutionInputs resolves task/plugin dependencies against the committed framework pin.
-func jointResolutionInputs(bundle engine.Bundle, plan runtimeDependencyPlan) ([]string, error) {
-	inputs, err := appendFrameworkResolutionInput(bundle, append([]string{}, plan.ProjectFiles...))
-	if err != nil {
-		return nil, err
-	}
-	if !plan.HasTasks {
-		return inputs, nil
-	}
-	path := filepath.Join(bundle.Directory, ".harnest", runtimeTaskInputFile)
-	if err := replaceRegularFile(path, []byte(procrastinateRequirement+"\n")); err != nil {
-		return nil, fmt.Errorf("write task runtime dependency input: %w", err)
-	}
-	return append(inputs, path), nil
-}
-
 // replaceRegularFile atomically replaces generated dependency state without following links.
 func replaceRegularFile(path string, contents []byte) error {
+	return replaceRegularFileMode(path, contents, 0o600)
+}
+
+// replaceRegularFileMode applies final permissions before the atomic publication rename.
+func replaceRegularFileMode(path string, contents []byte, mode os.FileMode) error {
 	directory := filepath.Dir(path)
 	temporary, err := os.CreateTemp(directory, ".harnest-dependencies-*")
 	if err != nil {
@@ -278,6 +260,9 @@ func replaceRegularFile(path string, contents []byte) error {
 	if _, err := temporary.Write(contents); err != nil {
 		return err
 	}
+	if err := temporary.Chmod(mode); err != nil {
+		return err
+	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
@@ -285,32 +270,5 @@ func replaceRegularFile(path string, contents []byte) error {
 		return err
 	}
 	removeTemporary = false
-	return nil
-}
-
-// requireFrozenRuntimeLock ensures a joint lock exists before uv is invoked.
-func requireFrozenRuntimeLock(path string) error {
-	if _, err := readRegularDependencyFile(path); err != nil {
-		return fmt.Errorf("frozen runtime dependency lock is unavailable: %w", err)
-	}
-	return nil
-}
-
-// publishRuntimeLock either verifies frozen output or atomically publishes it.
-func publishRuntimeLock(candidate, destination string, frozen bool) error {
-	candidateContents, err := readRegularDependencyFile(candidate)
-	if err != nil {
-		return fmt.Errorf("read resolved runtime dependency lock: %w", err)
-	}
-	if !frozen {
-		return replaceRegularFile(destination, candidateContents)
-	}
-	lockedContents, err := readRegularDependencyFile(destination)
-	if err != nil {
-		return fmt.Errorf("read frozen runtime dependency lock: %w", err)
-	}
-	if !bytes.Equal(candidateContents, lockedContents) {
-		return fmt.Errorf("runtime dependency lock is stale; run harnest env sync without --frozen")
-	}
 	return nil
 }

@@ -81,19 +81,3 @@ func (a *application) verifyAndRecordFramework(command *cobra.Command, bundle en
 	}
 	return a.recordFrameworkResolution(command, bundle, staged, frozen)
 }
-
-// appendFrameworkResolutionInput gives joint plugin resolution the same exact framework constraint.
-func appendFrameworkResolutionInput(bundle engine.Bundle, inputs []string) ([]string, error) {
-	pin, err := lockedFrameworkRequirement(bundle)
-	if err != nil {
-		return nil, err
-	}
-	if pin == "" {
-		return inputs, nil
-	}
-	path := filepath.Join(bundle.Directory, ".harnest", "framework-requirement.in")
-	if err := replaceRegularFile(path, []byte(pin+"\n")); err != nil {
-		return nil, err
-	}
-	return append(inputs, path), nil
-}

@@ -9,6 +9,11 @@ from typing import Any, Callable
 
 from .logging import get_logger
 from .sandbox_control import SandboxCancelledError, execution_control
+from .sandbox_policy import (
+    SandboxNetworkPolicy,
+    SandboxPolicyUnsupportedError,
+    SandboxProviderCapabilities,
+)
 from .sandbox_types import SandboxBackend, SandboxStatus
 
 
@@ -130,13 +135,17 @@ class SandboxRuntime:
             trigger="agent",
             outcome=outcome,
             framework=self.framework,
-            backend="container" if self.definition.backend == "container" else "provider",
+            # Provider names can be application-controlled and high-cardinality.
+            backend="provider",
         )
 
 
-def validate_backend(value: Any) -> Any:
-    """Accept portable executors and retain native ADK provider compatibility."""
+def validate_backend(
+    value: Any, *, network_policy: SandboxNetworkPolicy | None = None,
+) -> Any:
+    """Accept supported executors and validate explicit policy before execution."""
     if isinstance(value, SandboxBackend) and callable(value.execute):
+        _validate_network_capabilities(value, network_policy)
         return value
     # Portable providers do not require importing either framework. Native ADK
     # compatibility is checked only when the portable protocol is absent.
@@ -145,5 +154,24 @@ def validate_backend(value: Any) -> Any:
     except ImportError:
         BaseCodeExecutor = ()
     if isinstance(value, BaseCodeExecutor):
+        if network_policy is not None:
+            raise SandboxPolicyUnsupportedError(
+                "native ADK sandbox providers cannot declare Harnest network-policy capabilities"
+            )
         return value
     raise TypeError("sandbox provider must return SandboxBackend or ADK BaseCodeExecutor")
+
+
+def _validate_network_capabilities(
+    backend: Any, policy: SandboxNetworkPolicy | None,
+) -> None:
+    """Require typed provider guarantees whenever Harnest owns network policy."""
+    if policy is None:
+        return
+    capabilities = getattr(backend, "sandbox_capabilities", None)
+    if not isinstance(capabilities, SandboxProviderCapabilities):
+        raise SandboxPolicyUnsupportedError(
+            "sandbox providers with network_policy must declare "
+            "SandboxProviderCapabilities as sandbox_capabilities"
+        )
+    capabilities.require(policy)

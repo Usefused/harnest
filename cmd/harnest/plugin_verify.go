@@ -30,7 +30,10 @@ const (
 )
 
 // Add names only after Fused controls the corresponding public PyPI project.
-var officialPyPIPluginProjects = []string{}
+var officialPyPIPluginProjects = []string{
+	"harnest-extension-docker",
+	"harnest-extension-hatchet",
+}
 
 type pypiReleaseFile struct {
 	Filename    string `json:"filename"`
@@ -71,6 +74,11 @@ type pluginWheelManifest struct {
 type pluginEntryPoint struct {
 	Name  string
 	Value string
+}
+
+type pluginWheelPackage struct {
+	EntryPoint pluginEntryPoint
+	Manifest   []byte
 }
 
 // inspectPyPIPlugin checks compatibility without importing package code.
@@ -201,50 +209,67 @@ func (a *application) validPluginArtifactURL(value string) (*url.URL, error) {
 
 // inspectPluginWheel binds the package name to one entry point and manifest.
 func inspectPluginWheel(contents []byte, projectName, release string) error {
+	_, err := readPluginWheelPackage(contents, projectName, release)
+	return err
+}
+
+// readPluginWheelPackage returns only the verified resources needed by installation.
+func readPluginWheelPackage(
+	contents []byte, projectName, release string,
+) (pluginWheelPackage, error) {
 	reader, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
 	if err != nil || len(reader.File) > maxPluginWheelFiles {
-		return fmt.Errorf("invalid or oversized plugin wheel")
+		return pluginWheelPackage{}, fmt.Errorf("invalid or oversized plugin wheel")
 	}
 	entrypointFile, err := findPluginEntryPointFile(reader.File)
 	if err != nil {
-		return err
+		return pluginWheelPackage{}, err
 	}
 	entrypointBytes, err := readPluginWheelMetadata(entrypointFile)
 	if err != nil {
-		return err
+		return pluginWheelPackage{}, err
 	}
 	entrypoint, err := parsePluginEntryPointFile(string(entrypointBytes))
 	if err != nil {
-		return err
+		return pluginWheelPackage{}, err
 	}
-	return validatePluginWheelContent(reader.File, entrypoint, projectName, release)
+	manifest, err := validatePluginWheelContent(reader.File, entrypoint, projectName, release)
+	if err != nil {
+		return pluginWheelPackage{}, err
+	}
+	return pluginWheelPackage{EntryPoint: entrypoint, Manifest: manifest}, nil
 }
 
 // validatePluginWheelContent checks the three resources that define compatibility.
 func validatePluginWheelContent(
 	files []*zip.File, entrypoint pluginEntryPoint, projectName, release string,
-) error {
+) ([]byte, error) {
 	slug := extensionProjectSlug(projectName)
 	if normalizeProjectName(entrypoint.Name) != slug {
-		return fmt.Errorf("plugin entry point name does not match project name")
+		return nil, fmt.Errorf("plugin entry point name does not match project name")
 	}
 	root, err := pluginModuleRoot(entrypoint.Value)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stem, kind := extensionWheelFormat(entrypoint.Value)
 	manifestFile, err := findUniqueWheelFile(files, root+"/"+stem+".yaml")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := findUniqueWheelFile(files, root+"/"+stem+".py"); err != nil {
-		return err
+		return nil, err
 	}
 	manifestBytes, err := readPluginWheelMetadata(manifestFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return validatePluginWheelManifest(manifestBytes, entrypoint.Name, release, kind, stem+":"+stem)
+	if err := validatePluginWheelManifest(
+		manifestBytes, entrypoint.Name, release, kind, stem+":"+stem,
+	); err != nil {
+		return nil, err
+	}
+	return manifestBytes, nil
 }
 
 // findPluginEntryPointFile requires one unambiguous distribution metadata file.

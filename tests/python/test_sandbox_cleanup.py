@@ -6,10 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from harnest.context import activate_context, revoke_context
 from harnest.sandbox import Sandbox, SandboxCancelledError, control
-from harnest.sandbox_guard import _remove_owned_container
-from test_sandbox_control import _managed
 
 
 class SandboxCleanupTests(unittest.TestCase):
@@ -28,29 +25,6 @@ class SandboxCleanupTests(unittest.TestCase):
             with self.assertRaises(SandboxCancelledError):
                 parent.check()
         factory.assert_not_called()
-
-    def test_revoked_identity_allows_resource_removal(self):
-        """Exercise the built-in Docker cleanup transport after managed revocation."""
-        active = _managed()
-        api = SimpleNamespace(timeout=60)
-        container = SimpleNamespace(client=SimpleNamespace(api=api))
-        observed = []
-
-        def remove(**kwargs):
-            observed.append((api.timeout, kwargs))
-            control.current().check()
-            with self.assertRaises(SandboxCancelledError), control.execute(10):
-                self.fail("cleanup admitted execution")
-
-        container.remove = remove
-        with activate_context(active), control.execute(30) as parent:
-            revoke_context(active)
-            parent.cancelled.set()
-            _remove_owned_container(container)
-            self.assertTrue(parent.cancelled.is_set())
-        self.assertEqual(api.timeout, 60)
-        self.assertLessEqual(observed[0][0], 2)
-        self.assertEqual(observed[0][1], {"force": True, "v": True})
 
     def test_cleanup_deadline_is_finite_and_nested_scopes_cannot_extend_it(self):
         clock = Mock(return_value=100.0)

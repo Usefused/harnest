@@ -43,15 +43,30 @@ class ResolvedDependency:
 
 
 def load_runtime_plugin_project(
-    directory: Path, *, expected_name: str, expected_version: str
+    directory: Path,
+    *,
+    expected_name: str,
+    expected_version: str,
+    canonical_extension: bool = False,
 ) -> RuntimePluginProject:
-    """Load an optional plugin pyproject without importing plugin code."""
+    """Load an optional plugin pyproject without importing plugin code.
+
+    Canonical Harnest Extensions use a prefixed distribution name so their
+    package identity cannot collide with a provider SDK such as ``docker``.
+    Legacy runtime plugins retain their original exact-name contract.
+    """
 
     path = directory / "pyproject.toml"
     if not path.exists() and not path.is_symlink():
         return RuntimePluginProject(expected_name, expected_version, ())
     project = _load_project(path, owner=f"runtime plugin {expected_name!r}")
-    _require_matching_identity(project, expected_name, expected_version, path)
+    _require_matching_identity(
+        project,
+        expected_name,
+        expected_version,
+        path,
+        canonical_extension=canonical_extension,
+    )
     return RuntimePluginProject(
         name=str(project["name"]),
         version=str(project["version"]),
@@ -109,18 +124,21 @@ def _load_project(path: Path, *, owner: str) -> dict[str, object]:
 
 
 def _require_matching_identity(
-    project: dict[str, object], expected_name: str, expected_version: str, path: Path
+    project: dict[str, object],
+    expected_name: str,
+    expected_version: str,
+    path: Path,
+    *,
+    canonical_extension: bool,
 ) -> None:
     """Keep package metadata tied to the folder-discovered plugin identity."""
 
     name = project.get("name")
     if not isinstance(name, str) or not name.strip():
         raise RuntimePluginProjectError(f"[project].name must be a string: {path}")
-    if canonicalize_name(name) != canonicalize_name(expected_name):
-        raise RuntimePluginProjectError(
-            f"runtime plugin {expected_name!r} pyproject name {name!r} must match "
-            "plugin.yaml metadata.name"
-        )
+    manifest = _require_matching_project_name(
+        name, expected_name, canonical_extension=canonical_extension
+    )
     version = project.get("version")
     if not isinstance(version, str) or not version.strip():
         raise RuntimePluginProjectError(f"[project].version must be a string: {path}")
@@ -133,8 +151,29 @@ def _require_matching_identity(
     if not matches:
         raise RuntimePluginProjectError(
             f"runtime plugin {expected_name!r} pyproject version {version!r} must "
-            f"match plugin.yaml metadata.version {expected_version!r}"
+            f"match {manifest} metadata.version {expected_version!r}"
         )
+
+
+def _require_matching_project_name(
+    name: str, expected_name: str, *, canonical_extension: bool
+) -> str:
+    """Bind a distribution name to its manifest while retaining legacy errors."""
+
+    if not canonical_extension:
+        if canonicalize_name(name) != canonicalize_name(expected_name):
+            raise RuntimePluginProjectError(
+                f"runtime plugin {expected_name!r} pyproject name {name!r} must "
+                "match plugin.yaml metadata.name"
+            )
+        return "plugin.yaml"
+    expected_distribution = f"harnest-extension-{expected_name}"
+    if canonicalize_name(name) != canonicalize_name(expected_distribution):
+        raise RuntimePluginProjectError(
+            f"runtime plugin {expected_name!r} pyproject name {name!r} must be "
+            f"{expected_distribution!r} for extension.yaml metadata.name"
+        )
+    return "extension.yaml"
 
 
 def _project_dependencies(

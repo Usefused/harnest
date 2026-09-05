@@ -422,6 +422,50 @@ capabilities: []
 
         asyncio.run(verify())
 
+    def test_http_adapter_supports_environment_socks_proxies(self):
+        """Portable MCP sessions inherit uppercase and lowercase SOCKS proxies."""
+
+        import httpx
+
+        async def verify():
+            for variable in ("ALL_PROXY", "all_proxy"):
+                with self.subTest(variable=variable), patch.dict(
+                    os.environ,
+                    {
+                        variable: (
+                            "socks5h://proxy-user:proxy-secret@127.0.0.1:1080"
+                        )
+                    },
+                    clear=True,
+                ):
+                    client = portable_http_factory("https://example.com/mcp")()
+                    self.assertIsInstance(client, httpx.AsyncClient)
+                    await client.aclose()
+
+        asyncio.run(verify())
+
+    def test_http_adapter_redacts_proxy_construction_failures(self):
+        """Portable diagnostics cannot disclose credentials from proxy errors."""
+
+        import httpx
+
+        with patch.object(
+            httpx,
+            "AsyncClient",
+            side_effect=ValueError(
+                "invalid socks5://proxy-user:proxy-secret@127.0.0.1:1080"
+            ),
+        ):
+            with self.assertRaises(AgentPluginError) as caught:
+                portable_http_factory("https://example.com/mcp")()
+
+        self.assertEqual(
+            str(caught.exception),
+            "Agent Plugin MCP HTTP client construction failed with ValueError",
+        )
+        self.assertNotIn("proxy-secret", str(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
+
     def test_provider_failure_diagnostic_does_not_expose_exception_payload(self):
         root = self._package()
         client = self._stdio(root)

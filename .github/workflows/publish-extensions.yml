@@ -1,0 +1,200 @@
+name: Publish Official Extensions
+
+on:
+  pull_request:
+    paths:
+      - "official-extensions/docker/**"
+      - "official-extensions/hatchet/**"
+      - ".github/workflows/publish-extensions.yml"
+  push:
+    branches:
+      - "**"
+    tags:
+      - "harnest-extension-docker-v*"
+      - "harnest-extension-hatchet-v*"
+    paths:
+      - "official-extensions/docker/**"
+      - "official-extensions/hatchet/**"
+      - ".github/workflows/publish-extensions.yml"
+  workflow_dispatch:
+    inputs:
+      extension:
+        description: Official extension to publish from main
+        required: true
+        type: choice
+        options:
+          - docker
+          - hatchet
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-official-extensions-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.extension }} extension
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: [docker, hatchet]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # releases/v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # releases/v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify release source
+        id: selection
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+          REQUESTED_EXTENSION: ${{ inputs.extension }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "Manual extension publishing must run from main." >&2
+              exit 1
+            fi
+            if [[ "${REQUESTED_EXTENSION}" != "${EXTENSION}" ]]; then
+              echo "active=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            prefix="harnest-extension-${EXTENSION}-v"
+            if [[ "${GITHUB_REF_NAME}" != "${prefix}"* ]]; then
+              echo "active=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            tag_version="${GITHUB_REF_NAME#${prefix}}"
+            if ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"; then
+              echo "Extension release tags must point to a commit on main." >&2
+              exit 1
+            fi
+          else
+            tag_version=""
+          fi
+
+          echo "active=true" >> "${GITHUB_OUTPUT}"
+          project="official-extensions/${EXTENSION}"
+          project_version=$(python3 -c 'import pathlib, sys, tomllib; print(tomllib.loads((pathlib.Path(sys.argv[1]) / "pyproject.toml").read_text())["project"]["version"])' "${project}")
+          manifest_version=$(sed -n 's/^  version: \([^ ]*\)$/\1/p' "${project}/extension.yaml")
+          if [[ "${project_version}" != "${manifest_version}" ]]; then
+            echo "${EXTENSION} project and manifest versions do not match." >&2
+            exit 1
+          fi
+          if [[ -n "${tag_version}" && "${tag_version}" != "${project_version}" ]]; then
+            echo "Tag version ${tag_version} does not match ${EXTENSION} ${project_version}." >&2
+            exit 1
+          fi
+
+      - name: Install build and test dependencies
+        if: steps.selection.outputs.active == 'true'
+        run: python -m pip install --upgrade "build>=1.3,<2" ".[all,quality]"
+
+      - name: Install Docker contract dependency
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'docker'
+        run: python -m pip install 'docker>=7.1,<8'
+
+      - name: Install Hatchet contract dependency
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'hatchet'
+        run: python -m pip install 'hatchet-sdk>=1.38,<2'
+
+      - name: Check extension complexity
+        if: steps.selection.outputs.active == 'true'
+        run: python scripts/check_python_complexity.py --max 10 official-extensions/${{ matrix.extension }}
+
+      - name: Test Docker extension contracts
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'docker'
+        run: >-
+          python -m pytest -q
+          official-extensions/docker/_tests/test_backend.py
+          official-extensions/docker/_tests/test_extension.py
+          official-extensions/docker/_tests/test_guard.py
+          official-extensions/docker/_tests/test_runtime.py
+
+      - name: Test Hatchet extension contracts
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'hatchet'
+        run: >-
+          python -m pytest -q
+          tests/python/test_hatchet_runtime_plugin_example.py
+          tests/python/test_hatchet_plugin_consumer.py
+
+      - name: Build extension wheel
+        if: steps.selection.outputs.active == 'true'
+        run: python -m build --wheel --outdir dist official-extensions/${{ matrix.extension }}
+
+      - name: Verify wheel installation metadata
+        if: steps.selection.outputs.active == 'true'
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          python -c 'import importlib.metadata, sys; distribution = importlib.metadata.distribution("harnest-extension-" + sys.argv[1]); entries = [item for item in distribution.entry_points if item.group == "harnest.extensions"]; files = {str(item) for item in distribution.files or ()}; assert len(entries) == 1 and entries[0].name == sys.argv[1]; assert "harnest_extension_" + sys.argv[1] + "/README.md" in files; entries[0].load()' "${EXTENSION}"
+
+      - name: Preserve verified wheel
+        if: steps.selection.outputs.active == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # releases/v4
+        with:
+          name: harnest-extension-${{ matrix.extension }}-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish-docker:
+    name: Publish Docker extension
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.extension == 'docker') ||
+      startsWith(github.ref, 'refs/tags/harnest-extension-docker-v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Restore verified wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # releases/v5
+        with:
+          name: harnest-extension-docker-wheel
+          path: dist
+
+      - name: Publish extension to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+
+  publish-hatchet:
+    name: Publish Hatchet extension
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.extension == 'hatchet') ||
+      startsWith(github.ref, 'refs/tags/harnest-extension-hatchet-v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Restore verified wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # releases/v5
+        with:
+          name: harnest-extension-hatchet-wheel
+          path: dist
+
+      - name: Publish extension to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/

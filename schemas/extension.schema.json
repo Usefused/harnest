@@ -92,6 +92,7 @@
           "native.adk",
           "native.langgraph",
           "policy.output",
+          "sandbox.provider",
           "telemetry.exporter"
         ]
       }

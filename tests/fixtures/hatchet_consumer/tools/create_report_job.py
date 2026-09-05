@@ -1,4 +1,4 @@
-"""Consumer-owned agent tool backed by the public Hatchet plugin capability."""
+"""Consumer-owned agent tool backed by the public Hatchet extension capability."""
 
 from __future__ import annotations
 

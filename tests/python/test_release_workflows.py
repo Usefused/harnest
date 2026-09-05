@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,6 +90,191 @@ def write_installer_fakes(directory: Path, version: str):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_official_extensions_publish_with_trusted_publishing(self):
+        workflow = load_yaml(".github/workflows/publish-extensions.yml")
+        events = workflow_events(workflow)
+        build_job = workflow["jobs"]["build"]
+        scripts = "\n".join(step.get("run", "") for step in build_job["steps"])
+
+        self.assertEqual(workflow["name"], "Publish Official Extensions")
+        self.assertEqual(
+            events["push"]["tags"],
+            [
+                "harnest-extension-docker-v*",
+                "harnest-extension-hatchet-v*",
+            ],
+        )
+        self.assertEqual(
+            events["push"]["paths"],
+            [
+                "official-extensions/docker/**",
+                "official-extensions/hatchet/**",
+                ".github/workflows/publish-extensions.yml",
+            ],
+        )
+        self.assertEqual(
+            events["workflow_dispatch"]["inputs"]["extension"]["options"],
+            ["docker", "hatchet"],
+        )
+        self.assertEqual(
+            build_job["strategy"]["matrix"]["extension"],
+            ["docker", "hatchet"],
+        )
+        self.assertEqual(workflow["permissions"]["contents"], "read")
+        self.assertNotIn("id-token", workflow["permissions"])
+        expected_actions = {
+            "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
+            "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+            "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+            "actions/download-artifact": "634f93cb2916e3fdff6788551b99b062d0335ce0",
+            "pypa/gh-action-pypi-publish": (
+                "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
+            ),
+        }
+        for job in workflow["jobs"].values():
+            for step in job["steps"]:
+                action = step.get("uses")
+                if action is None:
+                    continue
+                repository, revision = action.split("@", 1)
+                self.assertEqual(revision, expected_actions[repository])
+        for slug in ("docker", "hatchet"):
+            publish_job = workflow["jobs"][f"publish-{slug}"]
+            publish_step = next(
+                step
+                for step in publish_job["steps"]
+                if step["name"] == "Publish extension to PyPI"
+            )
+            self.assertEqual(publish_job["permissions"]["id-token"], "write")
+            self.assertEqual(publish_job["needs"], "build")
+            self.assertEqual(publish_job["environment"], "pypi")
+            self.assertIn(f"harnest-extension-{slug}-v", publish_job["if"])
+            self.assertTrue(
+                publish_step["uses"].startswith(
+                    "pypa/gh-action-pypi-publish@dc37677"
+                )
+            )
+            self.assertNotIn("password", publish_step.get("with", {}))
+        self.assertIn('GITHUB_REF}" != "refs/heads/main', scripts)
+        self.assertIn('tag_version}" != "${project_version}', scripts)
+        self.assertIn(
+            'git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"',
+            scripts,
+        )
+        checkout = build_job["steps"][0]
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        self.assertFalse(checkout["with"]["persist-credentials"])
+        self.assertIn("official-extensions/${EXTENSION}", scripts)
+        self.assertIn("pip install --no-deps dist/*.whl", scripts)
+        self.assertIn("distribution.files", scripts)
+        self.assertIn("entries[0].load()", scripts)
+        self.assertIn("official-extensions/docker/_tests/test_backend.py", scripts)
+        self.assertIn("tests/python/test_hatchet_plugin_consumer.py", scripts)
+        self.assertIn("check_python_complexity.py --max 10", scripts)
+
+    def test_official_extension_wheels_expose_verified_entry_points(self):
+        expected_modules = {
+            "docker": {
+                "lib/__init__.py",
+                "lib/backend.py",
+                "lib/docker_runtime.py",
+                "lib/guard.py",
+                "lib/socket_stream.py",
+                "lib/startup.py",
+            },
+            "hatchet": {
+                "lib/client.py",
+                "lib/continuations.py",
+                "lib/payloads.py",
+            },
+        }
+        for slug in ("docker", "hatchet"):
+            with (
+                self.subTest(extension=slug),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                temporary_root = Path(temporary)
+                source = temporary_root / slug
+                distribution = temporary_root / "dist"
+                shutil.copytree(ROOT / "official-extensions" / slug, source)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "build",
+                        "--wheel",
+                        "--no-isolation",
+                        "--outdir",
+                        str(distribution),
+                        str(source),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                wheel = next(distribution.glob("*.whl"))
+                package = f"harnest_extension_{slug}"
+                with zipfile.ZipFile(wheel) as archive:
+                    names = archive.namelist()
+                    entry_points_path = next(
+                        name
+                        for name in names
+                        if name.endswith(".dist-info/entry_points.txt")
+                    )
+                    metadata_path = next(
+                        name
+                        for name in names
+                        if name.endswith(".dist-info/METADATA")
+                    )
+                    entry_points = archive.read(entry_points_path).decode("utf-8")
+                    readme = archive.read(f"{package}/README.md").decode("utf-8")
+                    metadata = archive.read(metadata_path).decode("utf-8")
+
+                self.assertIn(f"{package}/extension.py", names)
+                self.assertIn(f"{package}/extension.yaml", names)
+                self.assertIn(f"{package}/README.md", names)
+                self.assertTrue(
+                    {
+                        f"{package}/{relative}"
+                        for relative in expected_modules[slug]
+                    }.issubset(names)
+                )
+                self.assertFalse(
+                    any(
+                        "/_tests/" in name
+                        or "/_scripts/" in name
+                        or "__pycache__" in name
+                        for name in names
+                    )
+                )
+                self.assertIn("Harnest Extension", readme)
+                self.assertIn("not an Agent Plugin", readme)
+                self.assertIn("Description-Content-Type: text/markdown", metadata)
+                self.assertIn("not an Agent Plugin", metadata)
+                self.assertIn("[harnest.extensions]", entry_points)
+                self.assertIn(
+                    f"{slug} = {package}.extension:extension", entry_points
+                )
+
+    def test_official_extension_projects_use_packaged_readmes(self):
+        for slug in ("docker", "hatchet"):
+            with self.subTest(extension=slug):
+                root = ROOT / "official-extensions" / slug
+                project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+                readme = (root / "README.md").read_text("utf-8")
+
+                self.assertEqual(project["project"]["readme"], "README.md")
+                self.assertIn(
+                    "README.md",
+                    project["tool"]["setuptools"]["package-data"][
+                        f"harnest_extension_{slug}"
+                    ],
+                )
+                self.assertIn("https://docs.usefused.com/harnest", readme)
+                self.assertIn("https://github.com/Usefused/harnest", readme)
+
     def test_ci_only_validates_source_changes(self):
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]
@@ -96,7 +282,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             step for step in quality_job["steps"] if step["name"] == "Run quality gates"
         )
 
-        self.assertEqual(workflow_events(workflow)["push"]["branches"], ["**"])
+        events = workflow_events(workflow)
+        self.assertEqual(events["push"]["branches"], ["**"])
+        for event in ("pull_request", "push"):
+            self.assertEqual(
+                events[event]["paths-ignore"], ["official-extensions/**"]
+            )
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
         self.assertNotIn("release-tag", workflow["jobs"])
         self.assertEqual(workflow["permissions"]["contents"], "read")
@@ -326,6 +517,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             requirements = project[extra]
             self.assertTrue(any(value.startswith("asyncpg") for value in requirements))
             self.assertTrue(any(value.startswith("redis") for value in requirements))
+
+    def test_base_runtime_includes_httpx_socks_transport(self):
+        """Released installs support operator-provided SOCKS proxy environments."""
+
+        dependencies = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["dependencies"]
+
+        self.assertIn("httpx[socks]>=0.28,<1", dependencies)
 
     def test_all_extra_includes_the_task_runtime(self):
         """Keep the documented development install capable of live task tests."""

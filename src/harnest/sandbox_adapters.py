@@ -35,6 +35,7 @@ def adk_executor(definition: Any) -> Any:
                     lambda backend: _execute_adk(
                         backend, invocation_context, code_execution_input,
                         self.timeout_seconds, self._runtime.definition.metadata,
+                        self._runtime.definition.network_policy,
                     )
                 )
 
@@ -49,7 +50,12 @@ def adk_executor(definition: Any) -> Any:
 
 
 def _execute_adk(
-    backend: Any, context: Any, source: Any, timeout: int | None, metadata: Any,
+    backend: Any,
+    context: Any,
+    source: Any,
+    timeout: int | None,
+    metadata: Any,
+    network_policy: Any,
 ) -> Any:
     """Translate neutral providers but pass legacy ADK context through unchanged."""
     if not isinstance(backend, SandboxBackend):
@@ -61,6 +67,7 @@ def _execute_adk(
         input_files=tuple(_portable_file(value) for value in source.input_files),
         execution_id=source.execution_id,
         metadata=metadata,
+        network_policy=network_policy,
     )
     return _adk_result(_execute_portable(backend, request))
 
@@ -108,6 +115,7 @@ class _PortableToolRunner:
             request = SandboxRequest(
                 code=code, timeout_seconds=self.definition.timeout_seconds,
                 context=execution_context(native), metadata=self.definition.metadata,
+                network_policy=self.definition.network_policy,
             )
             result = self.runtime.run(lambda backend: _execute_portable(backend, request))
             return _tool_result(result)

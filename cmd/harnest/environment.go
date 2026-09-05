@@ -39,7 +39,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 	var frozen bool
 	command := &cobra.Command{
 		Use:   "sync AGENT_DIR",
-		Short: "Synchronize pyproject.toml into the agent environment",
+		Short: "Synchronize the complete locked agent runtime",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			bundle, err := loadAgentBundle(arguments[0])
@@ -62,7 +62,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&frozen,
 		"frozen",
 		false,
-		"require existing dependency and framework locks without updating them",
+		"require an existing current runtime lock without updating it",
 	)
 	return command
 }
@@ -182,9 +182,8 @@ func environmentFingerprint(
 		}
 	}
 	for _, path := range []string{
-		filepath.Join(bundle.Directory, "uv.lock"),
 		filepath.Join(bundle.Directory, "harnest.lock"),
-		filepath.Join(bundle.Directory, ".harnest", runtimeRequirementsLockFile),
+		filepath.Join(bundle.Directory, runtimeRequirementsLockFile),
 	} {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, true); err != nil {
 			return "", err
@@ -278,7 +277,7 @@ func lockEnvironment(path string) (func(), error) {
 	return func() { _ = os.Remove(path) }, nil
 }
 
-// installAgentEnvironment publishes only after the resolved framework lock is verified.
+// installAgentEnvironment publishes only after the complete runtime lock is installed and verified.
 func (a *application) installAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
@@ -293,14 +292,30 @@ func (a *application) installAgentEnvironment(
 		return pythonSelection{}, err
 	}
 	defer cleanup()
-	if err := a.syncAgentProject(command, bundle, staged, plan, frozen); err != nil {
+	if frozen {
+		lockPath := filepath.Join(bundle.Directory, runtimeRequirementsLockFile)
+		if err := validateFrozenRuntimeLock(bundle, wheel, plan, lockPath); err != nil {
+			return pythonSelection{}, err
+		}
+	}
+	if err := a.createAgentVirtualEnvironment(command, bundle, staged); err != nil {
 		return pythonSelection{}, err
 	}
-	if err := a.installAgentWheel(command, bundle, staged); err != nil {
+	lock, cleanupLock, err := a.prepareRuntimeLock(command, bundle, wheel, staged, plan, frozen)
+	if err != nil {
+		return pythonSelection{}, err
+	}
+	defer cleanupLock()
+	if err := a.syncLockedRuntime(command, staged, lock); err != nil {
 		return pythonSelection{}, err
 	}
 	if err := a.verifyAndRecordFramework(command, bundle, staged, frozen); err != nil {
 		return pythonSelection{}, err
+	}
+	if !frozen {
+		if err := refreshRuntimeLockMetadata(bundle, wheel, plan); err != nil {
+			return pythonSelection{}, err
+		}
 	}
 	return publishAgentEnvironment(bundle, wheel, paths, staged, plan)
 }
@@ -354,103 +369,39 @@ func (a *application) stageAgentEnvironment(
 	}, cleanup, nil
 }
 
-func (a *application) syncAgentProject(
+// createAgentVirtualEnvironment prepares an empty interpreter before the single locked sync.
+func (a *application) createAgentVirtualEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
 	staged stagedAgentEnvironment,
-	plan runtimeDependencyPlan,
-	frozen bool,
 ) error {
 	arguments := []string{
-		"sync",
-		"--project", bundle.Directory,
+		"venv",
 		"--python", bundle.Config.Spec.Runtime.Version,
 		"--managed-python",
-		"--no-install-project",
-		// Harnest itself is injected from the release wheel after project sync;
-		// inexact sync keeps that compiler-owned package out of authored metadata.
-		"--inexact",
-	}
-	if frozen {
-		arguments = append(arguments, "--frozen")
+		// A failed unpublished attempt may leave this content-addressed path behind.
+		"--clear",
+		staged.directory,
 	}
 	if err := a.runRuntimeCommandWithEnvironment(
 		command, staged.environment, staged.uvPath, arguments...,
 	); err != nil {
-		return fmt.Errorf("synchronize agent dependencies: %w", err)
-	}
-	return a.syncJointRuntimeDependencies(command, bundle, staged, plan, frozen)
-}
-
-// syncJointRuntimeDependencies resolves root and plugin constraints as one set.
-func (a *application) syncJointRuntimeDependencies(
-	command *cobra.Command,
-	bundle engine.Bundle,
-	staged stagedAgentEnvironment,
-	plan runtimeDependencyPlan,
-	frozen bool,
-) error {
-	if !plan.needsJointResolution() {
-		return nil
-	}
-	lockPath := filepath.Join(bundle.Directory, ".harnest", runtimeRequirementsLockFile)
-	if frozen {
-		if err := requireFrozenRuntimeLock(lockPath); err != nil {
-			return err
-		}
-	}
-	inputs, err := jointResolutionInputs(bundle, plan)
-	if err != nil {
-		return err
-	}
-	candidate, err := os.CreateTemp(filepath.Join(bundle.Directory, ".harnest"), ".runtime-lock-*")
-	if err != nil {
-		return fmt.Errorf("create runtime dependency lock candidate: %w", err)
-	}
-	candidatePath := candidate.Name()
-	if err := candidate.Close(); err != nil {
-		_ = os.Remove(candidatePath)
-		return fmt.Errorf("close runtime dependency lock candidate: %w", err)
-	}
-	defer os.Remove(candidatePath)
-	arguments := []string{"pip", "compile", "--python", staged.python, "--generate-hashes", "--output-file", candidatePath}
-	arguments = append(arguments, inputs...)
-	if err := a.runRuntimeCommandWithEnvironment(
-		command, staged.environment, staged.uvPath, arguments...,
-	); err != nil {
-		return fmt.Errorf("resolve joint runtime dependencies: %w", err)
-	}
-	if err := publishRuntimeLock(candidatePath, lockPath, frozen); err != nil {
-		return err
-	}
-	if err := a.runRuntimeCommandWithEnvironment(
-		command,
-		staged.environment,
-		staged.uvPath,
-		"pip", "install", "--python", staged.python, "--require-hashes", "-r", lockPath,
-	); err != nil {
-		return fmt.Errorf("install joint runtime dependencies: %w", err)
+		return fmt.Errorf("create agent virtual environment: %w", err)
 	}
 	return nil
 }
 
-// installAgentWheel installs the release alongside the exact committed framework pin.
-func (a *application) installAgentWheel(
-	command *cobra.Command,
-	bundle engine.Bundle,
-	staged stagedAgentEnvironment,
+// syncLockedRuntime makes the hash-verified lock the only installation source.
+func (a *application) syncLockedRuntime(
+	command *cobra.Command, staged stagedAgentEnvironment, lockPath string,
 ) error {
-	wheelRequirement := staged.wheelPath + "[" + bundle.Config.Spec.Framework.Name + "]"
-	pin, err := lockedFrameworkRequirement(bundle)
-	if err != nil {
-		return err
-	}
-	arguments := []string{"pip", "install", "--python", staged.python, wheelRequirement}
-	if pin != "" {
-		arguments = append(arguments, pin)
-	}
-	if err := a.runRuntimeCommandWithEnvironment(command, staged.environment, staged.uvPath, arguments...); err != nil {
-		return fmt.Errorf("install Harnest into agent environment: %w", err)
+	if err := a.runRuntimeCommandWithEnvironment(
+		command,
+		staged.environment,
+		staged.uvPath,
+		"pip", "sync", "--python", staged.python, "--require-hashes", lockPath,
+	); err != nil {
+		return fmt.Errorf("synchronize locked runtime dependencies: %w", err)
 	}
 	return nil
 }

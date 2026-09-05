@@ -2,6 +2,4 @@
 name = "hatchet-consumer-fixture"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = [
-  "hatchet-sdk>=1.38,<2",
-]
+dependencies = []

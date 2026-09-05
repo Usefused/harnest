@@ -93,7 +93,7 @@ class AuthoringErrorTests(unittest.TestCase):
         path = self.write("sandbox/sandbox.py", "sandbox = {}\n")
         message = self.diagnostic(_discover_sandboxes, path.parent)
         self.assertIn("got dict", message)
-        self.assertIn("sandbox = Sandbox.container", message)
+        self.assertIn("sandbox = Sandbox.provider", message)
 
     def test_missing_export_explains_python_term_without_echoing_values(self):
         path = self.write("tools/search.py", "other = 'private-test-value'\n")
