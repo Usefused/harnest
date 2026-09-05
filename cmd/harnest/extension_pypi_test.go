@@ -142,6 +142,8 @@ func TestExtensionWheelMetadataRejectsCaseInsensitiveDuplicate(t *testing.T) {
 	}
 }
 
+// TestExtensionInstallFromPyPIActivatesMaterializedLocalClass verifies an
+// installed wheel can be discovered through the same public runtime path.
 func TestExtensionInstallFromPyPIActivatesMaterializedLocalClass(t *testing.T) {
 	source := `from harnest.extensions import Extension
 
@@ -181,7 +183,12 @@ finally:
 `
 	python := filepath.Join(repository, ".venv", "bin", "python")
 	if _, err := os.Stat(python); err != nil {
-		python, err = exec.LookPath("python3")
+		// setup-python exposes the dependency-bearing interpreter as `python`;
+		// a distro `python3` may resolve to an unrelated environment in CI.
+		python, err = exec.LookPath("python")
+		if err != nil {
+			python, err = exec.LookPath("python3")
+		}
 		if err != nil {
 			t.Skip("Python is unavailable for extension activation")
 		}
