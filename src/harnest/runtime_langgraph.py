@@ -1377,7 +1377,11 @@ def _langgraph_stream_message_events(
     events = _start_langgraph_agent(agent, state)
     events.extend(
         _langgraph_message_items(
-            message, agent, include_message=False, include_tools=False
+            message,
+            agent,
+            include_message=False,
+            include_tools=False,
+            include_thinking=output_policy.thinking == "include",
         )
     )
     tool_events = _message_tool_events(message)
@@ -2991,12 +2995,13 @@ def _langgraph_message_items(
     include_message: bool,
     include_tools: bool = True,
     output_policy: OutputPolicy | None = None,
+    include_thinking: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Project public reasoning, optional narration, and tool activity from a message."""
 
     events: list[dict[str, Any]] = []
     thinking = _message_thinking(message)
-    if thinking:
+    if thinking and _thinking_is_visible(output_policy, include_thinking):
         events.append(
             _with_langgraph_agent({"type": "thinking", "text": thinking}, agent)
         )
@@ -3019,6 +3024,16 @@ def _langgraph_message_items(
         if metadata is not None:
             events.append(metadata)
     return events
+
+
+def _thinking_is_visible(
+    output_policy: OutputPolicy | None, override: bool | None
+) -> bool:
+    """Resolve the internal stream override without weakening the public default."""
+
+    if override is not None:
+        return override
+    return output_policy is not None and output_policy.thinking == "include"
 
 
 def _current_turn_messages(

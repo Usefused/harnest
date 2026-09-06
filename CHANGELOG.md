@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Suppress provider-exposed ADK and LangGraph thinking text by default; use
+  `OutputPolicy(thinking="include")` to expose it explicitly.
+
+* Add `server.agentPrincipal: required` so security-sensitive deployments can
+  reject custom `AgentInvoker` routes that omit a principal before any session
+  or invocation state is created.
+
+* Add Hatchet `run_and_wait(...)`, which verifies durable continuation support
+  before submitting an external run. Persist versioned private permission-name
+  snapshots for external continuations in memory, PostgreSQL, and Redis, then
+  reconstruct fresh Agent Runtime Principals when another replica resumes the
+  wait without persisting opaque principal identity or credentials.
+
+### Fixes
+
+* Accept only universal `py3-none-any` PyPI wheels for Harnest Extensions so a
+  platform- or ABI-specific artifact cannot be selected for the wrong host.
+
 ## [0.14.0](https://github.com/Usefused/harnest/compare/v0.13.0...v0.14.0) (2026-09-05)
 
 ### Features

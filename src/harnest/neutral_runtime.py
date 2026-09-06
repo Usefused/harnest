@@ -202,6 +202,7 @@ def create_neutral_router(
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     live_enabled: bool = True,
+    agent_principal_required: bool = False,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
     asset_store: AssetStore | None = None,
@@ -214,6 +215,7 @@ def create_neutral_router(
     # Embedders must make the same explicit boolean choice as the server config.
     if not isinstance(live_enabled, bool):
         raise TypeError("live_enabled must be boolean")
+    _validate_agent_principal_required(agent_principal_required)
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
@@ -315,6 +317,14 @@ def create_neutral_router(
         agent_principal: AgentRuntimePrincipal | None,
     ) -> Mapping[str, Any]:
         """Invoke custom routes through the same policy path as `/responses`."""
+
+        if agent_principal_required and agent_principal is None:
+            # Fail before session creation so one forgotten route binding cannot
+            # silently restore the root agent's unrestricted capability surface.
+            raise HTTPException(
+                status_code=500,
+                detail="Agent Runtime Principal is required for custom routes",
+            )
 
         principal = principal_for(connection)
         active_principal = _active_authenticated_principal()
@@ -896,6 +906,13 @@ def create_neutral_router(
     return router
 
 
+def _validate_agent_principal_required(value: Any) -> None:
+    """Reject truthy non-booleans at the custom-route security boundary."""
+
+    if not isinstance(value, bool):
+        raise TypeError("agent_principal_required must be boolean")
+
+
 def create_neutral_app(
     driver: RuntimeDriver,
     *,
@@ -904,6 +921,7 @@ def create_neutral_app(
     max_request_bytes: int = MAX_REQUEST_BYTES,
     playground_enabled: bool = True,
     live_enabled: bool = True,
+    agent_principal_required: bool = False,
     authenticator: Authenticator | None = None,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
@@ -964,6 +982,7 @@ def create_neutral_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             live_enabled=live_enabled,
+            agent_principal_required=agent_principal_required,
             approval_store=approval_store,
             client_tool_store=client_tool_store,
             asset_store=asset_store,

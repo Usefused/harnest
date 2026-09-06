@@ -734,11 +734,12 @@ def create_fastapi_app(
     max_request_bytes: int = DEFAULT_SERVER_CONFIG.limits.max_request_bytes,
     playground_enabled: bool = True,
     live_enabled: bool = True,
+    agent_principal_required: bool = False,
     adk_session_storage: ADKSessionStorage | None = None,
     langgraph_session_store: SessionStore | None = None,
     authenticator: Authenticator | None = None,
 ) -> Any:
-    """Build a server with explicit live policy; embedding keeps its historical default."""
+    """Build a server with explicit transport and principal policy."""
 
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
@@ -750,6 +751,8 @@ def create_fastapi_app(
         raise TypeError("live_enabled must be boolean")
     if not isinstance(playground_enabled, bool):
         raise TypeError("playground_enabled must be boolean")
+    if not isinstance(agent_principal_required, bool):
+        raise TypeError("agent_principal_required must be boolean")
     application = load_compiled_application(artifact)
     application = _application_with_asset_store(application)
     try:
@@ -762,6 +765,7 @@ def create_fastapi_app(
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
             live_enabled=live_enabled,
+            agent_principal_required=agent_principal_required,
             adk_session_storage=adk_session_storage,
             langgraph_session_store=langgraph_session_store,
             authenticator=authenticator,
@@ -782,6 +786,7 @@ def _build_fastapi_app(
     max_request_bytes: int,
     playground_enabled: bool,
     live_enabled: bool,
+    agent_principal_required: bool,
     adk_session_storage: ADKSessionStorage | None,
     langgraph_session_store: SessionStore | None,
     authenticator: Authenticator | None,
@@ -822,6 +827,7 @@ def _build_fastapi_app(
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
             live_enabled=live_enabled,
+            agent_principal_required=agent_principal_required,
             authenticator=authenticator,
             telemetry_exporter_factories=application.telemetry_exporters,
         )
@@ -856,6 +862,7 @@ def _build_fastapi_app(
             lifecycle_extensions=application.extensions,
             playground_enabled=playground_enabled,
             live_enabled=live_enabled,
+            agent_principal_required=agent_principal_required,
             playground_eval_service=eval_service,
             authenticator=authenticator,
             a2a_task_store=_a2a_task_store(application),
@@ -922,6 +929,7 @@ def _build_native_adk_app(
     max_request_bytes: int,
     playground_enabled: bool,
     live_enabled: bool,
+    agent_principal_required: bool,
     authenticator: Authenticator | None,
     telemetry_exporter_factories: Any,
 ) -> tuple[Any, Any]:
@@ -974,6 +982,7 @@ def _build_native_adk_app(
         max_concurrency=max_concurrency,
         max_request_bytes=max_request_bytes,
         live_enabled=live_enabled,
+        agent_principal_required=agent_principal_required,
         asset_store=application.asset_store,
         asset_stores=application.asset_stores,
         a2a_task_store=_a2a_task_store(application),
@@ -1143,6 +1152,7 @@ def _load_server(args: Any) -> tuple[Any, Any]:
         max_request_bytes=server.limits.max_request_bytes,
         playground_enabled=server.playground.enabled,
         live_enabled=server.live,
+        agent_principal_required=server.agent_principal == "required",
     )
     return application, http
 

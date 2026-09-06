@@ -601,7 +601,9 @@ retain their historical `live_enabled=True` default; the launcher passes its
 resolved server choice explicitly. `http` controls binding, remote-bind consent, timeout, and concurrency;
 `limits.maxRequestBytes` is
 enforced across neutral and advanced-native HTTP bodies and WebSocket frames;
-and `playground.enabled` controls the bundled UI. Explicit launcher flags are
+`agentPrincipal: required` makes custom `AgentInvoker` routes fail before
+session mutation when they omit an Agent Runtime Principal; and
+`playground.enabled` controls the bundled UI. Explicit launcher flags are
 short-lived operator overrides. Authentication, session storage, TLS, secrets,
 and deployment scaling remain separate injection or hosting boundaries.
 

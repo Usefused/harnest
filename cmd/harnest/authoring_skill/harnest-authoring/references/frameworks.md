@@ -136,12 +136,13 @@ requests reasoning, `thinking=False` requests no reasoning, and omission uses
 the provider default. LiteLLM maps the non-thinking mode to Ollama's
 `think: false`. Use `reasoning_effort` directly when a specific supported level
 is required. Harnest filters native ADK and LangGraph reasoning signatures,
-state, and raw metadata at its public boundary. When the framework provides
-readable reasoning text, Harnest emits it as portable `thinking` activity while
-leaving final answer text and multi-turn continuity separate. Provider-reported
-model, provider, finish reason, and exact token counts use the shared
-`agent_metadata` event. Declare `OutputPolicy(agent_metadata="raw")` only when
-the application deliberately exposes native provider metadata. Harnest-owned
+state, and raw metadata at its public boundary. Provider-readable reasoning
+text is private by default; `OutputPolicy(thinking="include")` emits it as
+portable `thinking` activity while leaving final answer text and multi-turn
+continuity separate. Provider-reported model, provider, finish reason, and
+exact token counts use the shared `agent_metadata` event. Declare
+`OutputPolicy(agent_metadata="raw")` only when the application deliberately
+exposes native provider metadata. Harnest-owned
 checkpoints retain normalized metadata for cross-replica result polling; add
 `persist_raw_agent_metadata=True` only when that native payload may also be
 stored for the checkpoint retention period.

@@ -123,18 +123,20 @@ func classifyPluginProject(name string, officialProjects []string) string {
 	return "community"
 }
 
-// selectPluginWheel chooses the smallest bounded non-yanked wheel.
+// selectPluginWheel chooses the smallest bounded universal wheel.
 func selectPluginWheel(files []pypiReleaseFile) (pypiReleaseFile, error) {
 	wheels := make([]pypiReleaseFile, 0, len(files))
 	for _, file := range files {
 		if file.PackageType == "bdist_wheel" && !file.Yanked &&
-			validWheelFilename(file.Filename) && file.Size > 0 &&
+			validUniversalWheelFilename(file.Filename) && file.Size > 0 &&
 			file.Size <= maxPluginWheelBytes && validSHA256(file.Digests.SHA256) {
 			wheels = append(wheels, file)
 		}
 	}
 	if len(wheels) == 0 {
-		return pypiReleaseFile{}, fmt.Errorf("latest release has no inspectable wheel")
+		return pypiReleaseFile{}, fmt.Errorf(
+			"latest release has no inspectable universal py3-none-any wheel",
+		)
 	}
 	sort.Slice(wheels, func(i, j int) bool {
 		if wheels[i].Size != wheels[j].Size {
@@ -143,6 +145,16 @@ func selectPluginWheel(files []pypiReleaseFile) (pypiReleaseFile, error) {
 		return wheels[i].Filename < wheels[j].Filename
 	})
 	return wheels[0], nil
+}
+
+// validUniversalWheelFilename limits installation to artifacts safe on every target.
+func validUniversalWheelFilename(value string) bool {
+	if !validWheelFilename(value) {
+		return false
+	}
+	parts := strings.Split(strings.TrimSuffix(value, path.Ext(value)), "-")
+	return len(parts) >= 5 && parts[len(parts)-3] == "py3" &&
+		parts[len(parts)-2] == "none" && parts[len(parts)-1] == "any"
 }
 
 func validWheelFilename(value string) bool {

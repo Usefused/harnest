@@ -991,7 +991,7 @@ def _event_items(
 ) -> list[dict[str, Any]]:
     """Collect public event projections in provider response order."""
 
-    items, text = _content_items(event)
+    items, text = _content_items(event, output_policy)
     items.extend(_output_items(event, text))
     items.extend(_function_call_items(event))
     items.extend(_function_response_items(event))
@@ -1000,18 +1000,15 @@ def _event_items(
     return items
 
 
-def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
+def _content_items(
+    event: Any, output_policy: OutputPolicy
+) -> tuple[list[dict[str, Any]], str]:
+    """Project visible ADK content under the reasoning disclosure policy."""
+
     items: list[dict[str, Any]] = []
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) if content is not None else None
-    thinking = "".join(
-        part.text
-        for part in parts or ()
-        if getattr(part, "thought", False)
-        and isinstance(getattr(part, "text", None), str)
-    )
-    if thinking:
-        items.append({"type": "thinking", "text": thinking})
+    items.extend(_thinking_items(parts, output_policy))
     text = "".join(
         part.text
         for part in _customer_facing_parts(parts)
@@ -1020,6 +1017,20 @@ def _content_items(event: Any) -> tuple[list[dict[str, Any]], str]:
     if text:
         items.append({"type": "message", "role": "assistant", "text": text})
     return items, text
+
+
+def _thinking_items(parts: Any, output_policy: OutputPolicy) -> list[dict[str, Any]]:
+    """Return provider reasoning only under the explicit disclosure opt-in."""
+
+    thinking = "".join(
+        part.text
+        for part in parts or ()
+        if getattr(part, "thought", False)
+        and isinstance(getattr(part, "text", None), str)
+    )
+    if thinking and output_policy.thinking == "include":
+        return [{"type": "thinking", "text": thinking}]
+    return []
 
 
 def _event_agent(event: Any) -> str | None:

@@ -1,6 +1,6 @@
 """PostgreSQL schema owned by the built-in Harnest store."""
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SCHEMA_LOCK = 489_867_841_435_466_307
 
 SCHEMA_SQL = """
@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS harnest_continuations (
     capability text NOT NULL,
     schema_id text NOT NULL,
     resume jsonb,
+    principal_grants jsonb,
     external_id text NOT NULL,
     external_key text NOT NULL,
     status text NOT NULL CHECK (
@@ -124,11 +125,13 @@ ALTER TABLE harnest_continuations
 ADD COLUMN IF NOT EXISTS resume jsonb;
 ALTER TABLE harnest_continuations
 ADD COLUMN IF NOT EXISTS ready boolean NOT NULL DEFAULT false;
+ALTER TABLE harnest_continuations
+ADD COLUMN IF NOT EXISTS principal_grants jsonb;
 CREATE INDEX IF NOT EXISTS harnest_pending_continuations
 ON harnest_continuations (application_id, provider, continuation_id)
 WHERE status='pending';
 INSERT INTO harnest_schema_migrations(component, version)
-VALUES ('store', 5)
+VALUES ('store', 6)
 ON CONFLICT (component) DO UPDATE
 SET version=EXCLUDED.version, applied_at=now()
 WHERE harnest_schema_migrations.version < EXCLUDED.version;

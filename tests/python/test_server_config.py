@@ -35,6 +35,29 @@ class ServerConfigTests(unittest.TestCase):
             self.assertEqual(config.limits.max_request_bytes, 10 * 1024 * 1024)
             self.assertFalse(config.playground.enabled)
 
+    def test_agent_principal_policy_defaults_optional_and_accepts_required(self):
+        """Keep compatibility while allowing custom routes to fail closed."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.yaml"
+            path.write_text(DEFAULT_SERVER_YAML, encoding="utf-8")
+            self.assertEqual(load_server_config(path).agent_principal, "optional")
+            path.write_text(
+                DEFAULT_SERVER_YAML.replace(
+                    "agentPrincipal: optional", "agentPrincipal: required"
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_server_config(path).agent_principal, "required")
+            path.write_text(
+                DEFAULT_SERVER_YAML.replace(
+                    "agentPrincipal: optional", "agentPrincipal: unrestricted"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ServerConfigError, "agentPrincipal"):
+                load_server_config(path)
+
     def test_rejects_unknown_duplicate_unsafe_and_excessive_values(self):
         cases = {
             "unknown": DEFAULT_SERVER_YAML + "unexpected: true\n",
@@ -171,7 +194,8 @@ class ServerConfigTests(unittest.TestCase):
             (artifact / "server.yaml").write_text(
                 DEFAULT_SERVER_YAML.replace("port: 8080", "port: ${SERVER_PORT}")
                 .replace("1MiB", "${SERVER_MAX_BYTES}")
-                .replace("enabled: true", "enabled: ${SERVER_PLAYGROUND}"),
+                .replace("enabled: true", "enabled: ${SERVER_PLAYGROUND}")
+                .replace("agentPrincipal: optional", "agentPrincipal: required"),
                 encoding="utf-8",
             )
             captured = {}
@@ -201,6 +225,7 @@ class ServerConfigTests(unittest.TestCase):
             self.assertEqual(captured["uvicorn"]["port"], 9091)
             self.assertEqual(captured["options"]["max_request_bytes"], 2 * 1024 * 1024)
             self.assertFalse(captured["options"]["playground_enabled"])
+            self.assertTrue(captured["options"]["agent_principal_required"])
 
     def test_compiled_launcher_does_not_print_invalid_environment_value(self):
         with tempfile.TemporaryDirectory() as directory:

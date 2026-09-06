@@ -73,6 +73,14 @@ class HatchetContext(ExtensionContext):
         self._require_active()
         return await self._owner._wait(job)
 
+    async def run_and_wait(
+        self, workflow_name: str, job_input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Preflight durable suspension before submitting external work."""
+
+        self._require_active()
+        return await self._owner._run_and_wait(workflow_name, job_input)
+
     async def cancel(self, job: HatchetRun) -> None:
         """Request cancellation while leaving worker shutdown to its owner."""
 
@@ -152,6 +160,13 @@ class HatchetExtension(Extension[HatchetContext]):
 
         return await self.context.wait(job)
 
+    async def run_and_wait(
+        self, workflow_name: str, job_input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Submit only after the current invocation proves it can suspend."""
+
+        return await self.context.run_and_wait(workflow_name, job_input)
+
     async def cancel(self, job: HatchetRun) -> None:
         """Cancel an external run through the active typed context."""
 
@@ -187,6 +202,23 @@ class HatchetExtension(Extension[HatchetContext]):
                 )
         finally:
             await self._close_monitor_transport(transport)
+
+    async def _run_and_wait(
+        self, workflow_name: str, job_input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Prevent known continuation incompatibilities from orphaning a run."""
+
+        continuations = invocation_continuations(self.context)
+        preflight = getattr(continuations, "preflight", None)
+        if not callable(preflight):
+            # Older compatible hosts cannot prove suspension safety before submission.
+            raise RuntimeError(
+                "Hatchet run_and_wait requires a Harnest host with continuation "
+                "preflight support"
+            )
+        preflight()
+        job = await self._run(workflow_name, job_input)
+        return await self._wait(job)
 
     async def _status(self, job: HatchetRun) -> HatchetRunStatus:
         """Resolve a fresh read-scoped client so credentials never enter job state."""

@@ -47,6 +47,15 @@ class _InvocationContinuations:
         self.capability: str | None = None
         self.schema_id: str | None = None
         self.validate = None
+        self.preflight_calls = 0
+        self.preflight_error: Exception | None = None
+
+    def preflight(self) -> None:
+        """Model the host check that runs before external submission."""
+
+        self.preflight_calls += 1
+        if self.preflight_error is not None:
+            raise self.preflight_error
 
     async def suspend(
         self, external_id, *, capability, schema_id, validate
@@ -194,15 +203,13 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                         SimpleNamespace(info=audit),
                     ),
                 ):
-                    job = await module.hatchet.run(
+                    result = await module.hatchet.run_and_wait(
                         "consumer-report", {"topic": "plugin test"}
                     )
-                    result = await module.hatchet.wait(job)
             finally:
                 revoke_context(active)
 
-            self.assertEqual(job.run_id, "run-1")
-            self.assertEqual(job.correlation_id, "invoke-1")
+            self.assertEqual(invocation.preflight_calls, 1)
             self.assertEqual(
                 create_transport.run_calls,
                 [
@@ -229,6 +236,57 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 audit_operations, ["run.create", "continuation.complete"]
             )
             self.assertNotIn("plugin test", repr(audit.call_args_list))
+
+    async def test_run_and_wait_preflight_fails_before_transport_submission(self):
+        """Do not orphan a Hatchet run for a known incompatible invocation."""
+
+        invocation = _InvocationContinuations()
+        invocation.preflight_error = RuntimeError("durable continuation unavailable")
+        provider = _ProviderContinuations(invocation)
+        async with self._active_plugin(provider) as (module, _plugin):
+            opened = AsyncMock()
+            active = _agent_context()
+            try:
+                with (
+                    activate_context(active),
+                    patch.object(
+                        module, "invocation_continuations", return_value=invocation
+                    ),
+                    patch.object(module, "open_hatchet_transport", opened),
+                    self.assertRaisesRegex(
+                        RuntimeError, "durable continuation unavailable"
+                    ),
+                ):
+                    await module.hatchet.run_and_wait("report", {"safe": True})
+            finally:
+                revoke_context(active)
+
+            opened.assert_not_awaited()
+
+    async def test_run_and_wait_requires_host_preflight_before_submission(self):
+        """Fail safely on an older host that cannot prove suspension compatibility."""
+
+        invocation = SimpleNamespace()
+        provider = _ProviderContinuations(_InvocationContinuations())
+        async with self._active_plugin(provider) as (module, _plugin):
+            opened = AsyncMock()
+            active = _agent_context()
+            try:
+                with (
+                    activate_context(active),
+                    patch.object(
+                        module, "invocation_continuations", return_value=invocation
+                    ),
+                    patch.object(module, "open_hatchet_transport", opened),
+                    self.assertRaisesRegex(
+                        RuntimeError, "continuation preflight support"
+                    ),
+                ):
+                    await module.hatchet.run_and_wait("report", {"safe": True})
+            finally:
+                revoke_context(active)
+
+            opened.assert_not_awaited()
 
     async def test_cancel_is_explicit_and_plugin_stop_does_not_cancel_jobs(self):
         """Prove external runtime ownership is independent from plugin lifetime."""

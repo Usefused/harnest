@@ -301,13 +301,36 @@ func pluginWheelFixture(
 
 func pluginReleaseFile(project string, wheel []byte) pypiReleaseFile {
 	digest := sha256.Sum256(wheel)
+	filename := project + "-1.0.0-py3-none-any.whl"
 	artifact := pypiReleaseFile{
-		Filename: project + ".whl", PackageType: "bdist_wheel",
+		Filename: filename, PackageType: "bdist_wheel",
 		URL:  "https://pypi.test/files/" + project + ".whl",
 		Size: int64(len(wheel)),
 	}
 	artifact.Digests.SHA256 = hex.EncodeToString(digest[:])
 	return artifact
+}
+
+func TestSelectPluginWheelRequiresUniversalCompatibilityTags(t *testing.T) {
+	files := []pypiReleaseFile{
+		pluginReleaseFile("demo-1.0.0-cp313-cp313-win_amd64", []byte("windows")),
+		pluginReleaseFile("demo-1.0.0-py3-none-any", []byte("universal")),
+	}
+	files[0].Filename = "demo-1.0.0-cp313-cp313-win_amd64.whl"
+	files[1].Filename = "demo-1.0.0-py3-none-any.whl"
+
+	selected, err := selectPluginWheel(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Filename != files[1].Filename {
+		t.Fatalf("selected wheel = %q, want universal wheel", selected.Filename)
+	}
+
+	if _, err := selectPluginWheel(files[:1]); err == nil ||
+		!strings.Contains(err.Error(), "py3-none-any") {
+		t.Fatalf("platform-only wheel error = %v", err)
+	}
 }
 
 func pluginMetadataFixture(

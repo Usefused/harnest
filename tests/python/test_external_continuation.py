@@ -429,35 +429,65 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(stored.status, "running")
 
-    async def test_principal_fails_before_cross_replica_wait_is_persisted(self):
-        """Never resume a restricted invocation without its opaque authority."""
+    async def test_principal_grants_reconstruct_on_callback_replica(self):
+        """Resume with fresh opaque identity carrying exactly the stored grants."""
 
+        principal = AgentRuntimePrincipal.create(
+            permissions={"hatchet.run", "reports.read"}
+        )
         request = _request(
             "run-principal",
+            agent_principal=principal,
+        )
+        await _begin(self.store, request)
+        await self._suspend(request)
+        armed = await self.runtime.arm(
+            response_id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+        )
+        stored = await self.store.get_continuation(
+            scope=RunScope("consumer", "user-1", "session-1", "run-principal"),
+            continuation_id=armed.continuation_id,
+        )
+
+        replica = ExternalContinuationRuntime(self.store, application_id="consumer")
+        replica_driver = _ResumeDriver()
+        replica.bind_driver(replica_driver)
+        replica.application_port("hatchet").register_schema(
+            "report/v1", _validate
+        )
+        try:
+            await replica.application_port("hatchet").complete(
+                "provider-run-principal", {"report": "restricted"}
+            )
+        finally:
+            await replica.close()
+
+        self.assertIsNotNone(stored)
+        self.assertEqual(
+            stored.principal_grants.permissions,
+            ("hatchet.run", "reports.read"),
+        )
+        self.assertNotIn("reports.read", repr(stored))
+        resumed = replica_driver.requests[0].agent_principal
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.permissions, principal.permissions)
+        self.assertNotEqual(resumed.id, principal.id)
+
+    async def test_preflight_accepts_reconstructable_principal(self):
+        """Keep provider submission available when durable grants can be restored."""
+
+        request = _request(
+            "run-preflight-principal",
             agent_principal=AgentRuntimePrincipal.create(
                 permissions={"hatchet.run"}
             ),
         )
-        await _begin(self.store, request)
         with self.runtime.execution(_run(request), request), native_durable_call(
             _artifact(request.invocation_id)
-        ), self.assertRaisesRegex(
-            ExternalContinuationUnavailableError, "Agent Runtime Principal"
         ):
-            await self.port.suspend(
-                "provider-run-principal",
-                capability="hatchet.run",
-                schema_id="report/v1",
-                validate=_validate,
-            )
-
-        self.assertIsNone(
-            await self.store.get_continuation_by_external_id(
-                application_id="consumer",
-                provider="hatchet",
-                external_id="provider-run-principal",
-            )
-        )
+            self.port.preflight()
 
     async def test_langgraph_replay_restores_existing_wait_on_second_replica(self):
         """Consume the claimed value when ToolNode re-enters plugin wait code."""
@@ -474,7 +504,12 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from harnest.tool import tool
 
         store = self.store
-        request = _request("run-graph")
+        request = _request(
+            "run-graph",
+            agent_principal=AgentRuntimePrincipal.create(
+                permissions={"hatchet.run"}
+            ),
+        )
 
         def replica(runtime: ExternalContinuationRuntime):
             """Build an independently compiled graph over the shared store."""

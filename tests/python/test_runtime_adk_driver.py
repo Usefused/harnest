@@ -17,8 +17,10 @@ from google.genai import types
 from pydantic import BaseModel
 
 from harnest._adk_warnings import suppress_adk_warnings
-from harnest.agent import Agent
+from harnest.agent import Agent, AgentRuntimePrincipal
+from harnest.agent_principal import active_agent_principal
 from harnest.application import CompiledApplication
+from harnest.approval import ApprovalRun
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.checkpoint import MemoryStore, PendingAction, RunScope
 from harnest.content import Image
@@ -28,7 +30,11 @@ from harnest.durable import (
     adk_durable_tool,
     current_native_durable_call,
 )
-from harnest.external_continuation import PendingExternalContinuation
+from harnest.external_continuation import (
+    ExternalContinuationRuntime,
+    PendingExternalContinuation,
+)
+from harnest.external_continuation_driver import ExternalContinuationRuntimeDriver
 from harnest.graph import START, Edge, Event, Graph
 from harnest.mcp import MCPClient
 from harnest.mcp_lifecycle import (
@@ -51,6 +57,7 @@ from harnest.runtime_adk import (
     _register_mcp_context_plugins,
     _register_tool_lifecycle_plugin,
 )
+from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.structured import FrameworkMetadata, provider_output_schema
 from harnest.transient_media import (
     TransientMediaAccess,
@@ -262,9 +269,13 @@ class DurableResumeLlm(BaseLlm):
     """Issue one stable durable call, then report its injected response."""
 
     responses: ClassVar[list[dict[str, Any]]] = []
+    principals: ClassVar[list[AgentRuntimePrincipal | None]] = []
 
     async def generate_content_async(self, llm_request, stream=False):
+        """Record invocation authority before issuing or consuming the call."""
+
         del stream
+        self.principals.append(active_agent_principal())
         function_responses = [
             part.function_response
             for content in llm_request.contents
@@ -320,10 +331,17 @@ class _RecordingCheckpointStore(MemoryStore):
 def _durable_resume_application(
     store: _RecordingCheckpointStore,
     observations: dict[str, list[Any]],
+    continuation_port: Any | None = None,
 ) -> CompiledApplication:
     """Build a fresh ADK application replica over shared durable state."""
 
-    @tool(durable=True)
+    durable_tool = (
+        tool(durable=True)
+        if continuation_port is None
+        else tool(durable=True, permission="hatchet.run")
+    )
+
+    @durable_tool
     async def wait_for_job(job_id: str) -> dict[str, Any]:
         """Suspend until an external job supplies its durable result."""
 
@@ -340,6 +358,14 @@ def _durable_resume_application(
         observations["checkpoint_payloads"].append(
             None if checkpoint is None else json.loads(checkpoint.payload)
         )
+        if continuation_port is not None:
+            handle = await continuation_port.suspend(
+                "provider-job-1",
+                capability="hatchet.run",
+                schema_id="report/v1",
+                validate=lambda value: value,
+            )
+            return await handle.result()
         await store.transition(
             scope=scope,
             expected_status="running",
@@ -768,11 +794,6 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "activity": "started",
                 },
                 {
-                    "type": "thinking",
-                    "text": "provider reasoning",
-                    "agent": "thinker",
-                },
-                {
                     "type": "message",
                     "role": "assistant",
                     "text": "customer answer",
@@ -938,6 +959,119 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(completed)
         assert completed is not None
         self.assertEqual(completed.status, "completed")
+
+    async def test_external_continuation_restores_principal_on_adk_replica(self):
+        """Resume real ADK execution with a fresh copy of persisted grants."""
+
+        store = _RecordingCheckpointStore()
+        service = InMemorySessionService()
+        observations: dict[str, list[Any]] = {
+            "executions": [],
+            "artifacts": [],
+            "checkpoint_payloads": [],
+        }
+        DurableResumeLlm.responses.clear()
+        DurableResumeLlm.principals.clear()
+        await store.start()
+        self.addAsyncCleanup(store.close)
+
+        first_runtime = ExternalContinuationRuntime(
+            store, application_id="durable_resume"
+        )
+        first_application = _durable_resume_application(
+            store,
+            observations,
+            first_runtime.invocation_port("hatchet"),
+        )
+        first_backend = ADKRuntimeDriver(
+            first_application,
+            session_service=service,
+        )
+        first_pipeline = ExternalContinuationRuntimeDriver(
+            ExtensionRuntimeDriver(first_backend, ()), first_runtime
+        )
+        first_runtime.bind_driver(first_pipeline)
+        principal = AgentRuntimePrincipal.create(permissions={"hatchet.run"})
+        request = InvocationRequest(
+            input="start",
+            user_id="test-user",
+            session_id="durable-session",
+            invocation_id="portable-principal-run",
+            metadata={},
+            state_delta={},
+            agent_principal=principal,
+        )
+        run = ApprovalRun(
+            id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            call_id=request.invocation_id,
+        )
+
+        second_pipeline = None
+        try:
+            await first_pipeline.create_session(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                state={},
+            )
+            with first_runtime.execution(run, request), self.assertRaises(
+                NativeDurableSuspended
+            ):
+                await first_pipeline.invoke(request)
+            await first_runtime.arm(
+                response_id=request.invocation_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+            )
+
+            second_runtime = ExternalContinuationRuntime(
+                store, application_id="durable_resume"
+            )
+            second_application = _durable_resume_application(
+                store,
+                observations,
+                second_runtime.invocation_port("hatchet"),
+            )
+            second_backend = ADKRuntimeDriver(
+                second_application,
+                session_service=service,
+            )
+            second_pipeline = ExternalContinuationRuntimeDriver(
+                ExtensionRuntimeDriver(second_backend, ()), second_runtime
+            )
+            second_runtime.bind_driver(second_pipeline)
+            second_runtime.application_port("hatchet").register_schema(
+                "report/v1", lambda value: value
+            )
+            claimed = await second_runtime.application_port("hatchet").complete(
+                "provider-job-1", {"report": "ready"}
+            )
+        finally:
+            if second_pipeline is not None:
+                await second_pipeline.close()
+            await first_pipeline.close()
+
+        self.assertEqual(claimed.status, "claimed")
+        self.assertEqual(observations["executions"], ["job-1"])
+        self.assertEqual(store.begin_calls, 1)
+        self.assertEqual(len(DurableResumeLlm.principals), 2)
+        initial_principal, resumed_principal = DurableResumeLlm.principals
+        self.assertIs(initial_principal, principal)
+        self.assertIsNotNone(resumed_principal)
+        assert resumed_principal is not None
+        self.assertEqual(resumed_principal.permissions, principal.permissions)
+        self.assertNotEqual(resumed_principal.id, principal.id)
+        self.assertEqual(
+            DurableResumeLlm.responses,
+            [
+                {
+                    "id": observations["artifacts"][0].tool_call_id,
+                    "name": observations["artifacts"][0].tool_name,
+                    "response": {"report": "ready"},
+                }
+            ],
+        )
 
     async def test_structured_output_is_a_result_for_invoke_and_stream(self):
         driver = ADKRuntimeDriver(_structured_application())
@@ -1313,7 +1447,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(
-            _ADKEventNormalizer().feed(event),
+            _ADKEventNormalizer(OutputPolicy(thinking="include")).feed(event),
             [
                 {
                     "type": "agent_activity",
@@ -1363,12 +1497,12 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             get_function_responses=lambda: [],
         )
         self.assertEqual(
-            _ADKEventNormalizer().feed(thought_only),
+            _ADKEventNormalizer(OutputPolicy(thinking="include")).feed(thought_only),
             [{"type": "thinking", "text": "private"}],
         )
 
     async def test_normalizer_deduplicates_cumulative_thinking(self):
-        normalizer = _ADKEventNormalizer()
+        normalizer = _ADKEventNormalizer(OutputPolicy(thinking="include"))
         partial = python_types.SimpleNamespace(
             partial=True,
             content=python_types.SimpleNamespace(
@@ -1436,11 +1570,6 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "type": "agent_activity",
                     "agent": "researcher",
                     "activity": "started",
-                },
-                {
-                    "type": "thinking",
-                    "text": "reasoning",
-                    "agent": "researcher",
                 },
                 {
                     "type": "message",

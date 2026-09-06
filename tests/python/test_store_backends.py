@@ -22,6 +22,7 @@ from harnest.continuation import (
     ContinuationFailure,
     ContinuationRecord,
     ContinuationStore,
+    PrincipalGrantSnapshot,
 )
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
@@ -65,15 +66,15 @@ class _PostgresConnection:
         self.executed = []
         self.fetched = []
         self.rows = []
-        self.schema_version = 5
+        self.schema_version = 6
 
     def transaction(self):
         return _Transaction()
 
     async def execute(self, query, *arguments):
         self.executed.append((query, arguments))
-        if "VALUES ('store', 5)" in query:
-            self.schema_version = 5
+        if "VALUES ('store', 6)" in query:
+            self.schema_version = 6
         return "INSERT 0 1"
 
     async def fetchval(self, query, *arguments):
@@ -289,6 +290,9 @@ def _continuation_row(continuation_id="continuation-1"):
         "capability": "workflow.run",
         "schema_id": "result/v1",
         "resume": None,
+        "principal_grants": json.dumps(
+            {"version": 1, "permissions": ["reports.read"]}
+        ),
         "external_id": "job-1",
         "external_key": "digest",
         "status": "pending",
@@ -311,6 +315,7 @@ def _continuation(continuation_id="continuation-1"):
         provider="hatchet",
         capability="workflow.run",
         schema_id="result/v1",
+        principal_grants=PrincipalGrantSnapshot(("reports.read",)),
     )
 
 
@@ -606,6 +611,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("harnest_a2a_tasks", statements)
         self.assertIn("harnest_a2a_tasks_by_context_status", statements)
         self.assertIn("harnest_continuations", statements)
+        self.assertIn("principal_grants", statements)
         self.assertIn("harnest_pending_continuations", statements)
 
     async def test_start_migrates_additive_postgres_schema_version_two(self):
@@ -615,7 +621,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         await store.start()
 
-        self.assertEqual(connection.schema_version, 5)
+        self.assertEqual(connection.schema_version, 6)
         statements = "\n".join(query for query, _ in connection.executed)
         self.assertIn("CREATE TABLE IF NOT EXISTS harnest_continuations", statements)
 
@@ -716,6 +722,10 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(values[0].external_id, "job-1")
+        self.assertEqual(
+            values[0].record.principal_grants.permissions,
+            ("reports.read",),
+        )
         query, arguments = connection.fetched[-1]
         self.assertIn("application_id=$1 AND provider=$2", query)
         self.assertIn("status='pending'", query)
@@ -723,6 +733,44 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ORDER BY continuation_id", query)
         self.assertIn("LIMIT $4", query)
         self.assertEqual(arguments, ("support", "hatchet", "a", 5))
+
+    async def test_continuation_suspend_persists_private_principal_grants(self):
+        """Write the versioned grant snapshot in the atomic suspension statement."""
+
+        connection = _PostgresConnection()
+        connection.rows = [_continuation_row()]
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        stored = await store.suspend_continuation(
+            record=_continuation(), external_id="job-1"
+        )
+
+        query, arguments = connection.fetched[-1]
+        self.assertIn("principal_grants", query)
+        self.assertEqual(
+            json.loads(arguments[9]),
+            {"permissions": ["reports.read"], "version": 1},
+        )
+        self.assertEqual(stored.principal_grants.permissions, ("reports.read",))
+
+    async def test_legacy_postgres_continuation_has_omitted_principal(self):
+        """Decode pre-snapshot rows using their historical compatibility mode."""
+
+        connection = _PostgresConnection()
+        legacy = _continuation_row()
+        legacy.pop("principal_grants")
+        connection.rows = [legacy]
+        store = PostgresStore(
+            "postgres://example", _pool=_Pool(connection), setup_schema=False
+        )
+
+        values = await store.list_pending_continuations(
+            application_id="support", provider="hatchet"
+        )
+
+        self.assertIsNone(values[0].record.principal_grants)
 
     async def test_continuation_cancel_scopes_and_transitions_in_one_query(self):
         connection = _PostgresConnection()
@@ -807,7 +855,7 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
 
         schema_keys = [key for key in client.values if key.endswith(":schema")]
         self.assertEqual(len(schema_keys), 1)
-        self.assertEqual(client.values[schema_keys[0]], "4")
+        self.assertEqual(client.values[schema_keys[0]], "5")
 
     async def test_start_migrates_additive_schema_version_one(self):
         client = _RedisClient()
@@ -816,7 +864,7 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
 
         await store.start()
 
-        self.assertEqual(client.values[store._key("schema")], "4")
+        self.assertEqual(client.values[store._key("schema")], "5")
 
     async def test_a2a_indexes_support_filtered_page_and_status_change(self):
         client = _RedisClient()
@@ -913,7 +961,8 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_continuation_reconciliation_uses_one_batched_read(self):
         client = _RedisClient()
         client.session_ids = [b"continuation-1"]
-        client.multi_values = [_continuation_dump(_continuation(), "job-1")]
+        encoded = _continuation_dump(_continuation(), "job-1")
+        client.multi_values = [encoded]
         store = RedisStore("redis://example", _client=client)
 
         values = await store.list_pending_continuations(
@@ -921,9 +970,33 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(values[0].external_id, "job-1")
+        self.assertEqual(
+            values[0].record.principal_grants.permissions,
+            ("reports.read",),
+        )
         self.assertEqual(client.mget_calls, 1)
         self.assertEqual(len(client.zrangebylex_calls), 1)
         self.assertEqual(client.zrangebylex_calls[0][-1]["num"], 5)
+        self.assertEqual(
+            json.loads(encoded)["record"]["principal_grants"],
+            {"permissions": ["reports.read"], "version": 1},
+        )
+
+    async def test_legacy_redis_continuation_has_omitted_principal(self):
+        """Decode pre-v5 records without inventing a restricted authority."""
+
+        envelope = json.loads(_continuation_dump(_continuation(), "job-1"))
+        envelope["record"].pop("principal_grants")
+        client = _RedisClient()
+        client.session_ids = [b"continuation-1"]
+        client.multi_values = [json.dumps(envelope)]
+        store = RedisStore("redis://example", _client=client)
+
+        values = await store.list_pending_continuations(
+            application_id="support", provider="hatchet"
+        )
+
+        self.assertIsNone(values[0].record.principal_grants)
 
     async def test_mutation_audit_excludes_tenant_identifiers_and_state(self):
         store = RedisStore("redis://example", _client=_RedisClient())

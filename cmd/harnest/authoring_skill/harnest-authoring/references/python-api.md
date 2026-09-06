@@ -266,8 +266,9 @@ resolve a `ModelConnector` lazily without contacting the model during compile.
 Set `thinking=True` to enable model reasoning, `thinking=False` to disable it,
 or omit the option for the provider default. Use `reasoning_effort="low"`,
 `"medium"`, or `"high"` instead when the provider supports explicit levels; do
-not combine it with `thinking`. Provider-exposed reasoning text is emitted as
-separate `thinking` activity, never as a tool input, transcript message, final
+not combine it with `thinking`. Provider-exposed reasoning text is suppressed
+unless `OutputPolicy(thinking="include")` is selected. When included it is
+separate `thinking` activity, never a tool input, transcript message, final
 answer, or eval expectation. Harnest keeps native signatures, state, and
 raw metadata private by default. It emits provider-reported model, provider,
 finish reason, and exact input/output/total token counts as normalized
@@ -496,12 +497,14 @@ Suspension commits an opaque Harnest continuation and returns
 `status: in_progress`; poll `GET /responses/{responseId}?sessionId=...` using
 the same authenticated principal. Provider completion and the native framework
 checkpoint may arrive in either order; once both are durable, one replica
-atomically claims the wait. ADK injects the persisted `FunctionResponse` and
-does not restore the Python tool frame. LangGraph re-enters its checkpointed
-tool node, so code before the wait and external submission must be idempotent.
-Harnest shutdown never owns or cancels the external job. A `HarnestStore`
-checkpoint provider is required; opaque native advanced checkpointers cannot
-provide this portable ownership boundary.
+atomically claims the wait. If an Agent Runtime Principal is active, the
+continuation persists only a private versioned snapshot of permission names and
+reconstructs fresh opaque authority on the resuming replica. ADK injects the
+persisted `FunctionResponse` and does not restore the Python tool frame.
+LangGraph re-enters its checkpointed tool node, so code before the wait and
+external submission must be idempotent. Harnest shutdown never owns or cancels
+the external job. A `HarnestStore` checkpoint provider is required; opaque
+native advanced checkpointers cannot provide this portable ownership boundary.
 
 `@tool(durable=True)` opts an asynchronous managed tool into Harnest's native
 durability boundary. ADK receives a long-running function tool and LangGraph
@@ -605,7 +608,10 @@ injected `AgentInvoker` and returns an `APIRouter`. Inside a route, call
 Never accept `user_id`; Harnest derives identity from the authenticated
 connection and uses the same sessions, approvals, client tools, lifecycle,
 credentials, limits, and telemetry as `/responses`. Compilation rejects
-duplicate and Harnest-owned paths. Subagents cannot own routes. See
+duplicate and Harnest-owned paths. Subagents cannot own routes. Set
+`server.agentPrincipal: required` when every custom invocation must pass an
+application-authorized `agent_principal=`; an omission then fails before
+session creation. See
 `https://docs.usefused.com/harnest/runtime/custom-http-endpoints` for the public
 contract and example. Keep domain-specific session queries, such as filtering
 by a site's origin, in an authenticated custom route backed by an
@@ -630,6 +636,7 @@ def output_policy():
 
 The factory is synchronous, zero-argument, root-only, and unique.
 `subagent_messages` accepts `"suppress"` (default) or `"include"`.
+`thinking` independently accepts `"suppress"` (default) or `"include"`.
 `agent_metadata` accepts `"normalized"` (default) or `"raw"`; raw mode keeps the
 portable fields and additionally exposes JSON-safe ADK or LangGraph metadata.
 It affects Harnest neutral JSON, SSE, WebSocket, A2A streaming, local responses,

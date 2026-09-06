@@ -15,6 +15,11 @@ class SuspendedContinuation(Protocol):
 class InvocationContinuationPort(Protocol):
     """Provider-bound suspension authority available only during invocation."""
 
+    def preflight(self) -> None:
+        """Reject waits that cannot survive the current invocation boundary."""
+
+        ...
+
     async def suspend(
         self,
         external_id: str,

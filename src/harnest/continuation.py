@@ -12,6 +12,7 @@ import secrets
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from ._json import json_value
+from .agent_principal import AgentRuntimePrincipal, validate_agent_principal
 from .checkpoint import PendingAction, RunScope
 from .durable import ResumeArtifact
 from .logging import get_logger
@@ -34,6 +35,63 @@ class ContinuationConflictError(ContinuationError):
 
 class ContinuationValidationError(ContinuationError):
     """Raised before untrusted external output crosses the durable boundary."""
+
+
+@dataclass(frozen=True, slots=True)
+class PrincipalGrantSnapshot:
+    """Persist only reconstructable permission names for a restricted wait."""
+
+    permissions: tuple[str, ...]
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        """Validate and canonicalize the private grant representation."""
+
+        if type(self.version) is not int or self.version != 1:
+            raise ValueError("principal grant snapshot version is unsupported")
+        if not isinstance(self.permissions, tuple):
+            raise TypeError("principal grant snapshot permissions must be a tuple")
+        normalized = AgentRuntimePrincipal.create(
+            permissions=self.permissions
+        ).permissions
+        object.__setattr__(self, "permissions", tuple(sorted(normalized)))
+
+    @classmethod
+    def capture(
+        cls, principal: AgentRuntimePrincipal | None
+    ) -> PrincipalGrantSnapshot | None:
+        """Capture grants without retaining the invocation's opaque identity."""
+
+        validate_agent_principal(principal)
+        if principal is None:
+            return None
+        return cls(tuple(sorted(principal.permissions)))
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> PrincipalGrantSnapshot:
+        """Reject malformed or forward-versioned persisted authority."""
+
+        if not isinstance(value, Mapping) or set(value) != {
+            "permissions",
+            "version",
+        }:
+            raise ValueError("principal grant snapshot fields are invalid")
+        permissions = value["permissions"]
+        if isinstance(permissions, (str, bytes)) or not isinstance(
+            permissions, Sequence
+        ):
+            raise TypeError("principal grant snapshot permissions must be an array")
+        return cls(tuple(permissions), version=value["version"])
+
+    def restore(self) -> AgentRuntimePrincipal:
+        """Create fresh opaque authority constrained to the persisted grants."""
+
+        return AgentRuntimePrincipal.create(permissions=self.permissions)
+
+    def private_dict(self) -> dict[str, Any]:
+        """Serialize the versioned snapshot only inside trusted storage."""
+
+        return {"version": self.version, "permissions": list(self.permissions)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +120,9 @@ class ContinuationRecord:
     capability: str
     schema_id: str
     resume: ResumeArtifact | None = None
+    principal_grants: PrincipalGrantSnapshot | None = field(
+        default=None, repr=False
+    )
     status: ContinuationStatus = "pending"
     ready: bool = False
     revision: int = 0
@@ -87,6 +148,7 @@ class ContinuationRecord:
             raise ValueError("schema_id must be a stable non-empty identifier")
         if self.resume is not None and not isinstance(self.resume, ResumeArtifact):
             raise TypeError("continuation resume must be a ResumeArtifact")
+        _validate_principal_grants(self.principal_grants)
         if type(self.ready) is not bool:
             raise ValueError("continuation ready must be a boolean")
         if type(self.revision) is not int or self.revision < 0:
@@ -252,6 +314,7 @@ class ContinuationProvider:
         capability: str,
         schema_id: str,
         resume: ResumeArtifact,
+        principal_grants: PrincipalGrantSnapshot | None = None,
     ) -> ContinuationRecord:
         """Atomically persist a wait and transition its owned run to waiting."""
 
@@ -266,6 +329,7 @@ class ContinuationProvider:
             capability=capability,
             schema_id=schema_id,
             resume=resume,
+            principal_grants=principal_grants,
         )
         return await self._store.suspend_continuation(
             record=record, external_id=external_id
@@ -486,6 +550,15 @@ def _validated_result(value: Any, validate: ContinuationValidator) -> Any:
         return json_value(validate(value))
     except Exception as exc:
         raise ContinuationValidationError("external continuation result is invalid") from exc
+
+
+def _validate_principal_grants(value: Any) -> None:
+    """Keep reconstructable authority typed at every persistence boundary."""
+
+    if value is not None and not isinstance(value, PrincipalGrantSnapshot):
+        raise TypeError(
+            "continuation principal_grants must be a PrincipalGrantSnapshot"
+        )
 
 
 def _validated_resolution(

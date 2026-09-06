@@ -44,6 +44,13 @@ class HatchetContext(ExtensionContext):
 
         ...
 
+    async def run_and_wait(
+        self, workflow_name: str, job_input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Preflight durable suspension before submitting external work."""
+
+        ...
+
     async def cancel(self, job: HatchetRun) -> None:
         """Request cancellation of an external Hatchet run."""
 
@@ -76,6 +83,13 @@ class HatchetExtension(Extension[HatchetContext]):
 
     async def wait(self, job: HatchetRun) -> Mapping[str, Any]:
         """Suspend and resume the active durable tool continuation."""
+
+        ...
+
+    async def run_and_wait(
+        self, workflow_name: str, job_input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Submit only after the current invocation proves it can suspend."""
 
         ...
 

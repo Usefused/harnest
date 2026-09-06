@@ -36,6 +36,7 @@ from .continuation import (
     ContinuationConflictError,
     ContinuationFailure,
     ContinuationRecord,
+    PrincipalGrantSnapshot,
     ProviderPendingContinuation,
     _require_page,
     _validated_resolution,
@@ -693,11 +694,12 @@ class PostgresStore(HarnestStore):
         WITH inserted AS (
             INSERT INTO harnest_continuations(
                 continuation_id, run_id, application_id, user_id, session_id,
-                provider, capability, schema_id, resume, external_id, external_key,
+                provider, capability, schema_id, resume, principal_grants,
+                external_id, external_key,
                 status, revision, ready, created_at, updated_at
             )
-            SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,'pending',0,false,
-                   $12::timestamptz,$13::timestamptz
+            SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,
+                   'pending',0,false,$13::timestamptz,$14::timestamptz
             FROM harnest_runs
             WHERE run_id=$2 AND application_id=$3 AND user_id=$4
               AND session_id=$5 AND status='running'
@@ -705,7 +707,7 @@ class PostgresStore(HarnestStore):
             RETURNING *
         ), waiting AS (
             UPDATE harnest_runs AS run SET
-                status='waiting', pending_action=$14::jsonb,
+                status='waiting', pending_action=$15::jsonb,
                 revision=run.revision + 1, updated_at=now()
             FROM inserted
             WHERE run.run_id=inserted.run_id AND run.status='running'
@@ -1363,6 +1365,9 @@ def _continuation_from_row(row: Mapping[str, Any]) -> ContinuationRecord:
 
     failure = _json_load(row.get("failure"))
     resume = _json_load(row.get("resume"))
+    # Older rows cannot represent a restricted wait because that runtime
+    # rejected principals before persistence, so SQL NULL safely means omission.
+    principal_grants = _json_load(row.get("principal_grants"))
     return ContinuationRecord(
         continuation_id=row["continuation_id"],
         application_id=row["application_id"],
@@ -1373,6 +1378,11 @@ def _continuation_from_row(row: Mapping[str, Any]) -> ContinuationRecord:
         capability=row["capability"],
         schema_id=row["schema_id"],
         resume=None if resume is None else ResumeArtifact.from_mapping(resume),
+        principal_grants=(
+            None
+            if principal_grants is None
+            else PrincipalGrantSnapshot.from_mapping(principal_grants)
+        ),
         status=row["status"],
         ready=bool(row.get("ready", False)),
         revision=row["revision"],
@@ -1459,12 +1469,21 @@ def _continuation_insert_values(
         _json_dump(
             None if value.resume is None else value.resume.public_dict()
         ),
+        _principal_grants_dump(value.principal_grants),
         external_id,
         external_id_key(value.provider, external_id),
         _parse_timestamp(value.created_at),
         _parse_timestamp(value.updated_at),
         _pending_dump(value.pending_action),
     )
+
+
+def _principal_grants_dump(
+    value: PrincipalGrantSnapshot | None,
+) -> str | None:
+    """Serialize reconstructable grants only into the private continuation row."""
+
+    return None if value is None else _json_dump(value.private_dict())
 
 
 def _failure_dump(value: ContinuationFailure | None) -> str | None:

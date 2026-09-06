@@ -786,12 +786,11 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata, {"source": "test"})
         self.assertEqual(
             [event["type"] for event in result.events],
-            ["tool_call", "tool_result", "thinking", "message", "graph_output"],
+            ["tool_call", "tool_result", "message", "graph_output"],
         )
         self.assertEqual(result.events[0]["arguments"], {"text": "ok"})
         self.assertEqual(result.events[1]["result"], "ok")
-        self.assertEqual(result.events[2]["text"], "considering")
-        self.assertEqual(result.events[3]["text"], "answer-2")
+        self.assertEqual(result.events[2]["text"], "answer-2")
         self.assertNotIn("considering", result.text)
         self.assertNotIn("private-signature", repr(result.events))
         self.assertNotIn("private-signature", repr(result.result))
@@ -809,6 +808,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             session.metadata["langgraph"]["messages"][-1]["content"][0]["text"],
             "answer-2",
         )
+
         messages = await self.driver.get_session_messages(
             session_id="session-1", user_id="user-1"
         )
@@ -833,6 +833,26 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("session-1", thread_ids)
         self.assertEqual(len(self.target.inputs[1]["messages"]), 4)
+
+    async def test_invoke_exposes_provider_thinking_only_when_opted_in(self):
+        """Keep reasoning private by default while retaining an explicit policy."""
+
+        target = _Target()
+        application = replace(
+            _application(target),
+            output_policy=OutputPolicy(thinking="include"),
+        )
+        driver = LangGraphRuntimeDriver(application)
+        try:
+            await driver.create_session(
+                session_id="thinking-opt-in", user_id="user-1", state={}
+            )
+            result = await driver.invoke(_request("thinking-opt-in"))
+        finally:
+            await driver.close()
+
+        thinking = [event for event in result.events if event["type"] == "thinking"]
+        self.assertEqual(thinking, [{"type": "thinking", "text": "considering"}])
 
     async def test_managed_graph_keeps_session_state_public_and_namespaced(self):
         class StatefulGraphTarget(_Target):
@@ -1149,7 +1169,6 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 "tool_result",
                 "agent_activity",
                 "agent_activity",
-                "thinking",
                 "message",
                 "agent_activity",
                 "graph_output",
@@ -1169,10 +1188,6 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 ("reply", "started"),
                 ("reply", "completed"),
             ],
-        )
-        self.assertEqual(
-            events[8],
-            {"type": "thinking", "text": "considering", "agent": "reply"},
         )
         self.assertEqual(
             "".join(event["text"] for event in events if event["type"] == "message"),

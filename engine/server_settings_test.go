@@ -20,7 +20,7 @@ func TestLoadBundleServerSettings(t *testing.T) {
 		name, section string
 		valid         bool
 	}{
-		{"partial", "server:\n  live: true\n  http:\n    port: ${PORT}\n  playground:\n    enabled: false\n", true},
+		{"partial", "server:\n  live: true\n  agentPrincipal: required\n  http:\n    port: ${PORT}\n  playground:\n    enabled: false\n", true},
 		{"empty", "server: {}\n", true},
 		{"unknown section", "server:\n  tls: true\n", false},
 		{"unknown field", "server:\n  http:\n    prot: 9090\n", false},
@@ -43,9 +43,17 @@ func TestLoadBundleServerSettings(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Scalars remain templates; Python owns runtime resolution and range checks.
-			if tc.name == "partial" && (bundle.Config.Server.HTTP.Port != "${PORT}" || bundle.Config.Server.Live != true) {
-				t.Fatalf("lost server environment reference: %#v", bundle.Config.Server)
+			if tc.name == "partial" {
+				assertPartialServerSettings(t, bundle.Config.Server)
 			}
 		})
+	}
+}
+
+// assertPartialServerSettings verifies that Go preserves values owned by Python decoding.
+func assertPartialServerSettings(t *testing.T, settings *AgentServerSettings) {
+	t.Helper()
+	if settings.HTTP.Port != "${PORT}" || settings.Live != true || settings.AgentPrincipal != "required" {
+		t.Fatalf("lost server setting: %#v", settings)
 	}
 }

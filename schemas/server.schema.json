@@ -127,6 +127,9 @@
           "$ref": "#/$defs/live",
           "default": false,
           "description": "Enable WebSocket transport on the HTTP server."
+        },
+        "agentPrincipal": {
+          "$ref": "#/$defs/agentPrincipal"
         }
       }
     },
@@ -139,6 +142,11 @@
           "$ref": "#/$defs/environmentReference"
         }
       ]
+    },
+    "agentPrincipal": {
+      "enum": ["optional", "required"],
+      "default": "optional",
+      "description": "Require every custom AgentInvoker route to bind an Agent Runtime Principal."
     }
   },
   "additionalProperties": false,
@@ -182,6 +190,9 @@
       "$ref": "#/$defs/live",
       "default": true,
       "description": "Legacy server files without this setting retain WebSocket access."
+    },
+    "agentPrincipal": {
+      "$ref": "#/$defs/agentPrincipal"
     }
   }
 }

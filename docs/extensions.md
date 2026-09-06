@@ -40,7 +40,8 @@ Installation validates the closed manifest, required regular entrypoint,
 optional project identity, and compiler-supported layout. A regular root
 `README.md` is allowed as package documentation and is copied by local and PyPI
 installation; other unexpected root entries, links, and special files remain
-invalid. For PyPI sources, Harnest downloads the selected wheel with a bounded
+invalid. For PyPI sources, Harnest accepts only universal `py3-none-any` wheels
+for this release, then downloads the selected wheel with a bounded
 transfer, verifies its published digest and package identity, extracts only the
 permitted extension tree, and preserves both its dependency metadata and
 packaged README for the agent's runtime lock and local inspection. Installation
@@ -124,12 +125,12 @@ authenticated user and session, so a reference cannot cross either boundary.
 
 ## Output policy
 
-`OutputPolicy` controls which model messages become public Harnest events; it
-does not modify prompts or model responses. The default
+`OutputPolicy` controls which model messages and provider-exposed reasoning
+become public Harnest events; it does not modify prompts or model responses. The default
 `subagent_messages="suppress"` hides intermediate child-agent narration when
 that message accompanies a tool call. Root-agent messages, tool calls, tool
-results, and a terminal child or canonical answer remain visible. Hidden model
-reasoning is filtered separately and cannot be enabled by this policy.
+results, and a terminal child or canonical answer remain visible. The default
+`thinking="suppress"` also keeps provider-exposed reasoning text private.
 
 A team that intentionally presents pre-tool subagent narration can opt in with
 one optional root factory:
@@ -142,10 +143,13 @@ from harnest.output import OutputPolicy
 
 @lifecycle.output_policy
 def output_policy():
-    return OutputPolicy(subagent_messages="include")
+    return OutputPolicy(
+        subagent_messages="include",
+        thinking="include",
+    )
 ```
 
-The only accepted values are `"suppress"` and `"include"`; an invalid value
+Both disclosure settings accept only `"suppress"` and `"include"`; an invalid value
 fails when the application is compiled. The factory must be synchronous, accept
 no arguments, and return `OutputPolicy`. It is root-only, optional, and unique;
 duplicate or incorrectly typed factories fail compilation.

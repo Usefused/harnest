@@ -221,9 +221,10 @@ def _aggregate_token_usage(events: Sequence[Mapping[str, Any]]) -> TokenUsage | 
 
 @dataclass(frozen=True, slots=True)
 class OutputPolicy:
-    """Control intermediate narration and provider metadata in public output."""
+    """Control narration, reasoning, and provider metadata in public output."""
 
     subagent_messages: SubagentMessageMode = "suppress"
+    thinking: Literal["suppress", "include"] = "suppress"
     agent_metadata: AgentMetadataMode = "normalized"
     persist_raw_agent_metadata: bool = False
 
@@ -234,6 +235,8 @@ class OutputPolicy:
             raise ValueError(
                 "subagent_messages must be either 'suppress' or 'include'"
             )
+        if self.thinking not in {"suppress", "include"}:
+            raise ValueError("thinking must be either 'suppress' or 'include'")
         if self.agent_metadata not in {"normalized", "raw"}:
             raise ValueError(
                 "agent_metadata must be either 'normalized' or 'raw'"

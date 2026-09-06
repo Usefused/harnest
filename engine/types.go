@@ -33,10 +33,11 @@ type AgentConfig struct {
 // Scalar values retain exact environment references; the server decoder owns
 // their type/range validation and resolves references only at runtime startup.
 type AgentServerSettings struct {
-	Live       any                      `yaml:"live,omitempty" json:"live,omitempty"`
-	HTTP       *AgentHTTPSettings       `yaml:"http,omitempty" json:"http,omitempty"`
-	Limits     *AgentServerLimits       `yaml:"limits,omitempty" json:"limits,omitempty"`
-	Playground *AgentPlaygroundSettings `yaml:"playground,omitempty" json:"playground,omitempty"`
+	Live           any                      `yaml:"live,omitempty" json:"live,omitempty"`
+	AgentPrincipal any                      `yaml:"agentPrincipal,omitempty" json:"agentPrincipal,omitempty"`
+	HTTP           *AgentHTTPSettings       `yaml:"http,omitempty" json:"http,omitempty"`
+	Limits         *AgentServerLimits       `yaml:"limits,omitempty" json:"limits,omitempty"`
+	Playground     *AgentPlaygroundSettings `yaml:"playground,omitempty" json:"playground,omitempty"`
 }
 
 type AgentHTTPSettings struct {

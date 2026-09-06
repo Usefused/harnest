@@ -194,6 +194,28 @@ class AgentInvokerTests(unittest.TestCase):
             frozenset({"tickets.read"}),
         )
 
+    def test_required_principal_rejects_omitted_custom_route_binding(self):
+        """Fail before session mutation when a protected deployment forgets grants."""
+
+        driver = FakeDriver()
+        extension = create_http_route_extension(
+            _application_router, identity="http.py:1:http_routes"
+        )
+        app = create_neutral_app(
+            driver,
+            http_routes=(extension,),
+            agent_principal_required=True,
+        )
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(
+                "/threadify/execute", json={"message": "hello"}
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(driver.sessions, {})
+        self.assertEqual(driver.invocations, [])
+
     def test_incomplete_projection_fails_before_implicit_session_creation(self):
         driver = FakeDriver()
         driver.info = replace(

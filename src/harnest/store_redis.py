@@ -40,6 +40,7 @@ from .continuation import (
     ContinuationConflictError,
     ContinuationFailure,
     ContinuationRecord,
+    PrincipalGrantSnapshot,
     ProviderPendingContinuation,
     _require_page,
     _validated_resolution,
@@ -52,8 +53,8 @@ from .runtime_contract import SessionConflictError, SessionRecord
 from .session import SessionLease, _require_list_options
 
 
-_SCHEMA_VERSION = "4"
-_MIGRATABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
+_SCHEMA_VERSION = "5"
+_MIGRATABLE_SCHEMA_VERSIONS = frozenset({"1", "2", "3", "4"})
 _AUDIT = get_logger("store.audit")
 _A2A_MISSING_TIMESTAMP_SCORE = -62_135_596_800_000_000
 _A2A_MUTATION_RETRIES = 8
@@ -1387,9 +1388,17 @@ def _continuation_load(value: Any) -> ProviderPendingContinuation:
     data = envelope["record"]
     failure = data.pop("failure", None)
     resume = data.pop("resume", None)
+    # Pre-v5 records cannot contain restricted waits, so an absent snapshot
+    # retains their original unrestricted compatibility semantics.
+    principal_grants = data.pop("principal_grants", None)
     record = ContinuationRecord(
         **data,
         resume=None if resume is None else ResumeArtifact.from_mapping(resume),
+        principal_grants=(
+            None
+            if principal_grants is None
+            else PrincipalGrantSnapshot.from_mapping(principal_grants)
+        ),
         failure=None if failure is None else ContinuationFailure(**failure),
     )
     return ProviderPendingContinuation(record, envelope["external_id"])

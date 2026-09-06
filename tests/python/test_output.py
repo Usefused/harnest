@@ -4,26 +4,31 @@ from harnest.output import AgentMetadata, OutputPolicy, TokenUsage
 
 
 class OutputPolicyTests(unittest.TestCase):
-    def test_default_suppresses_only_messages_attached_to_tool_calls(self):
+    def test_default_suppresses_thinking_and_messages_attached_to_tool_calls(self):
         policy = OutputPolicy()
 
+        self.assertEqual(policy.thinking, "suppress")
         self.assertFalse(policy.includes_intermediate_message(has_tool_calls=True))
         self.assertTrue(policy.includes_intermediate_message(has_tool_calls=False))
 
     def test_include_mode_and_invalid_values_are_explicit(self):
         policy = OutputPolicy(
             subagent_messages="include",
+            thinking="include",
             agent_metadata="raw",
             persist_raw_agent_metadata=True,
         )
 
         self.assertTrue(policy.includes_intermediate_message(has_tool_calls=True))
+        self.assertEqual(policy.thinking, "include")
         self.assertEqual(policy.agent_metadata, "raw")
         self.assertTrue(policy.persist_raw_agent_metadata)
         with self.assertRaisesRegex(ValueError, "subagent_messages"):
             OutputPolicy(subagent_messages="unexpected")
         with self.assertRaisesRegex(ValueError, "agent_metadata"):
             OutputPolicy(agent_metadata="hidden")
+        with self.assertRaisesRegex(ValueError, "thinking"):
+            OutputPolicy(thinking="public")
         with self.assertRaisesRegex(TypeError, "persist_raw_agent_metadata"):
             OutputPolicy(agent_metadata="raw", persist_raw_agent_metadata=1)
         with self.assertRaisesRegex(ValueError, "requires agent_metadata='raw'"):

@@ -4,6 +4,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+from harnest.agent import AgentRuntimePrincipal
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest.continuation import (
     ContinuationConflictError,
@@ -11,6 +12,7 @@ from harnest.continuation import (
     ContinuationProvider,
     ContinuationStore,
     ContinuationValidationError,
+    PrincipalGrantSnapshot,
     continuation_schema_id,
 )
 from harnest.durable import ResumeArtifact
@@ -70,6 +72,45 @@ class MemoryContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("job-1", repr(run.pending_action))
         self.assertEqual(pending[0].record, record)
         self.assertEqual(pending[0].external_id, "job-1")
+
+    async def test_memory_preserves_empty_principal_distinct_from_omission(self):
+        """Keep explicit deny-all authority reconstructable without its opaque ID."""
+
+        principal = AgentRuntimePrincipal.create()
+        snapshot = PrincipalGrantSnapshot.capture(principal)
+        record = await self.provider.suspend(
+            user_id="user-1",
+            session_id="session-1",
+            run_id="run-1",
+            external_id="job-empty-principal",
+            capability="workflow.run",
+            schema_id="report-result/v1",
+            resume=_RESUME,
+            principal_grants=snapshot,
+        )
+
+        self.assertIsNone(PrincipalGrantSnapshot.capture(None))
+        self.assertIsNotNone(record.principal_grants)
+        self.assertEqual(record.principal_grants.permissions, ())
+        restored = record.principal_grants.restore()
+        self.assertEqual(restored.permissions, frozenset())
+        self.assertNotEqual(restored.id, principal.id)
+        self.assertNotIn(principal.id, repr(record))
+
+    def test_principal_snapshot_rejects_untrusted_persisted_shapes(self):
+        """Fail closed on unknown versions, fields, and malformed grant arrays."""
+
+        invalid = (
+            {"version": 2, "permissions": []},
+            {"version": 1, "permissions": "reports.read"},
+            {"version": 1, "permissions": [], "identity": "opaque"},
+            {"version": 1, "permissions": ["not allowed"]},
+        )
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                PrincipalGrantSnapshot.from_mapping(value)
 
     async def test_completion_is_validated_then_claimed_exactly_once(self):
         suspended = await self._suspend()

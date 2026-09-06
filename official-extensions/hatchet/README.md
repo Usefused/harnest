@@ -41,8 +41,9 @@ from harnest.tool import tool
 @tool(durable=True)
 async def build_report(account_id: str) -> dict:
     """Build one account report in the external workflow system."""
-    job = await hatchet.run("build-report", {"account_id": account_id})
-    return await hatchet.wait(job)
+    return await hatchet.run_and_wait(
+        "build-report", {"account_id": account_id}
+    )
 ```
 
 `hatchet.status(job)` reads current state and `hatchet.cancel(job)` requests
@@ -72,11 +73,15 @@ does not deploy or supervise Hatchet, define workflows, manage workers, expose
 tools, or replace durable Harnest session/checkpoint storage. Cancellation is a
 provider request and does not imply immediate worker shutdown.
 
-An invocation carrying an Agent Runtime Principal cannot suspend an external
-continuation because another replica cannot reconstruct that opaque authority.
-In that case `wait` fails closed after `run` has submitted the Hatchet job.
-Poll it with `status` in the live invocation or avoid binding a runtime
-principal when cross-replica waiting is required.
+Agent Runtime Principals can cross an external continuation. Harnest persists
+only a private versioned snapshot of permission names and reconstructs a fresh
+opaque principal when another replica resumes the wait. Principal IDs,
+credentials, and authentication claims are never stored with the continuation.
+
+Use `run_and_wait` for work whose result is required because it verifies durable
+continuation support before submission. Separate `run` and `wait` calls remain
+available for fire-and-forget and existing-run workflows, but callers own the
+external job if a later wait fails for another reason.
 
 See the [Harnest documentation](https://docs.usefused.com/harnest) for agent
 configuration and operational guidance. Source and issue tracking live in the

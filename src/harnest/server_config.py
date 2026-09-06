@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import yaml
 
@@ -60,12 +60,13 @@ class PlaygroundConfig:
 
 @dataclass(frozen=True, slots=True)
 class ServerConfig:
-    """Group validated listener, limit, playground, and live-mode settings."""
+    """Group validated listener, limit, UI, transport, and principal policy."""
 
     http: HTTPServerConfig = HTTPServerConfig()
     limits: ServerLimits = ServerLimits()
     playground: PlaygroundConfig = PlaygroundConfig()
     live: bool = False
+    agent_principal: Literal["optional", "required"] = "optional"
 
     def with_overrides(
         self,
@@ -101,6 +102,7 @@ DEFAULT_SERVER_CONFIG = ServerConfig()
 DEFAULT_SERVER_YAML = """apiVersion: harnest.dev/v1alpha1
 kind: Server
 live: false
+agentPrincipal: optional
 http:
   host: 127.0.0.1
   port: 8080
@@ -214,11 +216,11 @@ def _project_server_document(value: Any) -> dict[str, Any]:
 
     settings = _mapping(value, "config.yaml server")
     document = yaml.safe_load(DEFAULT_SERVER_YAML)
-    sections = {"http", "limits", "playground", "live"}
+    sections = {"http", "limits", "playground", "live", "agentPrincipal"}
     _require_keys(dict.fromkeys(sections) | dict(settings), sections, "server")
     for name, value in settings.items():
         # Live is a transport switch, while the other sections merge nested defaults.
-        if name == "live":
+        if name in {"live", "agentPrincipal"}:
             document[name] = value
             continue
         overrides = _mapping(value, f"server.{name}")
@@ -281,8 +283,24 @@ def _decode_config(
 
     # Older compiled/authored server files exposed WebSockets unconditionally.
     # New defaults explicitly include live: false and do not take this fallback.
-    root = {"live": True, **_mapping(value, "server.yaml")}
-    _require_keys(root, {"apiVersion", "kind", "http", "limits", "playground", "live"}, "server.yaml")
+    root = {
+        "live": True,
+        "agentPrincipal": "optional",
+        **_mapping(value, "server.yaml"),
+    }
+    _require_keys(
+        root,
+        {
+            "apiVersion",
+            "kind",
+            "http",
+            "limits",
+            "playground",
+            "live",
+            "agentPrincipal",
+        },
+        "server.yaml",
+    )
     # Reject unrelated document kinds before decoding their settings.
     if root["apiVersion"] != _API_VERSION or root["kind"] != "Server":
         raise ServerConfigError(
@@ -294,7 +312,18 @@ def _decode_config(
         limits=_decode_limits(root["limits"], environment),
         playground=_decode_playground(root["playground"], environment),
         live=_resolved_boolean(root["live"], "live", environment),
+        agent_principal=_agent_principal_mode(root["agentPrincipal"]),
     )
+
+
+def _agent_principal_mode(value: Any) -> Literal["optional", "required"]:
+    """Decode the fail-closed custom-route principal policy."""
+
+    if value not in {"optional", "required"}:
+        raise ServerConfigError(
+            "agentPrincipal must be either 'optional' or 'required'"
+        )
+    return value
 
 
 def _decode_http(

@@ -20,6 +20,7 @@ from .continuation import (
     ContinuationRecord,
     ContinuationStore,
     ContinuationValidator,
+    PrincipalGrantSnapshot,
     ProviderPendingContinuation,
 )
 from .checkpoint import RunRecord, RunScope
@@ -120,6 +121,16 @@ class InvocationContinuationPort:
     ) -> None:
         self._runtime = runtime
         self._provider = provider
+
+    def preflight(self) -> None:
+        """Reject an invocation that cannot safely cross a replica boundary."""
+
+        execution = _CURRENT.get()
+        if execution is None or execution.runtime is not self._runtime:
+            raise ExternalContinuationUnavailableError(
+                "external continuations require a managed invocation"
+            )
+        self._runtime.preflight(execution)
 
     async def suspend(
         self,
@@ -319,6 +330,15 @@ class ExternalContinuationRuntime:
         finally:
             _CURRENT.reset(token)
 
+    def preflight(self, _execution: _Execution) -> None:
+        """Verify durable suspension is available before external submission."""
+
+        self._require_open()
+        if current_native_durable_call() is None:
+            raise ExternalContinuationUnavailableError(
+                "unfinished external work requires @tool(durable=True)"
+            )
+
     async def suspend(
         self,
         execution: _Execution,
@@ -333,18 +353,10 @@ class ExternalContinuationRuntime:
 
         self._require_open()
         native = current_native_durable_call()
-        if native is None:
-            raise ExternalContinuationUnavailableError(
-                "unfinished external work requires @tool(durable=True)"
-            )
-        if execution.request.agent_principal is not None:
-            # Stored continuations can resume on another replica, where the
-            # opaque invocation authority is deliberately unavailable. Failing
-            # before persistence prevents a restricted run resuming unrestricted.
-            raise ExternalContinuationUnavailableError(
-                "external continuations do not support Agent Runtime Principal "
-                "resumption"
-            )
+        self.preflight(execution)
+        # The preflight guarantees a native call in this exact synchronous
+        # context; retain the explicit check for static narrowing and clarity.
+        assert native is not None
         self.register_schema(provider, schema_id, validate)
         request = execution.request
         existing = await self.provider(provider).lookup(external_id)
@@ -371,6 +383,9 @@ class ExternalContinuationRuntime:
                 capability=capability,
                 schema_id=schema_id,
                 resume=native.artifact,
+                principal_grants=PrincipalGrantSnapshot.capture(
+                    request.agent_principal
+                ),
             )
         except BaseException:
             if reserved:
@@ -394,15 +409,14 @@ class ExternalContinuationRuntime:
         """Recreate one native handle when LangGraph replays its durable node."""
 
         request = execution.request
-        valid = (
-            record.application_id == self._application_id
-            and record.user_id == request.user_id
-            and record.session_id == request.session_id
-            and record.run_id == request.invocation_id
-            and record.provider == provider
-            and record.capability == capability
-            and record.schema_id == schema_id
-            and record.resume == native.artifact
+        valid = _continuation_matches_replay(
+            record,
+            request,
+            application_id=self._application_id,
+            provider=provider,
+            capability=capability,
+            schema_id=schema_id,
+            resume=native.artifact,
         )
         if not valid:
             raise ContinuationConflictError("external continuation ownership changed")
@@ -823,6 +837,11 @@ class ExternalContinuationRuntime:
             metadata={},
             state_delta={},
             transport="continuation",
+            agent_principal=(
+                None
+                if record.principal_grants is None
+                else record.principal_grants.restore()
+            ),
         )
         run = ApprovalRun(
             id=record.run_id,
@@ -934,6 +953,32 @@ class ExternalContinuationRuntime:
             raise ExternalContinuationUnavailableError(
                 "external continuation runtime is closed"
             )
+
+
+def _continuation_matches_replay(
+    record: ContinuationRecord,
+    request: InvocationRequest,
+    *,
+    application_id: str,
+    provider: str,
+    capability: str,
+    schema_id: str,
+    resume: Any,
+) -> bool:
+    """Match complete durable ownership, including reconstructed authority."""
+
+    return (
+        record.application_id == application_id
+        and record.user_id == request.user_id
+        and record.session_id == request.session_id
+        and record.run_id == request.invocation_id
+        and record.provider == provider
+        and record.capability == capability
+        and record.schema_id == schema_id
+        and record.resume == resume
+        and record.principal_grants
+        == PrincipalGrantSnapshot.capture(request.agent_principal)
+    )
 
 
 def _resume_value(record: ContinuationRecord) -> Any:
