@@ -280,19 +280,30 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     f"{slug} = {package}.extension:extension", entry_points
                 )
 
-    def test_official_extension_projects_use_packaged_readmes(self):
+    def test_official_extension_projects_have_local_build_backends_and_readmes(self):
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))
+        quality_requirements = set(
+            project["project"]["optional-dependencies"]["quality"]
+        )
         for slug in ("docker", "hatchet"):
             with self.subTest(extension=slug):
                 root = ROOT / "official-extensions" / slug
-                project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+                extension = tomllib.loads(
+                    (root / "pyproject.toml").read_text("utf-8")
+                )
                 readme = (root / "README.md").read_text("utf-8")
 
-                self.assertEqual(project["project"]["readme"], "README.md")
+                self.assertEqual(extension["project"]["readme"], "README.md")
                 self.assertIn(
                     "README.md",
-                    project["tool"]["setuptools"]["package-data"][
+                    extension["tool"]["setuptools"]["package-data"][
                         f"harnest_extension_{slug}"
                     ],
+                )
+                self.assertTrue(
+                    set(extension["build-system"]["requires"]).issubset(
+                        quality_requirements
+                    )
                 )
                 self.assertIn("https://docs.usefused.com/harnest", readme)
                 self.assertIn("https://github.com/Usefused/harnest", readme)
