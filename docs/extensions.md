@@ -125,12 +125,16 @@ authenticated user and session, so a reference cannot cross either boundary.
 
 ## Output policy
 
-`OutputPolicy` controls which model messages and provider-exposed reasoning
-become public Harnest events; it does not modify prompts or model responses. The default
-`subagent_messages="suppress"` hides intermediate child-agent narration when
-that message accompanies a tool call. Root-agent messages, tool calls, tool
-results, and a terminal child or canonical answer remain visible. The default
-`thinking="suppress"` also keeps provider-exposed reasoning text private.
+`OutputPolicy` controls which model messages, tool activity, provider-exposed
+reasoning, and model metadata become public Harnest events; it does not modify
+prompts, tool execution, or model responses. The default
+`subagent_messages=False` hides intermediate child-agent narration when
+that message accompanies a tool call. Root-agent messages and a terminal child
+or canonical answer remain visible. Tool calls and results remain visible by
+default and can be hidden with `tool_activity=False`. The default
+`thinking=False` keeps provider-exposed reasoning text private.
+Set `agent_metadata=AgentMetadataMode.SUPPRESS` to hide normalized
+model/provider details and aggregate token usage as well.
 
 A team that intentionally presents pre-tool subagent narration can opt in with
 one optional root factory:
@@ -138,29 +142,33 @@ one optional root factory:
 ```python
 # lifecycle/output.py
 from harnest.lifecycle import lifecycle
-from harnest.output import OutputPolicy
+from harnest.output import AgentMetadataMode, OutputPolicy
 
 
 @lifecycle.output_policy
 def output_policy():
     return OutputPolicy(
-        subagent_messages="include",
-        thinking="include",
+        subagent_messages=True,
+        tool_activity=False,
+        thinking=True,
+        agent_metadata=AgentMetadataMode.SUPPRESS,
     )
 ```
 
-Both disclosure settings accept only `"suppress"` and `"include"`; an invalid value
-fails when the application is compiled. The factory must be synchronous, accept
-no arguments, and return `OutputPolicy`. It is root-only, optional, and unique;
-duplicate or incorrectly typed factories fail compilation.
+The narration, tool-activity, and thinking settings are booleans;
+`agent_metadata` uses `AgentMetadataMode`. Released string values remain
+accepted as compatibility input and are normalized to booleans. An invalid
+value fails when the application is compiled. The factory must be synchronous,
+accept no arguments, and return `OutputPolicy`. It is root-only, optional, and
+unique; duplicate or incorrectly typed factories fail compilation.
 
 The policy applies to managed and advanced roots and their subagents when they
 run through Harnest. Neutral JSON, SSE, WebSocket, and playground surfaces use
 the same selection in ADK and LangGraph. Direct native framework endpoints stay
-framework-owned. `"include"` may expose provisional text that the agent later
-revises, so keep the safe default unless the product deliberately presents
-agent progress. The policy does not alter authored `agent`, `tools`, `client`,
-or `smoke` fixtures.
+framework-owned. `True` may expose provisional text that the
+agent later revises, so keep the safe default unless the product deliberately
+presents agent progress. The policy does not alter authored `agent`, `tools`,
+`client`, or `smoke` fixtures.
 
 ## Telemetry exporters
 

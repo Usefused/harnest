@@ -47,7 +47,7 @@ from harnest.neutral_runtime import (
     RuntimeDriver,
     SessionConflictError,
 )
-from harnest.output import OutputPolicy
+from harnest.output import AgentMetadataMode, OutputPolicy
 from harnest.runtime_adk import (
     ADKRuntimeDriver,
     _ADKEventNormalizer,
@@ -1447,7 +1447,9 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(
-            _ADKEventNormalizer(OutputPolicy(thinking="include")).feed(event),
+            _ADKEventNormalizer(
+                OutputPolicy(thinking=True)
+            ).feed(event),
             [
                 {
                     "type": "agent_activity",
@@ -1497,12 +1499,23 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             get_function_responses=lambda: [],
         )
         self.assertEqual(
-            _ADKEventNormalizer(OutputPolicy(thinking="include")).feed(thought_only),
+            _ADKEventNormalizer(
+                OutputPolicy(thinking=True)
+            ).feed(thought_only),
             [{"type": "thinking", "text": "private"}],
+        )
+        private_events = _ADKEventNormalizer(
+            OutputPolicy(tool_activity=False)
+        ).feed(event)
+        self.assertEqual(
+            [item["type"] for item in private_events],
+            ["agent_activity", "message", "graph_output"],
         )
 
     async def test_normalizer_deduplicates_cumulative_thinking(self):
-        normalizer = _ADKEventNormalizer(OutputPolicy(thinking="include"))
+        normalizer = _ADKEventNormalizer(
+            OutputPolicy(thinking=True)
+        )
         partial = python_types.SimpleNamespace(
             partial=True,
             content=python_types.SimpleNamespace(
@@ -1591,6 +1604,12 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         )
+        suppressed = _ADKEventNormalizer(
+            OutputPolicy(agent_metadata=AgentMetadataMode.SUPPRESS)
+        ).feed(event)
+        self.assertNotIn(
+            "agent_metadata", [item["type"] for item in suppressed]
+        )
 
     async def test_normalizer_raw_metadata_is_json_safe_and_content_free(self):
         event = ADKEvent(
@@ -1627,7 +1646,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             actions=EventActions(state_delta={"private": object()}),
         )
         events = _ADKEventNormalizer(
-            OutputPolicy(agent_metadata="raw")
+            OutputPolicy(agent_metadata=AgentMetadataMode.RAW)
         ).feed(event)
         metadata = next(item for item in events if item["type"] == "agent_metadata")
 
@@ -1847,12 +1866,21 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             *suppressed.feed(canonical),
         ]
         included = _ADKEventNormalizer(
-            OutputPolicy(subagent_messages="include"), root_agent_name="root"
+            OutputPolicy(subagent_messages=True),
+            root_agent_name="root",
         )
         included_events = [
             *included.feed(partial),
             *included.feed(completed),
             *included.feed(canonical),
+        ]
+        private = _ADKEventNormalizer(
+            OutputPolicy(tool_activity=False), root_agent_name="root"
+        )
+        private_events = [
+            *private.feed(partial),
+            *private.feed(completed),
+            *private.feed(canonical),
         ]
 
         self.assertEqual(
@@ -1870,6 +1898,11 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             "I'll inspect the pageDone",
         )
         self.assertIn("tool_call", [event["type"] for event in included_events])
+        self.assertEqual(
+            [event["type"] for event in private_events],
+            ["agent_activity", "agent_activity", "message"],
+        )
+        self.assertEqual(private_events[-1]["text"], "Done")
 
         terminal_child = _ADKEventNormalizer(root_agent_name="root")
         terminal = python_types.SimpleNamespace(

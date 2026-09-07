@@ -82,7 +82,11 @@ func compilerOwnedDistributions(selectedFramework string) (map[string]struct{}, 
 	}
 	owned := map[string]struct{}{"harnest": {}}
 	for _, compatibility := range frameworkCompatibilityByName {
-		for _, requirement := range compatibility.RuntimeRequirements {
+		requirements := append(
+			append([]string{}, compatibility.RuntimeRequirements...),
+			compatibility.MCPRequirements...,
+		)
+		for _, requirement := range requirements {
 			owned[normalizedRequirementName(requirement)] = struct{}{}
 		}
 	}

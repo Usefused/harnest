@@ -581,13 +581,15 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 "from harnest.output import OutputPolicy\n"
                 "@lifecycle.output_policy\n"
                 "def output_policy():\n"
-                "    return OutputPolicy(subagent_messages='include')\n",
+                "    return OutputPolicy(subagent_messages=True)\n",
                 encoding="utf-8",
             )
             configured = discover_extensions(root, framework="langgraph")
 
         self.assertEqual(default.output_policy, OutputPolicy())
-        self.assertEqual(configured.output_policy.subagent_messages, "include")
+        self.assertIs(
+            configured.output_policy.subagent_messages, True
+        )
         self.assertNotIn(
             "output_policy", [item.phase for item in configured.listeners]
         )

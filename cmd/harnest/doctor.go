@@ -19,15 +19,15 @@ import sys
 framework = sys.argv[1]
 dependencies = [
     ("harnest", "harnest"),
-    ("google.adk", "google-adk"),
     ("litellm", "litellm"),
-    ("pytest", "pytest"),
     ("opentelemetry.sdk", "opentelemetry-sdk"),
     ("opentelemetry.exporter.otlp.proto.http.trace_exporter", "opentelemetry-exporter-otlp-proto-http"),
     ("opentelemetry.instrumentation.fastapi", "opentelemetry-instrumentation-fastapi"),
     ("opentelemetry.instrumentation.logging", "opentelemetry-instrumentation-logging"),
 ]
-if framework == "langgraph":
+if framework == "adk":
+    dependencies.append(("google.adk", "google-adk"))
+else:
     dependencies.extend((
         ("langgraph", "langgraph"),
         ("langchain", "langchain"),

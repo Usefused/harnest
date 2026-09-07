@@ -263,7 +263,7 @@ func TestRuntimeLockNormalizesMachineLocalWheelAndProjectPaths(t *testing.T) {
 	))
 	document, err := normalizeRuntimeLock(
 		bundle, runtimewheel.Artifact{Name: "harnest-test.whl", Contents: []byte("wheel")},
-		plan, candidate, wheelPath,
+		plan, runtimeEnvironmentProfile, candidate, wheelPath,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -319,6 +319,100 @@ dependencies = ["httpx>=0.28,<1"]
 	lock := string(mustReadTestFile(t, filepath.Join(agent, runtimeRequirementsLockFile)))
 	if !strings.Contains(lock, "resolved-runtime-dependencies") {
 		t.Fatalf("unexpected generated runtime lock %q", lock)
+	}
+}
+
+func TestEnvironmentProfilesResolveIndependentMinimalLocks(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "profile-agent")
+	if err := createScaffold(agent, "profile-agent"); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+	sys := environmentTestSystem(t, root)
+
+	for _, profile := range environmentProfiles {
+		if _, _, err := executeForTest(
+			t, sys, "env", "sync", agent, "--profile", string(profile),
+		); err != nil {
+			t.Fatal(err)
+		}
+		assertFilesExist(t, agent, []string{
+			profile.requirementsLockFile(),
+			filepath.Join(".harnest", profile.stateFile()),
+		})
+	}
+
+	contents := string(mustReadTestFile(t, calls))
+	assertContainsAll(t, "profile dependency inputs", contents, []string{
+		"harnest[adk] @",
+		"harnest[adk,test] @",
+		"harnest[adk,eval] @",
+	})
+}
+
+func TestEnvironmentProfileAddsMCPOnlyForAuthoredMCP(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "mcp-profile-agent")
+	if err := createScaffold(agent, "mcp-profile-agent"); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEnvironmentFixture(
+		t,
+		filepath.Join(agent, "mcp", "catalog.py"),
+		"from harnest.mcp import MCPClient\n",
+	)
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+	if _, _, err := executeForTest(
+		t, environmentTestSystem(t, root), "env", "sync", agent,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if contents := string(mustReadTestFile(t, calls)); !strings.Contains(
+		contents, "harnest[adk,adk-mcp] @",
+	) {
+		t.Fatalf("MCP capability extra missing:\n%s", contents)
+	}
+}
+
+func TestTestCommandSelectsTestAndEvalProfiles(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "test-profile-agent")
+	if err := createScaffold(agent, "test-profile-agent"); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+	sys := environmentTestSystem(t, root)
+
+	if _, _, err := executeForTest(t, sys, "test", agent); err != nil {
+		t.Fatal(err)
+	}
+	assertFilesExist(t, agent, []string{
+		testEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", testEnvironmentProfile.stateFile()),
+	})
+	if _, _, err := executeForTest(t, sys, "test", agent, "--evals"); err != nil {
+		t.Fatal(err)
+	}
+	assertFilesExist(t, agent, []string{
+		evalEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", evalEnvironmentProfile.stateFile()),
+	})
+}
+
+func TestEnvironmentSyncRejectsUnknownProfile(t *testing.T) {
+	agent := filepath.Join(t.TempDir(), "invalid-profile-agent")
+	if err := createScaffold(agent, "invalid-profile-agent"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := executeForTest(
+		t, defaultSystem(), "env", "sync", agent, "--profile", "production",
+	)
+	if err == nil || !strings.Contains(err.Error(), "runtime, test, or eval") {
+		t.Fatalf("got error %v, want profile choices", err)
 	}
 }
 

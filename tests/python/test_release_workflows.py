@@ -576,6 +576,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(extras["tasks"], ["procrastinate==3.9.0"])
         self.assertIn("procrastinate==3.9.0", extras["all"])
 
+    def test_runtime_extras_exclude_eval_and_adk_extension_stacks(self):
+        """Keep serving independent from evaluation and broad provider bundles."""
+
+        extras = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["optional-dependencies"]
+
+        self.assertEqual(extras["test"], ["pytest>=8,<9"])
+        self.assertIn("google-adk[eval]>=2.8,<3", extras["eval"])
+        self.assertNotIn("pytest>=8,<9", extras["adk"])
+        self.assertFalse(
+            any("eval" in value or "extensions" in value for value in extras["adk"])
+        )
+        self.assertFalse(any("google-adk" in value for value in extras["langgraph"]))
+        self.assertFalse(any("extensions" in value for value in extras["all"]))
+
     def test_installer_replaces_a_writable_legacy_python_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

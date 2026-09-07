@@ -29,11 +29,14 @@ func (a *application) prepareRuntimeLock(
 	wheel runtimewheel.Artifact,
 	staged stagedAgentEnvironment,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 	frozen bool,
 ) (string, func(), error) {
-	lockPath := filepath.Join(bundle.Directory, runtimeRequirementsLockFile)
+	lockPath := filepath.Join(bundle.Directory, profile.requirementsLockFile())
 	if !frozen {
-		if err := a.resolveRuntimeLock(command, bundle, wheel, staged, plan, lockPath); err != nil {
+		if err := a.resolveRuntimeLock(
+			command, bundle, wheel, staged, plan, profile, lockPath,
+		); err != nil {
 			return "", nil, err
 		}
 	}
@@ -51,9 +54,10 @@ func (a *application) resolveRuntimeLock(
 	wheel runtimewheel.Artifact,
 	staged stagedAgentEnvironment,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 	destination string,
 ) error {
-	input, cleanupInput, err := createRuntimeLockInput(bundle, staged, plan)
+	input, cleanupInput, err := createRuntimeLockInput(bundle, staged, plan, profile)
 	if err != nil {
 		return err
 	}
@@ -71,9 +75,11 @@ func (a *application) resolveRuntimeLock(
 	if err := a.runRuntimeCommandWithEnvironment(
 		command, staged.environment, staged.uvPath, arguments...,
 	); err != nil {
-		return fmt.Errorf("resolve complete runtime dependency lock: %w", err)
+		return fmt.Errorf("resolve complete %s dependency lock: %w", profile, err)
 	}
-	document, err := normalizeRuntimeLock(bundle, wheel, plan, candidate, staged.wheelPath)
+	document, err := normalizeRuntimeLock(
+		bundle, wheel, plan, profile, candidate, staged.wheelPath,
+	)
 	if err != nil {
 		return err
 	}
@@ -88,11 +94,17 @@ func (a *application) resolveRuntimeLock(
 
 // createRuntimeLockInput owns compiler-injected requirements absent from authored projects.
 func createRuntimeLockInput(
-	bundle engine.Bundle, staged stagedAgentEnvironment, plan runtimeDependencyPlan,
+	bundle engine.Bundle,
+	staged stagedAgentEnvironment,
+	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) (string, func(), error) {
+	extras := strings.Join(
+		profile.wheelExtras(bundle.Config.Spec.Framework.Name, plan), ",",
+	)
 	wheelURI := runtimeWheelURI(staged.wheelPath)
 	lines := []string{fmt.Sprintf(
-		"harnest[%s] @ %s", bundle.Config.Spec.Framework.Name, wheelURI,
+		"harnest[%s] @ %s", extras, wheelURI,
 	)}
 	pin, err := lockedFrameworkRequirement(bundle)
 	if err != nil {
@@ -134,6 +146,7 @@ func normalizeRuntimeLock(
 	bundle engine.Bundle,
 	wheel runtimewheel.Artifact,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 	candidate, wheelPath string,
 ) ([]byte, error) {
 	contents, err := readRegularDependencyFile(candidate)
@@ -148,7 +161,7 @@ func normalizeRuntimeLock(
 	// Relative direct references must survive a checkout moving between machines.
 	projectPrefix := strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/") + "/"
 	body = strings.ReplaceAll(body, projectPrefix, runtimeProjectMarker+"/")
-	digest, err := runtimeLockInputFingerprint(bundle, wheel, plan)
+	digest, err := runtimeLockInputFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +170,16 @@ func normalizeRuntimeLock(
 
 // runtimeLockInputFingerprint detects stale locks without performing a fresh resolution.
 func runtimeLockInputFingerprint(
-	bundle engine.Bundle, wheel runtimewheel.Artifact, plan runtimeDependencyPlan,
+	bundle engine.Bundle,
+	wheel runtimewheel.Artifact,
+	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) (string, error) {
 	digest := sha256.New()
 	for _, value := range []string{
 		"1", bundle.Config.Spec.Runtime.Version, bundle.Config.Spec.Framework.Name,
 		bundle.Config.Spec.Framework.EffectiveMode(), wheel.Name,
+		string(profile),
 	} {
 		digest.Write([]byte(value))
 		digest.Write([]byte{0})
@@ -178,7 +195,7 @@ func runtimeLockInputFingerprint(
 	); err != nil {
 		return "", err
 	}
-	digest.Write([]byte{0, byte(boolByte(plan.HasTasks))})
+	digest.Write([]byte{0, byte(boolByte(plan.HasTasks)), byte(boolByte(plan.HasMCP))})
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
@@ -187,22 +204,27 @@ func validateFrozenRuntimeLock(
 	bundle engine.Bundle,
 	wheel runtimewheel.Artifact,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 	path string,
 ) error {
 	contents, err := readRegularDependencyFile(path)
 	if err != nil {
-		return fmt.Errorf("frozen runtime dependency lock is unavailable: %w", err)
+		return fmt.Errorf("frozen %s dependency lock is unavailable: %w", profile, err)
 	}
 	digest, _, err := splitRuntimeLock(contents)
 	if err != nil {
 		return fmt.Errorf("frozen runtime dependency lock is invalid: %w", err)
 	}
-	expected, err := runtimeLockInputFingerprint(bundle, wheel, plan)
+	expected, err := runtimeLockInputFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return err
 	}
 	if digest != expected {
-		return fmt.Errorf("runtime dependency lock is stale; run harnest env sync without --frozen")
+		return fmt.Errorf(
+			"%s dependency lock is stale; run harnest env sync --profile %s without --frozen",
+			profile,
+			profile,
+		)
 	}
 	return nil
 }
@@ -261,9 +283,12 @@ func renderRuntimeLock(
 
 // refreshRuntimeLockMetadata accounts for the framework pin recorded after first install.
 func refreshRuntimeLockMetadata(
-	bundle engine.Bundle, wheel runtimewheel.Artifact, plan runtimeDependencyPlan,
+	bundle engine.Bundle,
+	wheel runtimewheel.Artifact,
+	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) error {
-	path := filepath.Join(bundle.Directory, runtimeRequirementsLockFile)
+	path := filepath.Join(bundle.Directory, profile.requirementsLockFile())
 	contents, err := readRegularDependencyFile(path)
 	if err != nil {
 		return fmt.Errorf("read runtime dependency lock for finalization: %w", err)
@@ -272,7 +297,7 @@ func refreshRuntimeLockMetadata(
 	if err != nil {
 		return fmt.Errorf("finalize runtime dependency lock: %w", err)
 	}
-	digest, err := runtimeLockInputFingerprint(bundle, wheel, plan)
+	digest, err := runtimeLockInputFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return err
 	}

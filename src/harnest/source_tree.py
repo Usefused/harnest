@@ -19,13 +19,19 @@ IGNORED_SOURCE_DIRECTORIES = frozenset(
     }
 )
 
+_IGNORED_SOURCE_FILES = frozenset({"harnest-test.lock", "harnest-eval.lock"})
+
 
 def ignored_source_path(relative: Path) -> bool:
     """Exclude generated state and local secrets from every source identity."""
 
     if any(part in IGNORED_SOURCE_DIRECTORIES for part in relative.parts):
         return True
-    return relative.name == ".env" or relative.name.startswith(".env.")
+    return (
+        relative.name in _IGNORED_SOURCE_FILES
+        or relative.name == ".env"
+        or relative.name.startswith(".env.")
+    )
 
 
 __all__ = ["IGNORED_SOURCE_DIRECTORIES", "ignored_source_path"]

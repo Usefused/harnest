@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"harnest.dev/harnest/engine"
 	"harnest.dev/harnest/internal/runtimewheel"
 	"harnest.dev/harnest/internal/uvbootstrap"
 )
@@ -51,6 +52,7 @@ Typical workflow:
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
   harnest env sync my-agent
+  harnest env sync my-agent --profile test
   harnest mode advanced my-agent --check
   harnest upgrade my-agent
   harnest upgrade my-agent --apply
@@ -63,9 +65,10 @@ Typical workflow:
   harnest serve my-agent
   harnest serve my-agent --reload
 
-Released compile, test, and serve commands use an isolated environment derived
-from config.yaml, authored dependency metadata, the committed
-harnest-runtime.lock, and the embedded Harnest wheel.
+Released commands select isolated runtime, test, or eval environments derived
+from config.yaml, authored dependency metadata, the corresponding committed
+Harnest lock, and the embedded Harnest wheel. Framework MCP and evaluation
+dependencies are installed only when the source or command needs them.
 Harnest Extensions declare extension.yaml kind Extension, export extension
 from extension.py, and share that interpreter; their module is
 harnest.extensions.<name>. Legacy RuntimePlugin packages remain readable.
@@ -76,27 +79,29 @@ The bundled authoring skill is project-local guidance for coding agents. It is
 never compiled as one of the generated agent's runtime skills.`
 
 type system struct {
-	getenv         func(string) string
-	userHomeDir    func() (string, error)
-	lookPath       func(string) (string, error)
-	commandContext func(context.Context, string, ...string) *exec.Cmd
-	embeddedWheel  func(string) (runtimewheel.Artifact, error)
-	embeddedUV     func() (uvbootstrap.Artifact, error)
-	userCacheDir   func() (string, error)
-	httpClient     *http.Client
-	pypiBaseURL    string
+	getenv               func(string) string
+	userHomeDir          func() (string, error)
+	lookPath             func(string) (string, error)
+	commandContext       func(context.Context, string, ...string) *exec.Cmd
+	embeddedWheel        func(string) (runtimewheel.Artifact, error)
+	embeddedUV           func() (uvbootstrap.Artifact, error)
+	loadCompiledArtifact func(string, engine.Bundle) (engine.CompiledArtifact, error)
+	userCacheDir         func() (string, error)
+	httpClient           *http.Client
+	pypiBaseURL          string
 }
 
 func defaultSystem() system {
 	return system{
-		getenv:         os.Getenv,
-		userHomeDir:    os.UserHomeDir,
-		lookPath:       exec.LookPath,
-		commandContext: exec.CommandContext,
-		embeddedWheel:  runtimewheel.Embedded,
-		embeddedUV:     uvbootstrap.Embedded,
-		userCacheDir:   os.UserCacheDir,
-		pypiBaseURL:    "https://pypi.org",
+		getenv:               os.Getenv,
+		userHomeDir:          os.UserHomeDir,
+		lookPath:             exec.LookPath,
+		commandContext:       exec.CommandContext,
+		embeddedWheel:        runtimewheel.Embedded,
+		embeddedUV:           uvbootstrap.Embedded,
+		loadCompiledArtifact: engine.LoadCompiledArtifact,
+		userCacheDir:         os.UserCacheDir,
+		pypiBaseURL:          "https://pypi.org",
 	}
 }
 

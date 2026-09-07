@@ -15,6 +15,14 @@ import (
 type pythonSelection struct {
 	Executable string
 	Source     string
+	release    func()
+}
+
+// releaseLease relinquishes managed-environment ownership exactly once.
+func (p pythonSelection) releaseLease() {
+	if p.release != nil {
+		p.release()
+	}
 }
 
 func (a *application) resolvePython() (pythonSelection, error) {

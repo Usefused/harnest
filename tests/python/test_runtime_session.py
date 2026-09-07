@@ -12,7 +12,7 @@ from harnest.checkpoint import (
     get_durable_run_result,
 )
 from harnest.neutral_runtime import AgentInfo, SessionRecord
-from harnest.output import OutputPolicy, TokenUsage
+from harnest.output import AgentMetadataMode, OutputPolicy, TokenUsage
 from harnest.runtime import (
     AgentRuntimeError,
     _attach_driver_lifecycle,
@@ -267,7 +267,7 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         driver = StorageRuntimeDriver(
             _DurableBackend(store),
             storage_registry=registry,
-            output_policy=OutputPolicy(agent_metadata="raw"),
+            output_policy=OutputPolicy(agent_metadata=AgentMetadataMode.RAW),
         )
         request = InvocationRequest(
             input="hello",
@@ -298,7 +298,8 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
             _DurableBackend(store),
             storage_registry=registry,
             output_policy=OutputPolicy(
-                agent_metadata="raw", persist_raw_agent_metadata=True
+                agent_metadata=AgentMetadataMode.RAW,
+                persist_raw_agent_metadata=True,
             ),
         )
         request = InvocationRequest(

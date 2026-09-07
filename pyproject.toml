@@ -14,7 +14,6 @@ dependencies = [
   "a2a-sdk[http-server]>=1.1.2,<2",
   "litellm>=1.84,<2",
   "packaging>=24,<27",
-  "pytest>=8,<9",
   "fastapi>=0.115",
   "httpx[socks]>=0.28,<1",
   "pydantic>=2.10,<3",
@@ -34,27 +33,30 @@ postgres = ["asyncpg>=0.30,<1"]
 redis = ["redis>=6,<8"]
 tasks = ["procrastinate==3.9.0"]
 adk = [
-  "google-adk[eval,extensions,mcp]>=2.8,<3",
+  "google-adk>=2.8,<3",
   "asyncpg>=0.30,<1",
   "redis>=6,<8",
 ]
+adk-mcp = ["google-adk[mcp]>=2.8,<3"]
 langgraph = [
-  "google-adk[eval,extensions]>=2.8,<3",
   "langgraph>=1.2,<2",
   "langchain>=1.3,<2",
   "langchain-litellm>=0.7,<1",
-  "langchain-mcp-adapters>=0.3,<1",
   "asyncpg>=0.30,<1",
   "redis>=6,<8",
 ]
+langgraph-mcp = ["langchain-mcp-adapters>=0.3,<1"]
+test = ["pytest>=8,<9"]
+eval = ["google-adk[eval]>=2.8,<3", "pytest>=8,<9"]
 all = [
-  "google-adk[eval,extensions,mcp]>=2.8,<3",
+  "google-adk[eval,mcp]>=2.8,<3",
   "langgraph>=1.2,<2",
   "langchain>=1.3,<2",
   "langchain-litellm>=0.7,<1",
   "langchain-mcp-adapters>=0.3,<1",
   "asyncpg>=0.30,<1",
   "procrastinate==3.9.0",
+  "pytest>=8,<9",
   "redis>=6,<8",
 ]
 

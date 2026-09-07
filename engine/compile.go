@@ -146,6 +146,11 @@ func decodeCompiledManifest(reader io.Reader) (CompiledManifest, error) {
 	return manifest, nil
 }
 
+// LoadCompiledArtifact validates a retained artifact against its current source.
+func LoadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, error) {
+	return loadCompiledArtifact(directory, source)
+}
+
 func loadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, error) {
 	directory, err := existingDirectory(directory)
 	if err != nil {

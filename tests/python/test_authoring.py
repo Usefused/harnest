@@ -912,6 +912,8 @@ class AuthoringTests(unittest.TestCase):
             self._write(root / "__pycache__" / "ignored.pyc", "ignored")
             self._write(root / ".adk" / "eval_history" / "run.json", "{}")
             self._write(root / ".env", "TOKEN=local-secret\n")
+            self._write(root / "harnest-test.lock", "test-only resolution\n")
+            self._write(root / "harnest-eval.lock", "eval-only resolution\n")
             environment_bin = root / ".harnest" / "environments" / "test" / "bin"
             environment_bin.mkdir(parents=True)
             os.symlink(root / "agent.py", environment_bin / "python")
@@ -959,6 +961,12 @@ class AuthoringTests(unittest.TestCase):
         )
         self.assertFalse(
             any(record["path"].endswith("/.env") for record in first["files"])
+        )
+        self.assertFalse(
+            any(
+                record["path"].endswith(("harnest-test.lock", "harnest-eval.lock"))
+                for record in first["files"]
+            )
         )
         self.assertTrue(launcher_is_executable)
         self.assertEqual(compiled_server, authored_server)
@@ -1449,7 +1457,7 @@ class AuthoringTests(unittest.TestCase):
                 "from harnest.output import OutputPolicy\n\n"
                 "@lifecycle.output_policy\n"
                 "def output_policy():\n"
-                "    return OutputPolicy(subagent_messages='include')\n",
+                "    return OutputPolicy(subagent_messages=True)\n",
             )
             self._write(
                 root / "tools" / "double.py",

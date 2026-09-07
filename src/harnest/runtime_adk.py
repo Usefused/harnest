@@ -40,7 +40,12 @@ from .runtime_contract import (
     SessionRecord,
 )
 from .runtime_session import durable_completion_deferred
-from .output import AgentMetadata, OutputPolicy, _reported_token_usage
+from .output import (
+    AgentMetadata,
+    AgentMetadataMode,
+    OutputPolicy,
+    _reported_token_usage,
+)
 from .structured import (
     framework_metadata_field,
     validate_runtime_output,
@@ -837,9 +842,16 @@ class _ADKEventNormalizer:
         normalized = self._normalize_event(event)
         self._finish_event_agents(normalized)
         self._replace_pending_subagent_message(event, normalized)
-        if not self._filters_subagent_event(event):
-            return [*activities, *normalized]
-        return [*activities, *self._filter_subagent_messages(event, normalized)]
+        visible = (
+            normalized
+            if not self._filters_subagent_event(event)
+            else self._filter_subagent_messages(event, normalized)
+        )
+        return [
+            item
+            for item in (*activities, *visible)
+            if self._output_policy.includes_event(item["type"])
+        ]
 
     def _start_event(self, event: Any) -> list[dict[str, Any]]:
         """Reset cumulative text and announce newly active native agents."""
@@ -936,7 +948,7 @@ class _ADKEventNormalizer:
 
         author = getattr(event, "author", None)
         return (
-            self._output_policy.subagent_messages == "suppress"
+            not self._output_policy.subagent_messages
             and isinstance(author, str)
             and bool(author)
             and isinstance(self._root_agent_name, str)
@@ -1028,7 +1040,7 @@ def _thinking_items(parts: Any, output_policy: OutputPolicy) -> list[dict[str, A
         if getattr(part, "thought", False)
         and isinstance(getattr(part, "text", None), str)
     )
-    if thinking and output_policy.thinking == "include":
+    if thinking and output_policy.thinking:
         return [{"type": "thinking", "text": thinking}]
     return []
 
@@ -1063,6 +1075,8 @@ def _agent_metadata_items(
 ) -> list[dict[str, Any]]:
     """Normalize ADK model metadata under the configured disclosure policy."""
 
+    if output_policy.agent_metadata is AgentMetadataMode.SUPPRESS:
+        return []
     usage_metadata = getattr(event, "usage_metadata", None)
     usage = _reported_token_usage(
         getattr(usage_metadata, "prompt_token_count", None),
@@ -1073,7 +1087,7 @@ def _agent_metadata_items(
     finish_reason = _nonempty_adk_string(getattr(event, "finish_reason", None))
     raw = (
         _raw_adk_metadata(event)
-        if output_policy.agent_metadata == "raw"
+        if output_policy.agent_metadata is AgentMetadataMode.RAW
         else None
     )
     if usage is None and model is None and finish_reason is None and not raw:

@@ -35,7 +35,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         asset_store = MemoryAssetStore()
         credential_provider = _CredentialProvider()
         route = HTTPRouteExtension(object(), AgentInvoker(), "routes.py:1:routes")
-        policy = OutputPolicy(subagent_messages="include")
+        policy = OutputPolicy(subagent_messages=True)
         telemetry = _listener()
         context_value = ContextValue("sessions", store, "sessions.py:1:sessions")
         skill_registry = SkillRegistry({"root": SkillScope()})
@@ -85,7 +85,7 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         original = CompiledApplication(
             name="root", framework="adk", mode="managed", target=object()
         )
-        policy = OutputPolicy(subagent_messages="include")
+        policy = OutputPolicy(subagent_messages=True)
 
         replaced = replace(original, output_policy=policy)
 

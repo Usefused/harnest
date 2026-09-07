@@ -66,7 +66,13 @@ from .runtime_contract import (
     SessionRecord,
 )
 from .runtime_session import durable_completion_deferred
-from .output import AgentMetadata, OutputPolicy, TokenUsage, _reported_token_usage
+from .output import (
+    AgentMetadata,
+    AgentMetadataMode,
+    OutputPolicy,
+    TokenUsage,
+    _reported_token_usage,
+)
 from .session import InMemorySessionStore, SessionLease, SessionStore
 from .structured import validate_runtime_output
 from .transient_media import (
@@ -1381,15 +1387,16 @@ def _langgraph_stream_message_events(
             agent,
             include_message=False,
             include_tools=False,
-            include_thinking=output_policy.thinking == "include",
+            include_thinking=output_policy.thinking,
         )
     )
     tool_events = _message_tool_events(message)
-    for event in tool_events:
-        identity = _event_identity(event)
-        if identity not in state.tools:
-            state.tools.add(identity)
-            events.append(_with_langgraph_agent(event, agent))
+    if output_policy.includes_event("tool_call"):
+        for event in tool_events:
+            identity = _event_identity(event)
+            if identity not in state.tools:
+                state.tools.add(identity)
+                events.append(_with_langgraph_agent(event, agent))
     content = _message_text(message)
     has_tool_calls = any(
         event.get("type") == "tool_call" for event in tool_events
@@ -1572,11 +1579,12 @@ def _final_stream_events(
                     ),
                 )
             )
-    for event in _tool_events(state.final_state, turn_start=turn_start):
-        identity = _event_identity(event)
-        if identity not in state.tools:
-            state.tools.add(identity)
-            events.append(event)
+    if application.output_policy.includes_event("tool_call"):
+        for event in _tool_events(state.final_state, turn_start=turn_start):
+            identity = _event_identity(event)
+            if identity not in state.tools:
+                state.tools.add(identity)
+                events.append(event)
     events.extend(
         _unstreamed_metadata_events(application, state, turn_start=turn_start)
     )
@@ -2376,7 +2384,9 @@ def _langgraph_metadata_event(
 ) -> dict[str, Any] | None:
     """Normalize one AI message's reported metadata under the shared model."""
 
-    if not _is_ai_message(message):
+    if not output_policy.includes_event("agent_metadata") or not _is_ai_message(
+        message
+    ):
         return None
     response = _message_mapping(message, "response_metadata")
     usage_metadata = _message_mapping(message, "usage_metadata")
@@ -2506,7 +2516,7 @@ def _langgraph_raw_metadata(
 ) -> Mapping[str, Any] | None:
     """Namespace native mappings only under the explicit raw-output policy."""
 
-    if output_policy.agent_metadata != "raw":
+    if output_policy.agent_metadata is not AgentMetadataMode.RAW:
         return None
     raw = {
         name: json_value(dict(value), unsupported="string")
@@ -2879,7 +2889,7 @@ def _result_events(
 ) -> list[dict[str, Any]]:
     """Project one invocation using the same policy as the streaming boundary."""
 
-    if output_policy.subagent_messages == "include":
+    if output_policy.subagent_messages:
         events = _included_message_events(
             result, turn_start=turn_start, output_policy=output_policy
         )
@@ -3012,7 +3022,7 @@ def _langgraph_message_items(
                 {"type": "message", "role": "assistant", "text": content}, agent
             )
         )
-    if include_tools:
+    if _tool_activity_is_visible(output_policy, include_tools):
         events.extend(
             _with_langgraph_agent(event, agent)
             for event in _message_tool_events(message)
@@ -3026,6 +3036,16 @@ def _langgraph_message_items(
     return events
 
 
+def _tool_activity_is_visible(
+    output_policy: OutputPolicy | None, include_tools: bool
+) -> bool:
+    """Honor internal tool selection without weakening an application policy."""
+
+    return include_tools and (
+        output_policy is None or output_policy.includes_event("tool_call")
+    )
+
+
 def _thinking_is_visible(
     output_policy: OutputPolicy | None, override: bool | None
 ) -> bool:
@@ -3033,7 +3053,7 @@ def _thinking_is_visible(
 
     if override is not None:
         return override
-    return output_policy is not None and output_policy.thinking == "include"
+    return output_policy is not None and output_policy.includes_event("thinking")
 
 
 def _current_turn_messages(

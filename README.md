@@ -69,10 +69,13 @@ Synchronize the isolated project environment and run its offline tests:
 
 ```bash
 harnest env sync support-agent
+harnest env sync support-agent --profile test
 harnest test support-agent
 ```
 
-`compile`, `test`, and `serve` also synchronize the environment automatically.
+`compile` and `serve` select the lean runtime profile. `test` selects the test
+profile, or the eval profile with `--evals`; each command synchronizes its
+environment automatically.
 The explicit `env sync` command also maintains an IDE-detectable `.venv` link
 unless that path already belongs to the user.
 Add only agent-owned provider, tool, and library packages to the generated

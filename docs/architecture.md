@@ -61,7 +61,10 @@ advanced mode exposes framework-native APIs but does not opt out of Harnest's
 tested dependency range.
 
 Environment sync records the installed framework distribution and exact version in
-`harnest.lock`. Installers constrain subsequent environments to that pin, and
+`harnest.lock`. Runtime, test, and eval profiles resolve independent environments
+and hash-verified locks; MCP adapters join only when authored MCP resources are
+active, and evaluation dependencies never enter the serving profile. Installers
+constrain subsequent environments to that pin, and
 compilation checks it before importing authored code. Frozen sync cannot create
 or change a pin; schema upgrades preserve it. CI tests the committed baseline,
 minimum supported versions, and latest compatible versions for both backends.
@@ -385,7 +388,7 @@ unfiltered fallback and ranks metadata without loading skill bodies.
 Exactly zero or one root `@lifecycle.output_policy` factory selects public
 intermediate model messages. Its default `OutputPolicy()` suppresses subagent
 narration attached to tool calls without removing tool events or a terminal
-answer; `subagent_messages="include"` exposes that provisional narration. Both
+answer; `subagent_messages=True` exposes that provisional narration. Both
 backend drivers apply the policy before producing neutral non-streaming and
 streaming events, so `/responses`, `/live`, and the playground agree. Native
 framework endpoints remain outside this projection boundary.
@@ -575,9 +578,14 @@ the provider target as `root_agent`; its manifest records `framework.name` and
 the effective mode. Source does not need `__init__.py` and is loaded through the
 generated adapter. Generated `.harnest/`
 content is disposable and must not be edited or committed. VCS data, virtual
-environments, caches, `.adk/`, `.harnest/`, `.env` files, and bytecode are
-excluded. Source symlinks are rejected, keeping artifacts self-contained and
-preventing credentials or external files from being pulled in accidentally.
+environments, caches, `.adk/`, `.harnest/`, `.env` files, development-only
+profile locks, and bytecode are excluded. Source symlinks are rejected, keeping
+artifacts self-contained and preventing credentials or external files from being
+pulled in accidentally.
+One-shot `harnest serve` keeps one validated immutable generation under
+`.harnest/artifacts/`, keyed by the complete bundle digest and managed compiler
+identity. A cache miss publishes its replacement before superseded generations
+are removed asynchronously; editable compiler selections remain ephemeral.
 Canonical Harnest Extension packages may include one regular root `README.md`;
 the compiler preserves it with the extension source, while the closed package
 layout continues to reject other unrecognized, linked, or special root entries.
@@ -735,8 +743,8 @@ when the playground is disabled. This short-lived diagnostic buffer complements
 rather than replaces OTLP export.
 
 This is a process boundary, not a deployment boundary. The CLI creates a
-fingerprinted agent environment containing Harnest, the selected framework,
-model adapters, and the dependencies locked from `pyproject.toml`.
+fingerprinted, command-selected agent environment containing Harnest, the selected
+framework, model adapters, and the dependencies locked from `pyproject.toml`.
 Local root-agent invocation is available only when the authored deployment
 contract sets `spec.interfaces.cli: true`; that opt-in is bound into the
 compiled manifest and its digest. Older or disabled artifacts remain

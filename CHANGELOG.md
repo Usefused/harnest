@@ -4,8 +4,25 @@
 
 ### Features
 
-* Suppress provider-exposed ADK and LangGraph thinking text by default; use
-  `OutputPolicy(thinking="include")` to expose it explicitly.
+* Cache validated `harnest serve` artifacts by authored bundle and managed
+  compiler identity. Reuse unchanged generations without importing the agent
+  graph again, and remove superseded compiled generations asynchronously only
+  after a replacement is published successfully. Lease managed environments
+  across `compile`, `test`, `run`, and `serve`, and asynchronously reclaim old
+  unleased dependency fingerprints instead of accumulating them indefinitely.
+  Keep the managed Python compiler warm during `harnest serve --reload` so
+  source changes reuse imported Harnest and framework dependencies while still
+  producing and validating a fresh immutable generation. Split runtime, test,
+  and eval dependency profiles into independent environments and locks; omit
+  Google ADK's Kubernetes-backed extension bundle, install MCP adapters only
+  for authored MCP clients, and keep evaluation packages out of serving.
+
+* Let `OutputPolicy` independently suppress public tool activity, provider
+  thinking, and model/provider metadata across every neutral transport.
+  Thinking remains private by default; tool activity and normalized metadata
+  remain visible unless explicitly suppressed. Use booleans for binary
+  disclosure controls and `AgentMetadataMode` for normalized-versus-raw
+  metadata while normalizing released string inputs for compatibility.
 
 * Add `server.agentPrincipal: required` so security-sensitive deployments can
   reject custom `AgentInvoker` routes that omit a principal before any session

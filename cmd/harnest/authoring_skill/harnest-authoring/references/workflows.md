@@ -42,10 +42,11 @@ examples rather than Python placeholders. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
 
-`env sync` uses the embedded `uv` and Harnest wheel to create an isolated,
-fingerprinted environment below `.harnest/environments/`. It resolves
-the embedded release wheel, framework, project, extension, and task dependencies
-as one hash-verified `harnest-runtime.lock`; commit the lock after reviewing it. Do
+`env sync` uses the embedded `uv` and Harnest wheel to create isolated,
+fingerprinted environments below `.harnest/environments/`. The default runtime
+profile writes `harnest-runtime.lock`; `--profile test` and `--profile eval`
+write separate development locks. Commit every profile used by CI. MCP and eval
+packages join only the profiles that need them. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. The explicit sync command maintains a `.venv`
 link for IDE discovery when that path is absent or already Harnest-owned. It
@@ -55,8 +56,8 @@ Harnest Extensions use this same interpreter and dependency set. Agent Plugin
 MCP servers may use separate runtimes; their mutable dependencies and caches
 belong in client-managed `PLUGIN_DATA`, not the immutable plugin source.
 Compile, test, and serve run the same synchronization automatically. In CI, use
-`harnest env sync AGENT_DIR --frozen` before testing to reject a missing or
-stale lock instead of changing it.
+`harnest env sync AGENT_DIR --profile test --frozen` before ordinary tests, or
+use the eval profile before `test --evals`, to reject lock drift.
 
 Before editing an existing project, inspect `config.yaml`, any legacy `server.yaml`,
 `agent.py`, `instructions.md`, `agent-card.yaml`, and only the resource folders

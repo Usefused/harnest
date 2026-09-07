@@ -34,10 +34,11 @@ func (a *application) newCompileCommand() *cobra.Command {
 			if selectedEntrypoint == "" {
 				selectedEntrypoint = bundle.Config.Spec.Entrypoint
 			}
-			python, err := a.agentPython(command, bundle)
+			python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
 			if err != nil {
 				return err
 			}
+			defer python.releaseLease()
 			compilerArguments := []string{
 				"compile", bundle.Directory, "--output", output,
 				"--entrypoint", selectedEntrypoint,
@@ -85,10 +86,15 @@ func (a *application) newTestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			python, err := a.agentPython(command, bundle)
+			profile := testEnvironmentProfile
+			if includeEvals {
+				profile = evalEnvironmentProfile
+			}
+			python, err := a.agentPython(command, bundle, profile)
 			if err != nil {
 				return err
 			}
+			defer python.releaseLease()
 			pythonArguments := []string{"test", bundle.Directory}
 			pythonArguments = append(
 				pythonArguments,
@@ -220,7 +226,7 @@ func (a *application) newServeCommand() *cobra.Command {
 		&reload,
 		"reload",
 		false,
-		"recompile and restart on authored file changes (development only)",
+		"warm-compile and restart on authored file changes (development only)",
 	)
 	return command
 }
@@ -283,19 +289,25 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 	if options.reload {
 		return a.serveReload(command, bundle, options)
 	}
-	python, err := a.agentPython(command, bundle)
+	refreshed, python, err := a.reloadBundleAndPython(command, bundle.Directory)
 	if err != nil {
 		return err
 	}
-	artifact, cleanup, err := compiledArtifactDirectory(
-		options.output, bundle.Config.Metadata.Name, "harnest-serve-",
+	bundle = refreshed
+	defer python.releaseLease()
+	artifact, cleanup, cached, err := a.serveArtifact(
+		command, bundle, python, options.output,
 	)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := a.compileBundle(command, python, bundle, artifact, command.InOrStdin()); err != nil {
-		return err
+	if cached {
+		fmt.Fprintf(
+			command.ErrOrStderr(),
+			"Using cached compilation for %s\n",
+			bundle.Config.Metadata.Name,
+		)
 	}
 	launcher, err := compiledLauncher(artifact)
 	if err != nil {
@@ -315,6 +327,30 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 		return fmt.Errorf("run generated harnest-agent: %w", err)
 	}
 	return nil
+}
+
+// serveArtifact chooses explicit output, managed cache, or contributor temp state.
+func (a *application) serveArtifact(
+	command *cobra.Command,
+	bundle engine.Bundle,
+	python pythonSelection,
+	output string,
+) (string, func(), bool, error) {
+	if strings.TrimSpace(output) == "" && managedServeArtifactCacheAvailable(python) {
+		artifact, cached, err := a.prepareCachedServeArtifact(command, bundle, python)
+		return artifact, func() {}, cached, err
+	}
+	artifact, cleanup, err := compiledArtifactDirectory(
+		output, bundle.Config.Metadata.Name, "harnest-serve-",
+	)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if err := a.compileBundle(command, python, bundle, artifact, command.InOrStdin()); err != nil {
+		cleanup()
+		return "", nil, false, err
+	}
+	return artifact, cleanup, false, nil
 }
 
 // compiledArtifactDirectory owns cleanup only when the caller did not request retention.

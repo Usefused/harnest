@@ -23,6 +23,7 @@ const (
 type runtimeDependencyPlan struct {
 	ProjectFiles []string
 	HasTasks     bool
+	HasMCP       bool
 }
 
 // inspectRuntimeDependencyPlan joins agent, plugin, and optional task requirements.
@@ -40,10 +41,30 @@ func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, 
 	if err != nil {
 		return runtimeDependencyPlan{}, err
 	}
+	hasMCP, err := hasProjectMCP(bundle.Directory)
+	if err != nil {
+		return runtimeDependencyPlan{}, err
+	}
 	return runtimeDependencyPlan{
 		ProjectFiles: append([]string{rootProject}, projectFiles...),
 		HasTasks:     hasTasks,
+		HasMCP:       hasMCP,
 	}, nil
+}
+
+// hasProjectMCP combines authored agents with package-contributed MCP clients.
+func hasProjectMCP(root string) (bool, error) {
+	found, err := hasAuthoredMCP(root)
+	if err != nil || found {
+		return found, err
+	}
+	for _, folder := range []string{"plugins", "extensions"} {
+		found, err := hasPackagedMCP(filepath.Join(root, folder))
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
 }
 
 // projectRuntimeRequirements reads only static PEP 621 runtime dependencies.
@@ -174,6 +195,87 @@ func hasAuthoredTasks(root string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// hasAuthoredMCP follows only agent-owned subagent folders for MCP capability use.
+func hasAuthoredMCP(root string) (bool, error) {
+	found, err := hasActivePythonResource(filepath.Join(root, "mcp"))
+	if err != nil || found {
+		return found, err
+	}
+	return hasSubagentMCP(filepath.Join(root, "subagents"))
+}
+
+// hasSubagentMCP recursively limits capability discovery to active agent folders.
+func hasSubagentMCP(subagents string) (bool, error) {
+	entries, err := optionalRegularDirectoryEntries(subagents)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
+			continue
+		}
+		path := filepath.Join(subagents, entry.Name())
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			return false, fmt.Errorf("subagent dependency path must be a regular directory: %s", path)
+		}
+		found, err := hasAuthoredMCP(path)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+// hasActivePythonResource recognizes one direct convention folder without imports.
+func hasActivePythonResource(directory string) (bool, error) {
+	entries, err := optionalRegularDirectoryEntries(directory)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() || filepath.Ext(name) != ".py" {
+			return false, fmt.Errorf("unexpected resource in mcp directory: %s", filepath.Join(directory, name))
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// hasPackagedMCP recognizes declarative Agent Plugins and extension content.
+func hasPackagedMCP(directory string) (bool, error) {
+	entries, err := optionalRegularDirectoryEntries(directory)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
+			continue
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		packageRoot := filepath.Join(directory, entry.Name())
+		found, err := packageUsesMCP(packageRoot)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+// packageUsesMCP checks only manifest-owned paths that activate MCP behavior.
+func packageUsesMCP(root string) (bool, error) {
+	manifest, err := regularDependencyPathExists(filepath.Join(root, "mcp.json"), "Agent Plugin MCP manifest")
+	if err != nil || manifest {
+		return manifest, err
+	}
+	return hasActivePythonResource(filepath.Join(root, "mcp"))
 }
 
 // optionalRegularDirectoryEntries rejects symlink roots before bounded discovery.

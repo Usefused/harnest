@@ -300,6 +300,32 @@ func TestBundleDigestIncludesSkillsAndEvals(t *testing.T) {
 	}
 }
 
+func TestBundleDigestExcludesDevelopmentProfileLocks(t *testing.T) {
+	project := t.TempDir()
+	directory := writeAgent(t, project, "profile-locks", true)
+	first, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(directory, "harnest-test.lock"), "test resolution\n")
+	mustWrite(t, filepath.Join(directory, "harnest-eval.lock"), "eval resolution\n")
+	development, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest != development.Digest {
+		t.Fatal("development profile lock changed the deployable bundle digest")
+	}
+	mustWrite(t, filepath.Join(directory, "harnest-runtime.lock"), "runtime resolution\n")
+	runtime, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Digest == development.Digest {
+		t.Fatal("runtime profile lock did not change the deployable bundle digest")
+	}
+}
+
 func TestDeployAllValidatesPlanBeforeStartingWorkers(t *testing.T) {
 	plan := testPlan(t.TempDir())
 	plan.Parallelism = 0

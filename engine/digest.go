@@ -101,6 +101,7 @@ func writeDigestHeader(hash io.Writer, relative string, size int64) error {
 
 func ignoredBundleFile(name string) bool {
 	return name == ".env" || strings.HasPrefix(name, ".env.") ||
+		name == "harnest-test.lock" || name == "harnest-eval.lock" ||
 		strings.HasSuffix(name, ".pyc") || strings.HasSuffix(name, ".pyo")
 }
 

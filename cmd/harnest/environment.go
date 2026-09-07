@@ -37,19 +37,25 @@ func (a *application) newEnvironmentCommand() *cobra.Command {
 
 func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 	var frozen bool
+	var profileValue string
 	command := &cobra.Command{
 		Use:   "sync AGENT_DIR",
-		Short: "Synchronize the complete locked agent runtime",
+		Short: "Synchronize a locked agent dependency profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
+			profile, err := parseEnvironmentProfile(profileValue)
+			if err != nil {
+				return err
+			}
 			bundle, err := loadAgentBundle(arguments[0])
 			if err != nil {
 				return err
 			}
-			selection, err := a.syncAgentEnvironment(command, bundle, frozen)
+			selection, err := a.syncAgentEnvironment(command, bundle, profile, frozen)
 			if err != nil {
 				return err
 			}
+			defer pruneAgentEnvironmentsAsync(bundle.Directory)
 			fmt.Fprintf(
 				command.OutOrStdout(),
 				"Agent environment ready: %s\n",
@@ -70,17 +76,23 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&frozen,
 		"frozen",
 		false,
-		"require an existing current runtime lock without updating it",
+		"require an existing current profile lock without updating it",
+	)
+	command.Flags().StringVar(
+		&profileValue,
+		"profile",
+		string(runtimeEnvironmentProfile),
+		"dependency profile: runtime, test, or eval",
 	)
 	return command
 }
 
 func (a *application) agentPython(
-	command *cobra.Command, bundle engine.Bundle,
+	command *cobra.Command, bundle engine.Bundle, profile environmentProfile,
 ) (pythonSelection, error) {
-	selection, err := a.syncAgentEnvironment(command, bundle, false)
+	selection, err := a.syncAgentEnvironment(command, bundle, profile, false)
 	if err == nil {
-		return selection, nil
+		return leaseAgentPython(bundle.Directory, selection)
 	}
 	if releaseVersionPattern.MatchString(a.version) {
 		return pythonSelection{}, err
@@ -93,6 +105,7 @@ func (a *application) agentPython(
 func (a *application) syncAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
+	profile environmentProfile,
 	frozen bool,
 ) (pythonSelection, error) {
 	if err := validateAgentDependencyPolicy(bundle); err != nil {
@@ -110,11 +123,11 @@ func (a *application) syncAgentEnvironment(
 	if err != nil {
 		return pythonSelection{}, fmt.Errorf("load embedded uv: %w", err)
 	}
-	paths, err := inspectEnvironmentPaths(bundle)
+	paths, err := inspectEnvironmentPaths(bundle, profile)
 	if err != nil {
 		return pythonSelection{}, err
 	}
-	fingerprint, err := environmentFingerprint(bundle, wheel, plan)
+	fingerprint, err := environmentFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return pythonSelection{}, err
 	}
@@ -129,14 +142,16 @@ func (a *application) syncAgentEnvironment(
 	if selection, found := cachedAgentPython(paths, fingerprint); found {
 		return selection, nil
 	}
-	return a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, frozen)
+	return a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
 }
 
 type environmentPaths struct {
 	root, state, lock string
 }
 
-func inspectEnvironmentPaths(bundle engine.Bundle) (environmentPaths, error) {
+func inspectEnvironmentPaths(
+	bundle engine.Bundle, profile environmentProfile,
+) (environmentPaths, error) {
 	root := filepath.Join(bundle.Directory, ".harnest")
 	if err := ensureRegularEnvironmentDirectory(root); err != nil {
 		return environmentPaths{}, err
@@ -147,7 +162,7 @@ func inspectEnvironmentPaths(bundle engine.Bundle) (environmentPaths, error) {
 	}
 	return environmentPaths{
 		root:  root,
-		state: filepath.Join(root, environmentStateFile),
+		state: filepath.Join(root, profile.stateFile()),
 		lock:  filepath.Join(root, "environment.lock"),
 	}, nil
 }
@@ -171,13 +186,17 @@ func ensureRegularEnvironmentDirectory(path string) error {
 
 // environmentFingerprint invalidates cached environments when committed dependency pins change.
 func environmentFingerprint(
-	bundle engine.Bundle, wheel runtimewheel.Artifact, plan runtimeDependencyPlan,
+	bundle engine.Bundle,
+	wheel runtimewheel.Artifact,
+	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) (string, error) {
 	digest := sha256.New()
 	for _, value := range []string{
 		bundle.Config.Spec.Runtime.Version,
 		bundle.Config.Spec.Framework.Name,
 		bundle.Config.Spec.Framework.EffectiveMode(),
+		string(profile),
 		wheel.Name,
 	} {
 		digest.Write([]byte(value))
@@ -191,7 +210,7 @@ func environmentFingerprint(
 	}
 	for _, path := range []string{
 		filepath.Join(bundle.Directory, "harnest.lock"),
-		filepath.Join(bundle.Directory, runtimeRequirementsLockFile),
+		filepath.Join(bundle.Directory, profile.requirementsLockFile()),
 	} {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, true); err != nil {
 			return "", err
@@ -199,7 +218,7 @@ func environmentFingerprint(
 	}
 	// Task source contents do not change the dependency graph; presence alone
 	// controls whether the compiler-owned queue runtime joins the environment.
-	digest.Write([]byte{byte(0), byte(boolByte(plan.HasTasks))})
+	digest.Write([]byte{byte(0), byte(boolByte(plan.HasTasks)), byte(boolByte(plan.HasMCP))})
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
@@ -379,23 +398,28 @@ func (a *application) installAgentEnvironment(
 	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 	frozen bool,
 ) (pythonSelection, error) {
-	staged, cleanup, err := a.stageAgentEnvironment(bundle, wheel, uvArtifact, paths, plan)
+	staged, cleanup, err := a.stageAgentEnvironment(
+		bundle, wheel, uvArtifact, paths, plan, profile,
+	)
 	if err != nil {
 		return pythonSelection{}, err
 	}
 	defer cleanup()
 	if frozen {
-		lockPath := filepath.Join(bundle.Directory, runtimeRequirementsLockFile)
-		if err := validateFrozenRuntimeLock(bundle, wheel, plan, lockPath); err != nil {
+		lockPath := filepath.Join(bundle.Directory, profile.requirementsLockFile())
+		if err := validateFrozenRuntimeLock(bundle, wheel, plan, profile, lockPath); err != nil {
 			return pythonSelection{}, err
 		}
 	}
 	if err := a.createAgentVirtualEnvironment(command, bundle, staged); err != nil {
 		return pythonSelection{}, err
 	}
-	lock, cleanupLock, err := a.prepareRuntimeLock(command, bundle, wheel, staged, plan, frozen)
+	lock, cleanupLock, err := a.prepareRuntimeLock(
+		command, bundle, wheel, staged, plan, profile, frozen,
+	)
 	if err != nil {
 		return pythonSelection{}, err
 	}
@@ -407,11 +431,11 @@ func (a *application) installAgentEnvironment(
 		return pythonSelection{}, err
 	}
 	if !frozen {
-		if err := refreshRuntimeLockMetadata(bundle, wheel, plan); err != nil {
+		if err := refreshRuntimeLockMetadata(bundle, wheel, plan, profile); err != nil {
 			return pythonSelection{}, err
 		}
 	}
-	return publishAgentEnvironment(bundle, wheel, paths, staged, plan)
+	return publishAgentEnvironment(bundle, wheel, paths, staged, plan, profile)
 }
 
 type stagedAgentEnvironment struct {
@@ -425,8 +449,9 @@ func (a *application) stageAgentEnvironment(
 	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) (stagedAgentEnvironment, func(), error) {
-	fingerprint, err := environmentFingerprint(bundle, wheel, plan)
+	fingerprint, err := environmentFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return stagedAgentEnvironment{}, nil, err
 	}
@@ -506,8 +531,9 @@ func publishAgentEnvironment(
 	paths environmentPaths,
 	staged stagedAgentEnvironment,
 	plan runtimeDependencyPlan,
+	profile environmentProfile,
 ) (pythonSelection, error) {
-	finalFingerprint, err := environmentFingerprint(bundle, wheel, plan)
+	finalFingerprint, err := environmentFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return pythonSelection{}, err
 	}

@@ -267,7 +267,7 @@ Set `thinking=True` to enable model reasoning, `thinking=False` to disable it,
 or omit the option for the provider default. Use `reasoning_effort="low"`,
 `"medium"`, or `"high"` instead when the provider supports explicit levels; do
 not combine it with `thinking`. Provider-exposed reasoning text is suppressed
-unless `OutputPolicy(thinking="include")` is selected. When included it is
+unless `OutputPolicy(thinking=True)` is selected. When included it is
 separate `thinking` activity, never a tool input, transcript message, final
 answer, or eval expectation. Harnest keeps native signatures, state, and
 raw metadata private by default. It emits provider-reported model, provider,
@@ -626,19 +626,21 @@ tool calls, declare one root factory:
 
 ```python
 from harnest.lifecycle import lifecycle
-from harnest.output import OutputPolicy
+from harnest.output import AgentMetadataMode, OutputPolicy
 
 
 @lifecycle.output_policy
 def output_policy():
-    return OutputPolicy(subagent_messages="include")
+    return OutputPolicy(subagent_messages=True)
 ```
 
 The factory is synchronous, zero-argument, root-only, and unique.
-`subagent_messages` accepts `"suppress"` (default) or `"include"`.
-`thinking` independently accepts `"suppress"` (default) or `"include"`.
-`agent_metadata` accepts `"normalized"` (default) or `"raw"`; raw mode keeps the
-portable fields and additionally exposes JSON-safe ADK or LangGraph metadata.
+`subagent_messages`, `tool_activity`, and `thinking` are booleans.
+`agent_metadata` uses `AgentMetadataMode`; raw mode keeps the portable fields
+and additionally exposes JSON-safe ADK or LangGraph metadata. Suppression also
+omits aggregate usage derived from those events. Released string values remain
+accepted as compatibility input and are normalized to booleans or the metadata
+enum.
 It affects Harnest neutral JSON, SSE, WebSocket, A2A streaming, local responses,
 and playground events; direct native endpoints are not projected. Raw provider
 metadata may contain sensitive or high-cardinality values, so enable it only

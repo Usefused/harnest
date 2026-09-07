@@ -10,26 +10,27 @@ import (
 // while agent-selected model/provider packages remain project dependencies.
 type frameworkCompatibility struct {
 	RuntimeRequirements []string
+	MCPRequirements     []string
 }
 
 var frameworkCompatibilityByName = map[string]frameworkCompatibility{
 	"adk": {
 		RuntimeRequirements: []string{
-			"google-adk[eval,extensions,mcp]>=2.8,<3",
+			"google-adk>=2.8,<3",
 			"asyncpg>=0.30,<1",
 			"redis>=6,<8",
 		},
+		MCPRequirements: []string{"google-adk[mcp]>=2.8,<3"},
 	},
 	"langgraph": {
 		RuntimeRequirements: []string{
-			"google-adk[eval,extensions]>=2.8,<3",
 			"langgraph>=1.2,<2",
 			"langchain>=1.3,<2",
 			"langchain-litellm>=0.7,<1",
-			"langchain-mcp-adapters>=0.3,<1",
 			"asyncpg>=0.30,<1",
 			"redis>=6,<8",
 		},
+		MCPRequirements: []string{"langchain-mcp-adapters>=0.3,<1"},
 	},
 }
 

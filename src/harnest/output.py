@@ -4,11 +4,52 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from enum import Enum
+from typing import Any, TypeVar
 
 
-SubagentMessageMode = Literal["suppress", "include"]
-AgentMetadataMode = Literal["normalized", "raw"]
+# Keep the released public name as a compatibility alias.
+SubagentMessageMode = bool
+
+
+class AgentMetadataMode(str, Enum):
+    """Select how much model and provider metadata callers receive."""
+
+    SUPPRESS = "suppress"
+    NORMALIZED = "normalized"
+    RAW = "raw"
+
+
+_EnumValue = TypeVar("_EnumValue", bound=Enum)
+
+
+def _policy_mode(
+    value: Any, enum_type: type[_EnumValue], field_name: str
+) -> _EnumValue:
+    """Normalize released string values while storing a typed enum contract."""
+
+    if isinstance(value, enum_type):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_type(value)
+        except ValueError as exc:
+            raise ValueError(f"invalid {field_name}: {value!r}") from exc
+    raise TypeError(f"{field_name} must be {enum_type.__name__}")
+
+
+def _policy_flag(value: Any, field_name: str) -> bool:
+    """Normalize released string modes while storing a boolean policy flag."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value == "include":
+            return True
+        if value == "suppress":
+            return False
+        raise ValueError(f"invalid {field_name}: {value!r}")
+    raise TypeError(f"{field_name} must be a boolean")
 
 
 def _token_count(value: Any, field_name: str) -> int:
@@ -63,8 +104,8 @@ class AgentMetadata:
     """One framework-neutral view of model and provider response metadata.
 
     ``raw`` is populated only when :class:`OutputPolicy` explicitly selects
-    ``agent_metadata="raw"``. The normalized fields remain available in both
-    modes so consumers do not need framework-specific token or finish keys.
+    :attr:`AgentMetadataMode.RAW`. The normalized fields remain available in
+    normalized and raw modes so consumers do not need framework-specific keys.
     """
 
     framework: str
@@ -221,31 +262,40 @@ def _aggregate_token_usage(events: Sequence[Mapping[str, Any]]) -> TokenUsage | 
 
 @dataclass(frozen=True, slots=True)
 class OutputPolicy:
-    """Control narration, reasoning, and provider metadata in public output."""
+    """Control narration, tool activity, reasoning, and metadata in public output."""
 
-    subagent_messages: SubagentMessageMode = "suppress"
-    thinking: Literal["suppress", "include"] = "suppress"
-    agent_metadata: AgentMetadataMode = "normalized"
+    subagent_messages: SubagentMessageMode = False
+    thinking: bool = False
+    agent_metadata: AgentMetadataMode = AgentMetadataMode.NORMALIZED
     persist_raw_agent_metadata: bool = False
+    # Keep additions after the released positional fields so existing positional
+    # construction retains its meaning.
+    tool_activity: bool = True
 
     def __post_init__(self) -> None:
         """Reject misspelled policy values before the application can start."""
 
-        if self.subagent_messages not in {"suppress", "include"}:
-            raise ValueError(
-                "subagent_messages must be either 'suppress' or 'include'"
+        for field_name in ("subagent_messages", "tool_activity", "thinking"):
+            object.__setattr__(
+                self,
+                field_name,
+                _policy_flag(getattr(self, field_name), field_name),
             )
-        if self.thinking not in {"suppress", "include"}:
-            raise ValueError("thinking must be either 'suppress' or 'include'")
-        if self.agent_metadata not in {"normalized", "raw"}:
-            raise ValueError(
-                "agent_metadata must be either 'normalized' or 'raw'"
-            )
+        object.__setattr__(
+            self,
+            "agent_metadata",
+            _policy_mode(
+                self.agent_metadata, AgentMetadataMode, "agent_metadata"
+            ),
+        )
         if not isinstance(self.persist_raw_agent_metadata, bool):
             raise TypeError("persist_raw_agent_metadata must be a boolean")
-        if self.persist_raw_agent_metadata and self.agent_metadata != "raw":
+        if (
+            self.persist_raw_agent_metadata
+            and self.agent_metadata is not AgentMetadataMode.RAW
+        ):
             raise ValueError(
-                "persist_raw_agent_metadata requires agent_metadata='raw'"
+                "persist_raw_agent_metadata requires AgentMetadataMode.RAW"
             )
 
     def includes_intermediate_message(self, *, has_tool_calls: bool) -> bool:
@@ -253,7 +303,18 @@ class OutputPolicy:
 
         # Tool-free messages remain visible because a subagent may legitimately
         # own the final customer answer. Only pre-tool narration is policy-bound.
-        return not has_tool_calls or self.subagent_messages == "include"
+        return not has_tool_calls or self.subagent_messages
+
+    def includes_event(self, event_type: str) -> bool:
+        """Return whether a policy-controlled event may cross public boundaries."""
+
+        if event_type in {"tool_call", "tool_result"}:
+            return self.tool_activity
+        if event_type == "thinking":
+            return self.thinking
+        if event_type == "agent_metadata":
+            return self.agent_metadata is not AgentMetadataMode.SUPPRESS
+        return True
 
 
 __all__ = [

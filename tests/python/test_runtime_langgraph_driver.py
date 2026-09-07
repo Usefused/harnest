@@ -28,7 +28,8 @@ from harnest.mcp_lifecycle import (
     MCPHTTPClientOptions,
 )
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
-from harnest.output import OutputPolicy
+from harnest.output import AgentMetadataMode, OutputPolicy
+from harnest.runtime_continuation import completed_payload
 from harnest.runtime_langgraph import (
     LangGraphRuntimeDriver,
     _MODEL_ASSET_SCOPE,
@@ -632,6 +633,77 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("additional-detail", rendered)
         self.assertNotIn("stream-detail", rendered)
 
+    async def test_agent_metadata_suppression_crosses_invoke_and_stream(self):
+        """Hide per-call details and aggregate usage without hiding the answer."""
+
+        message = _Message(
+            "answer",
+            name="researcher",
+            usage_metadata={
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "total_tokens": 16,
+            },
+            response_metadata={
+                "model_name": "test-model",
+                "model_provider": "test-provider",
+            },
+        )
+        suppressed_target = _MetadataTarget(
+            message,
+            {
+                "langgraph_node": "researcher",
+                "ls_model_name": "test-model",
+                "ls_provider": "test-provider",
+            },
+        )
+        suppressed_application = replace(
+            _application(suppressed_target),
+            output_policy=OutputPolicy(
+                agent_metadata=AgentMetadataMode.SUPPRESS
+            ),
+        )
+        suppressed_driver = LangGraphRuntimeDriver(suppressed_application)
+        await suppressed_driver.create_session(
+            session_id="metadata-suppressed-invoke", user_id="user-1", state={}
+        )
+        await suppressed_driver.create_session(
+            session_id="metadata-suppressed-stream", user_id="user-1", state={}
+        )
+        try:
+            suppressed_invoke = await suppressed_driver.invoke(
+                _request("metadata-suppressed-invoke")
+            )
+            suppressed_stream = [
+                event
+                async for event in suppressed_driver.stream(
+                    _request("metadata-suppressed-stream")
+                )
+            ]
+        finally:
+            await suppressed_driver.close()
+
+        self.assertEqual(suppressed_invoke.text, "answer")
+        self.assertNotIn(
+            "agent_metadata",
+            [event["type"] for event in suppressed_invoke.events],
+        )
+        self.assertNotIn(
+            "agent_metadata", [event["type"] for event in suppressed_stream]
+        )
+        payload = completed_payload(
+            response_id="metadata-suppressed-invoke",
+            session_id="metadata-suppressed-invoke",
+            sequence=1,
+            events=suppressed_invoke.events,
+            text=suppressed_invoke.text,
+            metadata={},
+        )
+        self.assertNotIn("usage", payload)
+        self.assertNotIn(
+            "agent_metadata", [item["type"] for item in payload["output"]]
+        )
+
     async def test_raw_agent_metadata_namespaces_native_langgraph_mappings(self):
         message = _Message(
             "answer",
@@ -661,7 +733,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         application = replace(
             _application(target),
-            output_policy=OutputPolicy(agent_metadata="raw"),
+            output_policy=OutputPolicy(agent_metadata=AgentMetadataMode.RAW),
         )
         driver = LangGraphRuntimeDriver(application)
         await driver.create_session(
@@ -840,7 +912,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         target = _Target()
         application = replace(
             _application(target),
-            output_policy=OutputPolicy(thinking="include"),
+            output_policy=OutputPolicy(thinking=True),
         )
         driver = LangGraphRuntimeDriver(application)
         try:
@@ -1446,7 +1518,10 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         suppressed, suppressed_stream = await run(OutputPolicy())
         included, included_stream = await run(
-            OutputPolicy(subagent_messages="include")
+            OutputPolicy(subagent_messages=True)
+        )
+        private, private_stream = await run(
+            OutputPolicy(tool_activity=False)
         )
 
         self.assertEqual(suppressed.text, "Done.")
@@ -1479,6 +1554,19 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             "I'll inspect. Done.",
         )
         self.assertIn("tool_call", [event["type"] for event in included_stream])
+        self.assertEqual(private.text, "Done.")
+        self.assertFalse(
+            {"tool_call", "tool_result"}
+            & {event["type"] for event in private.events}
+        )
+        self.assertFalse(
+            {"tool_call", "tool_result"}
+            & {event["type"] for event in private_stream}
+        )
+        self.assertNotIn(
+            "I'll inspect.",
+            "".join(event.get("text", "") for event in private_stream),
+        )
 
     async def test_advanced_bridge_controls_input_and_visible_output(self):
         target = _Target()

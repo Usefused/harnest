@@ -45,6 +45,7 @@ type reloadWatchState struct {
 type reloadSupervisor struct {
 	application *application
 	command     *cobra.Command
+	compiler    *reloadCompilerPool
 	options     serveOptions
 	source      string
 	root        string
@@ -62,12 +63,17 @@ func (a *application) serveReload(
 		return fmt.Errorf("create reload artifact root: %w", err)
 	}
 	defer os.RemoveAll(root)
-	generation, err := a.prepareReloadGeneration(command, bundle.Directory, root, 1)
+	compiler := &reloadCompilerPool{application: a, command: command}
+	defer compiler.close()
+	generation, err := a.prepareReloadGeneration(
+		command, compiler, bundle.Directory, root, 1,
+	)
 	if err != nil {
 		return err
 	}
 	process, err := a.startReloadGeneration(command, generation, options)
 	if err != nil {
+		generation.python.releaseLease()
 		return err
 	}
 	fmt.Fprintf(
@@ -79,6 +85,7 @@ func (a *application) serveReload(
 	supervisor := reloadSupervisor{
 		application: a,
 		command:     command,
+		compiler:    compiler,
 		options:     options,
 		source:      bundle.Directory,
 		root:        root,
@@ -91,18 +98,23 @@ func (a *application) serveReload(
 
 // prepareReloadGeneration resolves dependencies before compiling an immutable tree.
 func (a *application) prepareReloadGeneration(
-	command *cobra.Command, source, root string, number int,
+	command *cobra.Command,
+	compiler *reloadCompilerPool,
+	source, root string,
+	number int,
 ) (reloadGeneration, error) {
 	bundle, python, err := a.reloadBundleAndPython(command, source)
 	if err != nil {
 		return reloadGeneration{}, err
 	}
 	artifact := filepath.Join(root, fmt.Sprintf("generation-%06d", number))
-	if err := a.compileBundle(command, python, bundle, artifact, command.InOrStdin()); err != nil {
+	if err := compiler.compile(bundle, python, artifact); err != nil {
+		python.releaseLease()
 		_ = os.RemoveAll(artifact)
 		return reloadGeneration{}, err
 	}
 	if _, err := compiledLauncher(artifact); err != nil {
+		python.releaseLease()
 		_ = os.RemoveAll(artifact)
 		return reloadGeneration{}, err
 	}
@@ -119,12 +131,13 @@ func (a *application) reloadBundleAndPython(
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
-	python, err := a.agentPython(command, bundle)
+	python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
 	refreshed, err := loadAgentBundle(source)
 	if err != nil {
+		python.releaseLease()
 		return engine.Bundle{}, pythonSelection{}, err
 	}
 	if refreshed.Digest == bundle.Digest {
@@ -132,11 +145,15 @@ func (a *application) reloadBundleAndPython(
 	}
 	// Environment synchronization may update harnest-runtime.lock. Resolve once more so the
 	// compiled generation and interpreter share the final dependency identity.
-	python, err = a.agentPython(command, refreshed)
+	python.releaseLease()
+	python, err = a.agentPython(command, refreshed, runtimeEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
 	final, err := loadAgentBundle(source)
+	if err != nil {
+		python.releaseLease()
+	}
 	return final, python, err
 }
 
@@ -172,6 +189,7 @@ func (a *application) startReloadGeneration(
 
 // run watches source identity while separately observing process termination.
 func (s *reloadSupervisor) run(ctx context.Context) error {
+	defer func() { s.current.generation.python.releaseLease() }()
 	ticker := time.NewTicker(reloadPollInterval)
 	defer ticker.Stop()
 	for {
@@ -209,7 +227,7 @@ func (s *reloadSupervisor) poll(now time.Time) error {
 	}
 	candidate := s.watch.candidate
 	generation, err := s.application.prepareReloadGeneration(
-		s.command, s.source, s.root, s.next,
+		s.command, s.compiler, s.source, s.root, s.next,
 	)
 	s.next++
 	if err != nil {
@@ -245,16 +263,20 @@ func (s *reloadSupervisor) replace(generation reloadGeneration) error {
 		_ = os.RemoveAll(generation.artifact)
 		if s.command.Context().Err() != nil {
 			if replacement != nil {
+				previous.generation.python.releaseLease()
 				s.current = replacement
 			} else {
+				generation.python.releaseLease()
 				s.current = previous
 			}
 			return nil
 		}
+		generation.python.releaseLease()
 		return s.restore(previous.generation, err)
 	}
 	s.current = replacement
 	_ = os.RemoveAll(previous.generation.artifact)
+	previous.generation.python.releaseLease()
 	fmt.Fprintf(
 		s.command.ErrOrStderr(),
 		"Reloaded %s (generation %d)\n",
