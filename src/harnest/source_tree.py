@@ -20,7 +20,7 @@ IGNORED_SOURCE_DIRECTORIES = frozenset(
 )
 
 _IGNORED_SOURCE_FILES = frozenset(
-    {"harnest-development.lock", "harnest-test.lock", "harnest-eval.lock"}
+    {"harnest-development.lock", "harnest-eval.lock"}
 )
 
 

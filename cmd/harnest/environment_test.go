@@ -382,8 +382,8 @@ func TestEnvironmentProfileAddsMCPOnlyForAuthoredMCP(t *testing.T) {
 
 func TestTestCommandSelectsDevelopmentAndEvalProfiles(t *testing.T) {
 	root := t.TempDir()
-	agent := filepath.Join(root, "test-profile-agent")
-	if err := createScaffold(agent, "test-profile-agent"); err != nil {
+	agent := filepath.Join(root, "development-profile-agent")
+	if err := createScaffold(agent, "development-profile-agent"); err != nil {
 		t.Fatal(err)
 	}
 	calls := filepath.Join(root, "calls.txt")

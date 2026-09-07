@@ -308,7 +308,6 @@ func TestBundleDigestExcludesDevelopmentProfileLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(directory, "harnest-development.lock"), "development resolution\n")
-	mustWrite(t, filepath.Join(directory, "harnest-test.lock"), "legacy test resolution\n")
 	mustWrite(t, filepath.Join(directory, "harnest-eval.lock"), "eval resolution\n")
 	development, err := LoadBundle(directory)
 	if err != nil {

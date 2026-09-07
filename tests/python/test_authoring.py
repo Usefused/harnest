@@ -915,7 +915,6 @@ class AuthoringTests(unittest.TestCase):
             self._write(
                 root / "harnest-development.lock", "development-only resolution\n"
             )
-            self._write(root / "harnest-test.lock", "legacy test-only resolution\n")
             self._write(root / "harnest-eval.lock", "eval-only resolution\n")
             environment_bin = root / ".harnest" / "environments" / "test" / "bin"
             environment_bin.mkdir(parents=True)
@@ -970,7 +969,6 @@ class AuthoringTests(unittest.TestCase):
                 record["path"].endswith(
                     (
                         "harnest-development.lock",
-                        "harnest-test.lock",
                         "harnest-eval.lock",
                     )
                 )
