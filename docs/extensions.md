@@ -159,9 +159,9 @@ The narration, tool-activity, and thinking settings are booleans;
 `agent_metadata` uses `AgentMetadataMode`, and all `OutputPolicy` arguments are
 keyword-only. An invalid value fails when the application is compiled. Run
 `harnest upgrade AGENT_DIR --apply` when moving an older project to this
-contract. The factory must be synchronous, accept no arguments, and return `OutputPolicy`.
-It is root-only, optional, and unique; duplicate or incorrectly typed factories
-fail compilation.
+contract. The factory must be synchronous, accept no arguments, and return
+`OutputPolicy`. It is root-only, optional, and unique; duplicate or incorrectly
+typed factories fail compilation.
 
 The policy applies to managed and advanced roots and their subagents when they
 run through Harnest. Neutral JSON, SSE, WebSocket, and playground surfaces use

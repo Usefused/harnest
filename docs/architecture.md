@@ -386,12 +386,15 @@ initial model-tool query returns no descriptors, Harnest performs one bounded
 unfiltered fallback and ranks metadata without loading skill bodies.
 
 Exactly zero or one root `@lifecycle.output_policy` factory selects public
-intermediate model messages. Its default `OutputPolicy()` suppresses subagent
-narration attached to tool calls without removing tool events or a terminal
-answer; `subagent_messages=True` exposes that provisional narration. Both
-backend drivers apply the policy before producing neutral non-streaming and
-streaming events, so `/responses`, `/live`, and the playground agree. Native
-framework endpoints remain outside this projection boundary.
+intermediate model messages, tool activity, provider-exposed reasoning, and
+model metadata. Its default `OutputPolicy()` suppresses subagent narration
+attached to tool calls and reasoning, while retaining tool events, normalized
+metadata, and terminal answers. Binary controls are keyword-only booleans;
+metadata uses `AgentMetadataMode` because normalized, suppressed, and raw output
+are distinct states. Both backend drivers apply the policy before producing
+neutral non-streaming and streaming events, so `/responses`, `/live`, and the
+playground agree. Native framework endpoints remain outside this projection
+boundary.
 
 Zero or more root `@lifecycle.telemetry_exporter` factories declare direct
 telemetry destinations. The compiler retains but never calls these factories;
