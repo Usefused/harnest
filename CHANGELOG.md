@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.16.0](https://github.com/Usefused/harnest/compare/v0.15.0...v0.16.0) (2026-09-07)
 
 ### Fixes
 
@@ -15,9 +15,6 @@
   and traces carrying `harnest.extension.name=docker`. Replace raw
   retention-scope strings with `DockerScope`. Prepare Hatchet extension `0.1.1`;
   both packages target Harnest `>=0.15,<0.16`.
-
-## [0.16.0](https://github.com/Usefused/harnest/compare/v0.15.0...v0.16.0) (2026-09-07)
-
 
 ### Features
 
