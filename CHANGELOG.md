@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.16.0](https://github.com/Usefused/harnest/compare/v0.15.0...v0.16.0) (2026-09-07)
 
 ### Fixes
 
@@ -15,6 +15,15 @@
   and traces carrying `harnest.extension.name=docker`. Replace raw
   retention-scope strings with `DockerScope`. Prepare Hatchet extension `0.1.1`;
   both packages target Harnest `>=0.15,<0.16`.
+
+### Features
+
+* add Docker service topologies ([2e01dae](https://github.com/Usefused/harnest/commit/2e01dae63bde133cd5e2470167ba69b42da016bd))
+
+
+### Fixes
+
+* keep compile independent from pytest ([ab521ac](https://github.com/Usefused/harnest/commit/ab521ac702d4a8018cee8fd222d9ac4c2950b04b))
 
 ## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
 
