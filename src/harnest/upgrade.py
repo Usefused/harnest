@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import shutil
 import textwrap
@@ -20,10 +20,10 @@ from .server_config import ServerConfigError, project_server_config_yaml
 from .application_layout import ApplicationLayoutError, lifecycle_directory
 
 
-PROJECT_SCHEMA = 3
+PROJECT_SCHEMA = 4
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 3
+projectSchema: 4
 """
 _STORAGE_LIBRARY = """from harnest.store import MemoryStore
 
@@ -69,6 +69,22 @@ _PORTABLE_PHASES = (
     "after_model",
     "on_model_error",
 )
+_OUTPUT_POLICY_POSITIONAL_FIELDS = (
+    "subagent_messages",
+    "thinking",
+    "agent_metadata",
+    "persist_raw_agent_metadata",
+    "tool_activity",
+)
+_OUTPUT_POLICY_BOOLEAN_FIELDS = frozenset(
+    {"subagent_messages", "thinking", "tool_activity"}
+)
+_OUTPUT_POLICY_BOOLEAN_VALUES = {"include": "True", "suppress": "False"}
+_OUTPUT_POLICY_METADATA_VALUES = {
+    "suppress": "SUPPRESS",
+    "normalized": "NORMALIZED",
+    "raw": "RAW",
+}
 
 
 class UpgradeError(RuntimeError):
@@ -577,6 +593,7 @@ def _plan_extensions(
         if _ignored(path.relative_to(directory).parts):
             continue
         _plan_extension_file(root, path, framework, actions, blockers)
+        _plan_output_policy_file(root, path, actions, blockers)
 
 
 def _plan_storage(
@@ -774,6 +791,364 @@ def _plan_portable_extension(
         return
     if replacement is not None:
         actions.append(_rewrite(root, path, replacement, "replace Extension(...) aggregation with lifecycle decorators"))
+
+
+def _plan_output_policy_file(
+    root: Path,
+    path: Path,
+    actions: list[UpgradeAction],
+    blockers: list[str],
+) -> None:
+    """Rewrite released OutputPolicy inputs without importing authored code."""
+
+    if path.is_symlink():
+        return
+    try:
+        pending, source = _planned_python_source(root, path, actions)
+        replacement = _output_policy_source(path, source)
+    except UpgradeError as exc:
+        blockers.append(str(exc))
+        return
+    if replacement is None:
+        return
+    _record_output_policy_rewrite(root, path, replacement, pending, actions)
+
+
+def _planned_python_source(
+    root: Path, path: Path, actions: list[UpgradeAction]
+) -> tuple[tuple[int, UpgradeAction] | None, str]:
+    """Read the latest planned content when another migration owns the same file."""
+
+    relative = _relative(root, path)
+    pending = next(
+        (
+            (index, action)
+            for index, action in enumerate(actions)
+            if action.kind == "rewrite" and action.path == relative
+        ),
+        None,
+    )
+    if pending is not None and pending[1].content is not None:
+        return pending, pending[1].content
+    try:
+        return pending, path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise UpgradeError(f"{path}: cannot read Python source") from exc
+
+
+def _record_output_policy_rewrite(
+    root: Path,
+    path: Path,
+    content: str,
+    pending: tuple[int, UpgradeAction] | None,
+    actions: list[UpgradeAction],
+) -> None:
+    """Compose source migrations so a path is rewritten only once before moves."""
+
+    detail = "migrate OutputPolicy to keyword-only booleans and AgentMetadataMode"
+    if pending is None:
+        actions.append(_rewrite(root, path, content, detail))
+        return
+    index, action = pending
+    actions[index] = replace(
+        action,
+        content=content,
+        detail=f"{action.detail}; {detail}",
+    )
+
+
+def _output_policy_source(path: Path, source: str) -> str | None:
+    """Build a formatting-preserving migration for imported policy call sites."""
+
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        raise UpgradeError(f"{path}: cannot parse Python source") from exc
+    imports = _output_policy_imports(module)
+    policy_names = _imported_names(imports, "OutputPolicy")
+    legacy_type_names = _imported_names(imports, "SubagentMessageMode")
+    metadata_names = _imported_names(imports, "AgentMetadataMode")
+    if not policy_names and not legacy_type_names:
+        return None
+    metadata_name = next(iter(metadata_names), "AgentMetadataMode")
+    edits, needs_metadata = _output_policy_call_edits(
+        path, source, module, policy_names, metadata_name
+    )
+    edits.extend(
+        _legacy_output_policy_type_edits(
+            path, source, module, legacy_type_names
+        )
+    )
+    edits.extend(
+        _output_policy_import_edits(
+            source,
+            imports,
+            add_metadata=needs_metadata and not metadata_names,
+        )
+    )
+    return _apply_text_edits(source, edits) if edits else None
+
+
+def _output_policy_imports(module: ast.Module) -> tuple[ast.ImportFrom, ...]:
+    """Return public imports that can bind the released policy names directly."""
+
+    return tuple(
+        item
+        for item in module.body
+        if isinstance(item, ast.ImportFrom)
+        and item.module in {"harnest", "harnest.output"}
+    )
+
+
+def _imported_names(
+    imports: tuple[ast.ImportFrom, ...], imported_name: str
+) -> frozenset[str]:
+    """Resolve local aliases for one directly imported public name."""
+
+    return frozenset(
+        name.asname or name.name
+        for item in imports
+        for name in item.names
+        if name.name == imported_name
+    )
+
+
+def _output_policy_call_edits(
+    path: Path,
+    source: str,
+    module: ast.Module,
+    policy_names: frozenset[str],
+    metadata_name: str,
+) -> tuple[list[tuple[int, int, str]], bool]:
+    """Convert known policy calls while rejecting ambiguous argument expansion."""
+
+    edits: list[tuple[int, int, str]] = []
+    needs_metadata = False
+    calls = (
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in policy_names
+    )
+    for call in calls:
+        call_edits, call_needs_metadata = _output_policy_call_edit(
+            path, source, call, metadata_name
+        )
+        edits.extend(call_edits)
+        needs_metadata = needs_metadata or call_needs_metadata
+    return edits, needs_metadata
+
+
+def _output_policy_call_edit(
+    path: Path,
+    source: str,
+    call: ast.Call,
+    metadata_name: str,
+) -> tuple[list[tuple[int, int, str]], bool]:
+    """Map one call from the released positional and string-valued contract."""
+
+    positional_fields = _validate_output_policy_call(path, call)
+    positional_edits, positional_metadata = _output_policy_positional_edits(
+        path, source, call, positional_fields, metadata_name
+    )
+    keyword_edits, keyword_metadata = _output_policy_keyword_edits(
+        path, source, call, metadata_name
+    )
+    return positional_edits + keyword_edits, positional_metadata or keyword_metadata
+
+
+def _validate_output_policy_call(path: Path, call: ast.Call) -> tuple[str, ...]:
+    """Reject calls whose runtime expansion cannot be mapped deterministically."""
+
+    if len(call.args) > len(_OUTPUT_POLICY_POSITIONAL_FIELDS):
+        raise UpgradeError(
+            f"{path}:{call.lineno}: OutputPolicy has too many positional arguments"
+        )
+    if any(isinstance(value, ast.Starred) for value in call.args):
+        raise UpgradeError(
+            f"{path}:{call.lineno}: OutputPolicy *args require manual migration"
+        )
+    if any(keyword.arg is None for keyword in call.keywords):
+        raise UpgradeError(
+            f"{path}:{call.lineno}: OutputPolicy **kwargs require manual migration"
+        )
+    positional_fields = _OUTPUT_POLICY_POSITIONAL_FIELDS[: len(call.args)]
+    keyword_fields = {keyword.arg for keyword in call.keywords}
+    overlap = next((field for field in positional_fields if field in keyword_fields), None)
+    if overlap is not None:
+        raise UpgradeError(
+            f"{path}:{call.lineno}: OutputPolicy field {overlap!r} is duplicated"
+        )
+    return positional_fields
+
+
+def _output_policy_positional_edits(
+    path: Path,
+    source: str,
+    call: ast.Call,
+    fields: tuple[str, ...],
+    metadata_name: str,
+) -> tuple[list[tuple[int, int, str]], bool]:
+    """Name positional values according to the exact released field order."""
+
+    edits: list[tuple[int, int, str]] = []
+    needs_metadata = False
+    for field_name, value in zip(fields, call.args):
+        replacement, converted_metadata = _output_policy_value(
+            path, source, field_name, value, metadata_name
+        )
+        edits.append(_node_edit(source, value, f"{field_name}={replacement}"))
+        needs_metadata = needs_metadata or converted_metadata
+    return edits, needs_metadata
+
+
+def _output_policy_keyword_edits(
+    path: Path,
+    source: str,
+    call: ast.Call,
+    metadata_name: str,
+) -> tuple[list[tuple[int, int, str]], bool]:
+    """Replace released string literals in already named policy arguments."""
+
+    edits: list[tuple[int, int, str]] = []
+    needs_metadata = False
+    for keyword in call.keywords:
+        assert keyword.arg is not None
+        replacement, converted_metadata = _output_policy_value(
+            path, source, keyword.arg, keyword.value, metadata_name
+        )
+        if replacement != ast.get_source_segment(source, keyword.value):
+            edits.append(_node_edit(source, keyword.value, replacement))
+        needs_metadata = needs_metadata or converted_metadata
+    return edits, needs_metadata
+
+
+def _output_policy_value(
+    path: Path,
+    source: str,
+    field_name: str,
+    value: ast.AST,
+    metadata_name: str,
+) -> tuple[str, bool]:
+    """Translate released string literals and preserve already typed expressions."""
+
+    segment = ast.get_source_segment(source, value)
+    if segment is None:
+        raise UpgradeError(f"{path}:{value.lineno}: cannot preserve OutputPolicy value")
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return segment, False
+    if field_name in _OUTPUT_POLICY_BOOLEAN_FIELDS:
+        replacement = _OUTPUT_POLICY_BOOLEAN_VALUES.get(value.value)
+        if replacement is not None:
+            return replacement, False
+    elif field_name == "agent_metadata":
+        member = _OUTPUT_POLICY_METADATA_VALUES.get(value.value)
+        if member is not None:
+            return f"{metadata_name}.{member}", True
+    else:
+        return segment, False
+    raise UpgradeError(
+        f"{path}:{value.lineno}: unsupported legacy OutputPolicy value "
+        f"{value.value!r} for {field_name}"
+    )
+
+
+def _legacy_output_policy_type_edits(
+    path: Path,
+    source: str,
+    module: ast.Module,
+    legacy_names: frozenset[str],
+) -> list[tuple[int, int, str]]:
+    """Replace the removed string alias only where it is used as a type."""
+
+    if not legacy_names:
+        return []
+    annotation_nodes = _annotation_node_ids(module)
+    references = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and node.id in legacy_names
+    ]
+    unsupported = next(
+        (node for node in references if id(node) not in annotation_nodes), None
+    )
+    if unsupported is not None:
+        raise UpgradeError(
+            f"{path}:{unsupported.lineno}: SubagentMessageMode value usage "
+            "requires manual migration"
+        )
+    return [_node_edit(source, node, "bool") for node in references]
+
+
+def _annotation_node_ids(module: ast.Module) -> frozenset[int]:
+    """Identify syntax owned by annotations without treating runtime names as types."""
+
+    roots: list[ast.AST] = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            roots.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+    return frozenset(id(node) for root in roots for node in ast.walk(root))
+
+
+def _output_policy_import_edits(
+    source: str,
+    imports: tuple[ast.ImportFrom, ...],
+    *,
+    add_metadata: bool,
+) -> list[tuple[int, int, str]]:
+    """Remove the stale alias and add the enum beside the canonical policy import."""
+
+    output_imports = [item for item in imports if item.module == "harnest.output"]
+    metadata_target = output_imports[0] if add_metadata and output_imports else None
+    edits = [
+        edit
+        for item in output_imports
+        if (edit := _output_policy_import_edit(source, item, item is metadata_target))
+    ]
+    if add_metadata and metadata_target is None:
+        edits.append(_agent_metadata_import_insertion(source, imports))
+    return edits
+
+
+def _output_policy_import_edit(
+    source: str, item: ast.ImportFrom, add_metadata: bool
+) -> tuple[int, int, str] | None:
+    """Rewrite one canonical import only when its public members change."""
+
+    names = [name for name in item.names if name.name != "SubagentMessageMode"]
+    if add_metadata:
+        names.append(ast.alias(name="AgentMetadataMode"))
+    if names == item.names:
+        return None
+    rendered = ", ".join(_render_import_alias(name) for name in names)
+    replacement = f"from harnest.output import {rendered}" if names else ""
+    return _node_edit(source, item, replacement)
+
+
+def _agent_metadata_import_insertion(
+    source: str, imports: tuple[ast.ImportFrom, ...]
+) -> tuple[int, int, str]:
+    """Place the enum import after a root-level OutputPolicy import."""
+
+    target = next(
+        item
+        for item in imports
+        if any(name.name == "OutputPolicy" for name in item.names)
+    )
+    offset = _line_offset(source, target.end_lineno + 1)
+    prefix = "" if offset == 0 or source[offset - 1 : offset] == "\n" else "\n"
+    return offset, offset, f"{prefix}from harnest.output import AgentMetadataMode\n"
+
+
+def _render_import_alias(value: ast.alias) -> str:
+    """Render an import member while retaining its local binding."""
+
+    return f"{value.name} as {value.asname}" if value.asname else value.name
 
 
 def _portable_extension_source(path: Path) -> str | None:

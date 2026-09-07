@@ -22,9 +22,11 @@
 * Let `OutputPolicy` independently suppress public tool activity, provider
   thinking, and model/provider metadata across every neutral transport.
   Thinking remains private by default; tool activity and normalized metadata
-  remain visible unless explicitly suppressed. Use booleans for binary
-  disclosure controls and `AgentMetadataMode` for normalized-versus-raw
-  metadata while normalizing released string inputs for compatibility.
+  remain visible unless explicitly suppressed. `OutputPolicy` is now
+  keyword-only and requires booleans for binary disclosure controls plus
+  `AgentMetadataMode` for normalized-versus-raw metadata; the former string
+  policy values are no longer accepted. `harnest upgrade --apply` migrates
+  released string and positional forms to the strict contract.
 
 * Add `server.agentPrincipal: required` so security-sensitive deployments can
   reject custom `AgentInvoker` routes that omit a principal before any session

@@ -274,9 +274,72 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 3",
+                "projectSchema: 4",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
             )
+
+    def test_output_policy_source_is_migrated_to_the_strict_contract(self):
+        """Carry released strings, positional calls, and the removed type alias."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            path = root / "extensions" / "output.py"
+            self.write(
+                path,
+                "from harnest.lifecycle import lifecycle\n"
+                "from harnest.output import OutputPolicy, SubagentMessageMode\n\n"
+                "def typed(value: SubagentMessageMode) -> SubagentMessageMode:\n"
+                "    return value\n\n"
+                "fallback = OutputPolicy(\n"
+                "    subagent_messages='suppress',\n"
+                "    thinking='include',\n"
+                "    agent_metadata='normalized',\n"
+                ")\n\n"
+                "@lifecycle.output\n"
+                "def output():\n"
+                "    return OutputPolicy(\n"
+                "        'include', 'suppress', 'raw', True, 'suppress'\n"
+                "    )\n",
+            )
+
+            plan = plan_upgrade(root)
+            action = next(item for item in plan.actions if item.path == "extensions/output.py")
+            apply_upgrade(plan)
+            migrated = (root / "lifecycle" / "output.py").read_text(encoding="utf-8")
+
+            self.assertIn("migrate OutputPolicy", action.detail)
+            self.assertIn(
+                "from harnest.output import OutputPolicy, AgentMetadataMode",
+                migrated,
+            )
+            self.assertIn("def typed(value: bool) -> bool:", migrated)
+            self.assertIn("subagent_messages=True", migrated)
+            self.assertIn("thinking=False", migrated)
+            self.assertIn("agent_metadata=AgentMetadataMode.RAW", migrated)
+            self.assertIn("persist_raw_agent_metadata=True", migrated)
+            self.assertIn("tool_activity=False", migrated)
+            self.assertIn("subagent_messages=False", migrated)
+            self.assertIn("thinking=True", migrated)
+            self.assertIn("agent_metadata=AgentMetadataMode.NORMALIZED", migrated)
+            self.assertNotIn("SubagentMessageMode", migrated)
+            self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_ambiguous_output_policy_expansion_is_a_manual_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(
+                root / "extensions" / "output.py",
+                "from harnest.output import OutputPolicy\n"
+                "policy = OutputPolicy(**{'thinking': 'include'})\n",
+            )
+
+            plan = plan_upgrade(root)
+
+        self.assertTrue(
+            any("OutputPolicy **kwargs require manual migration" in value for value in plan.blockers)
+        )
 
     def test_current_repository_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

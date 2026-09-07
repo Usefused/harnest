@@ -21,7 +21,7 @@ class OutputPolicyTests(unittest.TestCase):
         self.assertTrue(policy.includes_event("tool_call"))
         self.assertTrue(policy.includes_event("agent_metadata"))
 
-    def test_include_mode_and_invalid_values_are_explicit(self):
+    def test_explicit_policy_values_and_invalid_values(self):
         policy = OutputPolicy(
             subagent_messages=True,
             tool_activity=False,
@@ -35,14 +35,14 @@ class OutputPolicyTests(unittest.TestCase):
         self.assertTrue(policy.thinking)
         self.assertIs(policy.agent_metadata, AgentMetadataMode.RAW)
         self.assertTrue(policy.persist_raw_agent_metadata)
-        with self.assertRaisesRegex(ValueError, "subagent_messages"):
-            OutputPolicy(subagent_messages="unexpected")
-        with self.assertRaisesRegex(ValueError, "agent_metadata"):
-            OutputPolicy(agent_metadata="hidden")
-        with self.assertRaisesRegex(ValueError, "tool_activity"):
-            OutputPolicy(tool_activity="hidden")
-        with self.assertRaisesRegex(ValueError, "thinking"):
-            OutputPolicy(thinking="public")
+        with self.assertRaisesRegex(TypeError, "subagent_messages"):
+            OutputPolicy(subagent_messages="include")
+        with self.assertRaisesRegex(TypeError, "agent_metadata"):
+            OutputPolicy(agent_metadata="raw")
+        with self.assertRaisesRegex(TypeError, "tool_activity"):
+            OutputPolicy(tool_activity="suppress")
+        with self.assertRaisesRegex(TypeError, "thinking"):
+            OutputPolicy(thinking="include")
         with self.assertRaisesRegex(TypeError, "thinking"):
             OutputPolicy(thinking=1)
         with self.assertRaisesRegex(TypeError, "persist_raw_agent_metadata"):
@@ -57,19 +57,6 @@ class OutputPolicyTests(unittest.TestCase):
                 agent_metadata=AgentMetadataMode.SUPPRESS,
                 persist_raw_agent_metadata=True,
             )
-
-    def test_released_strings_normalize_to_policy_types(self):
-        policy = OutputPolicy(
-            subagent_messages="include",
-            thinking="include",
-            agent_metadata="raw",
-            tool_activity="suppress",
-        )
-
-        self.assertTrue(policy.subagent_messages)
-        self.assertTrue(policy.thinking)
-        self.assertIs(policy.agent_metadata, AgentMetadataMode.RAW)
-        self.assertFalse(policy.tool_activity)
 
     def test_private_activity_profile_keeps_only_customer_output(self):
         policy = OutputPolicy(
@@ -89,14 +76,9 @@ class OutputPolicyTests(unittest.TestCase):
             with self.subTest(event_type=event_type):
                 self.assertFalse(policy.includes_event(event_type))
 
-    def test_tool_activity_preserves_the_existing_positional_contract(self):
-        policy = OutputPolicy("include", "include", "raw", True)
-
-        self.assertTrue(policy.subagent_messages)
-        self.assertTrue(policy.thinking)
-        self.assertIs(policy.agent_metadata, AgentMetadataMode.RAW)
-        self.assertTrue(policy.persist_raw_agent_metadata)
-        self.assertTrue(policy.tool_activity)
+    def test_policy_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            OutputPolicy(False)
 
     def test_agent_metadata_has_one_typed_portable_shape(self):
         metadata = AgentMetadata(

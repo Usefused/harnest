@@ -21,7 +21,7 @@ class ExampleContractTests(unittest.TestCase):
                 lock_path = config_path.with_name("harnest.lock")
                 self.assertTrue(lock_path.is_file())
                 lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
-                self.assertEqual(lock["projectSchema"], 3)
+                self.assertEqual(lock["projectSchema"], 4)
                 self.assertEqual(
                     lock["framework"]["name"], config["spec"]["framework"]["name"]
                 )

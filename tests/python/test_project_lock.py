@@ -57,7 +57,7 @@ class ProjectLockTests(unittest.TestCase):
             path = root / "harnest.lock"
             path.write_text(yaml.safe_dump(value))
             upgraded = yaml.safe_load(_upgraded_project_lock(path))
-            self.assertEqual(upgraded["projectSchema"], 3)
+            self.assertEqual(upgraded["projectSchema"], 4)
             self.assertEqual(upgraded["framework"], value["framework"])
 
     def test_compiler_checks_pin_before_importing_authored_code(self):

@@ -638,9 +638,10 @@ The factory is synchronous, zero-argument, root-only, and unique.
 `subagent_messages`, `tool_activity`, and `thinking` are booleans.
 `agent_metadata` uses `AgentMetadataMode`; raw mode keeps the portable fields
 and additionally exposes JSON-safe ADK or LangGraph metadata. Suppression also
-omits aggregate usage derived from those events. Released string values remain
-accepted as compatibility input and are normalized to booleans or the metadata
-enum.
+omits aggregate usage derived from those events. All arguments are keyword-only;
+strings are not accepted for boolean or enum policy fields. When moving an
+older project, `harnest upgrade --apply` rewrites the released string and
+positional forms.
 It affects Harnest neutral JSON, SSE, WebSocket, A2A streaming, local responses,
 and playground events; direct native endpoints are not projected. Raw provider
 metadata may contain sensitive or high-cardinality values, so enable it only

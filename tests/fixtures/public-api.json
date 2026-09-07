@@ -413,7 +413,6 @@
     "AgentMetadata",
     "AgentMetadataMode",
     "OutputPolicy",
-    "SubagentMessageMode",
     "TokenUsage"
   ],
   "harnest.plugins": [

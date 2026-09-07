@@ -5,11 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeVar
-
-
-# Keep the released public name as a compatibility alias.
-SubagentMessageMode = bool
+from typing import Any
 
 
 class AgentMetadataMode(str, Enum):
@@ -18,38 +14,6 @@ class AgentMetadataMode(str, Enum):
     SUPPRESS = "suppress"
     NORMALIZED = "normalized"
     RAW = "raw"
-
-
-_EnumValue = TypeVar("_EnumValue", bound=Enum)
-
-
-def _policy_mode(
-    value: Any, enum_type: type[_EnumValue], field_name: str
-) -> _EnumValue:
-    """Normalize released string values while storing a typed enum contract."""
-
-    if isinstance(value, enum_type):
-        return value
-    if isinstance(value, str):
-        try:
-            return enum_type(value)
-        except ValueError as exc:
-            raise ValueError(f"invalid {field_name}: {value!r}") from exc
-    raise TypeError(f"{field_name} must be {enum_type.__name__}")
-
-
-def _policy_flag(value: Any, field_name: str) -> bool:
-    """Normalize released string modes while storing a boolean policy flag."""
-
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        if value == "include":
-            return True
-        if value == "suppress":
-            return False
-        raise ValueError(f"invalid {field_name}: {value!r}")
-    raise TypeError(f"{field_name} must be a boolean")
 
 
 def _token_count(value: Any, field_name: str) -> int:
@@ -260,34 +224,24 @@ def _aggregate_token_usage(events: Sequence[Mapping[str, Any]]) -> TokenUsage | 
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class OutputPolicy:
     """Control narration, tool activity, reasoning, and metadata in public output."""
 
-    subagent_messages: SubagentMessageMode = False
+    subagent_messages: bool = False
+    tool_activity: bool = True
     thinking: bool = False
     agent_metadata: AgentMetadataMode = AgentMetadataMode.NORMALIZED
     persist_raw_agent_metadata: bool = False
-    # Keep additions after the released positional fields so existing positional
-    # construction retains its meaning.
-    tool_activity: bool = True
 
     def __post_init__(self) -> None:
-        """Reject misspelled policy values before the application can start."""
+        """Reject untyped policy values before the application can start."""
 
         for field_name in ("subagent_messages", "tool_activity", "thinking"):
-            object.__setattr__(
-                self,
-                field_name,
-                _policy_flag(getattr(self, field_name), field_name),
-            )
-        object.__setattr__(
-            self,
-            "agent_metadata",
-            _policy_mode(
-                self.agent_metadata, AgentMetadataMode, "agent_metadata"
-            ),
-        )
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be a boolean")
+        if not isinstance(self.agent_metadata, AgentMetadataMode):
+            raise TypeError("agent_metadata must be AgentMetadataMode")
         if not isinstance(self.persist_raw_agent_metadata, bool):
             raise TypeError("persist_raw_agent_metadata must be a boolean")
         if (
@@ -321,6 +275,5 @@ __all__ = [
     "AgentMetadata",
     "AgentMetadataMode",
     "OutputPolicy",
-    "SubagentMessageMode",
     "TokenUsage",
 ]
