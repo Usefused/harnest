@@ -43,6 +43,25 @@
 * Accept only universal `py3-none-any` PyPI wheels for Harnest Extensions so a
   platform- or ABI-specific artifact cannot be selected for the wrong host.
 
+## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
+
+
+### Features
+
+* harden runtime and development workflows ([0e1ddd1](https://github.com/Usefused/harnest/commit/0e1ddd1e6e58050a066bc09bfd6608c2af2a9c05))
+* migrate output policies on project upgrade ([bfa1da2](https://github.com/Usefused/harnest/commit/bfa1da253cfb0ab5247d788cbccc1180baff6fd8))
+
+
+### Fixes
+
+* install extension build backend in CI ([c06ea06](https://github.com/Usefused/harnest/commit/c06ea06d7240173ee9e2f4fb39685ec1fd314ba9))
+* isolate production compile dependencies ([fa9e815](https://github.com/Usefused/harnest/commit/fa9e815032d4fc38e5f76ff3a7ea50397946e65f))
+
+
+### Refactoring
+
+* remove stale test profile compatibility ([36ed82e](https://github.com/Usefused/harnest/commit/36ed82e5dc7e944d75c5a3a9b720bbd7b33dea3e))
+
 ## [0.14.0](https://github.com/Usefused/harnest/compare/v0.13.0...v0.14.0) (2026-09-05)
 
 ### Features
