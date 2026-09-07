@@ -11,8 +11,8 @@ func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	current := "1111111111111111"
 	leased := "2222222222222222"
 	stale := "3333333333333333"
-	testCurrent := "4444444444444444"
-	for _, name := range []string{current, leased, stale, testCurrent} {
+	developmentCurrent := "4444444444444444"
+	for _, name := range []string{current, leased, stale, developmentCurrent} {
 		writeTestAgentEnvironment(t, project, name)
 	}
 	state := filepath.Join(project, ".harnest", environmentStateFile)
@@ -22,10 +22,12 @@ func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	testState := filepath.Join(project, ".harnest", testEnvironmentProfile.stateFile())
-	if err := writeEnvironmentState(testState, environmentState{
-		Fingerprint: testCurrent,
-		Directory:   filepath.ToSlash(filepath.Join("environments", testCurrent)),
+	developmentState := filepath.Join(
+		project, ".harnest", developmentEnvironmentProfile.stateFile(),
+	)
+	if err := writeEnvironmentState(developmentState, environmentState{
+		Fingerprint: developmentCurrent,
+		Directory:   filepath.ToSlash(filepath.Join("environments", developmentCurrent)),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,14 +54,14 @@ func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	waitForArtifactRemoval(t, testAgentEnvironment(project, stale))
 	assertTestEnvironmentExists(t, project, current)
 	assertTestEnvironmentExists(t, project, leased)
-	assertTestEnvironmentExists(t, project, testCurrent)
+	assertTestEnvironmentExists(t, project, developmentCurrent)
 
 	selection.releaseLease()
 	assertTestEnvironmentExists(t, project, leased)
 	overlapping.releaseLease()
 	waitForArtifactRemoval(t, testAgentEnvironment(project, leased))
 	assertTestEnvironmentExists(t, project, current)
-	assertTestEnvironmentExists(t, project, testCurrent)
+	assertTestEnvironmentExists(t, project, developmentCurrent)
 }
 
 // writeTestAgentEnvironment creates the interpreter shape recognized as managed.

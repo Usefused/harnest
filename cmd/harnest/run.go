@@ -141,7 +141,7 @@ func readBoundedRunMessage(stdin io.Reader) ([]byte, error) {
 func (a *application) runBundle(
 	command *cobra.Command, bundle engine.Bundle, message string, options runOptions,
 ) error {
-	python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
+	python, err := a.agentPython(command, bundle, developmentEnvironmentProfile)
 	if err != nil {
 		return err
 	}

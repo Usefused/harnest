@@ -52,7 +52,7 @@ Typical workflow:
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
   harnest env sync my-agent
-  harnest env sync my-agent --profile test
+  harnest env sync my-agent --profile development
   harnest mode advanced my-agent --check
   harnest upgrade my-agent
   harnest upgrade my-agent --apply
@@ -65,7 +65,7 @@ Typical workflow:
   harnest serve my-agent
   harnest serve my-agent --reload
 
-Released commands select isolated runtime, test, or eval environments derived
+Released commands select isolated production runtime, development, or eval environments derived
 from config.yaml, authored dependency metadata, the corresponding committed
 Harnest lock, and the embedded Harnest wheel. Framework MCP and evaluation
 dependencies are installed only when the source or command needs them.

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/internal/runtimewheel"
 	"harnest.dev/harnest/internal/uvbootstrap"
@@ -377,7 +380,7 @@ func TestEnvironmentProfileAddsMCPOnlyForAuthoredMCP(t *testing.T) {
 	}
 }
 
-func TestTestCommandSelectsTestAndEvalProfiles(t *testing.T) {
+func TestTestCommandSelectsDevelopmentAndEvalProfiles(t *testing.T) {
 	root := t.TempDir()
 	agent := filepath.Join(root, "test-profile-agent")
 	if err := createScaffold(agent, "test-profile-agent"); err != nil {
@@ -391,8 +394,8 @@ func TestTestCommandSelectsTestAndEvalProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFilesExist(t, agent, []string{
-		testEnvironmentProfile.requirementsLockFile(),
-		filepath.Join(".harnest", testEnvironmentProfile.stateFile()),
+		developmentEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", developmentEnvironmentProfile.stateFile()),
 	})
 	if _, _, err := executeForTest(t, sys, "test", agent, "--evals"); err != nil {
 		t.Fatal(err)
@@ -403,6 +406,33 @@ func TestTestCommandSelectsTestAndEvalProfiles(t *testing.T) {
 	})
 }
 
+func TestServeSelectsDevelopmentProfile(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "serve-profile-agent")
+	if err := createScaffold(agent, "serve-profile-agent"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HARNEST_ENV_TEST_CALLS", filepath.Join(root, "calls.txt"))
+	app := &application{system: environmentTestSystem(t, root), version: "test-version"}
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	bundle, python, err := app.reloadBundleAndPython(command, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	python.releaseLease()
+	if bundle.Directory == "" {
+		t.Fatal("serve dependency preparation returned an empty bundle")
+	}
+	assertFilesExist(t, agent, []string{
+		developmentEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", developmentEnvironmentProfile.stateFile()),
+	})
+	if _, err := os.Stat(filepath.Join(agent, runtimeRequirementsLockFile)); !os.IsNotExist(err) {
+		t.Fatalf("serve unexpectedly selected the production runtime profile: %v", err)
+	}
+}
+
 func TestEnvironmentSyncRejectsUnknownProfile(t *testing.T) {
 	agent := filepath.Join(t.TempDir(), "invalid-profile-agent")
 	if err := createScaffold(agent, "invalid-profile-agent"); err != nil {
@@ -411,7 +441,7 @@ func TestEnvironmentSyncRejectsUnknownProfile(t *testing.T) {
 	_, _, err := executeForTest(
 		t, defaultSystem(), "env", "sync", agent, "--profile", "production",
 	)
-	if err == nil || !strings.Contains(err.Error(), "runtime, test, or eval") {
+	if err == nil || !strings.Contains(err.Error(), "runtime, development, or eval") {
 		t.Fatalf("got error %v, want profile choices", err)
 	}
 }
@@ -451,6 +481,15 @@ func TestCompileUsesSynchronizedAgentPython(t *testing.T) {
 		"pip sync --python",
 		"PYTHON -m harnest.cli compile " + resolvedAgent,
 	})
+	assertFilesExist(t, agent, []string{
+		runtimeEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", runtimeEnvironmentProfile.stateFile()),
+	})
+	if _, err := os.Stat(filepath.Join(
+		agent, developmentEnvironmentProfile.requirementsLockFile(),
+	)); !os.IsNotExist(err) {
+		t.Fatalf("compile unexpectedly selected the development profile: %v", err)
+	}
 }
 
 func environmentTestSystem(t *testing.T, root string) system {

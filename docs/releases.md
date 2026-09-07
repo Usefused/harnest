@@ -84,9 +84,9 @@ normal, portable `harnest ...` workflow.
 
 That private CLI runtime is not shared with authored agents. Released
 `compile`, `test`, and `serve` commands use the embedded `uv` and wheel to
-synchronize each agent's `pyproject.toml` into fingerprinted runtime, test, and
-eval environments below its `.harnest/` directory. The corresponding
-`harnest-runtime.lock`, `harnest-test.lock`, or `harnest-eval.lock` covers the
+synchronize each agent's `pyproject.toml` into fingerprinted production runtime,
+development, and eval environments below its `.harnest/` directory. The corresponding
+`harnest-runtime.lock`, `harnest-development.lock`, or `harnest-eval.lock` covers the
 embedded release wheel, selected framework, authored and extension dependencies,
 optional source capabilities, profile tools, and every transitive dependency.
 Commit each used lock after review. CI should frozen-sync the profiles it runs

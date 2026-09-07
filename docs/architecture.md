@@ -61,10 +61,10 @@ advanced mode exposes framework-native APIs but does not opt out of Harnest's
 tested dependency range.
 
 Environment sync records the installed framework distribution and exact version in
-`harnest.lock`. Runtime, test, and eval profiles resolve independent environments
-and hash-verified locks; MCP adapters join only when authored MCP resources are
-active, and evaluation dependencies never enter the serving profile. Installers
-constrain subsequent environments to that pin, and
+`harnest.lock`. Production runtime, development, and eval profiles resolve
+independent environments and hash-verified locks; MCP adapters join only when
+authored MCP resources are active, and evaluation dependencies never enter the
+production profile. Installers constrain subsequent environments to that pin, and
 compilation checks it before importing authored code. Frozen sync cannot create
 or change a pin; schema upgrades preserve it. CI tests the committed baseline,
 minimum supported versions, and latest compatible versions for both backends.

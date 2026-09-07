@@ -86,7 +86,7 @@ func (a *application) newTestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profile := testEnvironmentProfile
+			profile := developmentEnvironmentProfile
 			if includeEvals {
 				profile = evalEnvironmentProfile
 			}

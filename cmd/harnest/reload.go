@@ -131,7 +131,7 @@ func (a *application) reloadBundleAndPython(
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
-	python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
+	python, err := a.agentPython(command, bundle, developmentEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
@@ -143,10 +143,10 @@ func (a *application) reloadBundleAndPython(
 	if refreshed.Digest == bundle.Digest {
 		return refreshed, python, nil
 	}
-	// Environment synchronization may update harnest-runtime.lock. Resolve once more so the
-	// compiled generation and interpreter share the final dependency identity.
+	// Environment synchronization may update the shared framework pin. Resolve once more so
+	// the compiled generation and interpreter share the final dependency identity.
 	python.releaseLease()
-	python, err = a.agentPython(command, refreshed, runtimeEnvironmentProfile)
+	python, err = a.agentPython(command, refreshed, developmentEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}

@@ -19,7 +19,9 @@ IGNORED_SOURCE_DIRECTORIES = frozenset(
     }
 )
 
-_IGNORED_SOURCE_FILES = frozenset({"harnest-test.lock", "harnest-eval.lock"})
+_IGNORED_SOURCE_FILES = frozenset(
+    {"harnest-development.lock", "harnest-test.lock", "harnest-eval.lock"}
+)
 
 
 def ignored_source_path(relative: Path) -> bool:

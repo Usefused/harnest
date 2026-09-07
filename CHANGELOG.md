@@ -12,10 +12,12 @@
   unleased dependency fingerprints instead of accumulating them indefinitely.
   Keep the managed Python compiler warm during `harnest serve --reload` so
   source changes reuse imported Harnest and framework dependencies while still
-  producing and validating a fresh immutable generation. Split runtime, test,
-  and eval dependency profiles into independent environments and locks; omit
-  Google ADK's Kubernetes-backed extension bundle, install MCP adapters only
-  for authored MCP clients, and keep evaluation packages out of serving.
+  producing and validating a fresh immutable generation. Split the lean
+  production runtime, shared development, and eval dependency profiles into
+  independent environments and locks; reserve the runtime profile for
+  `compile`, let `serve`, `run`, and ordinary tests share development tooling,
+  omit Google ADK's Kubernetes-backed extension bundle, and install MCP
+  adapters only for authored MCP clients.
 
 * Let `OutputPolicy` independently suppress public tool activity, provider
   thinking, and model/provider metadata across every neutral transport.

@@ -13,8 +13,8 @@ file is the path and ownership contract it relies on.
 | `agent.py` | Exports a managed `Agent`/portable `Graph`, or an `Agent` created with `Agent.advanced(...)`. |
 | `instructions.md` | Non-empty root instructions. Managed `Agent` definitions may omit `instruction`; the compiler supplies this file. |
 | `pyproject.toml` | Agent, Harnest Extension, and provider dependencies synchronized by Harnest. Never add Harnest, ADK, LangGraph, or Harnest-owned framework adapters. |
-| `harnest-runtime.lock` | Hash-verified serving resolution created by `harnest env sync`; commit it after review. |
-| `harnest-test.lock`, `harnest-eval.lock` | Development-only resolutions created by the matching `--profile`; commit the profiles used by CI. |
+| `harnest-runtime.lock` | Hash-verified production compilation resolution created by `harnest env sync`; commit it after review. |
+| `harnest-development.lock`, `harnest-eval.lock` | Development and evaluation resolutions created by the matching `--profile`; commit the profiles used by CI. |
 
 Set `server.live: true` in `config.yaml` to enable WebSockets on the HTTP listener.
 New project defaults disable live transport. Legacy `server.yaml` files without

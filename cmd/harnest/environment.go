@@ -82,7 +82,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&profileValue,
 		"profile",
 		string(runtimeEnvironmentProfile),
-		"dependency profile: runtime, test, or eval",
+		"dependency profile: runtime, development, or eval",
 	)
 	return command
 }

@@ -8,14 +8,14 @@ import (
 type environmentProfile string
 
 const (
-	runtimeEnvironmentProfile environmentProfile = "runtime"
-	testEnvironmentProfile    environmentProfile = "test"
-	evalEnvironmentProfile    environmentProfile = "eval"
+	runtimeEnvironmentProfile     environmentProfile = "runtime"
+	developmentEnvironmentProfile environmentProfile = "development"
+	evalEnvironmentProfile        environmentProfile = "eval"
 )
 
 var environmentProfiles = []environmentProfile{
 	runtimeEnvironmentProfile,
-	testEnvironmentProfile,
+	developmentEnvironmentProfile,
 	evalEnvironmentProfile,
 }
 
@@ -27,7 +27,7 @@ func parseEnvironmentProfile(value string) (environmentProfile, error) {
 			return profile, nil
 		}
 	}
-	return "", fmt.Errorf("--profile must be runtime, test, or eval")
+	return "", fmt.Errorf("--profile must be runtime, development, or eval")
 }
 
 // stateFile keeps the existing runtime pointer compatible while isolating tools.
@@ -38,7 +38,7 @@ func (p environmentProfile) stateFile() string {
 	return fmt.Sprintf("environment-%s.json", p)
 }
 
-// requirementsLockFile keeps deploy/runtime resolution independent from dev tools.
+// requirementsLockFile keeps production resolution independent from development tools.
 func (p environmentProfile) requirementsLockFile() string {
 	if p == runtimeEnvironmentProfile {
 		return runtimeRequirementsLockFile
@@ -54,7 +54,7 @@ func (p environmentProfile) wheelExtras(
 	if plan.HasMCP {
 		extras = append(extras, framework+"-mcp")
 	}
-	if p == testEnvironmentProfile {
+	if p == developmentEnvironmentProfile {
 		extras = append(extras, "test")
 	}
 	if p == evalEnvironmentProfile {
