@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
 
 ### Features
 
@@ -42,9 +42,6 @@
 
 * Accept only universal `py3-none-any` PyPI wheels for Harnest Extensions so a
   platform- or ABI-specific artifact cannot be selected for the wrong host.
-
-## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
-
 
 ### Features
 
