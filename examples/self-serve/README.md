@@ -73,7 +73,9 @@ shell values. See the canonical
 
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition
-and call `triage_request` directly; it does not invoke a model.
+and call `triage_request` directly; it does not invoke a model. The target also
+clears the example's model and MCP credentials so CI cannot make an authenticated
+external request even if a future unit test crosses that boundary accidentally.
 
 Run `make example-smoke` (or the retained `make live-test` alias) for the
 explicit live acceptance check. The `smoke` fixture sends only benign synthetic

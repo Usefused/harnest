@@ -70,7 +70,7 @@ live-run: compile-example
 	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
 
 example-test:
-	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
+	OPENAI_API_KEY= KNOWLEDGE_MCP_TOKEN= PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
 
 example-smoke:
 	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke

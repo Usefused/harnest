@@ -325,6 +325,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("release-tag", workflow["jobs"])
         self.assertEqual(workflow["permissions"]["contents"], "read")
 
+    def test_ci_example_test_withholds_external_credentials(self):
+        """Keep the default example lane offline even on credentialed runners."""
+
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        command = makefile.partition("example-test:\n")[2].splitlines()[0]
+
+        self.assertIn("OPENAI_API_KEY=", command)
+        self.assertIn("KNOWLEDGE_MCP_TOKEN=", command)
+        self.assertNotIn("OPENAI_BASE_URL=", command)
+        self.assertNotIn("--smoke", command)
+        self.assertNotIn("--evals", command)
+
     def test_release_please_runs_after_successful_main_ci(self):
         workflow = load_yaml(".github/workflows/release-please.yml")
         events = workflow_events(workflow)
