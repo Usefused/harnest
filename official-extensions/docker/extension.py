@@ -18,6 +18,7 @@ from harnest.sandbox import (
 )
 
 from .lib.backend import create_docker_backend, validate_adapter_options
+from .lib.topology import DockerNetwork, DockerReadiness, DockerScope, DockerService
 
 
 DOCKER_SANDBOX_CAPABILITIES = SandboxProviderCapabilities(
@@ -65,11 +66,13 @@ def docker_sandbox(
     docker_path: str | None = None,
     base_url: str | None = None,
     network_policy: SandboxNetworkPolicy | None = None,
+    services: tuple[DockerService, ...] | list[DockerService] = (),
+    network: DockerNetwork | None = None,
     timeout_seconds: int = 300,
     options: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
     max_output_bytes: int = 1_048_576,
-    scope: str = "execution",
+    scope: DockerScope = DockerScope.EXECUTION,
     budget: SandboxBudget | None = None,
     max_scopes: int = 8,
 ) -> Sandbox:
@@ -87,7 +90,9 @@ def docker_sandbox(
         image=image,
         docker_path=docker_path,
         base_url=base_url,
-        network=policy.mode == SandboxNetworkMode.UNRESTRICTED,
+        external_network=policy.mode == SandboxNetworkMode.UNRESTRICTED,
+        services=services,
+        network=network,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         scope=scope,
@@ -113,10 +118,91 @@ def docker_sandbox(
 class DockerExtension(Extension):
     """Expose Docker sandbox definitions without owning framework resources."""
 
-    def sandbox(self, **options: Any) -> Sandbox:
+    def sandbox(
+        self,
+        *,
+        image: str | None = None,
+        docker_path: str | None = None,
+        base_url: str | None = None,
+        network_policy: SandboxNetworkPolicy | None = None,
+        services: tuple[DockerService, ...] | list[DockerService] = (),
+        network: DockerNetwork | None = None,
+        timeout_seconds: int = 300,
+        options: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        max_output_bytes: int = 1_048_576,
+        scope: DockerScope = DockerScope.EXECUTION,
+        budget: SandboxBudget | None = None,
+        max_scopes: int = 8,
+    ) -> Sandbox:
         """Create a portable Docker sandbox definition from authored options."""
 
-        return docker_sandbox(**options)
+        return docker_sandbox(
+            image=image,
+            docker_path=docker_path,
+            base_url=base_url,
+            network_policy=network_policy,
+            services=services,
+            network=network,
+            timeout_seconds=timeout_seconds,
+            options=options,
+            metadata=metadata,
+            max_output_bytes=max_output_bytes,
+            scope=scope,
+            budget=budget,
+            max_scopes=max_scopes,
+        )
+
+    def service(
+        self,
+        *,
+        name: str,
+        image: str | None = None,
+        docker_path: str | None = None,
+        command: tuple[str, ...] | list[str] = (),
+        environment: Mapping[str, str] | None = None,
+        ports: tuple[int, ...] | list[int] = (),
+        aliases: tuple[str, ...] | list[str] = (),
+        readiness: DockerReadiness | None = None,
+        budget: SandboxBudget | None = None,
+    ) -> DockerService:
+        """Declare one bounded service container without contacting Docker."""
+
+        return DockerService(
+            name=name,
+            image=image,
+            docker_path=docker_path,
+            command=command,
+            environment={} if environment is None else environment,
+            ports=ports,
+            aliases=aliases,
+            readiness=readiness,
+            budget=SandboxBudget() if budget is None else budget,
+        )
+
+    def network(self, *, internal: bool = True) -> DockerNetwork:
+        """Declare the extension-owned bridge that joins a sandbox topology."""
+
+        return DockerNetwork(internal=internal)
+
+    def readiness(
+        self,
+        *,
+        command: tuple[str, ...] | list[str],
+        interval_seconds: float = 1.0,
+        timeout_seconds: float = 2.0,
+        retries: int = 30,
+        start_period_seconds: float = 0.0,
+    ) -> DockerReadiness:
+        """Declare a bounded Docker health command for one service."""
+
+        return DockerReadiness(
+            command=command,
+            interval_seconds=interval_seconds,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            start_period_seconds=start_period_seconds,
+        )
 
 
 extension = DockerExtension()
@@ -125,6 +211,10 @@ docker = extension
 
 __all__ = [
     "DOCKER_SANDBOX_CAPABILITIES",
+    "DockerNetwork",
+    "DockerReadiness",
+    "DockerScope",
+    "DockerService",
     "DockerExtension",
     "DockerSandboxProvider",
     "docker",

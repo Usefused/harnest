@@ -18,6 +18,7 @@ from harnest.sandbox import (
 
 from .docker_runtime import create_docker_executor
 from .guard import close_guarded_executor, guard_failed
+from .topology import DockerNetwork, DockerScope, DockerService, topology_config
 
 
 _ADAPTER_OPTIONS = frozenset(
@@ -52,10 +53,12 @@ def create_docker_backend(
     image: str | None = None,
     docker_path: str | None = None,
     base_url: str | None = None,
-    network: bool = False,
+    external_network: bool = False,
+    services: tuple[DockerService, ...] | list[DockerService] = (),
+    network: DockerNetwork | None = None,
     timeout_seconds: int = 300,
     max_output_bytes: int = 1_048_576,
-    scope: str = "execution",
+    scope: DockerScope = DockerScope.EXECUTION,
     budget: SandboxBudget | None = None,
     max_scopes: int = 8,
 ) -> "DockerSandboxBackend":
@@ -65,7 +68,7 @@ def create_docker_backend(
         image,
         docker_path,
         base_url,
-        network,
+        external_network,
         timeout_seconds,
         max_output_bytes,
     )
@@ -73,11 +76,22 @@ def create_docker_backend(
     effective_budget = SandboxBudget() if budget is None else budget
     if not isinstance(effective_budget, SandboxBudget):
         raise TypeError("sandbox budget must be SandboxBudget")
+    topology = topology_config(
+        services,
+        network,
+        external_network=external_network,
+    )
+    if topology is not None:
+        for service in topology["services"]:
+            service["harnest_resource_limits"] = _docker_budget_options(
+                service.pop("budget")
+            )
     config = {
         "image": image,
         "docker_path": docker_path,
         "base_url": base_url,
-        "network_enabled": network,
+        "network_enabled": external_network,
+        "topology": topology,
         "timeout_seconds": timeout_seconds,
         "harnest_resource_limits": _docker_budget_options(effective_budget),
     }
@@ -114,7 +128,7 @@ def _validate_settings(
     image: Any,
     docker_path: Any,
     base_url: Any,
-    network: Any,
+    external_network: Any,
     timeout_seconds: Any,
     max_output_bytes: Any,
 ) -> None:
@@ -129,8 +143,8 @@ def _validate_settings(
     _validate_optional_text("image", image)
     _validate_optional_text("docker_path", docker_path)
     _validate_optional_text("base_url", base_url)
-    if not isinstance(network, bool):
-        raise TypeError("Docker sandbox network must be a boolean")
+    if not isinstance(external_network, bool):
+        raise TypeError("Docker sandbox external_network must be a boolean")
     if type(max_output_bytes) is not int or max_output_bytes <= 0:
         raise ValueError(
             "Docker sandbox max_output_bytes must be a positive integer"
@@ -144,29 +158,32 @@ def _validate_optional_text(name: str, value: Any) -> None:
         raise ValueError(f"Docker sandbox {name} must be non-empty text")
 
 
-def _validate_scope(scope: str, max_scopes: int) -> None:
+def _validate_scope(scope: DockerScope, max_scopes: int) -> None:
     """Require a known retention scope and a finite identity-cache bound."""
 
-    if scope not in ("execution", "invocation", "session"):
-        raise ValueError(
-            "Docker sandbox scope must be execution, invocation, or session"
-        )
+    if not isinstance(scope, DockerScope):
+        raise TypeError("Docker sandbox scope must be DockerScope")
     if type(max_scopes) is not int or max_scopes <= 0:
         raise ValueError("Docker sandbox max_scopes must be a positive integer")
 
 
-def _scope_key(scope: str, context: Any) -> tuple[str, ...] | None:
+def _scope_key(scope: DockerScope, context: Any) -> tuple[str, ...] | None:
     """Bind retained containers to authenticated owner and invocation identity."""
 
-    if scope == "execution":
+    if scope is DockerScope.EXECUTION:
         return None
     fields = [context.agent_name, context.user_id, context.session_id]
-    if scope == "invocation":
+    if scope is DockerScope.INVOCATION:
         fields.append(context.invocation_id)
     if any(not isinstance(value, str) or not value for value in fields):
-        required = ", and invocation identity" if scope == "invocation" else " identity"
+        required = (
+            ", and invocation identity"
+            if scope is DockerScope.INVOCATION
+            else " identity"
+        )
         raise ValueError(
-            f"Docker sandbox {scope} scope requires agent, user, session" + required
+            f"Docker sandbox {scope.value} scope requires agent, user, session"
+            + required
         )
     return tuple(fields)
 
@@ -179,7 +196,7 @@ class DockerSandboxBackend:
         config: dict[str, Any],
         max_output_bytes: int,
         *,
-        scope: str,
+        scope: DockerScope,
         max_scopes: int,
     ) -> None:
         """Snapshot policy and defer Docker construction until execution."""

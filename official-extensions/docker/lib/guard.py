@@ -11,7 +11,7 @@ from typing import Any, Callable
 from harnest.sandbox import SandboxCancelledError, SandboxStatus, control
 
 from .socket_stream import collect_output
-from .startup import OwnedStartupClient, check_startup
+from .telemetry import docker_operation
 
 
 class OutputLimitError(RuntimeError):
@@ -19,12 +19,12 @@ class OutputLimitError(RuntimeError):
 
 
 class SandboxCleanupError(RuntimeError):
-    """An owned container may remain and must stay available for cleanup."""
+    """An owned Docker resource may remain available for cleanup retry."""
 
     def __init__(self, executor: Any) -> None:
         """Attach only the cleanup handle, never private provider details."""
 
-        super().__init__("sandbox container cleanup could not be confirmed")
+        super().__init__("sandbox Docker resource cleanup could not be confirmed")
         self.failed_executor = executor
 
 
@@ -163,6 +163,9 @@ class GuardedContainer:
                     raise SandboxCleanupError(self.owner) from None
             self.removed = True
             self.owner._container = None
+            forget = getattr(self.owner, "_forget_container", None)
+            if callable(forget):
+                forget(self.container)
 
 
 def _check_execution(
@@ -276,28 +279,118 @@ def _bounded_container_call(
         api.timeout = previous
 
 
-def close_guarded_executor(executor: Any) -> None:
-    """Release resources idempotently, including partial startup ownership."""
+def _remove_owned_network(network: Any) -> None:
+    """Remove an exact owned network after every attached container is gone."""
 
-    executor._guard_poisoned = True
-    guard = getattr(executor, "_guard", None)
-    if guard is not None:
-        guard.close()
-    else:
-        container = getattr(executor, "_container", None)
-        if container is not None:
-            try:
-                _remove_owned_container(container)
-            except Exception:
-                raise SandboxCleanupError(executor) from None
-            executor._container = None
+    with control.cleanup(5) as cleanup:
+        _bounded_container_call(
+            network,
+            network.remove,
+            cleanup.remaining(),
+        )
+
+
+def close_guarded_executor(executor: Any) -> None:
+    """Release all exact resources in reverse order and retain failed ownership."""
+
+    topology_id = getattr(executor, "_topology_id", "unknown")
+    with docker_operation(
+        "sandbox.cleanup",
+        topology_id=topology_id,
+        attributes={
+            "harnest.docker.container_count": len(
+                getattr(executor, "_owned_containers", ())
+            ),
+            "harnest.docker.network_count": len(
+                getattr(executor, "_owned_networks", ())
+            ),
+        },
+    ):
+        executor._guard_poisoned = True
+        try:
+            cleanup_failed = _cleanup_executor_resources(executor)
+        except Exception:
+            cleanup_failed = True
+        if cleanup_failed or getattr(executor, "_startup_uncertain", False):
+            raise SandboxCleanupError(executor)
+        atexit.unregister(executor.close)
+
+
+def _cleanup_executor_resources(executor: Any) -> bool:
+    """Share one five-second cleanup deadline across the complete topology."""
+
+    with control.cleanup(5):
+        return _cleanup_executor_resources_with_control(executor)
+
+
+def _cleanup_executor_resources_with_control(executor: Any) -> bool:
+    """Attempt every owned removal while preserving any failed exact handles."""
+
+    cleanup_failed = _close_primary_container(executor)
+    cleanup_failed = _close_tracked_containers(executor) or cleanup_failed
+    cleanup_failed = _close_tracked_networks(executor) or cleanup_failed
     client = getattr(executor, "_client", None)
-    if client is not None:
+    if client is not None and not cleanup_failed:
         client.close()
         executor._client = None
-    if getattr(executor, "_startup_uncertain", False):
-        raise SandboxCleanupError(executor)
-    atexit.unregister(executor.close)
+    return cleanup_failed
+
+
+def _close_primary_container(executor: Any) -> bool:
+    """Close the guarded primary or an older partial single-container owner."""
+
+    guard = getattr(executor, "_guard", None)
+    if guard is not None:
+        try:
+            guard.close()
+        except SandboxCleanupError:
+            return True
+        return False
+    if getattr(executor, "_owned_containers", None):
+        return False
+    container = getattr(executor, "_container", None)
+    if container is None:
+        return False
+    if not _removed_or_absent(lambda: _remove_owned_container(container)):
+        return True
+    executor._container = None
+    return False
+
+
+def _close_tracked_containers(executor: Any) -> bool:
+    """Remove every remaining exact container handle in reverse creation order."""
+
+    cleanup_failed = False
+    for container in reversed(tuple(getattr(executor, "_owned_containers", ()))):
+        if _removed_or_absent(lambda: _remove_owned_container(container)):
+            executor._forget_container(container)
+        else:
+            cleanup_failed = True
+    return cleanup_failed
+
+
+def _close_tracked_networks(executor: Any) -> bool:
+    """Remove owned networks after every removable container has been handled."""
+
+    cleanup_failed = False
+    for network in reversed(tuple(getattr(executor, "_owned_networks", ()))):
+        if _removed_or_absent(lambda: _remove_owned_network(network)):
+            executor._forget_network(network)
+        else:
+            cleanup_failed = True
+    return cleanup_failed
+
+
+def _removed_or_absent(operation: Callable[[], None]) -> bool:
+    """Treat provider-confirmed absence as successful exact-resource cleanup."""
+
+    try:
+        operation()
+    except Exception as error:
+        from docker.errors import NotFound
+
+        return isinstance(error, NotFound)
+    return True
 
 
 def guard_failed(executor: Any) -> bool:

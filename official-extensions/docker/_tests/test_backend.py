@@ -20,6 +20,7 @@ from harnest_extension_docker.lib.backend import (
     create_docker_backend,
     validate_adapter_options,
 )
+from harnest_extension_docker.lib.topology import DockerScope
 
 
 def _executor() -> SimpleNamespace:
@@ -73,7 +74,7 @@ def test_session_scope_never_crosses_identity() -> None:
     ) as create, patch(
         "harnest_extension_docker.lib.backend.close_guarded_executor"
     ) as close:
-        backend = create_docker_backend(image="python", scope="session")
+        backend = create_docker_backend(image="python", scope=DockerScope.SESSION)
         for value in (
             _request(),
             _request(),
@@ -97,7 +98,9 @@ def test_invocation_scope_requires_complete_identity() -> None:
     ) as create, patch(
         "harnest_extension_docker.lib.backend.close_guarded_executor"
     ):
-        backend = create_docker_backend(image="python", scope="invocation")
+        backend = create_docker_backend(
+            image="python", scope=DockerScope.INVOCATION
+        )
         backend.execute(_request())
         backend.execute(_request(invocation="turn-2"))
         with pytest.raises(ValueError, match="identity"):
@@ -117,7 +120,7 @@ def test_retained_budget_evicts_only_after_cleanup() -> None:
         side_effect=[RuntimeError("cleanup"), None],
     ):
         backend = create_docker_backend(
-            image="python", scope="session", max_scopes=1
+            image="python", scope=DockerScope.SESSION, max_scopes=1
         )
         backend.execute(_request())
         with pytest.raises(RuntimeError, match="cleanup"):
@@ -202,8 +205,9 @@ def test_input_files_and_invalid_settings_fail_closed() -> None:
     request = Mock(spec=SandboxRequest, input_files=(object(),), context=Mock())
     with pytest.raises(SandboxInputFilesUnsupportedError):
         backend.execute(request)
+    with pytest.raises(TypeError, match="DockerScope"):
+        create_docker_backend(image="python", scope="session")
     for values in (
-        {"scope": "global"},
         {"max_scopes": 0},
         {"max_output_bytes": 0},
         {"timeout_seconds": None},
@@ -233,7 +237,7 @@ def test_request_deadline_is_bounded_and_restored() -> None:
         return_value=owner,
     ), patch("harnest_extension_docker.lib.backend.close_guarded_executor"):
         backend = create_docker_backend(
-            image="python", timeout_seconds=30, scope="session"
+            image="python", timeout_seconds=30, scope=DockerScope.SESSION
         )
         backend.execute(
             SandboxRequest(

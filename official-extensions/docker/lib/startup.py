@@ -44,6 +44,7 @@ class OwnedStartupClient:
         self.containers = OwnedStartupContainers(
             owner, client.containers, limits=limits
         )
+        self.networks = OwnedStartupNetworks(owner, client.networks)
 
     def __getattr__(self, name: str) -> Any:
         """Forward image, configuration, and cleanup calls to the Docker client."""
@@ -91,18 +92,51 @@ class OwnedStartupContainers:
         constrain_startup_timeout(
             self._containers.client, self.owner.timeout_seconds
         )
+        limits = kwargs.pop("_harnest_limits", self._limits)
         try:
             # Provider policy wins over all Docker SDK defaults and caller input.
-            container = self._containers.create(*args, **(kwargs | self._limits))
+            container = self._containers.create(*args, **(kwargs | limits))
         except ImageNotFound:
             raise
         except Exception:
             # A lost response can hide an allocated ID, so replacement is unsafe.
             self.owner._startup_uncertain = True
             raise
-        self.owner._container = container
+        self.owner._retain_container(container)
         check_startup()
         return container
+
+
+class OwnedStartupNetworks:
+    """Capture each created network before containers can attach to it."""
+
+    def __init__(self, owner: Any, networks: Any) -> None:
+        """Bind network allocation to the same executor cleanup owner."""
+
+        self.owner = owner
+        self._networks = networks
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward collection inspection to the dedicated Docker client."""
+
+        return getattr(self._networks, name)
+
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        """Retain a returned network and poison ownership after an unknown result."""
+
+        check_startup()
+        constrain_startup_timeout(
+            self._networks.client, self.owner.timeout_seconds
+        )
+        try:
+            network = self._networks.create(*args, **kwargs)
+        except Exception:
+            # A lost response may leave an unidentifiable managed network.
+            self.owner._startup_uncertain = True
+            raise
+        self.owner._retain_network(network)
+        check_startup()
+        return network
 
 
 __all__ = [

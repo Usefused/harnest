@@ -62,7 +62,7 @@ def test_factory_maps_no_network_to_extension_owned_backend(docker_extension) ->
         definition = module.docker_sandbox(
             image="python@sha256:test",
             network_policy=policy,
-            scope="session",
+            scope=module.DockerScope.SESSION,
             options={"error_retry_attempts": 2},
         )
 
@@ -76,10 +76,12 @@ def test_factory_maps_no_network_to_extension_owned_backend(docker_extension) ->
         image="python@sha256:test",
         docker_path=None,
         base_url=None,
-        network=False,
+        external_network=False,
+        services=(),
+        network=None,
         timeout_seconds=300,
         max_output_bytes=1_048_576,
-        scope="session",
+        scope=module.DockerScope.SESSION,
         budget=None,
         max_scopes=8,
     )
@@ -100,7 +102,37 @@ def test_factory_maps_unrestricted_network_without_browser_policy(
         )
 
     assert definition.network_policy == SandboxNetworkPolicy.unrestricted()
-    assert create.call_args.kwargs["network"] is True
+    assert create.call_args.kwargs["external_network"] is True
+
+
+def test_factory_exposes_typed_multi_container_topology(docker_extension) -> None:
+    """Keep generic service and network declarations on the extension surface."""
+
+    module, _descriptor = docker_extension
+    configured = Mock()
+    configured.new_backend.return_value = Mock()
+    readiness = module.docker.readiness(command=["service", "ready"])
+    service = module.docker.service(
+        name="worker",
+        image="worker@sha256:test",
+        ports=[8080],
+        aliases=["jobs"],
+        readiness=readiness,
+    )
+    network = module.docker.network(internal=True)
+
+    with patch.object(module, "create_docker_backend", return_value=configured) as create:
+        definition = module.docker.sandbox(
+            image="python@sha256:test",
+            services=[service],
+            network=network,
+        )
+
+    assert definition.network_policy == SandboxNetworkPolicy.none()
+    assert isinstance(service, module.DockerService)
+    assert isinstance(network, module.DockerNetwork)
+    assert create.call_args.kwargs["services"] == [service]
+    assert create.call_args.kwargs["network"] == network
 
 
 @pytest.mark.parametrize(

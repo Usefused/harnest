@@ -13,7 +13,7 @@ from harnest.sandbox import (
     SandboxRequest,
     SandboxStatus,
 )
-from harnest_extension_docker.extension import docker_sandbox
+from harnest_extension_docker.extension import DockerScope, docker, docker_sandbox
 
 
 pytestmark = pytest.mark.skipif(
@@ -48,7 +48,7 @@ def test_kernel_policy_and_scoped_scratch() -> None:
     """Verify kernel settings, read-only root, and per-call process cleanup."""
 
     backend = _backend(
-        scope="session",
+        scope=DockerScope.SESSION,
         budget=SandboxBudget(
             cpu=0.5,
             memory_bytes=64 * 1024 * 1024,
@@ -123,7 +123,9 @@ def test_deadline_output_limit_and_fresh_isolation() -> None:
     # Reuse one already-started container so this assertion measures the host
     # execution watchdog rather than Docker Desktop image/container cold start.
     identity = SandboxContext("worker", "turn", "alice", "deadline-session")
-    deadline_backend = _backend(timeout_seconds=15, scope="session")
+    deadline_backend = _backend(
+        timeout_seconds=15, scope=DockerScope.SESSION
+    )
     try:
         ready = deadline_backend.execute(
             _request("print('ready')", context=identity)
@@ -135,3 +137,43 @@ def test_deadline_output_limit_and_fresh_isolation() -> None:
         assert timed_out.status == SandboxStatus.TIMED_OUT
     finally:
         deadline_backend.close()
+
+
+def test_internal_service_topology_resolves_without_host_ports() -> None:
+    """Verify real Docker DNS, readiness, execution, and owned-network cleanup."""
+
+    service = docker.service(
+        name="web",
+        image="python:3.12-slim",
+        command=["python3", "-m", "http.server", "8080"],
+        ports=[8080],
+        readiness=docker.readiness(
+            command=[
+                "python3",
+                "-c",
+                "import socket; socket.create_connection(('127.0.0.1', 8080), 1)",
+            ]
+        ),
+    )
+    backend = docker_sandbox(
+        image="python:3.12-slim",
+        services=[service],
+        network=docker.network(internal=True),
+        scope=DockerScope.SESSION,
+    ).build()
+    identity = SandboxContext("worker", "turn", "alice", "topology-session")
+    try:
+        result = backend.execute(
+            _request(
+                "import urllib.request; "
+                "print(urllib.request.urlopen('http://web:8080', timeout=2).status)",
+                context=identity,
+            )
+        )
+        assert result.stdout.strip() == "200"
+        owner = next(iter(backend._backend._scopes.values()))
+        service_container = owner._services[0][1]
+        service_container.reload()
+        assert not service_container.attrs["HostConfig"]["PortBindings"]
+    finally:
+        backend.close()

@@ -13,6 +13,7 @@ from harnest.sandbox import (
     SandboxResult,
 )
 from harnest_extension_docker.extension import (
+    DockerScope,
     DockerSandboxProvider,
     docker_sandbox,
 )
@@ -24,7 +25,7 @@ def test_definition_is_lazy_and_preserves_adapter_options() -> None:
     definition = docker_sandbox(
         image="python:3.12",
         options={"error_retry_attempts": 2},
-        scope="session",
+        scope=DockerScope.SESSION,
     )
     assert definition.backend == "docker"
     assert definition.timeout_seconds == 300
@@ -32,7 +33,7 @@ def test_definition_is_lazy_and_preserves_adapter_options() -> None:
     assert definition.to_adk_executor().error_retry_attempts == 2
     provider = definition.build()
     assert isinstance(provider, DockerSandboxProvider)
-    assert provider._backend._scope == "session"
+    assert provider._backend._scope is DockerScope.SESSION
     assert provider._backend._config["network_enabled"] is False
     provider.close()
 

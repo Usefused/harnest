@@ -2,10 +2,19 @@
 
 ## Unreleased
 
+### Fixes
+
+* Keep direct `harnest compile` independent from pytest so the command runs in
+  the intentionally lean production dependency profile.
+
 ### Changed
 
-* Prepare Docker extension `0.2.1` and Hatchet extension `0.1.1`, with both
-  packages targeting Harnest `>=0.15,<0.16`.
+* Prepare Docker extension `0.3.0` with bounded multi-container topologies,
+  extension-owned bridge networks, internal DNS aliases, service readiness,
+  per-container budgets, reverse-order cleanup, and privacy-safe lifecycle logs
+  and traces carrying `harnest.extension.name=docker`. Replace raw
+  retention-scope strings with `DockerScope`. Prepare Hatchet extension `0.1.1`;
+  both packages target Harnest `>=0.15,<0.16`.
 
 ## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
 

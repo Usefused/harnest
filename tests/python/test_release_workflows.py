@@ -180,6 +180,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("distribution.files", scripts)
         self.assertIn("entries[0].load()", scripts)
         self.assertIn("official-extensions/docker/_tests/test_backend.py", scripts)
+        self.assertIn("official-extensions/docker/_tests/test_telemetry.py", scripts)
+        self.assertIn("official-extensions/docker/_tests/test_topology.py", scripts)
         self.assertIn("tests/python/test_hatchet_plugin_consumer.py", scripts)
         self.assertIn("check_python_complexity.py --max 10", scripts)
 
@@ -192,6 +194,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "lib/guard.py",
                 "lib/socket_stream.py",
                 "lib/startup.py",
+                "lib/telemetry.py",
+                "lib/topology.py",
             },
             "hatchet": {
                 "lib/client.py",

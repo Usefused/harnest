@@ -44,11 +44,39 @@ def _client(native: Mock, *, image: Mock | None = None) -> Mock:
 
     client = Mock()
     client.containers.client = client
+    client.networks.client = client
     client.containers.create.return_value = native
     client.images.get.return_value = image or Mock(
         id="sha256:image", attrs={"Config": {}}
     )
     return client
+
+
+def _topology(service: dict[str, object] | None = None) -> dict[str, object]:
+    """Provide one complete internal service topology runtime snapshot."""
+
+    defaults: dict[str, object] = {
+        "name": "api",
+        "image": "service@sha256:test",
+        "docker_path": None,
+        "command": ["serve", "--port", "8080"],
+        "environment": {"MODE": "test"},
+        "ports": [8080],
+        "aliases": ["backend"],
+        "readiness": {
+            "command": ["ready"],
+            "interval_seconds": 1.0,
+            "timeout_seconds": 2.0,
+            "retries": 3,
+            "start_period_seconds": 0.5,
+        },
+        "harnest_resource_limits": {
+            "read_only": True,
+            "pids_limit": 8,
+        },
+    }
+    defaults.update(service or {})
+    return {"network": {"internal": True}, "services": [defaults]}
 
 
 def _config(**overrides: object) -> dict[str, object]:
@@ -67,6 +95,39 @@ def _config(**overrides: object) -> dict[str, object]:
     }
     config.update(overrides)
     return config
+
+
+def _assert_service_options(options: dict[str, object]) -> None:
+    """Verify topology service policy without inflating its lifecycle test."""
+
+    assert options["command"] == ["serve", "--port", "8080"]
+    assert options["environment"] == {"MODE": "test"}
+    assert "ports" not in options
+    assert options["pids_limit"] == 8
+    assert "_harnest_limits" not in options
+    assert options["healthcheck"] == {
+        "test": ["CMD", "ready"],
+        "interval": 1_000_000_000,
+        "timeout": 2_000_000_000,
+        "retries": 3,
+        "start_period": 500_000_000,
+    }
+
+
+def _assert_topology_connections(client: Mock, network: Mock) -> None:
+    """Verify internal DNS attachment without host-published ports."""
+
+    service_options = client.containers.create.call_args_list[0].kwargs
+    primary_options = client.containers.create.call_args_list[1].kwargs
+    assert service_options["network"] == network.name
+    assert primary_options["network"] == network.name
+    assert client.api.create_endpoint_config.call_args_list[0].kwargs == {
+        "aliases": ["api", "backend"]
+    }
+    assert client.api.create_endpoint_config.call_args_list[1].kwargs == {
+        "aliases": ["sandbox"]
+    }
+    assert client.networks.create.call_args.kwargs["internal"] is True
 
 
 def test_startup_applies_limits_and_network_before_probe() -> None:
@@ -286,3 +347,134 @@ def test_execute_preserves_output_and_nonzero_status() -> None:
         assert (result.status, result.exit_code) == (SandboxStatus.FAILED, 7)
     finally:
         executor.close()
+
+
+def test_topology_starts_services_before_primary_and_cleans_in_reverse() -> None:
+    """Own the bridge, readiness, aliases, limits, and complete cleanup ordering."""
+
+    service = _container(io.BytesIO())
+    service.id = "service-container"
+    service.attrs = {
+        "State": {"Status": "running", "Health": {"Status": "healthy"}}
+    }
+    primary = _container(io.BytesIO(_frame(1, b"Python 3.12\n")))
+    client = _client(primary)
+    client.containers.create.side_effect = [service, primary]
+    network = Mock(client=client)
+    network.name = "harnest-test-network"
+    client.networks.create.return_value = network
+    cleanup: list[str] = []
+    primary.remove.side_effect = lambda **_kwargs: cleanup.append("primary")
+    service.remove.side_effect = lambda **_kwargs: cleanup.append("service")
+    network.remove.side_effect = lambda: cleanup.append("network")
+
+    with patch("docker.from_env", return_value=client):
+        executor = create_docker_executor(
+            _config(topology=_topology(), network_enabled=False), 1024
+        )
+
+    _assert_service_options(client.containers.create.call_args_list[0].kwargs)
+    _assert_topology_connections(client, network)
+
+    executor.close()
+
+    assert cleanup == ["primary", "service", "network"]
+    client.close.assert_called_once_with()
+
+
+def test_retained_topology_fails_closed_when_a_service_stops() -> None:
+    """Never run new code against a retained topology that lost a service."""
+
+    service = _container(io.BytesIO())
+    service.attrs = {"State": {"Status": "running"}}
+    primary = _container(io.BytesIO(_frame(1, b"Python 3.12\n")))
+    client = _client(primary)
+    client.containers.create.side_effect = [service, primary]
+    network = Mock(client=client)
+    network.name = "harnest-test-network"
+    client.networks.create.return_value = network
+    config = _config(
+        topology=_topology({"readiness": None}),
+        network_enabled=False,
+    )
+    with patch("docker.from_env", return_value=client):
+        executor = create_docker_executor(config, 1024)
+    service.attrs = {"State": {"Status": "exited"}}
+
+    with pytest.raises(RuntimeError, match="service 'api' is unavailable"):
+        executor.execute(SandboxRequest("print('must not run')"))
+
+    assert guard_failed(executor)
+    assert primary.client.api.exec_create.call_count == 1
+    executor.close()
+
+
+def test_unknown_network_create_outcome_retains_poisoned_owner() -> None:
+    """A lost network response blocks replacement without leaking SDK details."""
+
+    client = _client(_container(io.BytesIO()))
+    client.networks.create.side_effect = OSError("private network response")
+    with patch("docker.from_env", return_value=client):
+        with pytest.raises(DockerStartupError) as caught:
+            create_docker_executor(_config(topology=_topology()), 1024)
+
+    executor = caught.value.failed_executor
+    assert caught.value.phase == "topology network creation"
+    assert "OSError" in str(caught.value)
+    assert "private network response" not in str(caught.value)
+    with pytest.raises(SandboxCleanupError):
+        close_guarded_executor(executor)
+    client.close.assert_called_once_with()
+
+
+def test_service_start_failure_removes_container_then_network() -> None:
+    """A deterministic service failure unwinds every earlier topology resource."""
+
+    service = _container(io.BytesIO())
+    service.start.side_effect = RuntimeError("private service failure")
+    client = _client(service)
+    network = Mock(client=client)
+    network.name = "harnest-test-network"
+    client.networks.create.return_value = network
+    cleanup: list[str] = []
+    service.remove.side_effect = lambda **_kwargs: cleanup.append("service")
+    network.remove.side_effect = lambda: cleanup.append("network")
+
+    with patch("docker.from_env", return_value=client):
+        with pytest.raises(DockerStartupError) as caught:
+            create_docker_executor(_config(topology=_topology()), 1024)
+
+    assert caught.value.phase == "service 'api' container creation and start"
+    assert "RuntimeError" in str(caught.value)
+    assert "private service failure" not in str(caught.value)
+    assert cleanup == ["service", "network"]
+    client.close.assert_called_once_with()
+
+
+def test_network_cleanup_failure_retains_only_the_failed_resource() -> None:
+    """Retry exact network cleanup after every owned container is gone."""
+
+    service = _container(io.BytesIO())
+    service.attrs = {"State": {"Status": "running"}}
+    primary = _container(io.BytesIO(_frame(1, b"Python 3.12\n")))
+    client = _client(primary)
+    client.containers.create.side_effect = [service, primary]
+    network = Mock(client=client)
+    network.name = "harnest-test-network"
+    network.remove.side_effect = [OSError("daemon unavailable"), None]
+    client.networks.create.return_value = network
+    with patch("docker.from_env", return_value=client):
+        executor = create_docker_executor(
+            _config(topology=_topology({"readiness": None})), 1024
+        )
+
+    with pytest.raises(SandboxCleanupError):
+        executor.close()
+    assert executor._owned_containers == []
+    assert executor._owned_networks == [network]
+    client.close.assert_not_called()
+
+    executor.close()
+
+    assert executor._owned_networks == []
+    client.close.assert_called_once_with()

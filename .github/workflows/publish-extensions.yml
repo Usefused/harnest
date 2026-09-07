@@ -124,6 +124,8 @@ jobs:
           official-extensions/docker/_tests/test_extension.py
           official-extensions/docker/_tests/test_guard.py
           official-extensions/docker/_tests/test_runtime.py
+          official-extensions/docker/_tests/test_telemetry.py
+          official-extensions/docker/_tests/test_topology.py
 
       - name: Test Hatchet extension contracts
         if: steps.selection.outputs.active == 'true' && matrix.extension == 'hatchet'
