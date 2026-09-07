@@ -44,7 +44,7 @@ def test_docker_extension_declares_provider_authority(docker_extension) -> None:
     assert descriptor.capabilities == ("sandbox.provider",)
     assert descriptor.dependencies == (
         "docker<8,>=7.1",
-        "harnest<0.15,>=0.14",
+        "harnest<0.16,>=0.15",
     )
 
 

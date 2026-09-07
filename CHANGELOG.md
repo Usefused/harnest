@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* Prepare Docker extension `0.2.1` and Hatchet extension `0.1.1`, with both
+  packages targeting Harnest `>=0.15,<0.16`.
+
 ## [0.15.0](https://github.com/Usefused/harnest/compare/v0.14.0...v0.15.0) (2026-09-07)
 
 ### Features

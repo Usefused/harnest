@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harnest-extension-docker"
-version = "0.2.0"
+version = "0.2.1"
 description = "Official Docker sandbox provider extension for Harnest"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "docker>=7.1,<8",
-  "harnest>=0.14,<0.15",
+  "harnest>=0.15,<0.16",
 ]
 
 [project.urls]

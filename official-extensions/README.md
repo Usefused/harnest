@@ -73,6 +73,6 @@ The pending publishers must use the exact distribution names
 workflow run creates each project. A maintainer can dispatch **Publish Official
 Extensions** from `main`, or push a tag whose version matches both
 `pyproject.toml` and `extension.yaml`, for example
-`harnest-extension-docker-v0.2.0`. Ordinary extension changes build and verify
-both official wheels without publishing them. The `pypi` GitHub environment may
-require reviewers before its publish job starts.
+`harnest-extension-docker-v<version>`. Ordinary extension changes build and
+verify both official wheels without publishing them. The `pypi` GitHub
+environment may require reviewers before its publish job starts.

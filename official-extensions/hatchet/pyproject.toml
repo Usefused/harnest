@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harnest-extension-hatchet"
-version = "0.1.0"
+version = "0.1.1"
 description = "Official Hatchet durable-workflow extension for Harnest"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "hatchet-sdk>=1.38,<2",
-  "harnest>=0.13,<0.15",
+  "harnest>=0.15,<0.16",
 ]
 
 [project.urls]

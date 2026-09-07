@@ -51,7 +51,7 @@ reproducible deployments.
 
 ## Compatibility and capabilities
 
-Version 0.2.0 requires Python 3.10 or newer, Harnest `>=0.14,<0.15`, and the
+Version 0.2.1 requires Python 3.10 or newer, Harnest `>=0.15,<0.16`, and the
 Docker Python SDK `>=7.1,<8`. The host must provide a reachable Docker daemon;
 installing this wheel does not install or start Docker.
 

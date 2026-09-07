@@ -52,7 +52,7 @@ deployed; stopping Harnest does not stop them.
 
 ## Compatibility and capabilities
 
-Version 0.1.0 requires Python 3.10 or newer, Harnest `>=0.13,<0.15`, and
+Version 0.1.1 requires Python 3.10 or newer, Harnest `>=0.15,<0.16`, and
 `hatchet-sdk>=1.38,<2`. It declares `context.credentials` and
 `context.continuations` so calls use invocation-scoped credentials and waits can
 survive process restarts. The deployment must supply a Hatchet service

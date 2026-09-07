@@ -200,9 +200,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             },
         }
         expected_requirements = {
-            "docker": {"docker": "<8,>=7.1", "harnest": "<0.15,>=0.14"},
+            "docker": {"docker": "<8,>=7.1", "harnest": "<0.16,>=0.15"},
             "hatchet": {
-                "harnest": "<0.15,>=0.13",
+                "harnest": "<0.16,>=0.15",
                 "hatchet-sdk": "<2,>=1.38",
             },
         }
