@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .bundle import BundleError, compile_artifact
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
-from .testing import AgentTestError, run_agent_tests
 from .upgrade import UpgradeError, apply_upgrade, plan_upgrade, render_upgrade_plan
 
 
@@ -130,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(manifest, sort_keys=True))
             return 0
         if args.command == "test":
+            # The production compiler environment intentionally excludes pytest;
+            # load the testing surface only after the user selects this command.
+            from .testing import run_agent_tests
+
             return run_agent_tests(
                 args.agent,
                 include_smoke=args.smoke,
@@ -159,7 +162,6 @@ def main(argv: list[str] | None = None) -> int:
         print(orchestrator.to_json(project_root=args.orchestrator.resolve().parent))
         return 0
     except (
-        AgentTestError,
         BundleError,
         UpgradeError,
         OSError,

@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -108,6 +109,8 @@ def _fake_adk_modules(*, public_mcp_exports=True):
     agents.LlmAgent = _recording_class("LlmAgent")
     apps = types.ModuleType("google.adk.apps")
     apps.App = _recording_class("App")
+    app_module = types.ModuleType("google.adk.apps.app")
+    app_module.ResumabilityConfig = _recording_class("ResumabilityConfig")
     models = types.ModuleType("google.adk.models")
     models.__path__ = []
     models.BaseLlm = _recording_class("BaseLlm")
@@ -163,6 +166,7 @@ def _fake_adk_modules(*, public_mcp_exports=True):
         "google.adk": adk,
         "google.adk.agents": agents,
         "google.adk.apps": apps,
+        "google.adk.apps.app": app_module,
         "google.adk.models": models,
         "google.adk.models.lite_llm": lite_llm,
         "google.adk.tools": tools_package,
@@ -1426,8 +1430,61 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "root")
         self.assertEqual(manifest["interfaces"], {"cli": True})
 
+    def test_compile_cli_does_not_import_pytest(self):
+        """Keep direct compilation runnable in the lean production profile."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "authored"
+            output = workspace / "compiled"
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n\n"
+                "root_agent = Agent(name='root', model='gemini-test')\n",
+            )
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            source_root = Path(__file__).resolve().parents[2] / "src"
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(source_root)
+            script = """
+import importlib.abc
+import sys
+
+
+class RejectPytest(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "pytest" or fullname.startswith("pytest."):
+            raise ModuleNotFoundError("pytest is intentionally unavailable")
+        return None
+
+
+sys.meta_path.insert(0, RejectPytest())
+from harnest.cli import main
+
+raise SystemExit(main(sys.argv[1:]))
+"""
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    "compile",
+                    str(root),
+                    "--output",
+                    str(output),
+                ],
+                cwd=source_root.parent,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["name"], "root")
+
     def test_test_cli_delegates_eval_result_output_and_quiet_mode(self):
-        with patch("harnest.cli.run_agent_tests", return_value=0) as runner:
+        with patch("harnest.testing.run_agent_tests", return_value=0) as runner:
             default_status = cli_main(["test", ".", "--evals"])
             quiet_status = cli_main(
                 [
