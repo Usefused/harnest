@@ -17,8 +17,9 @@ from harnest.agent_principal import (
 )
 from harnest.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore, RunScope
+from harnest import context, cron
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.cron import CompiledCron, Cron
+from harnest.cron import CompiledCron, Cron, CronConflictError, CronNotFoundError
 from harnest.durable import (
     NativeDurableSuspended,
     ResumeArtifact,
@@ -32,7 +33,7 @@ from harnest.runtime_task import (
     TaskRuntimeManager,
 )
 from harnest.runtime import _runtime_driver
-from harnest.runtime_contract import InvocationRequest
+from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.task import (
     CompiledTask,
     TaskUnavailableError,
@@ -97,6 +98,7 @@ class _Connector:
     def __init__(self, *, conninfo) -> None:
         self.conninfo = conninfo
         self.payloads = {}
+        self.cron_jobs = {}
         self.pool = self
         self.app = None
 
@@ -137,6 +139,8 @@ class _Connector:
             self.payloads.pop(values["payload_id"], None)
 
     async def execute_query_all_async(self, query, **values):
+        if "harnest_cron_jobs" in query:
+            return self._cron_query(query, values)
         payload = self.payloads.get(values["payload_id"])
         if "procrastinate_cancel_job_v1" in query:
             return self._cancel_payload(values["payload_id"], payload)
@@ -165,6 +169,116 @@ class _Connector:
                 agent_permissions=None,
             )
         return [{"payload_id": values["payload_id"]}]
+
+    def _cron_query(self, query, values):
+        """Model the SQL predicates that provide durable cron ownership."""
+
+        if "INSERT INTO harnest_cron_jobs" in query:
+            return self._insert_cron(values)
+        if query.lstrip().startswith("SELECT"):
+            return self._select_crons(query, values)
+        if query.lstrip().startswith("UPDATE"):
+            return self._update_cron(query, values)
+        if query.lstrip().startswith("DELETE"):
+            key = (values["application_id"], values["schedule_id"])
+            row = self.cron_jobs.get(key)
+            if row is None or row["user_id"] != values["user_id"]:
+                return []
+            del self.cron_jobs[key]
+            return [{"schedule_id": values["schedule_id"]}]
+        return []
+
+    def _insert_cron(self, values):
+        """Apply the application/user/key uniqueness contract."""
+
+        duplicate = next(
+            (
+                row
+                for row in self.cron_jobs.values()
+                if row["application_id"] == values["application_id"]
+                and row["user_id"] == values["user_id"]
+                and row["schedule_key"] == values["schedule_key"]
+            ),
+            None,
+        )
+        if duplicate is not None:
+            comparable = ("expression", "task_name", "arguments")
+            return (
+                [dict(duplicate)]
+                if all(duplicate[name] == values[name] for name in comparable)
+                else []
+            )
+        row = {
+            **values,
+            "timezone": "UTC",
+            "status": "active",
+        }
+        self.cron_jobs[(values["application_id"], values["schedule_id"])] = row
+        return [dict(row)]
+
+    def _select_crons(self, query, values):
+        """Evaluate owner-scoped point reads and ordered list queries."""
+
+        rows = [
+            row
+            for row in self.cron_jobs.values()
+            if row["application_id"] == values["application_id"]
+        ]
+        rows = self._select_cron_identity(rows, query, values)
+        rows = self._select_cron_page(rows, query, values)
+        rows.sort(key=lambda row: row["schedule_id"])
+        return [dict(row) for row in rows[: values.get("limit")]]
+
+    @staticmethod
+    def _select_cron_identity(rows, query, values):
+        """Apply point-read selectors independently of list pagination."""
+
+        if "schedule_id=%(schedule_id)s" in query:
+            rows = [row for row in rows if row["schedule_id"] == values["schedule_id"]]
+        if "schedule_key=%(schedule_key)s" in query:
+            rows = [row for row in rows if row["schedule_key"] == values["schedule_key"]]
+        return rows
+
+    @staticmethod
+    def _select_cron_page(rows, query, values):
+        """Apply owner, status, and cursor predicates to one list query."""
+
+        if values.get("user_id") is not None:
+            rows = [row for row in rows if row["user_id"] == values["user_id"]]
+        if "status='active'" in query:
+            rows = [row for row in rows if row["status"] == "active"]
+        if "schedule_id > %(after)s" in query:
+            rows = [row for row in rows if row["schedule_id"] > values["after"]]
+        return rows
+
+    def _update_cron(self, query, values):
+        """Apply mutable cron fields, lifecycle guards, and reconciliation."""
+
+        key = (values["application_id"], values["schedule_id"])
+        row = self.cron_jobs.get(key)
+        if row is None:
+            return []
+        if values.get("user_id") is not None and row["user_id"] != values["user_id"]:
+            return []
+        return self._update_cron_row(row, query, values)
+
+    @staticmethod
+    def _update_cron_row(row, query, values):
+        """Apply one mutable-field or status transition to an owned row."""
+
+        if "SET expression=" in query:
+            if row["status"] == "cancelled":
+                return []
+            row.update(expression=values["expression"], arguments=values["arguments"])
+        elif "SET status=%(status)s" in query:
+            if row["status"] == "cancelled" and values["status"] != "cancelled":
+                return []
+            row["status"] = values["status"]
+        elif "SET status='paused'" in query and row["status"] == "active":
+            row["status"] = "paused"
+        else:
+            return []
+        return [dict(row)]
 
     def _cancel_payload(self, payload_id, payload):
         """Model the native function and private-row transaction together."""
@@ -323,6 +437,61 @@ class _Driver:
         self.closed = True
 
 
+class _CronCallingDriver(_Driver):
+    """Call public cron APIs as a framework tool would during an invocation."""
+
+    def __init__(self, target) -> None:
+        super().__init__()
+        self.target = target
+
+    async def invoke(self, request):
+        """Create a cron job while the inner framework owns invocation context."""
+
+        active = _cron_invocation(request)
+        try:
+            with activate_context(active):
+                job = await cron.create(
+                    key="agent-created",
+                    expression="0 9 * * 1-5",
+                    task=self.target,
+                    arguments={"value": "from-tool"},
+                )
+        finally:
+            revoke_context(active)
+        return InvocationResult(
+            text=job.id,
+            events=(),
+            result=job,
+            session_id=request.session_id,
+            metadata={},
+        )
+
+    async def stream(self, request):
+        """List cron jobs while the streamed invocation context remains active."""
+
+        active = _cron_invocation(request)
+        try:
+            with activate_context(active):
+                jobs = await cron.list()
+                yield {"type": "cron", "count": len(jobs)}
+        finally:
+            revoke_context(active)
+
+
+def _cron_invocation(request):
+    """Build the managed context normally provided by a framework driver."""
+
+    return create_agent_context(
+        framework="langgraph",
+        agent_name="reporter",
+        invocation_id=request.invocation_id,
+        user_id=request.user_id,
+        session_id=request.session_id,
+        metadata=request.metadata,
+        resources={},
+    )
+
+
 def _compiled(function, *, name="send_report", retries=3):
     decorated = task(queue="reports", max_retries=retries)(function)
     definition = registration_for(decorated)
@@ -436,6 +605,245 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager._app.periodic_schedules, [])
         self.assertEqual(await handle.status(), "todo")
         await manager.close()
+
+    async def test_dynamic_cron_is_available_from_agent_invoke_and_stream(self):
+        """Expose scheduling to tools for both response transport styles."""
+
+        async def send_report(value):
+            """Send one scheduled report."""
+
+        authored, _compiled_task, application = _compiled(send_report)
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        driver = TaskRuntimeDriver(_CronCallingDriver(authored), manager)
+        request = InvocationRequest(
+            input="schedule it",
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="inv-cron-tool",
+            metadata={},
+            state_delta={},
+        )
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                result = await driver.invoke(request)
+                events = [event async for event in driver.stream(request)]
+            self.assertEqual(result.result.status, "active")
+            self.assertEqual(result.result.arguments, {"value": "from-tool"})
+            self.assertEqual(events, [{"type": "cron", "count": 1}])
+            stored = next(iter(manager._app.connector.cron_jobs.values()))
+            self.assertEqual(stored["user_id"], "user-1")
+        finally:
+            await driver.close()
+
+    async def test_dynamic_cron_is_available_inside_queued_task_execution(self):
+        """Let durable task code manage schedules under its restored owner scope."""
+
+        created = []
+
+        async def send_report(value):
+            """Send one scheduled report."""
+
+        authored, compiled, application = _compiled(send_report, name="send_report")
+
+        async def manage_schedule():
+            """Create a schedule from a durable task invocation."""
+
+            created.append(
+                await cron.create(
+                    key="task-created",
+                    expression="0 8 * * *",
+                    task=authored,
+                    arguments={"value": "from-task"},
+                )
+            )
+
+        manager_authored, manager_compiled, _ = _compiled(
+            manage_schedule, name="manage_schedule"
+        )
+        application = replace(
+            application, tasks=(compiled, manager_compiled)
+        )
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="reporter",
+            invocation_id="inv-cron-task",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                await manager.start()
+                with activate_context(active):
+                    handle = await manager_authored.defer()
+                native = manager._app.tasks[manager_compiled.name]
+                await native.function(_job_context(), handle._payload_id)
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created[0].status, "active")
+            stored = next(iter(manager._app.connector.cron_jobs.values()))
+            self.assertEqual(stored["user_id"], "user-1")
+            self.assertEqual(stored["arguments"], {"value": "from-task"})
+        finally:
+            revoke_context(active)
+            await manager.close()
+
+    async def test_dynamic_cron_crud_is_idempotent_and_owner_scoped(self):
+        """Enforce key idempotency and ownership across the durable registry API."""
+
+        async def send_report(value):
+            """Send one scheduled report."""
+
+        authored, _compiled_task, application = _compiled(send_report)
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        first = create_agent_context(
+            framework="langgraph",
+            agent_name="reporter",
+            invocation_id="inv-first",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        second = create_agent_context(
+            framework="langgraph",
+            agent_name="reporter",
+            invocation_id="inv-second",
+            user_id="user-2",
+            session_id="session-2",
+            metadata={},
+            resources={},
+        )
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                await manager.start()
+                with activate_context(first), cron._activate_runtime(
+                    manager.cron_runtime
+                ):
+                    created = await cron.create(
+                        key="owned-report",
+                        expression="0 9 * * *",
+                        task=authored,
+                        arguments={"value": "first"},
+                    )
+                    repeated = await cron.create(
+                        key="owned-report",
+                        expression="0 9 * * *",
+                        task=authored,
+                        arguments={"value": "first"},
+                    )
+                    self.assertEqual(repeated.id, created.id)
+                    with self.assertRaises(CronConflictError):
+                        await cron.create(
+                            key="owned-report",
+                            expression="0 10 * * *",
+                            task=authored,
+                            arguments={"value": "first"},
+                        )
+                    updated = await created.update(
+                        expression="30 9 * * *", arguments={"value": "updated"}
+                    )
+                    paused = await updated.pause()
+                    resumed = await cron.resume(paused.id)
+                    self.assertEqual(resumed.status, "active")
+                with activate_context(second), cron._activate_runtime(
+                    manager.cron_runtime
+                ):
+                    self.assertIsNone(await cron.get(created.id))
+                    self.assertEqual(await cron.list(), ())
+                    with self.assertRaises(CronNotFoundError):
+                        await cron.cancel(created.id)
+                with activate_context(first), cron._activate_runtime(
+                    manager.cron_runtime
+                ):
+                    cancelled = await resumed.cancel()
+                    self.assertEqual(cancelled.status, "cancelled")
+                    repeated_cancelled = await cron.create(
+                        key="owned-report",
+                        expression="30 9 * * *",
+                        task=authored,
+                        arguments={"value": "updated"},
+                    )
+                    self.assertEqual(repeated_cancelled.status, "cancelled")
+                    self.assertTrue(await cron.delete(cancelled.id))
+                    self.assertFalse(await cron.delete(cancelled.id))
+        finally:
+            revoke_context(first)
+            revoke_context(second)
+            await manager.close()
+
+    async def test_dynamic_cron_dispatch_is_idempotent_and_restores_owner(self):
+        """Queue each due occurrence once and execute it as the schedule owner."""
+
+        observed = []
+
+        async def send_report(value):
+            """Record the private value and owner restored by the worker."""
+
+            observed.append((value, context.user_id))
+
+        authored, compiled, application = _compiled(send_report)
+        manager = TaskRuntimeManager(application, backend=_BACKEND)
+        active = create_agent_context(
+            framework="langgraph",
+            agent_name="reporter",
+            invocation_id="inv-cron-create",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={},
+            resources={},
+        )
+        timestamp = 1_788_771_600  # 2026-09-07 09:00:00 UTC
+        try:
+            with patch.dict(
+                "os.environ", {"HARNEST_TASK_DATABASE_URL": "postgresql://tasks"}
+            ):
+                await manager.start()
+                with activate_context(active), cron._activate_runtime(
+                    manager.cron_runtime
+                ):
+                    job = await cron.create(
+                        key="weekday-report",
+                        expression="0 9 * * 1-5",
+                        task=authored,
+                        arguments={"value": "private"},
+                    )
+                await manager._dynamic_cron_dispatcher.function(timestamp)
+                await manager._dynamic_cron_dispatcher.function(timestamp)
+                matching = [
+                    queued
+                    for queued in manager._app.job_manager.jobs.values()
+                    if queued.task_name == compiled.name
+                ]
+                self.assertEqual(len(matching), 1)
+                payload_id = matching[0].task_kwargs["_harnest_payload_id"]
+                payload = manager._app.connector.payloads[payload_id]
+                self.assertEqual(payload["trigger"], "cron")
+                self.assertEqual(payload["arguments"], {"value": "private"})
+                self.assertEqual(payload["invocation"]["user_id"], "user-1")
+                self.assertNotIn("private", matching[0].task_kwargs)
+                await manager._app.tasks[compiled.name].function(
+                    _job_context(), payload_id
+                )
+                with activate_context(active), cron._activate_runtime(
+                    manager.cron_runtime
+                ):
+                    cancelled = await cron.cancel(job.id)
+                    with self.assertRaises(CronConflictError):
+                        await cancelled.resume()
+                    with self.assertRaises(CronConflictError):
+                        await cancelled.update(expression="0 10 * * *")
+            self.assertEqual(observed, [("private", "user-1")])
+        finally:
+            revoke_context(active)
+            await manager.close()
 
     async def test_defer_keeps_payload_out_of_native_job_and_restores_identity(self):
         observed = []

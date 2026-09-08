@@ -34,7 +34,7 @@ from .continuation import (
     ContinuationConflictError,
     ProviderPendingContinuation,
 )
-from .cron import CompiledCron
+from .cron import CompiledCron, _activate_runtime as activate_cron_runtime
 from .credentials import _activate_credential_provider
 from .durable import current_native_durable_call
 from .external_continuation import (
@@ -51,6 +51,7 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
+from .runtime_cron import DynamicCronRuntime
 from .session import SessionStore
 from .task import (
     CompiledTask,
@@ -223,7 +224,13 @@ class TaskRuntimeManager:
         self._app: Any | None = None
         self._native: dict[int, Any] = {}
         self._native_crons: dict[str, Any] = {}
+        self._dynamic_cron_dispatcher: Any | None = None
         self._task_by_name = {item.name: item for item in tasks}
+        self._dynamic_cron = DynamicCronRuntime(
+            application,
+            enabled=enable_cron,
+            enqueue=self._enqueue_dynamic_cron_occurrence,
+        )
         self._worker: asyncio.Task[Any] | None = None
         self._worker_controller: Any | None = None
         self._worker_failure: TaskRuntimeError | None = None
@@ -246,6 +253,12 @@ class TaskRuntimeManager:
         """Expose the compiled application only to the owning runtime driver."""
 
         return self._application
+
+    @property
+    def cron_runtime(self) -> DynamicCronRuntime:
+        """Expose the scoped cron capability to the owning runtime driver."""
+
+        return self._dynamic_cron
 
     def bind_continuations(self, runtime: ExternalContinuationRuntime) -> None:
         """Bind task outcomes to the application-wide continuation authority."""
@@ -312,9 +325,11 @@ class TaskRuntimeManager:
         self._register_native_tasks()
         if self._enable_cron:
             self._register_native_crons()
+            self._register_dynamic_cron_dispatcher()
         await self._app.open_async()
         await _ensure_procrastinate_schema(self._app)
         await self._app.connector.execute_query_async(query=_PAYLOAD_TABLE_SQL)
+        await self._dynamic_cron.start(self._app)
         # Existing task databases predate result ownership, so additive columns
         # are installed without discarding already queued opaque payloads.
         for query in _PAYLOAD_MIGRATION_SQL:
@@ -388,6 +403,22 @@ class TaskRuntimeManager:
         execute.__doc__ = "Enqueue one compiler-owned Harnest cron occurrence."
         return execute
 
+    def _register_dynamic_cron_dispatcher(self) -> None:
+        """Install one stable minute dispatcher backed by the durable job registry."""
+
+        if self._app is None:  # pragma: no cover - caller owns construction
+            raise RuntimeError("task app is unavailable")
+        name = f"harnest.{self._application.name}.system.dynamic_cron"
+
+        async def execute(timestamp: int) -> None:
+            await self._dynamic_cron.dispatch(timestamp)
+
+        execute.__name__ = "dynamic_cron_dispatch"
+        execute.__doc__ = "Dispatch matching user-owned Harnest cron jobs."
+        native = self._app.task(name=name, queue="default", retry=3)(execute)
+        self._app.periodic(cron="* * * * *", periodic_id=name)(native)
+        self._dynamic_cron_dispatcher = native
+
     async def defer(
         self,
         task_value: TaskCallable[Any],
@@ -442,6 +473,25 @@ class TaskRuntimeManager:
             _cron_audit("enqueue", cron.name, "failed")
             raise
         _cron_audit("enqueue", cron.name, "committed")
+
+    async def _enqueue_dynamic_cron_occurrence(
+        self,
+        compiled: CompiledTask,
+        arguments: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+        idempotency_key: str,
+    ) -> None:
+        """Commit one cron occurrence through the private task payload path."""
+
+        await self._defer_compiled(
+            compiled,
+            arguments,
+            snapshot,
+            frozenset(),
+            trigger="cron",
+            idempotency_key=idempotency_key,
+            schedule_in=None,
+        )
 
     async def _defer_compiled(
         self,
@@ -833,7 +883,10 @@ class TaskRuntimeManager:
         """Run inline or inside a reconstructed managed task invocation."""
 
         agent_scope = self._agent_scope(snapshot, payload_id, trigger)
-        with _task_agent_principal_scope(agent_permissions):
+        with (
+            activate_cron_runtime(self._dynamic_cron),
+            _task_agent_principal_scope(agent_permissions),
+        ):
             if snapshot is None:
                 with agent_scope:
                     return await _resolve_task_call(compiled.function, arguments)
@@ -1124,6 +1177,7 @@ class TaskRuntimeManager:
             failure = await _cleanup_failure(self._stop_worker)
             for compiled in self._tasks:
                 release_task_runtime(compiled.authored, self)
+            self._dynamic_cron.close()
             app = self._app
             self._app = None
             if app is not None:
@@ -1153,6 +1207,7 @@ class TaskRuntimeManager:
         await _cleanup_failure(self._stop_worker)
         for compiled in self._tasks:
             release_task_runtime(compiled.authored, self)
+        self._dynamic_cron.close()
         app = self._app
         self._app = None
         if app is not None:
@@ -1311,14 +1366,29 @@ class TaskRuntimeDriver(RuntimeDriver):
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         await self.start()
-        return await self._driver.invoke(request)
+        with activate_cron_runtime(self._manager.cron_runtime):
+            return await self._driver.invoke(request)
 
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[RuntimeEvent]:
         await self.start()
-        async for event in self._driver.stream(request):
-            yield event
+        iterator = self._driver.stream(request).__aiter__()
+        try:
+            while True:
+                try:
+                    # The capability is active only while authored runtime code
+                    # advances; callers cannot use a yielded stream as authority.
+                    with activate_cron_runtime(self._manager.cron_runtime):
+                        event = await anext(iterator)
+                except StopAsyncIteration:
+                    return
+                yield event
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if callable(close):
+                with activate_cron_runtime(self._manager.cron_runtime):
+                    await close()
 
     async def close(self) -> None:
         """Drain tasks before credentials, plugins, and storage are released."""

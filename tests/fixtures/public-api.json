@@ -213,7 +213,20 @@
   ],
   "harnest.cron": [
     "CompiledCron",
-    "Cron"
+    "Cron",
+    "CronConflictError",
+    "CronJob",
+    "CronNotFoundError",
+    "CronRuntimeError",
+    "CronUnavailableError",
+    "cancel",
+    "create",
+    "delete",
+    "get",
+    "list",
+    "pause",
+    "resume",
+    "update"
   ],
   "harnest.durable": [
     "NativeDurableCall",

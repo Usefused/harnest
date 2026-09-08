@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from google.protobuf.json_format import MessageToDict
 
 from harnest.application import CompiledApplication
+from harnest import context, cron
+from harnest.agent import tool
 from harnest.agent_principal import (
     AgentRuntimePrincipal,
     activate_agent_principal,
@@ -138,6 +140,27 @@ class _A2ADurableTaskDriver(FakeDriver):
         return InvocationResult(
             text=f"delivered: {value}",
             events=events,
+            result=value,
+            session_id=request.session_id,
+            metadata=request.metadata,
+        )
+
+
+class _DynamicCronToolDriver(FakeDriver):
+    """Invoke one real authored tool inside the normal managed context wrapper."""
+
+    def __init__(self, callback) -> None:
+        super().__init__()
+        self.info = replace(self.info, framework="langgraph")
+        self.callback = callback
+
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        """Let the test select create or cancel without bypassing tool governance."""
+
+        value = await self.callback(request.input)
+        return InvocationResult(
+            text=str(value),
+            events=(),
             result=value,
             session_id=request.session_id,
             metadata=request.metadata,
@@ -321,8 +344,150 @@ async def _continuation_database_evidence(run_id: str) -> dict[str, object]:
         await connection.close()
 
 
+async def _dynamic_cron_database_evidence(
+    application_id: str, schedule_id: str, task_name: str
+) -> dict[str, object]:
+    """Wait for the real worker and return only ownership and occurrence state."""
+
+    connection = await asyncpg.connect(_POSTGRES_DSN)
+    try:
+        for _attempt in range(100):
+            row = await connection.fetchrow(
+                """
+                SELECT cron.user_id, cron.status,
+                       count(payload.payload_id)::int AS occurrence_count,
+                       count(payload.payload_id) FILTER (
+                           WHERE payload.status='completed'
+                       )::int AS completed_count
+                FROM harnest_cron_jobs AS cron
+                LEFT JOIN harnest_task_payloads AS payload
+                  ON payload.task_name=$3 AND payload.trigger='cron'
+                WHERE cron.application_id=$1 AND cron.schedule_id=$2
+                GROUP BY cron.user_id, cron.status
+                """,
+                application_id,
+                schedule_id,
+                task_name,
+            )
+            if row is not None and row["completed_count"]:
+                return dict(row)
+            await asyncio.sleep(0.05)
+        raise AssertionError("dynamic cron occurrence did not complete")
+    finally:
+        await connection.close()
+
+
 @unittest.skipUnless(_POSTGRES_DSN, "requires HARNEST_TEST_POSTGRES_DSN")
 class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_creates_gets_and_cancels_user_owned_dynamic_cron(self):
+        """Cross Tool, managed context, PostgreSQL, scheduler, and worker boundaries."""
+
+        completed = asyncio.Event()
+        observed = []
+
+        @task(queue="integration")
+        async def deliver(value):
+            """Record the identity reconstructed for a dynamic occurrence."""
+
+            principal = active_agent_principal()
+            observed.append(
+                (
+                    value,
+                    context.user_id,
+                    None if principal is None else principal.permissions,
+                )
+            )
+            completed.set()
+
+        definition = registration_for(deliver)
+        assert definition is not None
+        unique = uuid.uuid4().hex
+        application_id = f"dynamic_cron_{unique}"
+        task_name = f"harnest.{application_id}.tasks.deliver"
+        compiled = CompiledTask(
+            name=task_name,
+            source="tasks/deliver.py",
+            definition=definition,
+            authored=deliver,
+        )
+        application = CompiledApplication(
+            name=application_id,
+            framework="langgraph",
+            mode="managed",
+            target=object(),
+            tasks=(compiled,),
+        )
+        created_id = None
+
+        @tool
+        async def manage_cron(action: str) -> dict[str, object]:
+            """Create or cancel the current user's integration schedule."""
+
+            nonlocal created_id
+            if action == "create":
+                job = await cron.create(
+                    key="weekly-report",
+                    expression="* 8 15 1 *",
+                    task=deliver,
+                    arguments={"value": "private-dynamic-value"},
+                )
+                created_id = job.id
+                return {"id": job.id, "count": len(await cron.list())}
+            assert created_id is not None
+            job = await cron.get(created_id)
+            assert job is not None
+            cancelled = await job.cancel()
+            return {"id": cancelled.id, "status": cancelled.status}
+
+        inner = _DynamicCronToolDriver(manage_cron)
+        pipeline = build_runtime_pipeline(
+            inner, application.runtime_capabilities, ()
+        )
+        manager = TaskRuntimeManager(application)
+        driver = TaskRuntimeDriver(pipeline, manager)
+        create_request = InvocationRequest(
+            input="create",
+            user_id="live-cron-user",
+            session_id=f"session-{unique}",
+            invocation_id=f"create-{unique}",
+            metadata={},
+            state_delta={},
+        )
+        try:
+            with patch.dict(
+                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
+            ):
+                created = await driver.invoke(create_request)
+                assert created_id is not None
+                timestamp = 1_800_000_000
+                await manager.cron_runtime.dispatch(timestamp)
+                await asyncio.wait_for(completed.wait(), timeout=10)
+                evidence = await _dynamic_cron_database_evidence(
+                    application_id, created_id, task_name
+                )
+                cancelled = await driver.invoke(
+                    replace(
+                        create_request,
+                        input="cancel",
+                        invocation_id=f"cancel-{unique}",
+                    )
+                )
+                await manager.cron_runtime.dispatch(timestamp + 60)
+                after_cancel = await _dynamic_cron_database_evidence(
+                    application_id, created_id, task_name
+                )
+            self.assertEqual(created.result["count"], 1)
+            self.assertEqual(cancelled.result["status"], "cancelled")
+            self.assertEqual(evidence["user_id"], "live-cron-user")
+            self.assertEqual(evidence["occurrence_count"], 1)
+            self.assertEqual(after_cancel["occurrence_count"], 1)
+            self.assertEqual(
+                observed,
+                [("private-dynamic-value", "live-cron-user", frozenset())],
+            )
+        finally:
+            await driver.close()
+
     async def test_cron_dispatcher_commits_one_private_job_per_occurrence(self):
         """Exercise cron idempotency and opaque payloads against real PostgreSQL."""
 

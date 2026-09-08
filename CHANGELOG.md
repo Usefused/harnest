@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add durable, user-owned recurring Task schedules through `harnest.cron`.
+  Managed runtime code can create, get, list, update, pause, resume, cancel, and
+  delete schedules that target compiled Tasks. Schedule access is scoped to the
+  active user, uses idempotent caller keys, and runs on the existing UTC Task
+  backend in long-lived serving processes.
+
 ## [0.16.0](https://github.com/Usefused/harnest/compare/v0.15.0...v0.16.0) (2026-09-07)
 
 ### Fixes
