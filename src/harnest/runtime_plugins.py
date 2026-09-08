@@ -52,6 +52,8 @@ RUNTIME_PLUGIN_CAPABILITIES = frozenset(
         "storage.checkpoints",
         "storage.custom",
         "storage.sessions",
+        "storage.tasks",
+        "storage.cron",
         "telemetry.exporter",
     }
 )

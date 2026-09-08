@@ -139,6 +139,8 @@ _RUNTIME_PLUGIN_PHASE_CAPABILITIES = {
     "checkpointer": "storage.checkpoints",
     "asset_store": "storage.assets",
     "custom_store": "storage.custom",
+    "task_store": "storage.tasks",
+    "cron_store": "storage.cron",
     "credential_provider": "context.credentials",
     "skill_source": "lifecycle.skills",
     "http_routes": "http.routes",
@@ -402,6 +404,8 @@ def _compile_advanced_application(
         asset_store=discovered_extensions.asset_store,
         asset_stores=discovered_extensions.asset_stores,
         custom_stores=discovered_extensions.storage_registry.custom,
+        task_store=discovered_extensions.storage_registry.tasks,
+        cron_store=discovered_extensions.storage_registry.cron,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
@@ -535,6 +539,8 @@ def _compile_managed_application(
         asset_store=discovered_extensions.asset_store,
         asset_stores=discovered_extensions.asset_stores,
         custom_stores=discovered_extensions.storage_registry.custom,
+        task_store=discovered_extensions.storage_registry.tasks,
+        cron_store=discovered_extensions.storage_registry.cron,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
@@ -793,7 +799,9 @@ def compile_artifact(
             plugin_records = _compiled_plugin_records(built.plugins)
             task_records = _compiled_task_records(built.tasks)
             cron_records = _compiled_cron_records(built.crons)
-            runtime_dependencies = _runtime_dependencies(task_records, cron_records)
+            runtime_dependencies = _runtime_dependencies(
+                task_records, cron_records, provider=built.task_store
+            )
             interfaces = {"cli": cli_enabled}
             manifest = {
                 "apiVersion": "harnest.dev/v1alpha1",
@@ -886,11 +894,11 @@ def _compiled_cron_records(crons: Sequence[CompiledCron]) -> list[dict[str, Any]
 
 
 def _runtime_dependencies(
-    tasks: Sequence[dict[str, Any]], crons: Sequence[dict[str, Any]]
+    tasks: Sequence[dict[str, Any]], crons: Sequence[dict[str, Any]], *, provider: Any = None
 ) -> list[str]:
-    """Select the pinned queue backend only for authored durable work."""
+    """Retain legacy queue dependencies only without an explicit task provider."""
 
-    return [_PROCRASTINATE_REQUIREMENT] if tasks or crons else []
+    return [_PROCRASTINATE_REQUIREMENT] if (tasks or crons) and provider is None else []
 
 
 def _release_compiled_plugins(plugins: Sequence[ActivatedPlugin]) -> None:

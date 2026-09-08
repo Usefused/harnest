@@ -36,12 +36,14 @@ from .output import OutputPolicy
 from .session import SessionStore
 from .skills import SkillSource
 from .storage_registry import CustomStorage, StorageRegistry
+from .task_storage import TaskStore
+from .cron_storage import CronStore
 
 
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _IGNORED_NAMES = frozenset({"__init__.py", ".DS_Store", "__pycache__"})
 _STORAGE_PHASES = frozenset(
-    {"session_store", "checkpointer", "asset_store", "custom_store"}
+    {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store"}
 )
 _ROOT_EXTENSION_ORIGIN = "root/extensions"
 _PLUGIN_EXTENSION_ORIGIN = re.compile(
@@ -199,8 +201,23 @@ def _create_storage_registry(
         checkpoints=checkpoint_store,
         assets=_named_storage_values(assets, values),
         custom=_named_storage_values(custom, values),
+        tasks=_optional_storage_value(storage, "task_store", values),
+        cron=_optional_storage_value(storage, "cron_store", values),
     )
     return registry, storage, remaining
+
+
+def _optional_storage_value(
+    listeners: tuple[LifecycleListener, ...], phase: str, values: dict[int, Any]
+) -> Any:
+    """Resolve an optional exclusive role through the shared factory cache."""
+
+    factories = tuple(item for item in listeners if item.phase == phase)
+    if len(factories) > 1:
+        raise ExtensionDiscoveryError(
+            f"only one @lifecycle.{_decorator_path_for_phase(phase)} factory is allowed"
+        )
+    return None if not factories else _storage_factory_value(factories[0], values)
 
 
 def _single_storage_listener(
@@ -247,6 +264,13 @@ def _storage_factory_value(
 def _validate_storage_value(listener: LifecycleListener, value: Any) -> None:
     """Validate repeatable storage roles without duplicating instantiation logic."""
 
+    contracts = {"task_store": TaskStore, "cron_store": CronStore}
+    contract = contracts.get(listener.phase)
+    if contract is not None and not isinstance(value, contract):
+        raise ExtensionDiscoveryError(
+            f"storage factory {listener.identity} must implement {contract.__name__}"
+        )
+
     if listener.phase == "asset_store" and not isinstance(value, AssetStore):
         raise ExtensionDiscoveryError(
             f"asset store lifecycle factory {listener.identity} must return "
@@ -279,6 +303,10 @@ def _storage_value_for_listener(
         return registry.sessions
     if listener.phase == "checkpointer":
         return registry.checkpoints
+    if listener.phase == "task_store":
+        return registry.tasks
+    if listener.phase == "cron_store":
+        return registry.cron
     mapping = registry.assets if listener.phase == "asset_store" else registry.custom
     return mapping[listener.registration_name or "default"]
 
@@ -671,6 +699,8 @@ def _validate_context_provider(
         "checkpointer",
         "asset_store",
         "custom_store",
+        "task_store",
+        "cron_store",
     }
     if phase not in allowed:
         raise ExtensionDiscoveryError(
@@ -691,6 +721,8 @@ def _validate_listener_signature(
         "checkpointer",
         "asset_store",
         "custom_store",
+        "task_store",
+        "cron_store",
         "credential_provider",
         "http_routes",
         "output_policy",

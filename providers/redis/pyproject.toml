@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harnest-redis"
+version = "0.1.0"
+description = "Redis storage for Harnest sessions, checkpoints, durable tasks and cron"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = ["harnest[redis]>=0.18.0,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harnest_redis"]

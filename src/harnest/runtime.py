@@ -209,11 +209,11 @@ def _runtime_driver(
 
         pipeline = ExternalContinuationRuntimeDriver(pipeline, continuations)
     if application.tasks:
-        from .runtime_task import TaskRuntimeDriver, TaskRuntimeManager
+        from .runtime_task import TaskRuntimeDriver
 
         pipeline = TaskRuntimeDriver(
             pipeline,
-            TaskRuntimeManager(
+            _task_runtime_manager(
                 application,
                 plugin_manager=plugin_manager,
                 continuation_runtime=continuations,
@@ -225,6 +225,20 @@ def _runtime_driver(
         # context, plugin, storage, and task capabilities as user invocations.
         continuations.bind_driver(pipeline)
     return pipeline
+
+
+def _task_runtime_manager(application: Any, **options: Any) -> Any:
+    """Select explicit storage providers before considering the legacy queue adapter."""
+
+    if application.runtime_capabilities.task_store is not None:
+        from .runtime_task_store import ProviderTaskRuntimeManager
+
+        # The inner storage lifecycle owns the shared provider. The task wrapper
+        # only owns workers, which must stop before that lifecycle closes pools.
+        return ProviderTaskRuntimeManager(application, manage_storage=False, **options)
+    from .runtime_task import TaskRuntimeManager
+
+    return TaskRuntimeManager(application, **options)
 
 
 def _plugin_runtime_manager(

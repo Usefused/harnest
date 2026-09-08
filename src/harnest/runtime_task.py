@@ -786,7 +786,7 @@ class TaskRuntimeManager:
             try:
                 pending = tuple(await port.list_pending(after=after, limit=100))
             except Exception:
-                _audit("result.reconcile", "agent", "failed")
+                self._audit_runtime("result.reconcile", "agent", "failed")
                 return
             for item in pending:
                 await self._reconcile_continuation(item)
@@ -813,7 +813,7 @@ class TaskRuntimeManager:
             # Another replica won the same provider/run compare-and-swap.
             return
         except Exception:
-            _audit("result.reconcile", "agent", "failed")
+            self._audit_runtime("result.reconcile", "agent", "failed")
 
     async def _read_provider_outcome(
         self, payload_id: str
@@ -1109,7 +1109,7 @@ class TaskRuntimeManager:
             # result() call re-reads this row and publishes after registering.
             return
         except Exception:
-            _audit("result.notify", "agent", "failed")
+            self._audit_runtime("result.notify", "agent", "failed")
 
     async def _delete_payload_quietly(self, payload_id: str) -> None:
         """Best-effort rollback keeps the original queue failure authoritative."""
@@ -1164,7 +1164,12 @@ class TaskRuntimeManager:
         error = worker.exception()
         suffix = "unexpectedly" if error is None else f"with {type(error).__name__}"
         self._worker_failure = TaskRuntimeError(f"task worker stopped {suffix}")
-        _audit("worker", "agent", "failed")
+        self._audit_runtime("worker", "agent", "failed")
+
+    def _audit_runtime(self, operation: str, trigger: str, outcome: str) -> None:
+        """Let shared continuation paths preserve their actual runtime identity."""
+
+        _audit(operation, trigger, outcome)
 
     async def close(self) -> None:
         """Stop queue execution before releasing authored runtime capabilities."""

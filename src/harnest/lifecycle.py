@@ -48,6 +48,8 @@ _FACTORY_PHASES = frozenset(
         "telemetry_exporter",
         "resource",
         "custom_store",
+        "task_store",
+        "cron_store",
         "skill_source",
     }
 )
@@ -55,12 +57,14 @@ _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 _STORAGE_PHASES = frozenset(
-    {"session_store", "checkpointer", "asset_store", "custom_store"}
+    {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store"}
 )
 _DECORATOR_PATHS = {
     "session_store": "storage.sessions",
     "checkpointer": "storage.checkpoints",
     "asset_store": "storage.assets",
+    "task_store": "storage.tasks",
+    "cron_store": "storage.cron",
     "before_invoke": "agent.before",
     "after_invoke": "agent.after",
     "on_event": "agent.on_event",
@@ -199,6 +203,8 @@ class _StorageDecorators:
 
     sessions = _PhaseDecorator("session_store")
     checkpoints = _PhaseDecorator("checkpointer")
+    tasks = _PhaseDecorator("task_store")
+    cron = _PhaseDecorator("cron_store")
 
     def assets(self, name: str, *, order: int = 0) -> Any:
         """Declare one named asset authority assembled into the registry."""

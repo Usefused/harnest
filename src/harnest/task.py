@@ -9,6 +9,9 @@ import re
 from threading import RLock
 from typing import Any, Callable, Generic, Mapping, TypeVar, overload
 
+from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError
+from .task_store_memory import MemoryTaskStore
+
 
 F = TypeVar("F", bound=Callable[..., Any])
 _TASK_ATTRIBUTE = "__harnest_task_definition__"
@@ -334,9 +337,13 @@ def _validate_defer_options(
 
 __all__ = [
     "CompiledTask",
+    "MemoryTaskStore",
     "TaskCallable",
     "TaskDefinition",
     "TaskHandle",
+    "TaskRecord",
+    "TaskStore",
+    "TaskStoreConflictError",
     "TaskUnavailableError",
     "safe_task_result",
     "task",

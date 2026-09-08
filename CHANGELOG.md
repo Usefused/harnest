@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add database-neutral durable Task and cron storage contracts, selected through
+  `lifecycle.storage.tasks` and `lifecycle.storage.cron`. Harnest owns execution,
+  retries, lease renewal and continuation recovery; providers atomically claim
+  work and commit scheduled occurrences. Ship optional `harnest-postgres` and
+  `harnest-redis` provider packages, an in-memory test provider, and reusable
+  conformance tests for custom databases. Explicit providers do not load
+  Procrastinate; existing applications retain the legacy backend until they
+  explicitly switch after draining their existing work.
+
+### Fixes
+
+* With explicit Task storage, reconcile removed and retargeted static schedules,
+  preserve cancellation across recovery, and isolate worker startup from the
+  caller's invocation permissions.
+
 ## [0.17.0](https://github.com/Usefused/harnest/compare/v0.16.0...v0.17.0) (2026-09-08)
 
 ### Features

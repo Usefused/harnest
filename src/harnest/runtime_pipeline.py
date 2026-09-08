@@ -77,6 +77,8 @@ def _with_storage(
         or capabilities.asset_store is not None
         or capabilities.asset_stores
         or capabilities.custom_stores
+        or capabilities.task_store is not None
+        or capabilities.cron_store is not None
     ):
         return driver
     return StorageRuntimeDriver(

@@ -217,7 +217,10 @@
     "CronConflictError",
     "CronJob",
     "CronNotFoundError",
+    "CronRecord",
     "CronRuntimeError",
+    "CronStore",
+    "CronStoreConflictError",
     "CronUnavailableError",
     "cancel",
     "create",
@@ -453,9 +456,13 @@
   ],
   "harnest.task": [
     "CompiledTask",
+    "MemoryTaskStore",
     "TaskCallable",
     "TaskDefinition",
     "TaskHandle",
+    "TaskRecord",
+    "TaskStore",
+    "TaskStoreConflictError",
     "TaskUnavailableError",
     "safe_task_result",
     "task"
@@ -472,6 +479,7 @@
   "harnest.testing": [
     "AgentTestError",
     "SmokeClient",
+    "TaskStoreConformanceMixin",
     "run_agent_tests"
   ],
   "harnest.tracing": [

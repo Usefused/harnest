@@ -11,6 +11,7 @@ import re
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
+from .cron_storage import CronRecord, CronStore, CronStoreConflictError
 from .task import (
     CompiledTask,
     TaskCallable,
@@ -418,6 +419,9 @@ __all__ = [
     "CronJob",
     "CronNotFoundError",
     "CronRuntimeError",
+    "CronRecord",
+    "CronStore",
+    "CronStoreConflictError",
     "CronUnavailableError",
     "cancel",
     "create",
