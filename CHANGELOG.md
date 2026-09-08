@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.17.0](https://github.com/Usefused/harnest/compare/v0.16.0...v0.17.0) (2026-09-08)
 
 ### Features
 
@@ -9,6 +9,11 @@
   delete schedules that target compiled Tasks. Schedule access is scoped to the
   active user, uses idempotent caller keys, and runs on the existing UTC Task
   backend in long-lived serving processes.
+
+### Features
+
+* add user-owned dynamic cron jobs ([72a5cd2](https://github.com/Usefused/harnest/commit/72a5cd21c641ea2ec1c38a5c124d086e74532191))
+* organize authoring APIs by namespace ([fd77242](https://github.com/Usefused/harnest/commit/fd77242d93a03b91131013f5b21aff77a7a76158))
 
 ## [0.16.0](https://github.com/Usefused/harnest/compare/v0.15.0...v0.16.0) (2026-09-07)
 
