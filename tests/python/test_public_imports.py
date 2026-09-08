@@ -249,23 +249,23 @@ class PublicImportTests(unittest.TestCase):
         )
 
     def test_public_exports_import_without_optional_frameworks_or_provider_sdks(self):
-        """Fresh imports expose cycles and accidental optional dependencies."""
+        """Fresh domain and bundled-provider imports must not require optional SDKs."""
         code = '''
 import importlib
 import importlib.abc
 import sys
 class Unavailable(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(('google.adk', 'langgraph', 'langchain', 'docker')):
+        if fullname.startswith(('google.adk', 'langgraph', 'langchain', 'docker', 'asyncpg', 'redis')):
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, Unavailable())
 for name in sys.argv[1:]:
-    module = importlib.import_module('harnest.' + name)
+    module = importlib.import_module(name)
     for symbol in getattr(module, '__all__', []):
         getattr(module, symbol)
 '''
         modules = [
-            name.removeprefix("harnest.")
+            name
             for name in _public_api_snapshot()
             if name != "harnest"
         ]

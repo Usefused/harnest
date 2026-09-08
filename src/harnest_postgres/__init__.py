@@ -1,4 +1,4 @@
-"""PostgreSQL storage for Harnest, sharing one managed connection pool."""
+"""Bundled PostgreSQL storage for Harnest, sharing one managed connection pool."""
 
 from harnest.store_postgres import PostgresStore as _SessionStore
 from harnest.task_store_postgres import PostgresTaskStore

@@ -477,6 +477,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("re.subn(", target_step["run"])
 
     def test_snapshot_wheel_uses_the_explicit_build_version(self):
+        """Release staging carries the matching runtime and bundled providers."""
+
         snapshot_version = "9.8.7.dev0"
         with tempfile.TemporaryDirectory() as temporary:
             result = subprocess.run(
@@ -510,14 +512,48 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
                 )
                 metadata_text = archive.read(metadata_path).decode("utf-8")
+            self._assert_bundled_provider_imports(wheel)
 
         self.assertIn(f"Version: {snapshot_version}\n", metadata_text)
         self.assertIn("Classifier: Typing :: Typed\n", metadata_text)
         self.assertIn("harnest/py.typed", archived_paths)
+        for package in ("harnest_postgres", "harnest_redis"):
+            self.assertIn(f"{package}/__init__.py", archived_paths)
+            self.assertIn(f"{package}/py.typed", archived_paths)
+        requirements = distribution_requirements(metadata_text)
+        self.assertNotIn("harnest-postgres", requirements)
+        self.assertNotIn("harnest-redis", requirements)
         self.assertIn("harnest/extensions/docker.pyi", archived_paths)
         self.assertIn("harnest/extensions/hatchet.pyi", archived_paths)
         for path, source in extension_stubs.items():
             compile(source, path, "exec")
+
+    def _assert_bundled_provider_imports(self, wheel: Path) -> None:
+        """Import providers from the built artifact, not editable source paths."""
+
+        script = textwrap.dedent("""
+            import sys
+            sys.path.insert(0, sys.argv[1])
+            import harnest_postgres
+            import harnest_redis
+            from harnest.cron import CronStore
+            from harnest.task import TaskStore
+            for module in (harnest_postgres, harnest_redis):
+                assert module.__file__.startswith(sys.argv[1]), module.__file__
+            postgres = harnest_postgres.PostgresStore('postgresql://not-connected')
+            redis = harnest_redis.RedisStore('redis://not-connected')
+            for store in (postgres, redis):
+                assert isinstance(store, TaskStore)
+                assert isinstance(store, CronStore)
+            # Provider construction must not load/connect optional DB drivers.
+            assert 'asyncpg' not in sys.modules
+            assert 'redis.asyncio' not in sys.modules
+        """)
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, str(wheel)],
+            cwd=wheel.parent, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_release_wheel_rejects_a_version_not_in_source(self):
         with tempfile.TemporaryDirectory() as temporary:

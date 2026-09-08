@@ -36,6 +36,9 @@ The release contains the native CLI, its matching Python runtime package, and
 the `uv` bootstrapper. It does not require a preinstalled Python. The installer
 shows the selected version and paths before asking for confirmation.
 
+The runtime includes the `harnest_postgres` and `harnest_redis` storage packages;
+no separate provider-package installation is required.
+
 Verify the installation:
 
 ```bash

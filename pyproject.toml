@@ -67,7 +67,7 @@ all = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/harnest"]
+packages = ["src/harnest", "src/harnest_postgres", "src/harnest_redis"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

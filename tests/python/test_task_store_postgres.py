@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
-import importlib.util
 import os
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 import uuid
@@ -16,6 +14,7 @@ from harnest.cron_storage import CronRecord, CronStoreConflictError
 from harnest.task_storage import TaskRecord, TaskStoreConflictError
 from harnest.task_store_postgres import PostgresTaskStore
 from harnest.testing import TaskStoreConformanceMixin
+from harnest_postgres import PostgresStore
 
 
 _DSN = os.environ.get("HARNEST_TEST_POSTGRES_DSN")
@@ -302,13 +301,9 @@ class PostgresTaskStoreIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await second.close()
 
     async def test_package_combines_storage_roles_on_one_pool(self) -> None:
-        """The installable provider reuses one pool for sessions and durable work."""
+        """The bundled provider reuses one pool for sessions and durable work."""
 
-        package = Path(__file__).resolve().parents[2] / "providers/postgres/src/harnest_postgres/__init__.py"
-        spec = importlib.util.spec_from_file_location("harnest_postgres_fixture", package)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        combined = module.PostgresStore(_DSN, _pool=self.store._pool)
+        combined = PostgresStore(_DSN, _pool=self.store._pool)
         await combined.start()
         try:
             self.assertIs(combined._pool, self.store._pool)

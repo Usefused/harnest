@@ -7,8 +7,10 @@
 * Add database-neutral durable Task and cron storage contracts, selected through
   `lifecycle.storage.tasks` and `lifecycle.storage.cron`. Harnest owns execution,
   retries, lease renewal and continuation recovery; providers atomically claim
-  work and commit scheduled occurrences. Ship optional `harnest-postgres` and
-  `harnest-redis` provider packages, an in-memory test provider, and reusable
+  work and commit scheduled occurrences. Bundle the `harnest_postgres` and
+  `harnest_redis` import packages in Harnest's matching runtime wheel, with no
+  separate provider installation or PyPI dependency. Keep database drivers in
+  optional/framework extras. Include an in-memory test provider and reusable
   conformance tests for custom databases. Explicit providers do not load
   Procrastinate; existing applications retain the legacy backend until they
   explicitly switch after draining their existing work.

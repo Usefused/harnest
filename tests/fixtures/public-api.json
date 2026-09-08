@@ -488,5 +488,12 @@
     "get_tracer",
     "span",
     "traced"
+  ],
+  "harnest_postgres": [
+    "PostgresStore",
+    "PostgresTaskStore"
+  ],
+  "harnest_redis": [
+    "RedisStore"
   ]
 }
