@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.17.0](https://github.com/Usefused/harnest/compare/v0.16.0...v0.17.0) (2026-09-08)
 
 ### Features
 
@@ -9,9 +9,6 @@
   delete schedules that target compiled Tasks. Schedule access is scoped to the
   active user, uses idempotent caller keys, and runs on the existing UTC Task
   backend in long-lived serving processes.
-
-## [0.17.0](https://github.com/Usefused/harnest/compare/v0.16.0...v0.17.0) (2026-09-08)
-
 
 ### Features
 
