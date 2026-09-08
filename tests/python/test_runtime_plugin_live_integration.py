@@ -185,9 +185,9 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             f"""
             from pathlib import Path
 
-            from harnest.context import context
+            from harnest import context
             from harnest.plugins.temporal import TemporalContext, plugin
-            from harnest.tool import tool
+            from harnest.agent import tool
 
 
             _JOURNAL = Path({str(journal)!r})
@@ -241,8 +241,8 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             f"""
             from pathlib import Path
 
-            from harnest.context import context
-            from harnest.lifecycle import lifecycle
+            from harnest import context
+            from harnest import lifecycle
             from harnest.plugins.temporal import TemporalContext
 
 

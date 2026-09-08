@@ -3,7 +3,7 @@ import inspect
 import unittest
 
 from harnest.client_tool import ClientToolError
-from harnest.tool import client_tool
+from harnest.agent import client_tool
 
 
 class ClientToolTests(unittest.TestCase):

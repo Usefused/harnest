@@ -133,7 +133,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
 
         self._write(
             plugin / "tools" / "normalize.py",
-            "from harnest.tool import tool\n"
+            "from harnest.agent import tool\n"
             "@tool\n"
             "def normalize(value: str) -> str:\n"
             "    \"\"\"Normalize a catalog lookup value.\"\"\"\n"
@@ -157,7 +157,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
         )
         self._write(
             plugin / "extensions" / "audit.py",
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "@lifecycle.agent.before(order=4)\n"
             "def audit(context, value):\n"
             "    return context.next()\n",
@@ -256,7 +256,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                 if contribution == "tools":
                     self._write(
                         plugin / "tools" / "normalize.py",
-                        "from harnest.tool import tool\n"
+                        "from harnest.agent import tool\n"
                         "@tool\n"
                         "def normalize(value):\n"
                         "    \"\"\"Return the supplied value unchanged.\"\"\"\n"
@@ -265,14 +265,14 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                 elif contribution == "extensions":
                     self._write(
                         plugin / "extensions" / "audit.py",
-                        "from harnest.lifecycle import lifecycle\n"
+                        "from harnest import lifecycle\n"
                         "@lifecycle.agent.before\n"
                         "def audit(context, value): return context.next()\n",
                     )
                 else:
                     self._write(
                         plugin / "extensions" / "skills.py",
-                        "from harnest.lifecycle import lifecycle\n"
+                        "from harnest import lifecycle\n"
                         "from harnest.skills import SkillSource\n"
                         "class Source(SkillSource):\n"
                         "  async def list(self, context, *, query=None, cursor=None, limit=50): pass\n"
@@ -302,7 +302,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             root = Path(temp)
             self._root_agent(root)
             source = (
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def normalize(value):\n"
                 "    \"\"\"Return the supplied value unchanged.\"\"\"\n"
@@ -427,7 +427,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             )
             self._write(
                 plugin / "tools" / "normalize.py",
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def normalize(value):\n"
                 "    \"\"\"Return the supplied value unchanged.\"\"\"\n"
@@ -458,11 +458,11 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             )
             self._write(
                 plugin / "extensions" / "bindings.py",
-                "from harnest.context import context\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import context\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.agent.before\n"
                 "def observe(scope, value): return scope.next()\n"
-                "@context('temporal_client')\n"
+                "@context.provider('temporal_client')\n"
                 "def temporal_client(): return {'ready': True}\n",
             )
             compiled = None

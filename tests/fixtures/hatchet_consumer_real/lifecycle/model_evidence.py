@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
 def _record(phase: str) -> None:

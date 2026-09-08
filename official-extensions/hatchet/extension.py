@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from harnest.continuation import ContinuationConflictError
-from harnest.context import context
+from harnest import context
 from harnest.durable import current_native_durable_call
 from harnest.extensions import Extension, ExtensionContext, extension_mutation
 

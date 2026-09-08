@@ -18,13 +18,51 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--example", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--minimal", "--example", "harnest add subagent", "harnest add tool", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
 	}
 	if strings.Contains(stdout, "plan") {
 		t.Fatalf("standalone help unexpectedly mentions orchestrator plans:\n%s", stdout)
+	}
+}
+
+// TestInitExplicitMinimalCreatesOnlyRunnableCoreFiles pins the additive workflow.
+func TestInitExplicitMinimalCreatesOnlyRunnableCoreFiles(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "minimal-agent")
+	stdout, _, err := executeForTest(t, defaultSystem(), "init", target, "--minimal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "Initialized minimal agent") {
+		t.Fatalf("unexpected minimal init output: %q", stdout)
+	}
+	assertFilesExist(t, target, []string{
+		"agent.py", "agent-card.yaml", "config.yaml", "harnest.lock",
+		"instructions.md", "pyproject.toml", "lifecycle/storage.py",
+	})
+	for _, directory := range []string{
+		"lib", "models", "tools", "tasks", "cron", "subagents", "mcp",
+		"extensions", "plugins", "sandbox", "skills", "evals", "tests",
+	} {
+		if _, err := os.Stat(filepath.Join(target, directory)); !os.IsNotExist(err) {
+			t.Fatalf("minimal scaffold unexpectedly created %s: %v", directory, err)
+		}
+	}
+	if _, err := engine.LoadBundle(target); err != nil {
+		t.Fatalf("minimal scaffold does not satisfy the Go bundle contract: %v", err)
+	}
+}
+
+// TestInitRejectsConflictingProfiles keeps profile intent unambiguous.
+func TestInitRejectsConflictingProfiles(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "conflicting-agent")
+	_, _, err := executeForTest(
+		t, defaultSystem(), "init", target, "--minimal", "--example",
+	)
+	if err == nil || !strings.Contains(err.Error(), "[example minimal]") {
+		t.Fatalf("expected mutually exclusive profile error, got %v", err)
 	}
 }
 
@@ -66,7 +104,7 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 	})
 	assertFilesContain(t, target, map[string]string{
 		".gitignore":             ".venv",
-		"harnest.lock":           "projectSchema: 4",
+		"harnest.lock":           "projectSchema: 5",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"models/_README.md":      "from harnest.models.support import",
@@ -88,6 +126,42 @@ func TestInitCreatesMinimalLoadableKebabNamedLiteLLMAgent(t *testing.T) {
 		t.Fatal("minimal scaffold should rely on server defaults")
 	}
 	assertOnlyPlaceholderResources(t, target)
+}
+
+// TestInitFolderGuidesExplainUseAndRemoval keeps empty scaffold folders actionable.
+func TestInitFolderGuidesExplainUseAndRemoval(t *testing.T) {
+	guidePaths := []string{"lib/_README.md", "models/_README.md"}
+	for _, directory := range managedResourceDirectories {
+		guidePaths = append(guidePaths, directory+"/_README.md")
+	}
+	guidePaths = append(guidePaths, "tests/unit/_README.md", "tests/smoke/_README.md")
+
+	for _, framework := range []string{"adk", "langgraph"} {
+		for _, mode := range []string{"managed", "advanced"} {
+			for _, example := range []bool{false, true} {
+				profile := "guided"
+				if example {
+					profile = "example"
+				}
+				t.Run(framework+"/"+mode+"/"+profile, func(t *testing.T) {
+					files := scaffoldFilesForMode("guide-agent", framework, mode, example)
+					for _, path := range guidePaths {
+						guide, ok := files[path]
+						if !ok {
+							if example {
+								// Active example code replaces some otherwise empty guides.
+								continue
+							}
+							t.Fatalf("missing generated folder guide %s", path)
+						}
+						assertContainsAll(t, path, guide, []string{
+							"Optional:", "Delete this folder", "```",
+						})
+					}
+				})
+			}
+		}
+	}
 }
 
 // TestInitExampleFillsOnlyPlaceholderFolders checks the same inert profile on
@@ -123,7 +197,7 @@ func assertManagedFolderExamples(t *testing.T, target string) {
 	assertFilesContain(t, target, map[string]string{
 		"lib/_example.py":                                         "def normalize(",
 		"models/_example.py":                                      "class Message(BaseModel)",
-		"tools/_example.py":                                       "from harnest.tool import tool",
+		"tools/_example.py":                                       "from harnest.agent import tool",
 		"tasks/_example.py":                                       "@task(queue=",
 		"cron/_example.py":                                        "daily_report = Cron(",
 		"subagents/_example.py":                                   "helper = Agent(",
@@ -320,18 +394,21 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"from harnest.agent import Agent",
 		"root_agent = Agent.advanced(",
 		"from langchain.agents import create_agent",
+		"from harnest.lib.storage import store",
 		"model=LiteLLMModel.from_openai_environment().build_langgraph(),",
 	})
 	if strings.Contains(string(source), "NativeApp") {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
 	}
-	assertFilesExist(t, directory, []string{"tools/_README.md"})
+	assertFilesExist(t, directory, []string{"tools/_README.md", "lib/storage.py"})
 	assertFilesContain(t, directory, map[string]string{
-		"lib/_README.md":    "from harnest.lib.audit import record_change",
-		"models/_README.md": "from harnest.models.support import",
-		"tools/_README.md":  "Advanced mode owns framework wiring",
-		"tasks/_README.md":  "Harnest discovers tasks in both authoring modes",
-		"cron/_README.md":   "Harnest owns scheduling in both authoring modes",
+		"lib/_README.md":       "from harnest.lib.audit import record_change",
+		"lib/storage.py":       "store = MemoryStore()",
+		"lifecycle/storage.py": "from harnest.lib.storage import store",
+		"models/_README.md":    "from harnest.models.support import",
+		"tools/_README.md":     "Advanced mode owns framework wiring",
+		"tasks/_README.md":     "Harnest discovers tasks in both authoring modes",
+		"cron/_README.md":      "Harnest owns scheduling in both authoring modes",
 	})
 	assertOnlyPlaceholderResources(t, directory)
 }

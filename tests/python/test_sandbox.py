@@ -221,7 +221,7 @@ class SandboxTests(unittest.TestCase):
             definition = self._definition(root)
             self.assertFalse(hasattr(definition, "sandbox"))
             self.assertEqual(dict(definition._sandbox_bindings), {})
-            self._write(root / "agent.py", "from harnest import Agent\nroot_agent = Agent(name='root', model='test/model', sandboxes=['sandbox'])\n")
+            self._write(root / "agent.py", "from harnest.agent import Agent\nroot_agent = Agent(name='root', model='test/model', sandboxes=['sandbox'])\n")
             definition = self._definition(root)
             self.assertEqual(definition._sandbox_bindings["sandbox"].backend, "test-provider")
 

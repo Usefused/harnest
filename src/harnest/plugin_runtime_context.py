@@ -8,7 +8,8 @@ import re
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Iterator, Literal, Mapping, Sequence
 
-from .context import ContextResourceError, context
+from . import context
+from .context import ContextResourceError
 from .logging import get_logger
 
 

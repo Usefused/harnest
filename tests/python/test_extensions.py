@@ -24,16 +24,16 @@ class ExtensionDiscoveryTests(unittest.TestCase):
     def _session_store(root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)
         (root / "sessions.py").write_text(
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "from harnest.session import InMemorySessionStore\n"
-            "@lifecycle.session_store\n"
+            "@lifecycle.storage.sessions\n"
             "def session_store(): return InMemorySessionStore()\n",
             encoding="utf-8",
         )
         (root / "checkpoints.py").write_text(
             "from harnest.checkpoint import MemoryStore\n"
-            "from harnest.lifecycle import lifecycle\n"
-            "@lifecycle.checkpointer\n"
+            "from harnest import lifecycle\n"
+            "@lifecycle.storage.checkpoints\n"
             "def checkpointer(): return MemoryStore()\n",
             encoding="utf-8",
         )
@@ -44,17 +44,17 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             (root / "nested").mkdir(parents=True)
             self._session_store(root)
             (root / "zeta.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "def helper(): return 'ignored'\n"
-                "@lifecycle.before_invoke(order=10)\n"
+                "@lifecycle.agent.before(order=10)\n"
                 "def late(context, value): return value\n",
                 encoding="utf-8",
             )
             (root / "nested" / "alpha.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.before_invoke(order=10)\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.agent.before(order=10)\n"
                 "def first(context, value): return value\n"
-                "@lifecycle.before_invoke(order=-1)\n"
+                "@lifecycle.agent.before(order=-1)\n"
                 "def earliest(context, value): return value\n",
                 encoding="utf-8",
             )
@@ -84,8 +84,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             ):
                 self._write(
                     target,
-                    "from harnest.lifecycle import lifecycle\n"
-                    "@lifecycle.before_invoke\n"
+                    "from harnest import lifecycle\n"
+                    "@lifecycle.agent.before\n"
                     f"def {function_name}(context, value): return context.next(value)\n",
                 )
 
@@ -125,14 +125,14 @@ class ExtensionDiscoveryTests(unittest.TestCase):
 
         provider = (
             "from harnest.credentials import CredentialProvider\n"
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "class Provider(CredentialProvider):\n"
             "  async def resolve(self, request): return None\n"
             "@lifecycle.credential_provider\n"
             "def provider(): return Provider()\n"
         )
         output = (
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "from harnest.output import OutputPolicy\n"
             "@lifecycle.output_policy\n"
             "def policy(): return OutputPolicy()\n"
@@ -140,17 +140,17 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         cases = (
             (
                 None,
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.session import InMemorySessionStore\n"
-                "@lifecycle.session_store\n"
+                "@lifecycle.storage.sessions\n"
                 "def sessions(): return InMemorySessionStore()\n",
                 "exactly one.*session_store.*found 2",
             ),
             (
                 None,
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpoints(): return MemoryStore()\n",
                 "exactly one.*checkpointer.*found 2",
             ),
@@ -185,7 +185,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             plugin = workspace / "plugins" / "state" / "extensions"
             self._write(
                 plugin / "state.py",
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
                 "@lifecycle.storage.sessions\n"
                 "@lifecycle.storage.checkpoints\n"
@@ -213,21 +213,21 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         cases = (
             (
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.storage.assets('media')\n"
                 "def media(): return MemoryAssetStore()\n",
                 "duplicate asset store names: media",
             ),
             (
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
                 "@lifecycle.storage.custom('users')\n"
                 "def users(): return MemoryStore()\n",
                 "duplicate custom storage names: users",
             ),
             (
-                "from harnest.context import context\n"
-                "@context('shared')\n"
+                "from harnest import context\n"
+                "@context.provider('shared')\n"
                 "def shared(): return object()\n",
                 "duplicate context resource names: shared",
             ),
@@ -257,7 +257,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
 
         route = (
             "from fastapi import APIRouter\n"
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "@lifecycle.http_routes\n"
             "def routes(agent):\n"
             "  router = APIRouter()\n"
@@ -291,7 +291,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self.skipTest("google-adk is not installed")
         native = (
             "from google.adk.plugins.base_plugin import BasePlugin\n"
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "@lifecycle.adk_plugin\n"
             "def native(): return BasePlugin(name='shared-native')\n"
         )
@@ -369,14 +369,14 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary) / "extensions"
             (root / "storage").mkdir(parents=True)
             (root / "storage" / "sessions.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.session import InMemorySessionStore\n"
                 "@lifecycle.storage.sessions\n"
                 "def sessions(): return InMemorySessionStore()\n",
                 encoding="utf-8",
             )
             (root / "storage" / "checkpoints.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
                 "@lifecycle.storage.checkpoints\n"
                 "def checkpoints(): return MemoryStore()\n",
@@ -384,13 +384,13 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             )
             (root / "storage" / "assets.py").write_text(
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.storage.assets('uploads')\n"
                 "def uploads(): return MemoryAssetStore()\n",
                 encoding="utf-8",
             )
             (root / "storage" / "users.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
                 "@lifecycle.storage.custom('users')\n"
                 "def users(): return MemoryStore()\n",
@@ -410,7 +410,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "state.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.store import MemoryStore\n"
                 "@lifecycle.storage.sessions\n"
                 "@lifecycle.storage.checkpoints\n"
@@ -430,8 +430,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             (root / "assets.py").write_text(
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.asset_store(name='media')\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.assets(name='media')\n"
                 "def old(): return MemoryAssetStore()\n"
                 "@lifecycle.storage.assets('media')\n"
                 "def new(): return MemoryAssetStore()\n",
@@ -464,7 +464,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 root = Path(temporary)
                 self._session_store(root)
                 (root / "custom.py").write_text(
-                    "from harnest.lifecycle import lifecycle\n"
+                    "from harnest import lifecycle\n"
                     "from harnest.store import MemoryStore\n" + source,
                     encoding="utf-8",
                 )
@@ -480,8 +480,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             )
             (root / "assets.py").write_text(
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.asset_store\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.assets('default')\n"
                 "def asset_store(): return MemoryAssetStore()\n",
                 encoding="utf-8",
             )
@@ -490,8 +490,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
 
             self.assertIsInstance(configured.asset_store, MemoryAssetStore)
             (root / "assets.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.asset_store\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.assets('default')\n"
                 "def asset_store(): return object()\n",
                 encoding="utf-8",
             )
@@ -504,10 +504,10 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             (root / "assets.py").write_text(
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.asset_store(name='media')\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.assets(name='media')\n"
                 "def media(): return MemoryAssetStore()\n"
-                "@lifecycle.asset_store\n"
+                "@lifecycle.storage.assets('default')\n"
                 "def default(): return MemoryAssetStore()\n",
                 encoding="utf-8",
             )
@@ -518,10 +518,10 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self.assertIs(configured.asset_store, configured.asset_stores["default"])
             (root / "assets.py").write_text(
                 "from harnest.assets import MemoryAssetStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.asset_store(name='media')\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.assets(name='media')\n"
                 "def first(): return MemoryAssetStore()\n"
-                "@lifecycle.asset_store(name='media')\n"
+                "@lifecycle.storage.assets(name='media')\n"
                 "def second(): return MemoryAssetStore()\n",
                 encoding="utf-8",
             )
@@ -533,7 +533,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary)
             self._session_store(root)
             (root / "telemetry.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.telemetry_exporter\n"
                 "def first(): raise RuntimeError('runtime only')\n"
                 "@lifecycle.telemetry_exporter(order=10)\n"
@@ -560,7 +560,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary)
             self._session_store(root)
             (root / "telemetry.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.telemetry_exporter\n"
                 "def exporter(endpoint): return endpoint\n",
                 encoding="utf-8",
@@ -577,7 +577,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             default = discover_extensions(root, framework="langgraph")
             (root / "output.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.output import OutputPolicy\n"
                 "@lifecycle.output_policy\n"
                 "def output_policy():\n"
@@ -599,7 +599,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary)
             self._session_store(root)
             (root / "output.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.output_policy\n"
                 "def output_policy(): return object()\n",
                 encoding="utf-8",
@@ -607,7 +607,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ExtensionDiscoveryError, "OutputPolicy"):
                 discover_extensions(root, framework="adk")
             (root / "other_output.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.output import OutputPolicy\n"
                 "@lifecycle.output_policy\n"
                 "def other_output(): return OutputPolicy()\n",
@@ -624,8 +624,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ExtensionDiscoveryError, "found 0"):
                 discover_extensions(root, framework="adk")
             (root / "checkpoints.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.checkpointer\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return object()\n",
                 encoding="utf-8",
             )
@@ -638,9 +638,9 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             (root / "checkpoints.py").write_text(
                 "from harnest.checkpoint import HarnestStore\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "class IncompleteStore(HarnestStore): pass\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return IncompleteStore()\n",
                 encoding="utf-8",
             )
@@ -656,11 +656,11 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root.mkdir(parents=True, exist_ok=True)
             (root / "storage.py").write_text(
                 "from harnest.checkpoint import ADKStore\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "store = ADKStore(object())\n"
-                "@lifecycle.session_store\n"
+                "@lifecycle.storage.sessions\n"
                 "def session_store(): return store\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return store\n",
                 encoding="utf-8",
             )
@@ -675,8 +675,8 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             (root / "checkpoints.py").write_text(
                 "from harnest.checkpoint import ADKStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.checkpointer\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return ADKStore(object())\n",
                 encoding="utf-8",
             )
@@ -700,7 +700,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(directory) / "extensions"
             self._session_store(root)
             (root / "retrieval.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.resource\n"
                 "def vector_client():\n"
                 "  raise RuntimeError('compile must not create clients')\n",
@@ -718,17 +718,17 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(directory) / "extensions"
             self._session_store(root)
             (root / "memory.py").write_text(
-                "from harnest.context import context\n"
-                "@context('request_cache')\n"
+                "from harnest import context\n"
+                "@context.provider('request_cache')\n"
                 "async def request_cache():\n"
                 "  raise RuntimeError('compile must not create context values')\n",
                 encoding="utf-8",
             )
             (root / "client.py").write_text(
-                "from harnest.context import context\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import context\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.resource\n"
-                "@context('memory')\n"
+                "@context.provider('memory')\n"
                 "async def memory():\n"
                 "  yield object()\n",
                 encoding="utf-8",
@@ -747,14 +747,14 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root.mkdir(parents=True)
             (root / "storage.py").write_text(
                 "from harnest.checkpoint import MemoryStore\n"
-                "from harnest.context import context\n"
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import context\n"
+                "from harnest import lifecycle\n"
                 "store = MemoryStore()\n"
-                "@lifecycle.session_store\n"
-                "@context('sessions')\n"
+                "@lifecycle.storage.sessions\n"
+                "@context.provider('sessions')\n"
                 "def session_store(): return store\n"
-                "@lifecycle.checkpointer\n"
-                "@context('checkpoints')\n"
+                "@lifecycle.storage.checkpoints\n"
+                "@context.provider('checkpoints')\n"
                 "def checkpointer(): return store\n",
                 encoding="utf-8",
             )
@@ -771,22 +771,22 @@ class ExtensionDiscoveryTests(unittest.TestCase):
     def test_context_names_and_lifecycle_roles_are_strict(self):
         for source, message in (
             (
-                "from harnest.context import context\n"
-                "@context('same')\ndef first(): return 1\n"
-                "@context('same')\ndef second(): return 2\n",
+                "from harnest import context\n"
+                "@context.provider('same')\ndef first(): return 1\n"
+                "@context.provider('same')\ndef second(): return 2\n",
                 "duplicate context resource names",
             ),
             (
-                "from harnest.context import context\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.before_invoke\n"
-                "@context('invalid')\n"
+                "from harnest import context\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.agent.before\n"
+                "@context.provider('invalid')\n"
                 "def before(ctx, value): return value\n",
-                "cannot also use @lifecycle.before_invoke",
+                "cannot also use @lifecycle.agent.before",
             ),
             (
-                "from harnest.context import context\n"
-                "@context('invalid')\n"
+                "from harnest import context\n"
+                "@context.provider('invalid')\n"
                 "def invalid():\n  yield object()\n",
                 "combine it with @lifecycle.resource",
             ),
@@ -814,7 +814,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 root = Path(directory) / "extensions"
                 self._session_store(root)
                 (root / "resource.py").write_text(
-                    "from harnest.lifecycle import lifecycle\n" + source,
+                    "from harnest import lifecycle\n" + source,
                     encoding="utf-8",
                 )
 
@@ -831,7 +831,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root.mkdir(parents=True)
             self._session_store(root)
             (root / "audit.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.adk_plugin(order=4)\n"
                 "def plugin():\n"
                 "  from google.adk.plugins.base_plugin import BasePlugin\n"
@@ -854,7 +854,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 root.mkdir(parents=True)
                 self._session_store(root)
                 (root / "bad.py").write_text(
-                    "from harnest.lifecycle import lifecycle\n" + source,
+                    "from harnest import lifecycle\n" + source,
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ExtensionDiscoveryError, message):
@@ -881,13 +881,13 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             ),
             (
                 "listener.py",
-                "@lifecycle.on_event\n"
+                "@lifecycle.agent.on_event\n"
                 "def event(context): return None\n",
                 "exactly two",
             ),
             (
                 "duplicate.py",
-                "@lifecycle.on_error\n"
+                "@lifecycle.agent.on_error\n"
                 "def notify(context, error): pass\n"
                 "also_notify = notify\n",
                 "multiple names",
@@ -902,7 +902,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 root.mkdir(parents=True)
                 self._session_store(root)
                 (root / filename).write_text(
-                    "from harnest.lifecycle import lifecycle\n" + source,
+                    "from harnest import lifecycle\n" + source,
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ExtensionDiscoveryError, message):
@@ -918,9 +918,9 @@ class ExtensionDiscoveryTests(unittest.TestCase):
 
             self._session_store(root)
             (root / "other.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.session import InMemorySessionStore\n"
-                "@lifecycle.session_store\n"
+                "@lifecycle.storage.sessions\n"
                 "def other(): return InMemorySessionStore()\n",
                 encoding="utf-8",
             )
@@ -930,15 +930,15 @@ class ExtensionDiscoveryTests(unittest.TestCase):
     def test_session_store_factory_is_synchronous_zero_argument_and_typed(self):
         cases = (
             (
-                "@lifecycle.session_store\ndef session_store(value): return value\n",
+                "@lifecycle.storage.sessions\ndef session_store(value): return value\n",
                 "no arguments",
             ),
             (
-                "@lifecycle.session_store\nasync def session_store(): return None\n",
+                "@lifecycle.storage.sessions\nasync def session_store(): return None\n",
                 "synchronous",
             ),
             (
-                "@lifecycle.session_store\ndef session_store(): return object()\n",
+                "@lifecycle.storage.sessions\ndef session_store(): return object()\n",
                 "must return SessionStore",
             ),
         )
@@ -947,7 +947,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 root = Path(directory) / "extensions"
                 root.mkdir(parents=True)
                 (root / "sessions.py").write_text(
-                    "from harnest.lifecycle import lifecycle\n" + source,
+                    "from harnest import lifecycle\n" + source,
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ExtensionDiscoveryError, message):

@@ -9,6 +9,28 @@
 
 ### Changed
 
+* Add an explicit `harnest init --minimal` profile that emits only runnable core
+  files. Build it up safely with `harnest add tool`, `subagent`, `task`,
+  `lifecycle`, or `context`; additive scaffolds recreate optional folders,
+  validate framework ownership, and never overwrite existing resources.
+  `harnest test` now treats an absent optional test folder like an empty suite.
+
+* Make Harnest features explicit public namespaces instead of flattening their
+  classes, decorators, and functions onto `harnest`. Agent and tool contracts
+  now live together under `harnest.agent`; there is no `harnest.tool` public
+  module. Make `harnest.lifecycle` and `harnest.context` first-class module
+  namespaces. Lifecycle hooks now use grouped paths such as
+  `lifecycle.storage.sessions` and `lifecycle.agent.before`, while context
+  providers use `@context.provider(...)`. Remove the same-named facade objects
+  and flat lifecycle aliases; `harnest upgrade --apply` splits existing root
+  imports across their owning domains, moves old tool imports to
+  `harnest.agent`, and rewrites decorator paths with a backup.
+
+* Make every generated folder `_README.md` state whether the folder is
+  optional, explain when it can be deleted, and include a minimal example of
+  the code or configuration the folder owns. Advanced-mode guides also call
+  out folders that Harnest does not discover.
+
 * Prepare Docker extension `0.3.0` with bounded multi-container topologies,
   extension-owned bridge networks, internal DNS aliases, service readiness,
   per-container budgets, reverse-order cleanup, and privacy-safe lifecycle logs

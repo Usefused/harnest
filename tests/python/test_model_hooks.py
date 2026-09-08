@@ -2,7 +2,8 @@ import unittest
 import asyncio
 from dataclasses import replace
 
-from harnest.context import activate_context, context, create_agent_context
+from harnest import context
+from harnest.context import activate_context, create_agent_context
 from harnest.lifecycle import (
     LifecycleListener,
     ModelCallRequest,

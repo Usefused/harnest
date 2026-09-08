@@ -1,17 +1,17 @@
 """Bind one lifecycle-owned authority for sessions and checkpoints."""
 
 from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     """Provide the demo's in-memory session store."""
 
     return store
 
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     """Use the same store for private in-progress checkpoints."""
 

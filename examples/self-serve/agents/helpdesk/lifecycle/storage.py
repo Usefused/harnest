@@ -1,12 +1,12 @@
 from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     return store
 
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     return store

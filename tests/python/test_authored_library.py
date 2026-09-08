@@ -62,7 +62,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             else ""
         )
         body = (
-            "from harnest.tool import tool\n"
+            "from harnest.agent import tool\n"
             f"{eager_import}"
             "@tool\n"
             "def lookup(value):\n"
@@ -83,7 +83,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             self._write_agent(root)
             self._write(
                 root / "lib" / "not_a_resource.py",
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def hidden(value):\n"
                 "    return value\n",
@@ -228,7 +228,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             self._write(
                 root / "models" / "support.py",
                 "from typing import Any\n"
-                "from harnest import FrameworkMetadata\n"
+                "from harnest.structured import FrameworkMetadata\n"
                 "from pydantic import BaseModel\n"
                 "class TurnMetadata(BaseModel):\n"
                 "    adk: dict[str, Any] | None = None\n"
@@ -418,10 +418,10 @@ class AuthoredLibraryTests(unittest.TestCase):
             self._write(
                 root / "extensions/storage.py",
                 "from harnest.lib.storage import store\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.session_store\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.sessions\n"
                 "def sessions(): return store\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpoints(): return store\n",
             )
             self._write(

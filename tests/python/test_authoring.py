@@ -14,27 +14,12 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from harnest import (
-    Agent,
-    AgentSource,
-    BundleConventionError,
-    BundleDuplicateError,
-    BundleEvalError,
-    BundleExportError,
-    BundleImportError,
-    BundleSkillError,
-    EvalSuite,
-    LiteLLMModel,
-    MCPClient,
-    OllamaModel,
-    Orchestrator,
-    bundle_agent,
-    compile_agent,
-    compile_artifact,
-    discover_evals,
-    instruction_file,
-    tool,
-)
+from harnest.agent import tool
+from harnest.agent import Agent, instruction_file
+from harnest.orchestrator import AgentSource, Orchestrator
+from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEvalError, BundleExportError, BundleImportError, BundleSkillError, EvalSuite, bundle_agent, compile_agent, compile_artifact, discover_evals
+from harnest.model import LiteLLMModel, OllamaModel
+from harnest.mcp import MCPClient
 from harnest.cli import load_orchestrator, main as cli_main
 from harnest.runtime import create_fastapi_app, run_agent_message
 from harnest.server_config import DEFAULT_SERVER_YAML
@@ -796,7 +781,7 @@ class AuthoringTests(unittest.TestCase):
             self._write(root / "instructions.md", "Delegate when useful.\n")
             self._write(
                 root / "tools" / "lookup.py",
-                "from harnest.tool import tool\n\n"
+                "from harnest.agent import tool\n\n"
                 "@tool\n"
                 "def lookup(query: str) -> str:\n"
                 "    \"\"\"Look up a query.\"\"\"\n"
@@ -1370,7 +1355,7 @@ class AuthoringTests(unittest.TestCase):
             )
             self._write(
                 root / "extensions" / "gateway.py",
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.runtime_auth import AuthPrincipal, AuthenticationError\n"
                 "@lifecycle.authenticate\n"
                 "def authenticate(connection, principal):\n"
@@ -1517,7 +1502,7 @@ raise SystemExit(main(sys.argv[1:]))
             self._write(root / "instructions.md", "Answer clearly.\n")
             self._write(
                 root / "extensions" / "output.py",
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.output import OutputPolicy\n\n"
                 "@lifecycle.output_policy\n"
                 "def output_policy():\n"
@@ -1525,7 +1510,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(
                 root / "tools" / "double.py",
-                "from harnest.tool import tool\n\n"
+                "from harnest.agent import tool\n\n"
                 "@tool\n"
                 "def double(value: int) -> int:\n"
                 "    \"\"\"Double a number.\"\"\"\n"
@@ -1543,7 +1528,7 @@ raise SystemExit(main(sys.argv[1:]))
 
         self.assertEqual(exit_code, 0)
 
-    def test_authored_test_runner_requires_convention_directories(self):
+    def test_authored_test_runner_accepts_absent_optional_test_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "authored"
             self._write(
@@ -1553,8 +1538,12 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(root / "instructions.md", "Answer clearly.\n")
 
-            with self.assertRaisesRegex(AgentTestError, "tests/unit"):
-                run_agent_tests(root)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = run_agent_tests(root)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("no authored Python tests", output.getvalue())
 
     def test_authored_test_runner_accepts_placeholder_only_test_folders(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2689,7 +2678,7 @@ raise SystemExit(main(sys.argv[1:]))
             self._write(root / "instructions.md", "Bundled instructions.\n")
             self._write(
                 root / "tools" / "zeta.py",
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def zeta(value: str) -> str:\n"
                 "    \"\"\"Return a value.\"\"\"\n"
@@ -2697,7 +2686,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(
                 root / "tools" / "alpha.py",
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def alpha(value: str) -> str:\n"
                 "    \"\"\"Return a value.\"\"\"\n"
@@ -2705,7 +2694,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(
                 root / "subagents" / "reviewer.py",
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "reviewer = Agent(name='reviewer', model='gemini-test', "
                 "instruction='Review.')\n",
             )
@@ -2754,12 +2743,12 @@ raise SystemExit(main(sys.argv[1:]))
             self._write(nested / "instructions.md", "Nested instructions.\n")
             self._write(
                 nested / "agent.py",
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "researcher = Agent(name='researcher', model='gemini-test')\n",
             )
             self._write(
                 nested / "tools" / "lookup.py",
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def lookup(query: str) -> str:\n"
                 "    \"\"\"Look up a query.\"\"\"\n"
@@ -2767,7 +2756,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(
                 nested / "subagents" / "critic.py",
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "critic = Agent(name='critic', model='gemini-test', "
                 "instruction='Critique.')\n",
             )
@@ -2956,7 +2945,7 @@ raise SystemExit(main(sys.argv[1:]))
 
             self._write(
                 resource,
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def search() -> str:\n"
                 "    \"\"\"Search.\"\"\"\n"
@@ -2990,7 +2979,7 @@ raise SystemExit(main(sys.argv[1:]))
             self._write(root / "instructions.md", "Bundled instructions.\n")
             self._write(
                 root / "tools" / "search.py",
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def search(query: str) -> str:\n"
                 "    \"\"\"Search automatically.\"\"\"\n"
@@ -3031,7 +3020,7 @@ raise SystemExit(main(sys.argv[1:]))
             outside_tool = root / "outside.py"
             self._write(
                 outside_tool,
-                "from harnest import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def escaped() -> str:\n"
                 "    \"\"\"Must not load.\"\"\"\n"
@@ -3052,7 +3041,7 @@ raise SystemExit(main(sys.argv[1:]))
             outside_agent = root / "outside.py"
             self._write(
                 outside_agent,
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "researcher = Agent(name='researcher', model='gemini-test', "
                 "instruction='Research.')\n",
             )
@@ -3071,7 +3060,7 @@ raise SystemExit(main(sys.argv[1:]))
             self._write(root / "instructions.md", "Bundled instructions.\n")
             self._write(
                 root / "subagents" / "researcher.py",
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "researcher = Agent(name='different', model='gemini-test', "
                 "instruction='Research.')\n",
             )

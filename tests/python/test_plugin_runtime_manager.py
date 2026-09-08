@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from harnest import context
 from harnest.context import (
     ContextResourceError,
     activate_context,
-    context,
     create_agent_context,
     derive_agent_context,
     revoke_context,

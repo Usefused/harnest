@@ -8,7 +8,7 @@ import (
 )
 
 func TestFrameworkPinRequirement(t *testing.T) {
-	pin := []byte("apiVersion: harnest.dev/v1alpha1\nkind: ProjectLock\nprojectSchema: 4\nframework:\n  name: langgraph\n  distribution: langgraph\n  version: 1.2.11\n")
+	pin := []byte("apiVersion: harnest.dev/v1alpha1\nkind: ProjectLock\nprojectSchema: 5\nframework:\n  name: langgraph\n  distribution: langgraph\n  version: 1.2.11\n")
 	requirement, err := parseFrameworkRequirement(pin, "langgraph")
 	if err != nil || requirement != "langgraph==1.2.11" {
 		t.Fatalf("pin: %q %v", requirement, err)

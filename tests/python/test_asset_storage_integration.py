@@ -18,7 +18,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from harnest import Stored
+from harnest.assets import Stored
 from harnest.assets import (
     AssetMediaMetadata,
     AssetNotFoundError,
@@ -27,7 +27,8 @@ from harnest.assets import (
     AssetStoreError,
 )
 from harnest.content import Image, ImageConstraints
-from harnest.context import activate_context, context, create_agent_context
+from harnest import context
+from harnest.context import activate_context, create_agent_context
 from harnest.runtime_langgraph import _materialize_model_message
 from harnest.stored_media import stage_stored_media, stored_reference_value
 

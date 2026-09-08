@@ -1,9 +1,9 @@
 import unittest
 
+from harnest import lifecycle
 from harnest.lifecycle import (
     DROP_EVENT,
     LifecycleContext,
-    lifecycle,
     registration_for,
     registrations_for,
 )
@@ -11,11 +11,11 @@ from harnest.lifecycle import (
 
 class ExtensionContractTests(unittest.TestCase):
     def test_direct_and_configured_decorators_attach_explicit_metadata(self):
-        @lifecycle.before_invoke
+        @lifecycle.agent.before
         def before(_context, value):
             return value
 
-        @lifecycle.after_invoke(order=20)
+        @lifecycle.agent.after(order=20)
         async def after(_context, value):
             return value
 
@@ -40,7 +40,7 @@ class ExtensionContractTests(unittest.TestCase):
         )
 
     def test_session_store_decorator_registers_a_root_factory(self):
-        @lifecycle.session_store
+        @lifecycle.storage.sessions
         def sessions():
             return object()
 
@@ -48,7 +48,7 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual(registration.phase, "session_store")
 
     def test_checkpointer_decorator_registers_an_ownership_factory(self):
-        @lifecycle.checkpointer
+        @lifecycle.storage.checkpoints
         def checkpoints():
             return object()
 
@@ -58,7 +58,7 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual(registration.phase, "checkpointer")
 
     def test_asset_store_decorator_registers_a_root_factory(self):
-        @lifecycle.asset_store
+        @lifecycle.storage.assets("default")
         def asset_store():
             return object()
 
@@ -69,13 +69,13 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual(registration.name, "default")
 
     def test_asset_store_decorator_records_an_explicit_name(self):
-        @lifecycle.asset_store(name="media")
+        @lifecycle.storage.assets(name="media")
         def media():
             return object()
 
         self.assertEqual(registration_for(media).name, "media")
         with self.assertRaisesRegex(ValueError, "storage identifier"):
-            lifecycle.asset_store(name="not/valid")
+            lifecycle.storage.assets(name="not/valid")
 
     def test_storage_namespace_allows_one_factory_to_fulfil_multiple_roles(self):
         """Keep shared connection ownership concise without allowing hook stacking."""
@@ -212,12 +212,12 @@ class ExtensionContractTests(unittest.TestCase):
 
     def test_decorator_validation_rejects_ambiguous_registration(self):
         with self.assertRaisesRegex(TypeError, "integer"):
-            lifecycle.on_event(order=True)
+            lifecycle.agent.on_event(order=True)
 
         with self.assertRaisesRegex(TypeError, "only one"):
 
-            @lifecycle.on_error
-            @lifecycle.after_invoke
+            @lifecycle.agent.on_error
+            @lifecycle.agent.after
             def duplicated(_context, _value):
                 return None
 

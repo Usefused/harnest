@@ -1,6 +1,6 @@
 """Development storage for the Chrome sandbox example."""
 
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.store import MemoryStore
 
 

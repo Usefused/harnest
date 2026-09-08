@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import BaseModel
 
-from harnest import Stored
+from harnest.assets import Stored
 from harnest.asset_policy import storage_policy
 from harnest.content import Image
 

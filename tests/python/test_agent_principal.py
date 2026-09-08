@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START as LANGGRAPH_START
 from langgraph.graph import StateGraph
 
-from harnest import AgentRuntimePermissionError, AgentRuntimePrincipal
+from harnest.agent import AgentRuntimePermissionError, AgentRuntimePrincipal
 from harnest.agent_principal import (
     activate_agent_principal,
     active_agent_principal,
@@ -36,7 +36,7 @@ from harnest.application import CompiledApplication
 from harnest.approval import require_human_approval
 from harnest.client_tool import client_tool
 from harnest.context_agent import _resolve_invocation_agent_principal
-from harnest.context import context
+from harnest import context
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.mcp import MCPClient
 from harnest.graph import START, Edge, Graph
@@ -55,7 +55,7 @@ from harnest.neutral_runtime import (
 from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.runtime_adk import ADKRuntimeDriver
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
-from harnest.tool import tool
+from harnest.agent import tool
 from harnest.tool_adk import _project_model_tools
 
 

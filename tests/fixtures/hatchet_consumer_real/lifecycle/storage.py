@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.store import PostgresStore
 
 

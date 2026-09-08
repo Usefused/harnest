@@ -219,7 +219,7 @@ def main() -> int:
 
 
 _AGENT = '''"""Deterministic graph for the live telemetry probe."""
-from harnest import Edge, Event, Graph, START
+from harnest.graph import Edge, Event, Graph, START
 
 def respond(value):
     return Event(output=f"received:{value}", message=f"received:{value}")
@@ -231,22 +231,23 @@ root_agent = Graph(
 )
 '''
 
-_STORAGE = """from harnest import MemoryStore\nstore = MemoryStore()\n"""
+_STORAGE = """from harnest.store import MemoryStore\nstore = MemoryStore()\n"""
 
 _STORAGE_EXTENSION = '''from harnest import lifecycle
 from harnest.lib.storage import store
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def sessions():
     return store
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpoints():
     return store
 '''
 
 _TELEMETRY_EXTENSION = '''import os
-from harnest import TelemetryExporter, lifecycle
+from harnest import lifecycle
+from harnest.telemetry import TelemetryExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 

@@ -26,7 +26,7 @@ from harnest.runtime_adk import (
     _asset_content_plugin,
     _session_record,
 )
-from harnest.tool import client_tool
+from harnest.agent import client_tool
 from harnest.transient_media import (
     TransientMediaAccess,
     TransientMediaLeaseStore,

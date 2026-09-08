@@ -1,5 +1,5 @@
 from harnest.models.triage import TriageResult
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool

@@ -156,7 +156,8 @@ def main() -> int:
 
 
 _AGENT = '''"""Deterministic graph for the dynamic approval live probe."""
-from harnest import Edge, Event, Graph, START, request_human_approval
+from harnest.approval import request_human_approval
+from harnest.graph import Edge, Event, Graph, START
 
 evaluations = 0
 
@@ -180,16 +181,16 @@ root_agent = Graph(
 )
 '''
 
-_STORAGE = """from harnest import MemoryStore\nstore = MemoryStore()\n"""
+_STORAGE = """from harnest.store import MemoryStore\nstore = MemoryStore()\n"""
 
 _STORAGE_EXTENSION = '''from harnest import lifecycle
 from harnest.lib.storage import store
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def sessions():
     return store
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpoints():
     return store
 '''

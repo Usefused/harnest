@@ -12,11 +12,11 @@ from google.adk.plugins.base_plugin import BasePlugin
 from .context import (
     AgentContext,
     _ACTIVE_CONTEXT,
-    context,
     create_agent_context,
     derive_agent_context,
     revoke_context,
 )
+from . import context
 from .plugin_runtime_context import (
     PluginInvocationBinding,
     bind_plugin_bindings,

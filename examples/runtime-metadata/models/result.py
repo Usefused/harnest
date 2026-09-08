@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from harnest import FrameworkMetadata
+from harnest.structured import FrameworkMetadata
 
 
 class ADKTurnMetadata(BaseModel):

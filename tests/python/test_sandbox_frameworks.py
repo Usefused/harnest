@@ -17,7 +17,7 @@ class SandboxFrameworkTests(unittest.TestCase):
                 root = Path(directory)
                 (root / "instructions.md").write_text("Test")
                 (root / "agent.py").write_text(
-                    "from harnest import Agent, Sandbox\n"
+                    "from harnest.agent import Agent\nfrom harnest.sandbox import Sandbox\n"
                     "root_agent = Agent(name='test', model='test/model', "
                     "sandbox=Sandbox.provider(lambda: None))\n"
                 )

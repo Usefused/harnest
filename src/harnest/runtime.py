@@ -337,7 +337,7 @@ def _langgraph_runtime_driver(
     lifecycle_store = application.runtime_capabilities.session_store
     if lifecycle_store is not None and session_store is not None:
         raise AgentRuntimeError(
-            "@lifecycle.session_store cannot be combined with an injected "
+            "@lifecycle.storage.sessions cannot be combined with an injected "
             "LangGraph session store"
         )
     return LangGraphRuntimeDriver(
@@ -883,7 +883,7 @@ def _validate_session_storage_choice(
         adk_storage is not None or langgraph_store is not None
     ):
         raise AgentRuntimeError(
-            "@lifecycle.session_store cannot be combined with injected session storage"
+            "@lifecycle.storage.sessions cannot be combined with injected session storage"
         )
 
 

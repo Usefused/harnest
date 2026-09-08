@@ -241,7 +241,7 @@ def _wrap_sync_tool(function: F) -> F:
 def _tool_context(name: str) -> ToolLifecycleContext:
     """Derive tool ownership only from Harnest's revocable invocation context."""
 
-    from .context import context
+    from . import context
 
     active = context.current()
     return ToolLifecycleContext(

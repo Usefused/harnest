@@ -40,7 +40,7 @@ from harnest.approval import (
 from harnest.client_tool import InMemoryClientToolStore, client_tool
 from harnest.runtime_continuation import completed_payload, public_output
 from harnest.runtime_sse import sse_approval_run, stream_frame
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool

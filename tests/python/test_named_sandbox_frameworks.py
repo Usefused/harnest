@@ -16,7 +16,7 @@ _ADK_MODEL = '''
 import json
 from google.adk.models import BaseLlm, LlmResponse
 from google.genai import types
-from harnest import Agent
+from harnest.agent import Agent
 
 
 class ProbeModel(BaseLlm):
@@ -52,7 +52,7 @@ import json
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from harnest import Agent
+from harnest.agent import Agent
 
 
 class ProbeModel(BaseChatModel):
@@ -95,7 +95,7 @@ _PROVIDER = '''
 import json
 from dataclasses import asdict
 from pathlib import Path
-from harnest import Sandbox, SandboxResult
+from harnest.sandbox import Sandbox, SandboxResult
 
 
 def record(value):
@@ -133,7 +133,8 @@ EXPORT = Sandbox.provider(build, name=NAME, timeout_seconds=8,
 
 
 _BUSINESS_TOOL = '''
-from harnest import context, tool
+from harnest import context
+from harnest.agent import tool
 from harnest.sandbox_types import sandbox_metadata_to_dict
 
 
@@ -146,7 +147,8 @@ ASYNCdef EXPORT() -> dict:
 
 
 _DENIAL_TOOL = '''
-from harnest import context, tool
+from harnest import context
+from harnest.agent import tool
 from harnest.context import ContextResourceError
 
 

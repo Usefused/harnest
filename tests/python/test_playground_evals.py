@@ -28,16 +28,16 @@ class PlaygroundEvalTests(unittest.TestCase):
             self._write(root / "instructions.md", "Answer clearly.\n")
             self._write(
                 root / "extensions" / "sessions.py",
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.session import InMemorySessionStore\n"
-                "@lifecycle.session_store\n"
+                "@lifecycle.storage.sessions\n"
                 "def session_store(): return InMemorySessionStore()\n",
             )
             self._write(
                 root / "extensions" / "checkpoints.py",
                 "from harnest.checkpoint import MemoryStore\n"
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.checkpointer\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return MemoryStore()\n",
             )
             self._write(

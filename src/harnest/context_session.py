@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from ._json import json_value
-from .context import ContextUnavailableError, context
+from . import context
+from .context import ContextUnavailableError
 from .logging import get_logger
 from .session import SessionLease
 from .session import SessionStore

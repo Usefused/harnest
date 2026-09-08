@@ -134,16 +134,18 @@ def optional_active_context() -> AgentContext | None:
 class _ContextAccess:
     """Decorate providers and access the context active in the current task."""
 
-    def __call__(
+    def provider(
         self, name: str, *, order: int = 0
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Declare one invocation-scoped resource provider."""
+
         _validate_name(name)
         if not isinstance(order, int) or isinstance(order, bool):
             raise TypeError("context provider order must be an integer")
 
         def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
             if not callable(function):
-                raise TypeError("@context can only decorate callables")
+                raise TypeError("@context.provider can only decorate callables")
             if getattr(function, "__harnest_tool__", False):
                 raise TypeError("tools cannot also be context providers")
             if hasattr(function, _CONTEXT_ATTRIBUTE):
@@ -458,7 +460,27 @@ def _validate_name(name: str) -> None:
         )
 
 
-context = _ContextAccess()
+_access = _ContextAccess()
+
+
+def provider(
+    name: str, *, order: int = 0
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Declare one invocation-scoped resource on the public context namespace."""
+
+    return _access.provider(name, order=order)
+
+
+def current() -> AgentContext:
+    """Return the active managed invocation context."""
+
+    return _access.current()
+
+
+def resource(name: str, expected_type: type[Any] | None = None) -> Any:
+    """Resolve one explicitly published invocation resource."""
+
+    return _access.resource(name, expected_type)
 
 
 # These contracts depend on context activation primitives. Resolve them after
@@ -472,23 +494,50 @@ _PUBLIC_CONTRACTS = {
         "AgentSession", "AgentSessionNotFoundError", "AgentStreamItem", "LocalAgentRuntime",
     ), "context_agent"),
 }
+_ACCESS_MEMBERS = frozenset(
+    {
+        "agent",
+        "agent_name",
+        "assets",
+        "credentials",
+        "depth",
+        "extensions",
+        "framework",
+        "invocation_id",
+        "is_root",
+        "mcp",
+        "metadata",
+        "parent_agent_name",
+        "plugins",
+        "sandboxes",
+        "session",
+        "session_id",
+        "skills",
+        "storage",
+        "user_id",
+    }
+)
 
 
 def __getattr__(name: str) -> Any:
-    """Expose context-owned contracts without loading runtime adapters eagerly."""
+    """Expose lazy contracts and values from the active invocation namespace."""
     from importlib import import_module
 
     module = _PUBLIC_CONTRACTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(f".{module}", __package__), name)
-    globals()[name] = value
-    return value
+    if module is not None:
+        value = getattr(import_module(f".{module}", __package__), name)
+        globals()[name] = value
+        return value
+    if name in _ACCESS_MEMBERS:
+        # Invocation values must be resolved per access; caching them on the
+        # module would leak authority and identity across concurrent requests.
+        return getattr(_access, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
     """Include lazy public contracts in interactive API discovery."""
-    return sorted(set(globals()) | _PUBLIC_CONTRACTS.keys())
+    return sorted(set(globals()) | _PUBLIC_CONTRACTS.keys() | _ACCESS_MEMBERS)
 
 
 __all__ = [
@@ -497,6 +546,8 @@ __all__ = [
     "ContextResourceError",
     "ContextUnavailableError",
     "activate_agent_scope",
-    "context",
+    "current",
     "derive_agent_context",
+    "provider",
+    "resource",
 ] + list(_PUBLIC_CONTRACTS)

@@ -65,7 +65,7 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             "extensions/storage.py",
             '''
             from harnest.checkpoint import MemoryStore
-            from harnest.lifecycle import lifecycle
+            from harnest import lifecycle
             from harnest.session import InMemorySessionStore
 
             @lifecycle.storage.sessions
@@ -104,7 +104,7 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             import os
             from pathlib import Path
             import sys
-            from harnest.context import context
+            from harnest import context
             from harnest.plugins import Plugin, PluginContext
 
             def _record(event, **fields):
@@ -150,8 +150,8 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             root,
             "plugins/liveplugin/extensions/invocation.py",
             '''
-            from harnest.context import context
-            from harnest.lifecycle import lifecycle
+            from harnest import context
+            from harnest import lifecycle
             from harnest.plugin_runtime_context import plugin_mutation
             from harnest.plugins.liveplugin import LiveContext, plugin
 

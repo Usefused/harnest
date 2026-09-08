@@ -1,270 +1,64 @@
-"""Public authoring API for Harnest agents."""
+"""Public domain namespaces for Harnest agents."""
 
-from .agent import (
-    Agent,
-    AgentDefinition,
-    AgentRuntimePermissionError,
-    AgentRuntimePrincipal,
-    instruction_file,
-)
-from .a2a import (
-    A2AClient,
-    A2AClientError,
-    A2AResult,
-    A2AUpdate,
-    RemoteAgent,
-    RemoteAgentError,
-)
-from .application import CompiledApplication
-from .bundle import (
-    BundleConventionError,
-    BundleDuplicateError,
-    BundleError,
-    BundleEvalError,
-    BundleExportError,
-    BundleImportError,
-    BundleSkillError,
-    EvalSuite,
-    bundle_agent,
-    compile_agent,
-    compile_application,
-    compile_app,
-    compile_artifact,
-    discover_evals,
-)
-from .mcp import (
-    MCPClient,
-    MCPClientContext,
-    MCPClientLifecycle,
-    MCPHTTPClientOptions,
-)
-from .mcp_context import (
-    MCPClientUnavailableError,
-    MCPContext,
-    MCPContextUnavailableError,
-    MCPLifecycleError,
-    MCPLifecyclePipeline,
-    MCPToolCallError,
-    MCPToolCallRequest,
-    MCPToolLifecycleContext,
-    MCPToolUnavailableError,
-    ManagedMCPClient,
-)
-from .approval import request_human_approval, require_human_approval
-from .client_tool import client_tool
-from .checkpoint import ADKStore, HarnestStore, LangGraphStore
-from .continuation import (
-    ContinuationConflictError,
-    ContinuationFailure,
-    ContinuationProvider,
-    ContinuationRecord,
-    ContinuationStore,
-    ContinuationValidationError,
-    ProviderPendingContinuation,
-    continuation_schema_id,
-)
-from .cron import Cron
-from .asset_policy import Stored
-from .assets import AssetStorage, AssetURLStorage
-from .context import AgentContext, context
-from .context_session import SessionContext, SessionDataError
-from .context_storage import StorageContext
-from .credentials import (
-    Credential,
-    CredentialContext,
-    CredentialError,
-    CredentialProvider,
-    CredentialProviderError,
-    CredentialRequest,
-    CredentialUnavailableError,
-    credentials,
-)
-from .store import MemoryStore, PostgresStore, RedisStore
-from .graph import START, Edge, Event, Graph, GraphContext, Join
-from .http_routes import AgentInvoker, AgentResponse, HTTPRouteError
-from .http_lifecycle import (
-    HTTPCallRequest,
-    HTTPLifecycleContext,
-    HTTPLifecycleError,
-    HTTPResponseHead,
-)
-from .model import LiteLLMLifecycle, LiteLLMModel, ModelConnector, OllamaModel
-from .model_lifecycle import LiteLLMContext
-from .orchestrator import AgentSource, Orchestrator, define_orchestrator
-from .output import AgentMetadata, OutputPolicy, TokenUsage
-from .runtime_contract import ResponseRequest
-from .structured import FrameworkMetadata, StructuredOutputError
-from .telemetry import TelemetryExporter, TelemetryExporterError
-from .lifecycle import DROP_EVENT, Finish, LifecycleContext, Next, lifecycle
-from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
-from .logging import Logger, get_logger
-from .sandbox import (
-    cleanup_control,
-    Sandbox, SandboxBudget, SandboxStatus, SandboxBackend, SandboxContext, SandboxExecutionError,
-    SandboxFile, SandboxRequest, SandboxResult,
-)
-from .skills import (
-    FilesystemSkillSource,
-    SkillCatalogPage,
-    SkillContext,
-    SkillDescriptor,
-    SkillDocument,
-    SkillError,
-    SkillNotFoundError,
-    SkillPage,
-    SkillRegistry,
-    SkillResource,
-    SkillResourceNotSupported,
-    SkillSource,
-    SkillSourceExecutionError,
-    SkillValidationError,
-)
-from .tool import tool
-from .task import TaskHandle, TaskUnavailableError, task
-from .tracing import Tracer, current_trace_ids, get_tracer, span, traced
+from importlib import import_module
+from types import ModuleType
 
+
+# Root exports are feature modules, never individual contracts. Classes,
+# decorators, and functions remain under the domain that owns their public API.
 __all__ = [
-    "Agent",
-    "AgentDefinition",
-    "AgentRuntimePermissionError",
-    "AgentRuntimePrincipal",
-    "AgentInvoker",
-    "AgentMetadata",
-    "AgentResponse",
-    "AgentContext",
-    "AgentSource",
-    "A2AClient",
-    "A2AClientError",
-    "A2AResult",
-    "A2AUpdate",
-    "ADKStore",
-    "AssetStorage",
-    "AssetURLStorage",
-    "CompiledApplication",
-    "ContinuationConflictError",
-    "ContinuationFailure",
-    "ContinuationProvider",
-    "ContinuationRecord",
-    "ContinuationStore",
-    "ContinuationValidationError",
-    "Cron",
-    "Credential",
-    "CredentialContext",
-    "CredentialError",
-    "CredentialProvider",
-    "CredentialProviderError",
-    "CredentialRequest",
-    "CredentialUnavailableError",
-    "SessionContext",
-    "SessionDataError",
-    "StorageContext",
-    "FilesystemSkillSource",
-    "SkillCatalogPage",
-    "SkillContext",
-    "SkillDescriptor",
-    "SkillDocument",
-    "SkillError",
-    "SkillNotFoundError",
-    "SkillPage",
-    "SkillRegistry",
-    "SkillResource",
-    "SkillResourceNotSupported",
-    "SkillSource",
-    "SkillSourceExecutionError",
-    "SkillValidationError",
-    "BundleConventionError",
-    "BundleDuplicateError",
-    "BundleError",
-    "BundleEvalError",
-    "BundleExportError",
-    "BundleImportError",
-    "BundleSkillError",
-    "EvalSuite",
-    "Edge",
-    "Event",
-    "Graph",
-    "GraphContext",
-    "HarnestStore",
-    "HTTPRouteError",
-    "HTTPCallRequest",
-    "HTTPLifecycleContext",
-    "HTTPLifecycleError",
-    "HTTPResponseHead",
-    "Join",
-    "MCPClient",
-    "MCPClientUnavailableError",
-    "MCPClientContext",
-    "MCPClientLifecycle",
-    "MCPContext",
-    "MCPContextUnavailableError",
-    "MCPHTTPClientOptions",
-    "MCPLifecycleError",
-    "MCPLifecyclePipeline",
-    "MCPToolCallError",
-    "MCPToolCallRequest",
-    "MCPToolLifecycleContext",
-    "MCPToolUnavailableError",
-    "ManagedMCPClient",
-    "request_human_approval",
-    "require_human_approval",
-    "LiteLLMContext",
-    "LiteLLMLifecycle",
-    "LiteLLMModel",
-    "LangGraphStore",
-    "MemoryStore",
-    "PostgresStore",
-    "ProviderPendingContinuation",
-    "RedisStore",
-    "RemoteAgent",
-    "RemoteAgentError",
-    "DROP_EVENT",
-    "Finish",
-    "LifecycleContext",
-    "LifecycleCoverage",
-    "CoverageLevel",
-    "lifecycle",
-    "lifecycle_coverage",
-    "Logger",
-    "ModelConnector",
-    "Next",
-    "OllamaModel",
-    "Orchestrator",
-    "OutputPolicy",
-    "ResponseRequest",
-    "FrameworkMetadata",
-    "Sandbox", "SandboxBudget", "SandboxStatus", "cleanup_control",
-    "SandboxBackend",
-    "SandboxContext",
-    "SandboxExecutionError",
-    "SandboxFile",
-    "SandboxRequest",
-    "SandboxResult",
-    "START",
-    "StructuredOutputError",
-    "Stored",
-    "TelemetryExporter",
-    "TelemetryExporterError",
-    "TokenUsage",
-    "TaskHandle",
-    "TaskUnavailableError",
-    "Tracer",
-    "bundle_agent",
-    "client_tool",
-    "compile_agent",
-    "compile_application",
-    "compile_app",
-    "compile_artifact",
-    "continuation_schema_id",
-    "discover_evals",
-    "define_orchestrator",
-    "instruction_file",
-    "current_trace_ids",
+    "a2a",
+    "agent",
+    "application",
+    "approval",
+    "assets",
+    "auth",
+    "bundle",
+    "checkpoint",
+    "compatibility",
+    "content",
     "context",
+    "continuation",
     "credentials",
-    "get_logger",
-    "get_tracer",
-    "span",
-    "tool",
+    "cron",
+    "durable",
+    "evaluation",
+    "extensions",
+    "graph",
+    "http",
+    "lifecycle",
+    "logging",
+    "mcp",
+    "model",
+    "orchestrator",
+    "output",
+    "plugins",
+    "runtime",
+    "sandbox",
+    "server",
+    "session",
+    "skills",
+    "store",
+    "structured",
     "task",
-    "traced",
+    "telemetry",
+    "testing",
+    "tracing",
 ]
+_PUBLIC_DOMAINS = frozenset(__all__)
+
+
+def __getattr__(name: str) -> ModuleType:
+    """Load one public domain without eagerly importing the whole runtime."""
+
+    if name not in _PUBLIC_DOMAINS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f".{name}", __name__)
+    globals()[name] = module
+    return module
+
+
+def __dir__() -> list[str]:
+    """Include lazy public domains in interactive package discovery."""
+
+    return sorted(set(globals()) | _PUBLIC_DOMAINS)

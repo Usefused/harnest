@@ -1,4 +1,4 @@
-"""Tool authoring helpers."""
+"""Primary agent tool decorator implementation."""
 
 from __future__ import annotations
 
@@ -7,19 +7,16 @@ import functools
 import inspect
 from typing import Any, TypeVar, overload
 
-from .client_tool import (
-    ClientToolError, ClientToolExecution, InMemoryClientToolStore, PendingClientTool,
-    client_tool, client_tool_execution, current_transient_media,
-)
-from .tool_lifecycle import ToolCallRequest, ToolLifecycleContext, ToolLifecycleError
+from .assets import AssetScope
+from .client_tool import current_transient_media
+from .stored_media import model_uses_stored, stage_stored_media
 from .structured import (
     PydanticModel,
     callable_output_schema,
     validate_output_schema,
     validate_output_value,
 )
-from .assets import AssetScope
-from .stored_media import model_uses_stored, stage_stored_media
+
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -46,7 +43,7 @@ def tool(
     durable: bool = False,
     permission: str | None = None,
 ) -> F | Callable[[F], F]:
-    """Mark a typed Python function as a managed Harnest tool.
+    """Mark a typed Python function as a managed Harnest agent tool.
 
     Both managed backends wrap callables natively. This decorator preserves the
     function's typed signature, checks that the model receives a description,
@@ -61,7 +58,6 @@ def tool(
         from .agent_principal import validate_permission
 
         validate_permission(permission)
-
     configured_schema = validate_output_schema(
         output_schema, field_name="tool output_schema"
     )
@@ -82,9 +78,8 @@ def tool(
         from .approval import wrap_approved_tool
         from .tool_lifecycle import wrap_lifecycle_tool
 
-        # The lifecycle wrapper stays outside approval and validation so policy
-        # can short-circuit harmlessly, while every executed side effect still
-        # crosses the existing approval and schema boundaries.
+        # Lifecycle stays outside approval and validation so policy can stop a
+        # call while every executed side effect still crosses those boundaries.
         governed = wrap_lifecycle_tool(wrap_approved_tool(wrapped))
         if permission is not None:
             from .agent_principal import attach_required_permissions
@@ -140,7 +135,7 @@ def _validated_tool(function: F, schema: PydanticModel) -> F:
             access = current_transient_media()
             if access is None:
                 return validated
-            from .context import context
+            from . import context
 
             active = context.current()
             validated = await stage_stored_media(
@@ -175,8 +170,4 @@ def _validated_tool(function: F, schema: PydanticModel) -> F:
     return wrapped  # type: ignore[return-value]
 
 
-__all__ = [
-    "client_tool", "tool", "ClientToolError", "ClientToolExecution",
-    "InMemoryClientToolStore", "PendingClientTool", "client_tool_execution",
-    "current_transient_media", "ToolCallRequest", "ToolLifecycleContext", "ToolLifecycleError",
-]
+__all__ = ["tool"]

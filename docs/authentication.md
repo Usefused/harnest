@@ -21,7 +21,8 @@ The request body is never provided. Return one validated `AuthPrincipal`:
 
 ```python
 # lifecycle/authentication.py
-from harnest import Credential, lifecycle
+from harnest import lifecycle
+from harnest.credentials import Credential
 from harnest.auth import AuthPrincipal, AuthenticationError
 from harnest.lib.identity import verify_browser_token
 
@@ -58,7 +59,8 @@ Declare one optional root provider:
 
 ```python
 # lifecycle/credentials.py
-from harnest import CredentialProvider, lifecycle
+from harnest import lifecycle
+from harnest.credentials import CredentialProvider
 from harnest.lib.identity import exchange_for_engine
 
 

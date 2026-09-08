@@ -8,7 +8,8 @@ from typing import Any
 
 from google.adk.plugins.base_plugin import BasePlugin
 
-from .context import activate_context, context, derive_agent_context
+from . import context
+from .context import activate_context, derive_agent_context
 from .lifecycle import LifecycleListener
 from .mcp_context import _is_governed_mcp_operation
 from .tool_arguments import callable_argument_names, unknown_argument_error

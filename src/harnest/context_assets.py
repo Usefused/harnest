@@ -245,7 +245,7 @@ class ScopedAssets:
     def _active_context(self) -> Any:
         """Resolve the active invocation lazily to avoid a context import cycle."""
 
-        from .context import context
+        from . import context
 
         return context.current()
 

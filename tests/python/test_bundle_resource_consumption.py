@@ -54,7 +54,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write(root / "instructions.md", "Root instructions.\n")
         self._write(
             root / "tools" / "root_tool.py",
-            "from harnest.tool import tool\n"
+            "from harnest.agent import tool\n"
             "@tool\n"
             "def root_tool(value):\n"
             "    \"\"\"Use the root tool.\"\"\"\n"
@@ -81,7 +81,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
         self._write(nested / "instructions.md", "Research privately.\n")
         self._write(
             nested / "tools" / "local_tool.py",
-            "from harnest.tool import tool\n"
+            "from harnest.agent import tool\n"
             "@tool\n"
             "def local_tool(value):\n"
             "    \"\"\"Use the local tool.\"\"\"\n"
@@ -327,7 +327,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
     def test_nested_reference_does_not_consume_any_root_resource(self):
         cases = {
             "tools/root_tool.py": (
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def root_tool(value):\n"
                 "    \"\"\"Root tool.\"\"\"\n"
@@ -444,7 +444,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             )
             self._write(
                 root / "native_child" / "tools" / "ignored.py",
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def ignored():\n"
                 "    return 'ignored'\n",
@@ -487,7 +487,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
     def test_callable_graph_rejects_unconsumed_tools_mcp_and_skills(self):
         cases = {
             "tools/lookup.py": (
-                "from harnest.tool import tool\n"
+                "from harnest.agent import tool\n"
                 "@tool\n"
                 "def lookup(value):\n"
                 "    \"\"\"Return the input.\"\"\"\n"

@@ -35,7 +35,7 @@ consumer-owned asynchronous tool can use the installed public API:
 
 ```python
 from harnest.extensions.hatchet import hatchet
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool(durable=True)

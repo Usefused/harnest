@@ -1,5 +1,6 @@
 import unittest
 
+from harnest import context, lifecycle
 from harnest.assets import (
     AssetNotFoundError,
     AssetScope,
@@ -13,14 +14,12 @@ from harnest.context import (
     activate_context,
     activate_agent_scope,
     bind_resource,
-    context,
     create_agent_context,
     derive_agent_context,
     registration_for,
 )
 from harnest.client_tool import client_tool
-from harnest.lifecycle import lifecycle
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 async def _chunks(value: bytes):
@@ -29,7 +28,7 @@ async def _chunks(value: bytes):
 
 class ContextAuthoringTests(unittest.TestCase):
     def test_decorator_records_one_valid_provider_name(self):
-        @context("memory", order=7)
+        @context.provider("memory", order=7)
         def memory():
             return object()
 
@@ -38,17 +37,17 @@ class ContextAuthoringTests(unittest.TestCase):
         self.assertEqual(registration.name, "memory")
         self.assertEqual(registration.order, 7)
         with self.assertRaisesRegex(TypeError, "only one"):
-            context("other")(memory)
+            context.provider("other")(memory)
         with self.assertRaisesRegex(ValueError, "Python identifier"):
-            context("not-valid")
+            context.provider("not-valid")
 
     def test_tools_and_context_providers_are_mutually_exclusive(self):
         def documented():
             """A documented callable."""
 
         for decorate in (
-            lambda: tool(context("memory")(documented)),
-            lambda: context("memory")(tool(documented)),
+            lambda: tool(context.provider("memory")(documented)),
+            lambda: context.provider("memory")(tool(documented)),
         ):
             with self.subTest(order=decorate), self.assertRaisesRegex(
                 TypeError, "context|tool"
@@ -64,8 +63,8 @@ class ContextAuthoringTests(unittest.TestCase):
 
                 def decorate():
                     if lifecycle_first:
-                        return tool_decorator(lifecycle.before_invoke(documented))
-                    return lifecycle.before_invoke(tool_decorator(documented))
+                        return tool_decorator(lifecycle.agent.before(documented))
+                    return lifecycle.agent.before(tool_decorator(documented))
 
                 with self.subTest(
                     tool=tool_decorator.__name__, lifecycle_first=lifecycle_first

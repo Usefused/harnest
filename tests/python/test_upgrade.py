@@ -118,9 +118,10 @@ class RepositoryUpgradeTests(unittest.TestCase):
             lifecycle = (root / "lifecycle" / "audit" / "lifecycle.py").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("from harnest.lifecycle import DROP_EVENT, lifecycle", lifecycle)
-            self.assertIn("@lifecycle.before_invoke", lifecycle)
-            self.assertIn("@lifecycle.on_event", lifecycle)
+            self.assertIn("from harnest import lifecycle", lifecycle)
+            self.assertIn("from harnest.lifecycle import DROP_EVENT", lifecycle)
+            self.assertIn("@lifecycle.agent.before", lifecycle)
+            self.assertIn("@lifecycle.agent.on_event", lifecycle)
             self.assertNotIn("Extension(", lifecycle)
             native = (root / "lifecycle" / "audit" / "adk.py").read_text(
                 encoding="utf-8"
@@ -274,7 +275,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 4",
+                "projectSchema: 5",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
             )
 
@@ -324,6 +325,97 @@ class RepositoryUpgradeTests(unittest.TestCase):
             self.assertIn("agent_metadata=AgentMetadataMode.NORMALIZED", migrated)
             self.assertNotIn("SubagentMessageMode", migrated)
             self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_authoring_namespaces_are_migrated_across_the_project(self):
+        """Move compatibility into upgrade instead of retaining runtime aliases."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(
+                root / "tools" / "memory.py",
+                "from harnest import Agent, MCPClient as Client, context, tool\n"
+                "from harnest.context import ContextResourceError, context\n\n"
+                "@context('memory')\n"
+                "def memory(): return object()\n",
+            )
+            self.write(
+                root / "extensions" / "storage.py",
+                "from harnest.lifecycle import lifecycle\n\n"
+                "@lifecycle.session_store\n"
+                "@lifecycle.checkpointer\n"
+                "def storage(): return object()\n\n"
+                "@lifecycle.asset_store\n"
+                "def assets(): return object()\n\n"
+                "@lifecycle.asset_store()\n"
+                "def default_assets(): return object()\n\n"
+                "@lifecycle.asset_store(order=3)\n"
+                "def ordered_assets(): return object()\n",
+            )
+            self.write(
+                root / "models" / "hooks.py",
+                "import harnest\n\n"
+                "@harnest.lifecycle.before_model\n"
+                "def before_model(context, request): return request\n\n"
+                "@harnest.context('cache')\n"
+                "def cache(): return object()\n",
+            )
+            self.write(
+                root / "tests" / "unit" / "test_tool_imports.py",
+                "from harnest.tool import ClientToolError, client_tool, tool\n"
+                "import harnest.tool\n"
+                "import harnest.tool as agent_tools\n\n"
+                "decorator = harnest.tool.tool\n"
+                "aliased_decorator = agent_tools.tool\n",
+            )
+
+            apply_upgrade(plan_upgrade(root))
+
+            tool = (root / "tools" / "memory.py").read_text(encoding="utf-8")
+            storage = (root / "lifecycle" / "storage.py").read_text(encoding="utf-8")
+            hooks = (root / "models" / "hooks.py").read_text(encoding="utf-8")
+            tool_imports = (
+                root / "tests" / "unit" / "test_tool_imports.py"
+            ).read_text(encoding="utf-8")
+            self.assertIn("from harnest import context", tool)
+            self.assertIn("from harnest.agent import Agent, tool", tool)
+            self.assertIn("from harnest.mcp import MCPClient as Client", tool)
+            self.assertIn("from harnest.context import ContextResourceError", tool)
+            self.assertIn("@context.provider('memory')", tool)
+            self.assertIn("from harnest import lifecycle", storage)
+            self.assertIn("@lifecycle.storage.sessions", storage)
+            self.assertIn("@lifecycle.storage.checkpoints", storage)
+            self.assertEqual(
+                storage.count('@lifecycle.storage.assets("default")'), 2
+            )
+            self.assertIn(
+                '@lifecycle.storage.assets("default", order=3)', storage
+            )
+            self.assertIn("@harnest.lifecycle.model.before", hooks)
+            self.assertIn("@harnest.context.provider('cache')", hooks)
+            self.assertIn(
+                "from harnest.agent import ClientToolError, client_tool, tool",
+                tool_imports,
+            )
+            self.assertIn("import harnest.agent", tool_imports)
+            self.assertIn("import harnest.agent as agent_tools", tool_imports)
+            self.assertIn("decorator = harnest.agent.tool", tool_imports)
+            self.assertIn("aliased_decorator = agent_tools.tool", tool_imports)
+            self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_flat_root_star_import_is_a_manual_blocker(self):
+        """Refuse to guess which public domains an authored star import needs."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(root / "agent.py", "from harnest import *\n")
+
+            plan = plan_upgrade(root)
+
+        self.assertTrue(
+            any("explicit domain imports" in value for value in plan.blockers)
+        )
 
     def test_ambiguous_output_policy_expansion_is_a_manual_blocker(self):
         with tempfile.TemporaryDirectory() as directory:

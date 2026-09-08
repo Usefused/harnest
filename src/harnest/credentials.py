@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .context import context
+from . import context
 
 if TYPE_CHECKING:
     from .runtime_auth import AuthPrincipal

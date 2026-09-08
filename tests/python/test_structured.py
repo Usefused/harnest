@@ -12,7 +12,8 @@ from harnest.structured import (
     provider_output_schema,
     validate_runtime_output,
 )
-from harnest.tool import client_tool, tool
+from harnest.agent import tool
+from harnest.agent import client_tool
 
 
 class Result(BaseModel):

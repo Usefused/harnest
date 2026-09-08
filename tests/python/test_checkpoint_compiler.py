@@ -22,12 +22,12 @@ def _write_project(
         checkpoint_source, encoding="utf-8"
     )
     (root / "extensions" / "storage.py").write_text(
-        "from harnest.lifecycle import lifecycle\n"
+        "from harnest import lifecycle\n"
         "from harnest.session import InMemorySessionStore\n"
         "from harnest.lib.storage import store\n"
-        "@lifecycle.session_store\n"
+        "@lifecycle.storage.sessions\n"
         "def sessions(): return InMemorySessionStore()\n"
-        "@lifecycle.checkpointer\n"
+        "@lifecycle.storage.checkpoints\n"
         "def checkpointer(): return store\n",
         encoding="utf-8",
     )

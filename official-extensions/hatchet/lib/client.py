@@ -9,7 +9,7 @@ from enum import Enum
 import os
 from typing import Any, Protocol
 
-from harnest.context import context
+from harnest import context
 
 from .payloads import normalize_json_mapping
 

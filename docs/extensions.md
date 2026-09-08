@@ -54,16 +54,16 @@ init` keeps both in `lifecycle/storage.py` and returns the shared development
 store from `lib/storage.py`:
 
 ```python
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.lib.storage import store
 
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     return store
 
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     return store
 ```
@@ -79,23 +79,23 @@ competing authorities. See [checkpoints.md](checkpoints.md).
 
 ## Asset storage
 
-Durable multimodal content can use named root `@lifecycle.asset_store`
+Durable multimodal content can use named root `@lifecycle.storage.assets("name")`
 factories. Each
 must be synchronous, zero-argument, uniquely named, and return an
 `AssetStorage` (`AssetStore` remains a compatible import):
 
 ```python
 from harnest.assets import AssetStorage, MemoryAssetStore
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.lib.assets import MyS3AssetStorage
 
 
-@lifecycle.asset_store
+@lifecycle.storage.assets("default")
 def default_assets() -> AssetStorage:
     return MemoryAssetStore()
 
 
-@lifecycle.asset_store(name="media")
+@lifecycle.storage.assets(name="media")
 def media_assets() -> AssetStorage:
     return MyS3AssetStorage(bucket="agent-media")
 ```
@@ -141,7 +141,7 @@ one optional root factory:
 
 ```python
 # lifecycle/output.py
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.output import AgentMetadataMode, OutputPolicy
 
 
@@ -180,7 +180,8 @@ Use one repeatable runtime factory per telemetry destination. Supplying
 # lifecycle/telemetry.py
 import os
 
-from harnest import TelemetryExporter, lifecycle
+from harnest import lifecycle
+from harnest.telemetry import TelemetryExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
@@ -208,15 +209,15 @@ exporter set.
 
 ```python
 # lifecycle/history.py
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
-@lifecycle.before_invoke(order=10)
+@lifecycle.agent.before(order=10)
 async def apply_policy(context, request):
     return request
 
 
-@lifecycle.after_invoke(order=20)
+@lifecycle.agent.after(order=20)
 async def persist_result(context, result):
     await save(result)
     # None observes without replacing the result.
@@ -229,14 +230,14 @@ through `harnest.lib.*`. Nested agents cannot own extensions.
 
 ## Context resources
 
-Use `@context("name")` on a zero-argument provider to publish its returned value
+Use `@context.provider("name")` on a zero-argument provider to publish its returned value
 throughout one invocation:
 
 ```python
-from harnest.context import context
+from harnest import context
 
 
-@context("request_cache")
+@context.provider("request_cache")
 def request_cache():
     return {}
 ```
@@ -245,7 +246,7 @@ The provider runs once at the start of each invocation. Any node, tool, lifecycl
 listener, or subagent executing inside that invocation can retrieve it:
 
 ```python
-from harnest.context import context
+from harnest import context
 
 
 async def recall_node(state):
@@ -256,20 +257,20 @@ async def recall_node(state):
 
 Add `@lifecycle.resource` when Harnest should instead own application-scoped
 startup and reverse-order shutdown. Lifecycle ownership alone does not publish
-the entered value; `@context` makes that exposure explicit:
+the entered value; `@context.provider` makes that exposure explicit:
 
 ```python
 # lifecycle/memory.py
 import os
 
 from google.cloud import bigquery
-from harnest.context import context
-from harnest.lifecycle import lifecycle
+from harnest import context
+from harnest import lifecycle
 from harnest.lib.memory.bigquery import BigQueryMemory
 
 
 @lifecycle.resource
-@context("memory")
+@context.provider("memory")
 async def memory():
     client = bigquery.Client(project=os.environ["GCP_PROJECT"])
     memory = BigQueryMemory(client, table=os.environ["MEMORY_TABLE"])
@@ -289,7 +290,7 @@ invocation/model/authentication listeners. Combining those execution roles is
 rejected. Names must be unique. Unknown names and calls to
 `context.resource(name)` outside an active Harnest invocation fail clearly at
 runtime. Storage and checkpointers remain private unless the author deliberately
-publishes them with `@context`. That returns the raw implementation, so agent
+publishes them with `@context.provider`. That returns the raw implementation, so agent
 code must use `context.user_id` and `context.session_id`, respect leases, and
 avoid mutating framework checkpoint state directly.
 The compiler imports providers without connecting to external services.

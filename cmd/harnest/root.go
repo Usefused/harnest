@@ -48,6 +48,9 @@ Typical workflow:
   harnest extensions install ./harnest-extension-postgres --project my-agent
   harnest extensions install docker --project my-agent
   harnest extensions search postgres
+  harnest init minimal-agent --minimal
+  harnest add subagent researcher --project minimal-agent
+  harnest add tool search --project minimal-agent
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
@@ -133,6 +136,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 	)
 	command.AddCommand(
 		app.newInitCommand(),
+		app.newAddCommand(),
 		app.newCompileCommand(),
 		app.newTestCommand(),
 		app.newRunCommand(),

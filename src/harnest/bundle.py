@@ -635,7 +635,7 @@ def _validate_advanced_langgraph_checkpointer(
         if native is not provider:
             raise BundleConventionError(
                 "advanced LangGraph target must compile with the same LangGraphStore "
-                "returned by @lifecycle.checkpointer"
+                "returned by @lifecycle.storage.checkpoints"
             )
         return
     if not isinstance(provider, HarnestStore):
@@ -941,7 +941,7 @@ def _write_artifact_loader(
     (directory / "agent.py").write_text(
         '"""Generated Harnest application entrypoint; do not edit."""\n\n'
         "from pathlib import Path\n\n"
-        "from harnest import compile_application\n\n"
+        "from harnest.bundle import compile_application\n\n"
         "from harnest.agent_plugin_runtime import plugin_installation\n\n"
         f"with plugin_installation({scope!r}):\n"
         "    application = compile_application(\n"

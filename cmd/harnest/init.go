@@ -18,11 +18,20 @@ import (
 
 var scaffoldNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
-// newInitCommand exposes minimal scaffolds and opt-in authoring samples.
+type scaffoldProfile string
+
+const (
+	scaffoldGuidedProfile  scaffoldProfile = "guided"
+	scaffoldMinimalProfile scaffoldProfile = "minimal"
+	scaffoldExampleProfile scaffoldProfile = "example"
+)
+
+// newInitCommand exposes guided, strict-minimal, and example scaffold profiles.
 func (a *application) newInitCommand() *cobra.Command {
 	var framework string
 	var mode string
 	var example bool
+	var minimal bool
 	command := &cobra.Command{
 		Use:   "init [directory]",
 		Short: "Scaffold a self-contained filesystem agent",
@@ -46,12 +55,19 @@ func (a *application) newInitCommand() *cobra.Command {
 			if mode != "managed" && mode != "advanced" {
 				return fmt.Errorf("--mode must be managed or advanced")
 			}
-			if err := createScaffoldForModeProfile(
-				absolute, name, framework, mode, example,
+			profile := scaffoldProfileForFlags(minimal, example)
+			if err := createScaffoldForProfile(
+				absolute, name, framework, mode, profile,
 			); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.OutOrStdout(), "Initialized agent %s in %s\n", name, absolute)
+			fmt.Fprintf(
+				command.OutOrStdout(),
+				"Initialized %s agent %s in %s\n",
+				profile,
+				name,
+				absolute,
+			)
 			return nil
 		},
 	}
@@ -63,7 +79,25 @@ func (a *application) newInitCommand() *cobra.Command {
 		false,
 		"include ignored code samples in guide-only managed folders",
 	)
+	command.Flags().BoolVar(
+		&minimal,
+		"minimal",
+		false,
+		"create only files required to compile and run the agent",
+	)
+	command.MarkFlagsMutuallyExclusive("example", "minimal")
 	return command
+}
+
+// scaffoldProfileForFlags converts mutually exclusive CLI intent to policy.
+func scaffoldProfileForFlags(minimal, example bool) scaffoldProfile {
+	if minimal {
+		return scaffoldMinimalProfile
+	}
+	if example {
+		return scaffoldExampleProfile
+	}
+	return scaffoldGuidedProfile
 }
 
 func deploymentName(base string) (string, error) {
@@ -131,6 +165,18 @@ func createScaffoldForModeProfile(
 	directory, name, framework, mode string,
 	example bool,
 ) (returnErr error) {
+	profile := scaffoldGuidedProfile
+	if example {
+		profile = scaffoldExampleProfile
+	}
+	return createScaffoldForProfile(directory, name, framework, mode, profile)
+}
+
+// createScaffoldForProfile creates one selected profile or rolls back its files.
+func createScaffoldForProfile(
+	directory, name, framework, mode string,
+	profile scaffoldProfile,
+) (returnErr error) {
 	_, err := compatibilityForFramework(framework)
 	if err != nil {
 		return err
@@ -153,8 +199,11 @@ func createScaffoldForModeProfile(
 		}
 	}()
 
-	files := scaffoldFilesForMode(name, framework, mode, example)
-	if err := createScaffoldDirectories(directory, files, &created); err != nil {
+	files := scaffoldFilesForProfile(name, framework, mode, profile)
+	includeOptional := profile != scaffoldMinimalProfile
+	if err := createScaffoldDirectories(
+		directory, files, &created, includeOptional,
+	); err != nil {
 		return err
 	}
 	return createScaffoldFiles(directory, files, &created)
@@ -165,8 +214,9 @@ func createScaffoldDirectories(
 	root string,
 	files map[string]string,
 	created *[]string,
+	includeOptional bool,
 ) error {
-	for _, relative := range scaffoldDirectories(files) {
+	for _, relative := range scaffoldDirectories(files, includeOptional) {
 		path := filepath.Join(root, relative)
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("create scaffold directory %s: %w", path, err)
@@ -178,11 +228,14 @@ func createScaffoldDirectories(
 
 // scaffoldDirectories derives nested folders from the selected files so ignored
 // examples never leave empty public plugin or skill directories behind.
-func scaffoldDirectories(files map[string]string) []string {
-	directories := map[string]bool{"lib": true, "models": true, "tests": true,
-		"tests/unit": true, "tests/smoke": true}
-	for _, directory := range managedResourceDirectories {
-		directories[directory] = true
+func scaffoldDirectories(files map[string]string, includeOptional bool) []string {
+	directories := map[string]bool{}
+	if includeOptional {
+		directories = map[string]bool{"lib": true, "models": true, "tests": true,
+			"tests/unit": true, "tests/smoke": true}
+		for _, directory := range managedResourceDirectories {
+			directories[directory] = true
+		}
 	}
 	for path := range files {
 		for parent := filepath.Dir(path); parent != "."; parent = filepath.Dir(parent) {
@@ -273,6 +326,18 @@ func scaffoldFilesForMode(
 	name, framework, mode string,
 	example bool,
 ) map[string]string {
+	profile := scaffoldGuidedProfile
+	if example {
+		profile = scaffoldExampleProfile
+	}
+	return scaffoldFilesForProfile(name, framework, mode, profile)
+}
+
+// scaffoldFilesForProfile selects required files, guides, or opt-in examples.
+func scaffoldFilesForProfile(
+	name, framework, mode string,
+	profile scaffoldProfile,
+) map[string]string {
 	adkIdentifier := adkName(name)
 	title := displayName(name)
 	files := map[string]string{
@@ -283,7 +348,7 @@ __pycache__/
 `,
 		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 4
+projectSchema: 5
 `,
 		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent
@@ -355,7 +420,7 @@ root_agent = Graph(
 )
 `, adkIdentifier),
 		"tools/echo.py": `from harnest.logging import get_logger
-from harnest.tool import tool
+from harnest.agent import tool
 from harnest.tracing import span
 
 
@@ -370,31 +435,10 @@ def echo(message: str) -> str:
         logger.info("tool.echo.completed", message_length=len(message))
         return message
 `,
-		"lib/_README.md": `# Reusable Python helpers
-
-Add ordinary Python modules here when agent resources need the same
-implementation. Import a helper through the compiler-owned namespace:
-
-    from harnest.lib.audit import record_change
-
-Nested helper modules follow the same import path. The root-only lib/ directory
-is bundled but never discovered as tools or other agent resources. Keep resource
-declarations in their owning folders. Harnest ignores this underscore-prefixed
-guide; replace it with Python modules as needed.
-`,
-		"models/_README.md": `# Pydantic contracts
-
-Store request, response, tool, WebSocket, and streaming Pydantic models here.
-Import them through the compiler-owned namespace:
-
-    from harnest.models.support import SupportRequest, SupportResponse
-
-Nested modules use the same harnest.models.* path. This root-only folder is
-bundled but never discovered as a capability. Harnest ignores this
-underscore-prefixed guide; replace it with Python modules as needed.
-`,
-		"tasks/_README.md": "Add one durable @task callable per public Python file.\n",
-		"cron/_README.md":  "Add one UTC Cron declaration per public Python file, targeting a root tasks/ export.\n",
+		"lib/_README.md":    scaffoldLibraryGuide(),
+		"models/_README.md": scaffoldModelsGuide(),
+		"tasks/_README.md":  optionalFolderGuide("tasks", mode),
+		"cron/_README.md":   optionalFolderGuide("cron", mode),
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,
 		"mcp/_README.md": `Add direct MCP client connections here. Each public file exports a
@@ -407,14 +451,14 @@ plugins/<name>/ with an Agent Plugins 1.0 plugin.json manifest.
   "name": "starter"
 }
 `,
-		"lifecycle/starter.py": `from harnest.lifecycle import lifecycle
+		"lifecycle/starter.py": `from harnest import lifecycle
 
 
-@lifecycle.after_invoke
+@lifecycle.agent.after
 def observe_result(_context, _result):
     """Observe completed invocations without replacing their result."""
 `,
-		"lifecycle/storage.py": `from harnest.lifecycle import lifecycle
+		"lifecycle/storage.py": `from harnest import lifecycle
 from harnest.store import MemoryStore
 
 
@@ -536,8 +580,8 @@ description: Apply the agent's core instructions when answering a general reques
 	}
 	if framework == "langgraph" {
 		delete(files, "subagents/__init__.py")
-		files["subagents/_README.md"] = "Add subagents here and reference them explicitly as Graph nodes.\n"
-		files["evals/_README.md"] = "Add shared *.evalset.json files and optional test_config.json metrics here.\n"
+		files["subagents/_README.md"] = optionalFolderGuide("subagents", mode)
+		files["evals/_README.md"] = optionalFolderGuide("evals", mode)
 		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_agent_name(agent, tools):
     assert agent.name == %q
     assert tools["echo"]("hello") == "hello"
@@ -589,6 +633,23 @@ root_agent = Agent.advanced(
 )
 `, adkIdentifier, adkIdentifier, adkIdentifier)
 		} else {
+			// Advanced LangGraph passes the same lifecycle-owned store into native
+			// graph compilation, so the authored library module is required source.
+			files["lib/storage.py"] = `from harnest.store import MemoryStore
+
+
+store = MemoryStore()
+`
+			files["lifecycle/storage.py"] = `from harnest import lifecycle
+from harnest.lib.storage import store
+
+
+@lifecycle.storage.sessions
+@lifecycle.storage.checkpoints
+def state_store():
+    """Share the store passed to the native LangGraph checkpointer."""
+    return store
+`
 			files["agent.py"] = fmt.Sprintf(`from langchain.agents import create_agent
 from harnest.agent import Agent
 from harnest.lib.storage import store
@@ -610,8 +671,11 @@ root_agent = Agent.advanced(
 `, adkIdentifier, adkIdentifier)
 		}
 	}
-	if !example {
-		return minimalScaffoldFiles(files, adkIdentifier, framework, mode)
+	if profile == scaffoldMinimalProfile {
+		return strictMinimalScaffoldFiles(files, adkIdentifier, framework, mode)
+	}
+	if profile != scaffoldExampleProfile {
+		return guidedScaffoldFiles(files, adkIdentifier, framework, mode)
 	}
 	if mode == "managed" {
 		return managedExampleScaffoldFiles(files, adkIdentifier, framework)
@@ -619,12 +683,27 @@ root_agent = Agent.advanced(
 	return files
 }
 
-func minimalScaffoldFiles(
+// strictMinimalScaffoldFiles keeps only the runnable root and required state store.
+func strictMinimalScaffoldFiles(
 	files map[string]string,
 	agentName, framework, mode string,
 ) map[string]string {
-	// Minimal projects keep only resources required to compile safely; optional
-	// examples become ignored guides so discovery never grants capabilities.
+	files = guidedScaffoldFiles(files, agentName, framework, mode)
+	for path := range files {
+		if strings.HasSuffix(path, "/_README.md") {
+			delete(files, path)
+		}
+	}
+	return files
+}
+
+// guidedScaffoldFiles keeps the runnable core and adds inert optional guides.
+func guidedScaffoldFiles(
+	files map[string]string,
+	agentName, framework, mode string,
+) map[string]string {
+	// Optional examples become ignored guides so discovery never grants
+	// capabilities in the default profile.
 	for _, relative := range []string{
 		"tools/echo.py",
 		"subagents/__init__.py",
@@ -644,43 +723,15 @@ func minimalScaffoldFiles(
 	for _, directory := range managedResourceDirectories {
 		files[directory+"/_README.md"] = optionalFolderGuide(directory, mode)
 	}
-	files["tests/unit/_README.md"] = "Add offline test_*.py files for agent definitions and local tools.\n"
-	files["tests/smoke/_README.md"] = "Add opt-in test_*.py files for live models, MCP, and HTTP behavior.\n"
+	files["tests/unit/_README.md"] = scaffoldTestGuide("unit")
+	files["tests/smoke/_README.md"] = scaffoldTestGuide("smoke")
 	if mode == "managed" {
 		files["agent.py"] = minimalManagedAgentSource(agentName)
 	}
 	if framework == "langgraph" {
-		files["evals/_README.md"] = "Add shared *.evalset.json files and optional test_config.json metrics here.\n"
+		files["evals/_README.md"] = optionalFolderGuide("evals", mode)
 	}
 	return files
-}
-
-// optionalFolderGuide distinguishes agent capabilities from application lifecycle packages.
-func optionalFolderGuide(directory, mode string) string {
-	if directory == "plugins" {
-		if mode == "advanced" {
-			return "Agent Plugin folders contain plugin.json with optional skills/ and mcp.json; advanced mode wires their content explicitly in agent.py. Put Harnest Extensions in extensions/.\n"
-		}
-		return "Add Agent Plugin folders with an Agent Plugins 1.0 plugin.json manifest and optional skills/ and mcp.json. Put reusable application functionality in extensions/, not plugins/.\n"
-	}
-	if directory == "extensions" {
-		return "Add Harnest Extension packages at extensions/<name>/ with extension.yaml and extension.py. Declare their hooks and resource factories in lifecycle/ inside each package.\n"
-	}
-	if mode == "advanced" && directory != "lifecycle" && directory != "tasks" && directory != "cron" {
-		return "Advanced mode owns framework wiring in agent.py; Harnest does not discover this folder.\n"
-	}
-	guides := map[string]string{
-		"tools":     "Add one @tool callable per public Python file.\n",
-		"tasks":     "Add one durable @task callable per public Python file; Harnest discovers tasks in both authoring modes.\n",
-		"cron":      "Add one UTC Cron declaration per public Python file; Harnest owns scheduling in both authoring modes.\n",
-		"subagents": "Add subagent definitions here; use folders when they own resources.\n",
-		"mcp":       "Add direct MCPClient connections here.\n",
-		"lifecycle": "Add @lifecycle-decorated hooks and resource factories in public Python files here. Reusable packages belong in extensions/.\n",
-		"sandbox":   "Add named Python sandboxes, assign Agent(sandboxes=[...]), then call context.sandboxes from authored tools.\n",
-		"skills":    "Add one Agent Skill directory per progressive instruction pack.\n",
-		"evals":     "Add shared *.evalset.json files and optional test_config.json metrics here.\n",
-	}
-	return guides[directory]
 }
 
 func agentPyproject(name string) string {

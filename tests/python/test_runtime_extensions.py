@@ -6,11 +6,11 @@ from typing import AsyncIterator, Mapping, Sequence
 from unittest.mock import patch
 
 from harnest.lifecycle import LifecycleListener
+from harnest import context
 from harnest.context import (
     ContextResourceError,
     ContextUnavailableError,
     ContextValue,
-    context,
 )
 from harnest.context_session import invocation_session_context
 from harnest.neutral_runtime import (

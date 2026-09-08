@@ -8,9 +8,9 @@ from google.adk.sessions import Session
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 
+from harnest import context
 from harnest.context import (
     activate_context,
-    context,
     create_agent_context,
     revoke_context,
 )

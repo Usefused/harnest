@@ -57,6 +57,27 @@ _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 _STORAGE_PHASES = frozenset(
     {"session_store", "checkpointer", "asset_store", "custom_store"}
 )
+_DECORATOR_PATHS = {
+    "session_store": "storage.sessions",
+    "checkpointer": "storage.checkpoints",
+    "asset_store": "storage.assets",
+    "before_invoke": "agent.before",
+    "after_invoke": "agent.after",
+    "on_event": "agent.on_event",
+    "on_error": "agent.on_error",
+    "before_model": "model.before",
+    "after_model": "model.after",
+    "on_model_error": "model.on_error",
+    "before_tool": "tool.before",
+    "after_tool": "tool.after",
+    "on_tool_error": "tool.on_error",
+    "before_http": "http.before",
+    "after_http": "http.after",
+    "on_http_error": "http.on_error",
+    "before_mcp": "mcp.before",
+    "after_mcp": "mcp.after",
+    "on_mcp_error": "mcp.on_error",
+}
 
 
 class _DropEvent:
@@ -193,7 +214,7 @@ class _StorageDecorators:
 
 
 class _ToolDecorators:
-    """Group portable tool interception without removing flat compatibility."""
+    """Group portable tool interception under its first-class domain path."""
 
     before = _PhaseDecorator("before_tool")
     after = _PhaseDecorator("after_tool")
@@ -213,6 +234,7 @@ class _AgentDecorators:
 
     before = _PhaseDecorator("before_invoke")
     after = _PhaseDecorator("after_invoke")
+    on_event = _PhaseDecorator("on_event")
     on_error = _PhaseDecorator("on_error")
 
 
@@ -242,71 +264,46 @@ class _SkillDecorators:
         return _registration_decorator("skill_source", order=order, name=name)
 
 
-class _LifecycleDecorators:
-    coverage = staticmethod(lifecycle_coverage)
-    # Discovery requires both factories so compiled roots always declare who
-    # owns committed conversation state and resumable in-progress state.
-    session_store = _PhaseDecorator("session_store")
-    checkpointer = _PhaseDecorator("checkpointer")
-    credential_provider = _PhaseDecorator("credential_provider")
-    http_routes = _PhaseDecorator("http_routes")
-    output_policy = _PhaseDecorator("output_policy")
-    telemetry_exporter = _PhaseDecorator("telemetry_exporter")
-    resource = _PhaseDecorator("resource")
-    authenticate = _PhaseDecorator("authenticate")
-    before_invoke = _PhaseDecorator("before_invoke")
-    after_invoke = _PhaseDecorator("after_invoke")
-    on_event = _PhaseDecorator("on_event")
-    on_error = _PhaseDecorator("on_error")
-    before_model = _PhaseDecorator("before_model")
-    after_model = _PhaseDecorator("after_model")
-    on_model_error = _PhaseDecorator("on_model_error")
-    before_tool = _PhaseDecorator("before_tool")
-    after_tool = _PhaseDecorator("after_tool")
-    on_tool_error = _PhaseDecorator("on_tool_error")
-    storage = _StorageDecorators()
-    tool = _ToolDecorators()
-    model = _ModelDecorators()
-    agent = _AgentDecorators()
-    http = _HTTPDecorators()
-    mcp = _MCPDecorators()
-    skills = _SkillDecorators()
+# Public lifecycle authoring is the module namespace itself. Keeping the
+# decorator families here prevents ``harnest.lifecycle.lifecycle`` from becoming
+# a second, import-style-dependent public surface.
+coverage = lifecycle_coverage
+storage = _StorageDecorators()
+tool = _ToolDecorators()
+model = _ModelDecorators()
+agent = _AgentDecorators()
+http = _HTTPDecorators()
+mcp = _MCPDecorators()
+skills = _SkillDecorators()
 
-    def asset_store(
-        self,
-        function: Callable[..., Any] | None = None,
-        *,
-        name: str = "default",
-        order: int = 0,
-    ) -> Any:
-        """Declare one named binary storage authority.
+credential_provider = _PhaseDecorator("credential_provider")
+http_routes = _PhaseDecorator("http_routes")
+output_policy = _PhaseDecorator("output_policy")
+telemetry_exporter = _PhaseDecorator("telemetry_exporter")
+resource = _PhaseDecorator("resource")
+authenticate = _PhaseDecorator("authenticate")
 
-        The unnamed decorator remains the ``default`` store for backward
-        compatibility.  Names select storage policy; they never carry tenant
-        or session identity.
-        """
 
-        _validate_storage_name(name, kind="asset store")
-        decorator = _registration_decorator(
-            "asset_store", order=order, name=name
-        )
-        return decorator if function is None else decorator(function)
+def adk_plugin(
+    function: Callable[..., Any] | None = None, *, order: int = 0
+) -> Any:
+    """Register a native ADK plugin factory at the lifecycle boundary."""
 
-    def adk_plugin(
-        self, function: Callable[..., Any] | None = None, *, order: int = 0
-    ) -> Any:
-        decorator = _registration_decorator(
-            "adk_plugin", order=order, framework="adk"
-        )
-        return decorator if function is None else decorator(function)
+    decorator = _registration_decorator(
+        "adk_plugin", order=order, framework="adk"
+    )
+    return decorator if function is None else decorator(function)
 
-    def langgraph_middleware(
-        self, function: Callable[..., Any] | None = None, *, order: int = 0
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        decorator = _registration_decorator(
-            "langgraph_middleware", order=order, framework="langgraph"
-        )
-        return decorator if function is None else decorator(function)
+
+def langgraph_middleware(
+    function: Callable[..., Any] | None = None, *, order: int = 0
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a native LangGraph middleware factory at the lifecycle boundary."""
+
+    decorator = _registration_decorator(
+        "langgraph_middleware", order=order, framework="langgraph"
+    )
+    return decorator if function is None else decorator(function)
 
 
 def _registration_decorator(
@@ -381,7 +378,10 @@ def _validate_storage_name(
         raise ValueError(f"{kind} name must be a valid {identifier} identifier")
 
 
-lifecycle = _LifecycleDecorators()
+def _decorator_path_for_phase(phase: str) -> str:
+    """Return the sole public decorator path for an internal lifecycle phase."""
+
+    return _DECORATOR_PATHS.get(phase, phase)
 
 
 __all__ = [
@@ -396,6 +396,21 @@ __all__ = [
     "ModelLifecycleContext",
     "ModelMessage",
     "Next",
-    "lifecycle",
+    "adk_plugin",
+    "agent",
+    "authenticate",
+    "coverage",
+    "credential_provider",
+    "http",
+    "http_routes",
+    "langgraph_middleware",
+    "mcp",
+    "model",
+    "output_policy",
     "registrations_for",
+    "resource",
+    "skills",
+    "storage",
+    "telemetry_exporter",
+    "tool",
 ]

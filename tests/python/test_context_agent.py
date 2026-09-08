@@ -9,7 +9,7 @@ from unittest.mock import patch
 from harnest.application import CompiledApplication
 from harnest.approval import request_human_approval
 from harnest.client_tool import client_tool
-from harnest.context import context
+from harnest import context
 from harnest.context_agent import (
     AgentContinuationUnsupportedError,
     AgentInvocationUnavailableError,

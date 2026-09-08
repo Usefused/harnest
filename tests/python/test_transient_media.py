@@ -16,7 +16,8 @@ from harnest.client_tool import (
     current_transient_media,
 )
 from harnest.content import Image, ImageConstraints
-from harnest.tool import client_tool, tool
+from harnest.agent import tool
+from harnest.agent import client_tool
 from harnest.transient_media import (
     TransientMediaAccess,
     TransientMediaLeaseStore,

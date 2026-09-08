@@ -38,16 +38,16 @@ class ExtensionCompilerTests(unittest.TestCase):
         library = path.parent / "lib"
         library.mkdir(exist_ok=True)
         (path / "sessions.py").write_text(
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "from harnest.session import InMemorySessionStore\n"
-            "@lifecycle.session_store\n"
+            "@lifecycle.storage.sessions\n"
             "def session_store(): return InMemorySessionStore()\n",
             encoding="utf-8",
         )
         (path / "checkpoints.py").write_text(
             "from harnest.lib.checkpoints import checkpoints\n"
-            "from harnest.lifecycle import lifecycle\n"
-            "@lifecycle.checkpointer\n"
+            "from harnest import lifecycle\n"
+            "@lifecycle.storage.checkpoints\n"
             "def checkpointer(): return checkpoints\n",
             encoding="utf-8",
         )
@@ -65,10 +65,10 @@ class ExtensionCompilerTests(unittest.TestCase):
             path.mkdir()
             self._session_store(path)
             (path / "history.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.before_invoke\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.agent.before\n"
                 "def before(context, value): return value\n"
-                "@lifecycle.after_invoke\n"
+                "@lifecycle.agent.after\n"
                 "def after(context, value): return value\n",
                 encoding="utf-8",
             )
@@ -99,7 +99,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             path.mkdir()
             self._session_store(path)
             (path / "guardrail.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.langgraph_middleware\n"
                 "def middleware():\n"
                 "  from langchain.agents.middleware import AgentMiddleware\n"
@@ -134,7 +134,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             path.mkdir()
             self._session_store(path)
             (path / "audit.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.adk_plugin\n"
                 "def plugin():\n"
                 "  from google.adk.plugins.base_plugin import BasePlugin\n"
@@ -205,8 +205,8 @@ class ExtensionCompilerTests(unittest.TestCase):
             path.mkdir()
             self._session_store(path)
             (path / "history.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
-                "@lifecycle.on_error\n"
+                "from harnest import lifecycle\n"
+                "@lifecycle.agent.on_error\n"
                 "def notify(context, error): pass\n",
                 encoding="utf-8",
             )
@@ -240,7 +240,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             path.mkdir()
             self._session_store(path)
             (path / "native.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.langgraph_middleware\n"
                 "def native():\n"
                 "  from langchain.agents.middleware import AgentMiddleware\n"

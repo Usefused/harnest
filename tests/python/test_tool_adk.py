@@ -4,9 +4,9 @@ import unittest
 
 from google.adk.tools import FunctionTool
 
+from harnest import context
 from harnest.context import (
     activate_context,
-    context,
     create_agent_context,
     revoke_context,
 )

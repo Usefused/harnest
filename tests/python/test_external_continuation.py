@@ -501,7 +501,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from harnest.checkpoint_langgraph import HarnestCheckpointSaver
         from harnest.durable import langgraph_durable_callable
         from harnest.runtime_langgraph import LangGraphRuntimeDriver
-        from harnest.tool import tool
+        from harnest.agent import tool
 
         store = self.store
         request = _request(

@@ -159,7 +159,7 @@ class FrameworkArtifactTests(unittest.TestCase):
             root / "tools" / "protected_send.py",
             """
             from harnest.approval import require_human_approval
-            from harnest.tool import tool
+            from harnest.agent import tool
 
 
             @tool
@@ -248,7 +248,7 @@ class FrameworkArtifactTests(unittest.TestCase):
             """
             from dataclasses import replace
 
-            from harnest.lifecycle import lifecycle
+            from harnest import lifecycle
             from harnest.runtime_auth import AuthPrincipal, AuthenticationError
 
 
@@ -261,7 +261,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 return AuthPrincipal(user_id)
 
 
-            @lifecycle.before_model
+            @lifecycle.model.before
             def identify_model_request(context, request):
                 messages = list(request.messages)
                 latest = messages[-1]
@@ -591,7 +591,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from contextlib import contextmanager
                 from pathlib import Path
 
-                from harnest.lifecycle import lifecycle
+                from harnest import lifecycle
 
 
                 @lifecycle.resource
@@ -735,7 +735,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from google.genai import types
                 from harnest.agent import Agent
                 from harnest.approval import request_human_approval
-                from harnest.tool import tool
+                from harnest.agent import tool
 
 
                 @tool
@@ -806,7 +806,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from google.genai import types
                 from harnest.agent import Agent
                 from harnest.approval import require_human_approval
-                from harnest.tool import tool
+                from harnest.agent import tool
 
 
                 @tool
@@ -1013,9 +1013,9 @@ class FrameworkArtifactTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "extensions" / "checkpoints.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.lib.checkpoints import checkpoints\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return checkpoints\n",
                 encoding="utf-8",
             )
@@ -1094,9 +1094,9 @@ class FrameworkArtifactTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "extensions" / "checkpoints.py").write_text(
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "from harnest.lib.checkpoints import checkpoints\n"
-                "@lifecycle.checkpointer\n"
+                "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return checkpoints\n",
                 encoding="utf-8",
             )

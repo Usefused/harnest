@@ -21,7 +21,7 @@ from harnest.approval import (
 )
 from harnest.bundle import BundleExportError, BundleImportError, _discover_mcp
 from harnest.client_tool import client_tool
-from harnest.tool import tool
+from harnest.agent import tool
 from harnest.mcp import MCPClient
 
 

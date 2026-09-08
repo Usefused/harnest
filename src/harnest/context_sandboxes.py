@@ -151,7 +151,8 @@ class SandboxHandle:
 
 def _require_scope(registry: SandboxRegistry, owner: Any) -> Any:
     """Prevent retained handles crossing applications, agents, or invocations."""
-    from .context import ContextUnavailableError, context
+    from . import context
+    from .context import ContextUnavailableError
 
     owner._require_active()
     active = context.current()

@@ -276,7 +276,7 @@ class ManagedMCPClient:
     def _require_active(self) -> None:
         """Require both the binding lifetime and its exact invocation identity."""
 
-        from .context import context
+        from . import context
 
         try:
             active = context.current()
@@ -395,7 +395,7 @@ def _activate_mcp_context(
 ) -> Iterator[None]:
     """Bind governed clients and revoke framework and child-task references."""
 
-    from .context import context
+    from . import context
 
     from .agent_principal import permissions_are_available
 
@@ -514,7 +514,7 @@ async def _safe_framework_call(
 def _call_context(client_name: str, tool_name: str) -> MCPToolLifecycleContext:
     """Derive private call identity only from the active Harnest invocation."""
 
-    from .context import context
+    from . import context
 
     active = context.current()
     return MCPToolLifecycleContext(

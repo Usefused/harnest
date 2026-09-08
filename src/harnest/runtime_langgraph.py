@@ -1807,7 +1807,7 @@ def _is_native_tool_call(tool_input: Any) -> bool:
 def _has_agent_context() -> bool:
     """Detect the outer runtime authority without broadening direct-driver use."""
 
-    from .context import context
+    from . import context
 
     try:
         context.current()

@@ -1,6 +1,6 @@
 apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 4
+projectSchema: 5
 framework:
   name: adk
   distribution: google-adk

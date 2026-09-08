@@ -2,10 +2,10 @@ import asyncio
 import traceback
 import unittest
 
+from harnest import context
 from harnest.context import (
     ContextUnavailableError,
     activate_context,
-    context,
     create_agent_context,
 )
 from harnest.credentials import (

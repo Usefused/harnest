@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from harnest.credentials import Credential, CredentialProvider, CredentialRequest
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
 class HatchetEnvironmentCredentials(CredentialProvider):

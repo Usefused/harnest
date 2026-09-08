@@ -25,10 +25,10 @@ with warnings.catch_warnings():
 from .context import (
     AgentContext,
     activate_context,
-    context,
     create_agent_context,
     revoke_context,
 )
+from . import context
 from .credentials import (
     CredentialProvider,
     _activate_credential_provider,

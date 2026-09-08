@@ -24,10 +24,10 @@ from .agent_principal import (
 from .context import (
     ContextUnavailableError,
     activate_context,
-    context,
     create_agent_context,
     revoke_context,
 )
+from . import context
 from .context_session import invocation_session_context
 from .context_agent import LocalAgentRuntime, activate_context_agent
 from .continuation import (

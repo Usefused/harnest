@@ -1,4 +1,4 @@
-"""Framework-neutral managed agent definitions."""
+"""Framework-neutral managed agent definitions and tool contracts."""
 
 from __future__ import annotations
 
@@ -13,6 +13,16 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 from pydantic import BaseModel
 
 from .agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
+from ._agent_tool import tool
+from .client_tool import (
+    ClientToolError,
+    ClientToolExecution,
+    InMemoryClientToolStore,
+    PendingClientTool,
+    client_tool,
+    client_tool_execution,
+    current_transient_media,
+)
 from .mcp import MCPClient
 from .mcp_lifecycle import propagate_mcp_lifecycles
 from .model import ModelInput, resolve_model
@@ -24,6 +34,11 @@ from .structured import (
     framework_metadata_field,
     provider_output_schema,
     validate_output_schema,
+)
+from .tool_lifecycle import (
+    ToolCallRequest,
+    ToolLifecycleContext,
+    ToolLifecycleError,
 )
 
 Tool = Callable[..., Any] | Any
@@ -365,5 +380,16 @@ __all__ = [
     "AgentDefinition",
     "AgentRuntimePermissionError",
     "AgentRuntimePrincipal",
+    "ClientToolError",
+    "ClientToolExecution",
+    "InMemoryClientToolStore",
+    "PendingClientTool",
+    "ToolCallRequest",
+    "ToolLifecycleContext",
+    "ToolLifecycleError",
+    "client_tool",
+    "client_tool_execution",
+    "current_transient_media",
     "instruction_file",
+    "tool",
 ]

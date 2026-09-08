@@ -177,7 +177,8 @@ def main() -> int:
 
 
 _AGENT = '''import os
-from harnest import Agent, LiteLLMModel
+from harnest.agent import Agent
+from harnest.model import LiteLLMModel
 
 root_agent = Agent(
     name="named_sandbox_live", sandboxes=["calculations", "research"],
@@ -197,7 +198,7 @@ Never simulate execution. Return the sha256, both provider-generated receipts
 from metadata exactly, and the access denial outcome.
 '''
 
-_SANDBOX = '''from harnest import Sandbox
+_SANDBOX = '''from harnest.sandbox import Sandbox
 from harnest.lib.provider import build
 
 EXPORT = Sandbox.provider(
@@ -207,7 +208,8 @@ EXPORT = Sandbox.provider(
 )
 '''
 
-_BUSINESS_TOOL = '''from harnest import context, tool
+_BUSINESS_TOOL = '''from harnest import context
+from harnest.agent import tool
 from harnest.sandbox_types import sandbox_metadata_to_dict
 
 
@@ -224,7 +226,8 @@ async def EXPORT(nonce: str) -> dict:
             "metadata": sandbox_metadata_to_dict(result.metadata)}
 '''
 
-_DENIAL_TOOL = '''from harnest import context, tool
+_DENIAL_TOOL = '''from harnest import context
+from harnest.agent import tool
 from harnest.context import ContextResourceError
 from harnest.lib.provider import record
 
@@ -248,7 +251,7 @@ from importlib.metadata import version
 from pathlib import Path
 import time
 import uuid
-from harnest import Sandbox, SandboxResult
+from harnest.sandbox import Sandbox, SandboxResult
 from harnest_extension_docker.extension import docker_sandbox
 from harnest.sandbox_types import sandbox_metadata_to_dict
 

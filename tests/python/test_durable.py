@@ -10,7 +10,7 @@ from harnest.durable import (
     current_native_durable_call,
     langgraph_durable_callable,
 )
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 class DurableToolTests(unittest.IsolatedAsyncioTestCase):

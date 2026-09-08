@@ -1,7 +1,7 @@
 """Portable persistence used by the managed Hatchet consumer fixture."""
 
 from harnest.checkpoint import MemoryStore
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.session import InMemorySessionStore
 
 

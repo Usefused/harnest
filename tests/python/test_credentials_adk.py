@@ -14,10 +14,10 @@ from google.adk.auth.credential_service.base_credential_service import (
 )
 from google.adk.plugins.base_plugin import BasePlugin
 
+from harnest import context
 from harnest.context import (
     ContextUnavailableError,
     activate_context,
-    context,
     create_agent_context,
     revoke_context,
 )

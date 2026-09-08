@@ -13,7 +13,8 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from harnest import context, tool
+from harnest import context
+from harnest.agent import tool
 from harnest.context import ContextUnavailableError, optional_active_context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.eval_adk import adk_evaluation_runtime

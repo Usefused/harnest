@@ -6,7 +6,9 @@ from dataclasses import replace
 import unittest
 from unittest.mock import Mock
 
-from harnest import Agent, Sandbox, SandboxFile, SandboxResult, context
+from harnest import context
+from harnest.agent import Agent
+from harnest.sandbox import Sandbox, SandboxFile, SandboxResult
 from harnest.agent_scope_adk import managed_adk_agent_type, scope_native_adk_agent
 from harnest.backends.langgraph import _agent_tools
 from harnest.context import (

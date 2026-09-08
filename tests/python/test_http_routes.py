@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from _session_store_fixture import write_session_store
-from harnest import AgentRuntimePrincipal
+from harnest.agent import AgentRuntimePrincipal
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.http_routes import (
     AgentInvoker,

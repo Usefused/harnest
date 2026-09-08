@@ -44,7 +44,7 @@ declare one explicit runtime-owned field on either output model:
 ```python
 from typing import Any
 from pydantic import BaseModel
-from harnest import FrameworkMetadata
+from harnest.structured import FrameworkMetadata
 
 class TurnMetadata(BaseModel):
     adk: dict[str, Any] | None = None
@@ -97,7 +97,7 @@ retrievable.
 For deliberate durability, annotate the field with
 `Stored(store="media", path="screenshots", expires_in=60,
 retention=timedelta(days=7))` and configure the named storage with
-`@lifecycle.asset_store(name="media")`. An inline value is saved before it
+`@lifecycle.storage.assets(name="media")`. An inline value is saved before it
 becomes framework-visible; the durable value carries scoped `assetId` and
 `store` fields. A URL-capable storage generates a fresh signed URL only at the
 model-call boundary. Agent code can use `context.assets.stat/get/open/delete`
@@ -128,7 +128,7 @@ subagent remains flat and composes those capabilities through its native target.
 ## Tools
 
 ```python
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool
@@ -166,7 +166,7 @@ For work implemented by the connected browser, desktop, or mobile client,
 declare a typed stub instead:
 
 ```python
-from harnest.tool import client_tool
+from harnest.agent import client_tool
 
 
 @client_tool
@@ -237,7 +237,7 @@ def normalize_ticket_id(value: str) -> str:
 
 # tools/lookup_ticket.py
 from harnest.lib.validation import normalize_ticket_id
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool
@@ -377,7 +377,7 @@ Declare protected local tools beside their implementation:
 
 ```python
 from harnest.approval import require_human_approval
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool
@@ -392,7 +392,7 @@ async protected block instead of decorating the whole tool:
 
 ```python
 from harnest.approval import request_human_approval
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool
@@ -495,16 +495,25 @@ contributing a tool.
 
 Suspension commits an opaque Harnest continuation and returns
 `status: in_progress`; poll `GET /responses/{responseId}?sessionId=...` using
-the same authenticated principal. Provider completion and the native framework
-checkpoint may arrive in either order; once both are durable, one replica
-atomically claims the wait. If an Agent Runtime Principal is active, the
-continuation persists only a private versioned snapshot of permission names and
-reconstructs fresh opaque authority on the resuming replica. ADK injects the
-persisted `FunctionResponse` and does not restore the Python tool frame.
-LangGraph re-enters its checkpointed tool node, so code before the wait and
-external submission must be idempotent. Harnest shutdown never owns or cancels
-the external job. A `HarnestStore` checkpoint provider is required; opaque
-native advanced checkpointers cannot provide this portable ownership boundary.
+the same authenticated principal. A live WebSocket remains attached after that
+frame: it can receive the eventual result or submit `response.cancel` for the
+same response. Provider completion and the native framework checkpoint may
+arrive in either order; once both are durable, one replica atomically claims the
+wait. A result validator may be asynchronous and always completes before the
+result is persisted or ADK receives it, so restart-safe provider verification
+belongs there.
+
+While an ADK live WebSocket remains attached to its originating replica,
+completion resumes the suspended tool frame before returning to the model loop.
+After transport loss or replica replacement, ADK falls back to injecting the
+already-verified persisted `FunctionResponse`; it cannot reconstruct arbitrary
+Python local variables. LangGraph re-enters its checkpointed tool node, so code
+before the wait and external submission must be idempotent. If an Agent Runtime
+Principal is active, the continuation persists only a private versioned snapshot
+of permission names and reconstructs fresh opaque authority on the resuming
+replica. Harnest shutdown never owns or cancels the external job. A
+`HarnestStore` checkpoint provider is required; opaque native advanced
+checkpointers cannot provide this portable ownership boundary.
 
 `@tool(durable=True)` opts an asynchronous managed tool into Harnest's native
 durability boundary. ADK receives a long-running function tool and LangGraph
@@ -544,7 +553,7 @@ their continuations are process-local after the task returns.
 Schedule an existing task from root `cron/<name>.py`:
 
 ```python
-from harnest import Cron
+from harnest.cron import Cron
 from tasks.build_report import build_report
 
 
@@ -578,10 +587,10 @@ root or Harnest Extension `lifecycle/` may contain helpers, but only decorated
 functions execute:
 
 ```python
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
 
-@lifecycle.after_invoke(order=20)
+@lifecycle.agent.after(order=20)
 async def after_invoke(context, result):
     await store.write(context.invocation_id, result.text)
 ```
@@ -625,7 +634,7 @@ not provisional subagent narration. To expose narration attached to subagent
 tool calls, declare one root factory:
 
 ```python
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 from harnest.output import AgentMetadataMode, OutputPolicy
 
 
@@ -695,7 +704,7 @@ nested agents cannot register competing destinations.
 
 Use public domain modules for authored imports: `harnest.auth` for principals,
 `harnest.http` for route/lifecycle contracts, `harnest.server` for configuration,
-`harnest.tool` for client tools and tool lifecycle types, `harnest.mcp` for MCP
+`harnest.agent` for agent and tool contracts, `harnest.mcp` for MCP
 contexts, `harnest.model` for model contexts, `harnest.context` for scoped context
 types, `harnest.runtime` for runtime contracts, `harnest.assets` for `Stored`, and
 `harnest.store` for storage contracts. Query lifecycle guarantees with
@@ -751,7 +760,7 @@ HTTP or WebSocket connection and return `AuthPrincipal(user_id=...)`. The
 principal scopes neutral session and execution routes. Do not derive identity
 from session payloads or use a session store as an authenticator.
 
-Exactly one synchronous, zero-argument `@lifecycle.session_store` factory must
+Exactly one synchronous, zero-argument `@lifecycle.storage.sessions` factory must
 return a `SessionStore` with tenant-scoped CRUD and an exclusive execution
 lease. Harnest owns that instance and adapts it to ADK or LangGraph; host
 storage injection is mutually exclusive. Production
@@ -759,19 +768,19 @@ stores must persist durably, list with set-based queries, coordinate leases
 across replicas, and emit privacy-safe OTEL audit signals after committed
 mutations. The generated `MemoryStore` declaration is development-only.
 
-Every agent also declares exactly one synchronous `@lifecycle.checkpointer`
+Every agent also declares exactly one synchronous `@lifecycle.storage.checkpoints`
 factory. Keep a shared built-in store in root `lib/` and return the same object
 from both storage factories:
 
 ```python
 from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     return store
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     return store
 ```
@@ -793,10 +802,10 @@ the same not-found result for missing and foreign runs. Never expose a helper
 that loads checkpoints by `run_id` alone.
 
 For other database, vector-store, embedding, or HTTP clients, declare a
-zero-argument provider and decorate it with `@context("name")`. On its own the
+zero-argument provider and decorate it with `@context.provider("name")`. On its own the
 provider runs once per invocation. Add `@lifecycle.resource` when Harnest must
 start it once for the application and close it after framework shutdown.
-Lifecycle ownership stays private unless `@context` explicitly publishes the
+Lifecycle ownership stays private unless `@context.provider` explicitly publishes the
 returned or yielded value. Nodes, tools, lifecycle listeners, and subagents use
 `context.resource("name")` during execution. Keep provider imports free of
 connection or network work. Duplicate names and incompatible decorator roles
@@ -807,7 +816,7 @@ Harnest binds context for `/responses`, `/live`, `run_agent_message`, and their
 managed nodes, tools, listeners, and subagents. Direct native framework
 endpoints and native targets called outside the compiled Harnest application do
 not receive it. Storage and checkpointer factories may be combined with
-`@context` when deliberate direct access is required; their ownership and
+`@context.provider` when deliberate direct access is required; their ownership and
 tenant guarantees still apply.
 
 ## Advanced applications

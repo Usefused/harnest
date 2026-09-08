@@ -5,7 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harnest.context import ContextResourceError, context
+from harnest import context
+from harnest.context import ContextResourceError
 from harnest.bundle import compile_application
 from harnest.credentials import (
     Credential,
@@ -98,16 +99,16 @@ def _request():
 def _storage_extensions(root: Path) -> None:
     root.mkdir(parents=True)
     (root / "sessions.py").write_text(
-        "from harnest.lifecycle import lifecycle\n"
+        "from harnest import lifecycle\n"
         "from harnest.session import InMemorySessionStore\n"
-        "@lifecycle.session_store\n"
+        "@lifecycle.storage.sessions\n"
         "def sessions(): return InMemorySessionStore()\n",
         encoding="utf-8",
     )
     (root / "checkpoints.py").write_text(
         "from harnest.checkpoint import MemoryStore\n"
-        "from harnest.lifecycle import lifecycle\n"
-        "@lifecycle.checkpointer\n"
+        "from harnest import lifecycle\n"
+        "@lifecycle.storage.checkpoints\n"
         "def checkpoints(): return MemoryStore()\n",
         encoding="utf-8",
     )
@@ -228,7 +229,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
             root = Path(temporary) / "extensions"
             _storage_extensions(root)
             (root / "credentials.py").write_text(
-                "from harnest import Credential, CredentialProvider, lifecycle\n"
+                "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"
                 "class Provider(CredentialProvider):\n"
                 "  async def resolve(self, request): return Credential('token')\n"
                 "  def __repr__(self): return 'Provider<private-token>'\n"
@@ -265,7 +266,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 discover_extensions(root, framework="adk")
 
             first.write_text(
-                "from harnest import Credential, CredentialProvider, lifecycle\n"
+                "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"
                 "class Provider(CredentialProvider):\n"
                 "  async def resolve(self, request): return Credential('token')\n"
                 "@lifecycle.credential_provider\n"
@@ -306,7 +307,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "agent.py").write_text(
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "root_agent = Agent(name='root', model='unused/model')\n",
                 encoding="utf-8",
             )
@@ -314,7 +315,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
             extensions = root / "extensions"
             _storage_extensions(extensions)
             (extensions / "credentials.py").write_text(
-                "from harnest import Credential, CredentialProvider, lifecycle\n"
+                "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"
                 "class Provider(CredentialProvider):\n"
                 "  async def resolve(self, request): return Credential('token')\n"
                 "@lifecycle.credential_provider\n"
@@ -336,7 +337,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 "from google.adk.apps import App\n"
                 "from google.adk.agents import LlmAgent\n"
                 "from google.adk.plugins.base_plugin import BasePlugin\n"
-                "from harnest import Agent\n"
+                "from harnest.agent import Agent\n"
                 "root_agent = Agent.advanced(\n"
                 "  App(name='root', root_agent=LlmAgent(\n"
                 "    name='root', model='gemini-test'\n"
@@ -348,7 +349,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
             extensions = root / "extensions"
             _storage_extensions(extensions)
             (extensions / "credentials.py").write_text(
-                "from harnest import Credential, CredentialProvider, lifecycle\n"
+                "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"
                 "class Provider(CredentialProvider):\n"
                 "  async def resolve(self, request): return Credential('token')\n"
                 "@lifecycle.credential_provider\n"

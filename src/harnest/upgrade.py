@@ -18,33 +18,212 @@ import yaml
 
 from .server_config import ServerConfigError, project_server_config_yaml
 from .application_layout import ApplicationLayoutError, lifecycle_directory
+from .lifecycle import _decorator_path_for_phase
 
 
-PROJECT_SCHEMA = 4
+PROJECT_SCHEMA = 5
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 4
+projectSchema: 5
 """
 _STORAGE_LIBRARY = """from harnest.store import MemoryStore
 
 
 store = MemoryStore()
 """
-_STORAGE_EXTENSION = '''from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
+_STORAGE_EXTENSION = '''from harnest import lifecycle
+from harnest.lib.storage import store
 
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     """Return the store for completed conversation and business state."""
     return store
 
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     """Return the same store for private in-progress execution state."""
     return store
 '''
+
+# Schema 5 removes the package-level object facade. Keep this reviewed map in
+# the migrator so every former root contract moves to its owning public domain.
+_FLAT_ROOT_IMPORT_GROUPS = {
+    "a2a": frozenset(
+        {
+            "A2AClient",
+            "A2AClientError",
+            "A2AResult",
+            "A2AUpdate",
+            "RemoteAgent",
+            "RemoteAgentError",
+        }
+    ),
+    "agent": frozenset(
+        {
+            "Agent",
+            "AgentDefinition",
+            "AgentRuntimePermissionError",
+            "AgentRuntimePrincipal",
+            "client_tool",
+            "instruction_file",
+            "tool",
+        }
+    ),
+    "application": frozenset({"CompiledApplication"}),
+    "approval": frozenset(
+        {"request_human_approval", "require_human_approval"}
+    ),
+    "assets": frozenset({"AssetStorage", "AssetURLStorage", "Stored"}),
+    "bundle": frozenset(
+        {
+            "BundleConventionError",
+            "BundleDuplicateError",
+            "BundleError",
+            "BundleEvalError",
+            "BundleExportError",
+            "BundleImportError",
+            "BundleSkillError",
+            "EvalSuite",
+            "bundle_agent",
+            "compile_agent",
+            "compile_app",
+            "compile_application",
+            "compile_artifact",
+            "discover_evals",
+        }
+    ),
+    "checkpoint": frozenset({"ADKStore", "HarnestStore", "LangGraphStore"}),
+    "context": frozenset(
+        {"AgentContext", "SessionContext", "SessionDataError", "StorageContext"}
+    ),
+    "continuation": frozenset(
+        {
+            "ContinuationConflictError",
+            "ContinuationFailure",
+            "ContinuationProvider",
+            "ContinuationRecord",
+            "ContinuationStore",
+            "ContinuationValidationError",
+            "ProviderPendingContinuation",
+            "continuation_schema_id",
+        }
+    ),
+    "credentials": frozenset(
+        {
+            "Credential",
+            "CredentialContext",
+            "CredentialError",
+            "CredentialProvider",
+            "CredentialProviderError",
+            "CredentialRequest",
+            "CredentialUnavailableError",
+            "credentials",
+        }
+    ),
+    "cron": frozenset({"Cron"}),
+    "graph": frozenset({"START", "Edge", "Event", "Graph", "GraphContext", "Join"}),
+    "http": frozenset(
+        {
+            "AgentInvoker",
+            "AgentResponse",
+            "HTTPCallRequest",
+            "HTTPLifecycleContext",
+            "HTTPLifecycleError",
+            "HTTPResponseHead",
+            "HTTPRouteError",
+        }
+    ),
+    "lifecycle": frozenset(
+        {
+            "CoverageLevel",
+            "DROP_EVENT",
+            "Finish",
+            "LifecycleContext",
+            "LifecycleCoverage",
+            "Next",
+            "lifecycle_coverage",
+        }
+    ),
+    "logging": frozenset({"Logger", "get_logger"}),
+    "mcp": frozenset(
+        {
+            "MCPClient",
+            "MCPClientContext",
+            "MCPClientLifecycle",
+            "MCPClientUnavailableError",
+            "MCPContext",
+            "MCPContextUnavailableError",
+            "MCPHTTPClientOptions",
+            "MCPLifecycleError",
+            "MCPLifecyclePipeline",
+            "MCPToolCallError",
+            "MCPToolCallRequest",
+            "MCPToolLifecycleContext",
+            "MCPToolUnavailableError",
+            "ManagedMCPClient",
+        }
+    ),
+    "model": frozenset(
+        {
+            "LiteLLMContext",
+            "LiteLLMLifecycle",
+            "LiteLLMModel",
+            "ModelConnector",
+            "OllamaModel",
+        }
+    ),
+    "orchestrator": frozenset(
+        {"AgentSource", "Orchestrator", "define_orchestrator"}
+    ),
+    "output": frozenset({"AgentMetadata", "OutputPolicy", "TokenUsage"}),
+    "runtime": frozenset({"ResponseRequest"}),
+    "sandbox": frozenset(
+        {
+            "Sandbox",
+            "SandboxBackend",
+            "SandboxBudget",
+            "SandboxContext",
+            "SandboxExecutionError",
+            "SandboxFile",
+            "SandboxRequest",
+            "SandboxResult",
+            "SandboxStatus",
+            "cleanup_control",
+        }
+    ),
+    "skills": frozenset(
+        {
+            "FilesystemSkillSource",
+            "SkillCatalogPage",
+            "SkillContext",
+            "SkillDescriptor",
+            "SkillDocument",
+            "SkillError",
+            "SkillNotFoundError",
+            "SkillPage",
+            "SkillRegistry",
+            "SkillResource",
+            "SkillResourceNotSupported",
+            "SkillSource",
+            "SkillSourceExecutionError",
+            "SkillValidationError",
+        }
+    ),
+    "store": frozenset({"MemoryStore", "PostgresStore", "RedisStore"}),
+    "structured": frozenset({"FrameworkMetadata", "StructuredOutputError"}),
+    "task": frozenset({"TaskHandle", "TaskUnavailableError", "task"}),
+    "telemetry": frozenset({"TelemetryExporter", "TelemetryExporterError"}),
+    "tracing": frozenset(
+        {"Tracer", "current_trace_ids", "get_tracer", "span", "traced"}
+    ),
+}
+_FLAT_ROOT_IMPORTS = {
+    name: domain
+    for domain, names in _FLAT_ROOT_IMPORT_GROUPS.items()
+    for name in names
+}
 _FRAMEWORK_DEPENDENCIES = {
     "adk": ("google-adk>=2.8,<3",),
     "langgraph": (
@@ -148,6 +327,7 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     from .upgrade_layout import plan_application_layout
 
     plan_application_layout(root, actions, blockers)
+    _plan_authoring_namespaces(root, actions, blockers)
     return UpgradePlan(
         root,
         framework,
@@ -814,6 +994,384 @@ def _plan_output_policy_file(
     _record_output_policy_rewrite(root, path, replacement, pending, actions)
 
 
+def _plan_authoring_namespaces(
+    root: Path, actions: list[UpgradeAction], blockers: list[str]
+) -> None:
+    """Rewrite released facade imports and flat lifecycle decorators project-wide."""
+
+    for path in _authoring_python_files(root):
+        if path.is_symlink():
+            blockers.append(f"{_relative(root, path)} is a symlink")
+            continue
+        try:
+            pending, source = _planned_python_source(root, path, actions)
+            replacement = _authoring_namespace_source(path, source)
+        except UpgradeError as exc:
+            blockers.append(str(exc))
+            continue
+        if replacement is not None:
+            _record_composed_rewrite(
+                root,
+                path,
+                replacement,
+                pending,
+                actions,
+                "move root contracts into first-class feature namespaces",
+            )
+
+
+def _authoring_python_files(root: Path) -> tuple[Path, ...]:
+    """Return authored Python while excluding managed environments and backups."""
+
+    excluded = frozenset({".harnest", ".venv", "venv", "__pycache__"})
+    return tuple(
+        path
+        for path in sorted(root.rglob("*.py"))
+        if not any(
+            part in excluded or part.startswith(".")
+            for part in path.relative_to(root).parts
+        )
+    )
+
+
+def _authoring_namespace_source(path: Path, source: str) -> str | None:
+    """Build a formatting-preserving rewrite to the module namespace contract."""
+
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        raise UpgradeError(f"{path}: cannot parse Python source") from exc
+    lifecycle_prefixes = _namespace_prefixes(module, "lifecycle")
+    context_prefixes = _namespace_prefixes(module, "context")
+    edits = _retired_tool_import_edits(source, module)
+    edits.extend(_flat_root_import_edits(path, source, module))
+    edits.extend(_namespace_import_edits(source, module, "lifecycle"))
+    edits.extend(_namespace_import_edits(source, module, "context"))
+    edits.extend(
+        _lifecycle_namespace_edits(source, module, lifecycle_prefixes)
+    )
+    edits.extend(_context_provider_edits(source, module, context_prefixes))
+    return _apply_text_edits(source, edits) if edits else None
+
+
+def _retired_tool_import_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Move the retired tool module surface into the agent feature."""
+
+    edits: list[tuple[int, int, str]] = []
+    rewrite_qualified_access = False
+    for item in module.body:
+        if isinstance(item, ast.ImportFrom) and item.module == "harnest.tool":
+            names = ", ".join(_render_import_alias(name) for name in item.names)
+            edits.append(_node_edit(source, item, f"from harnest.agent import {names}"))
+            continue
+        if not isinstance(item, ast.Import):
+            continue
+        replacement, unaliased = _retired_tool_import_statement(item)
+        if replacement is not None:
+            edits.append(_node_edit(source, item, replacement))
+            rewrite_qualified_access = rewrite_qualified_access or unaliased
+    if rewrite_qualified_access:
+        edits.extend(_retired_tool_attribute_edits(source, module))
+    return edits
+
+
+def _retired_tool_import_statement(item: ast.Import) -> tuple[str | None, bool]:
+    """Rewrite imported tool modules while retaining local aliases."""
+
+    changed = False
+    unaliased = False
+    rendered: list[str] = []
+    for name in item.names:
+        imported = "harnest.agent" if name.name == "harnest.tool" else name.name
+        changed = changed or imported != name.name
+        unaliased = unaliased or (imported != name.name and name.asname is None)
+        rendered.append(imported + (f" as {name.asname}" if name.asname else ""))
+    return (f"import {', '.join(rendered)}", unaliased) if changed else (None, False)
+
+
+def _retired_tool_attribute_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Rewrite outermost qualified access after an unaliased module import."""
+
+    nested = {
+        id(node.value)
+        for node in ast.walk(module)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+    }
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute) or id(node) in nested:
+            continue
+        dotted = _dotted_name(node)
+        if dotted is None or not (
+            dotted == "harnest.tool" or dotted.startswith("harnest.tool.")
+        ):
+            continue
+        replacement = "harnest.agent" + dotted[len("harnest.tool") :]
+        edits.append(_node_edit(source, node, replacement))
+    return edits
+
+
+def _flat_root_import_edits(
+    path: Path, source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Move former root objects into their owning public domain modules."""
+
+    edits: list[tuple[int, int, str]] = []
+    for item in module.body:
+        if not isinstance(item, ast.ImportFrom) or item.module != "harnest":
+            continue
+        if any(name.name == "*" for name in item.names):
+            raise UpgradeError(
+                f"{path}: replace 'from harnest import *' with explicit domain imports"
+            )
+        replacement = _flat_root_import_replacement(item)
+        if replacement is not None:
+            edits.append(_node_edit(source, item, replacement))
+    return edits
+
+
+def _flat_root_import_replacement(item: ast.ImportFrom) -> str | None:
+    """Render one root import as stable, grouped domain imports."""
+
+    grouped: dict[str, list[ast.alias]] = {}
+    root_names: list[ast.alias] = []
+    for name in item.names:
+        domain = _FLAT_ROOT_IMPORTS.get(name.name)
+        if domain is None:
+            root_names.append(name)
+            continue
+        grouped.setdefault(domain, []).append(name)
+    if not grouped:
+        return None
+    lines = _render_grouped_domain_imports(root_names, grouped)
+    return "\n".join(lines)
+
+
+def _render_grouped_domain_imports(
+    root_names: list[ast.alias], grouped: dict[str, list[ast.alias]]
+) -> list[str]:
+    """Keep module imports at the root and place objects under their domains."""
+
+    lines: list[str] = []
+    if root_names:
+        rendered = ", ".join(_render_import_alias(name) for name in root_names)
+        lines.append(f"from harnest import {rendered}")
+    for domain, names in grouped.items():
+        rendered = ", ".join(_render_import_alias(name) for name in names)
+        lines.append(f"from harnest.{domain} import {rendered}")
+    return lines
+
+
+def _namespace_prefixes(module: ast.Module, domain: str) -> frozenset[str]:
+    """Resolve local spellings that refer to one public domain namespace."""
+
+    prefixes: set[str] = set()
+    for item in module.body:
+        if isinstance(item, ast.ImportFrom):
+            prefixes.update(_from_import_namespace_prefixes(item, domain))
+        elif isinstance(item, ast.Import):
+            prefixes.update(_import_namespace_prefixes(item, domain))
+    return frozenset(prefixes)
+
+
+def _from_import_namespace_prefixes(
+    item: ast.ImportFrom, domain: str
+) -> set[str]:
+    """Resolve root and removed facade imports for one domain namespace."""
+
+    if item.module not in {"harnest", f"harnest.{domain}"}:
+        return set()
+    prefixes = {
+        name.asname or domain for name in item.names if name.name == domain
+    }
+    if item.module == f"harnest.{domain}" and any(
+        name.name == "*" for name in item.names
+    ):
+        prefixes.add(domain)
+    return prefixes
+
+
+def _import_namespace_prefixes(item: ast.Import, domain: str) -> set[str]:
+    """Resolve qualified and aliased ``import`` spellings for one namespace."""
+
+    prefixes: set[str] = set()
+    for name in item.names:
+        if name.name == "harnest":
+            prefixes.add(f"{name.asname or 'harnest'}.{domain}")
+        elif name.name == f"harnest.{domain}":
+            prefixes.add(name.asname or name.name)
+    return prefixes
+
+
+def _namespace_import_edits(
+    source: str, module: ast.Module, domain: str
+) -> list[tuple[int, int, str]]:
+    """Move a same-named facade import from its submodule to the root package."""
+
+    candidates = (
+        item for item in module.body if isinstance(item, ast.ImportFrom)
+    )
+    return [
+        edit
+        for item in candidates
+        if (edit := _namespace_import_edit(source, item, domain)) is not None
+    ]
+
+
+def _namespace_import_edit(
+    source: str, item: ast.ImportFrom, domain: str
+) -> tuple[int, int, str] | None:
+    """Rewrite one removed facade import while retaining sibling contracts."""
+
+    if item.module != f"harnest.{domain}":
+        return None
+    replacement = _namespace_import_replacement(item, domain)
+    return _node_edit(source, item, replacement) if replacement else None
+
+
+def _namespace_import_replacement(
+    item: ast.ImportFrom, domain: str
+) -> str | None:
+    """Render the root import required by one legacy namespace import."""
+
+    facade = next((name for name in item.names if name.name == domain), None)
+    if facade is None:
+        if any(name.name == "*" for name in item.names):
+            return f"from harnest import {domain}\nfrom harnest.{domain} import *"
+        return None
+    remaining = [name for name in item.names if name is not facade]
+    root_import = f"from harnest import {_render_import_alias(facade)}"
+    if remaining:
+        rendered = ", ".join(_render_import_alias(name) for name in remaining)
+        root_import += f"\nfrom harnest.{domain} import {rendered}"
+    return root_import
+
+
+def _lifecycle_namespace_edits(
+    source: str, module: ast.Module, prefixes: frozenset[str]
+) -> list[tuple[int, int, str]]:
+    """Replace every removed flat decorator with its grouped lifecycle path."""
+
+    bare_decorators = {
+        id(decorator)
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Attribute)
+    }
+    attributes = (
+        node for node in ast.walk(module) if isinstance(node, ast.Attribute)
+    )
+    edits = [
+        edit
+        for node in attributes
+        if (
+            edit := _lifecycle_attribute_edit(
+                source, node, prefixes, id(node) in bare_decorators
+            )
+        ) is not None
+    ]
+    edits.extend(_asset_default_argument_edits(source, module, prefixes))
+    return edits
+
+
+def _asset_default_argument_edits(
+    source: str, module: ast.Module, prefixes: frozenset[str]
+) -> list[tuple[int, int, str]]:
+    """Preserve the flat asset decorator's implicit default store name."""
+
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call) or node.args:
+            continue
+        prefix, member = _matched_namespace_member(
+            _dotted_name(node.func), prefixes
+        )
+        if member != "asset_store" or any(
+            item.arg == "name" for item in node.keywords
+        ):
+            continue
+        # Insert independently of the function-name rewrite so authored keyword
+        # formatting and comments remain intact.
+        function_end = _position_offset(
+            source, node.func.end_lineno, node.func.end_col_offset
+        )
+        call_end = _position_offset(source, node.end_lineno, node.end_col_offset)
+        opening = source.find("(", function_end, call_end)
+        if prefix is not None and opening >= 0:
+            separator = ", " if node.keywords else ""
+            edits.append((opening + 1, opening + 1, f'"default"{separator}'))
+    return edits
+
+
+def _lifecycle_attribute_edit(
+    source: str,
+    node: ast.Attribute,
+    prefixes: frozenset[str],
+    bare_decorator: bool,
+) -> tuple[int, int, str] | None:
+    """Map one removed lifecycle member without evaluating authored code."""
+
+    prefix, old_name = _matched_namespace_member(_dotted_name(node), prefixes)
+    if prefix is None or old_name is None:
+        return None
+    replacement = _decorator_path_for_phase(old_name)
+    if replacement == old_name:
+        return None
+    value = f"{prefix}.{replacement}"
+    if old_name == "asset_store" and bare_decorator:
+        value += '("default")'
+    return _node_edit(source, node, value)
+
+
+def _context_provider_edits(
+    source: str, module: ast.Module, prefixes: frozenset[str]
+) -> list[tuple[int, int, str]]:
+    """Make context provider registration explicit without changing other calls."""
+
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for decorator in node.decorator_list:
+            name = _dotted_name(decorator.func) if isinstance(decorator, ast.Call) else None
+            if name in prefixes:
+                edits.append(_node_edit(source, decorator.func, f"{name}.provider"))
+    return edits
+
+
+def _matched_namespace_member(
+    dotted: str | None, prefixes: frozenset[str]
+) -> tuple[str | None, str | None]:
+    """Split a qualified member only when its prefix is a known namespace import."""
+
+    if dotted is None:
+        return None, None
+    for prefix in prefixes:
+        marker = f"{prefix}."
+        if dotted.startswith(marker) and "." not in dotted[len(marker):]:
+            return prefix, dotted[len(marker):]
+    return None, None
+
+
+def _dotted_name(value: ast.AST) -> str | None:
+    """Return a static dotted name without evaluating authored expressions."""
+
+    parts: list[str] = []
+    current = value
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
 def _planned_python_source(
     root: Path, path: Path, actions: list[UpgradeAction]
 ) -> tuple[tuple[int, UpgradeAction] | None, str]:
@@ -845,7 +1403,26 @@ def _record_output_policy_rewrite(
 ) -> None:
     """Compose source migrations so a path is rewritten only once before moves."""
 
-    detail = "migrate OutputPolicy to keyword-only booleans and AgentMetadataMode"
+    _record_composed_rewrite(
+        root,
+        path,
+        content,
+        pending,
+        actions,
+        "migrate OutputPolicy to keyword-only booleans and AgentMetadataMode",
+    )
+
+
+def _record_composed_rewrite(
+    root: Path,
+    path: Path,
+    content: str,
+    pending: tuple[int, UpgradeAction] | None,
+    actions: list[UpgradeAction],
+    detail: str,
+) -> None:
+    """Merge independent source migrations into one digest-bound rewrite."""
+
     if pending is None:
         actions.append(_rewrite(root, path, content, detail))
         return
@@ -1173,8 +1750,19 @@ def _portable_extension_source(path: Path) -> str | None:
     edits.extend(_extension_import_edits(path, source, module))
     for phase, name in callbacks.items():
         function = functions[name]
-        line = function.decorator_list[0].lineno if function.decorator_list else function.lineno
-        edits.append((_line_offset(source, line), _line_offset(source, line), f"@lifecycle.{phase}\n"))
+        line = (
+            function.decorator_list[0].lineno
+            if function.decorator_list
+            else function.lineno
+        )
+        decorator = _decorator_path_for_phase(phase)
+        edits.append(
+            (
+                _line_offset(source, line),
+                _line_offset(source, line),
+                f"@lifecycle.{decorator}\n",
+            )
+        )
     return _apply_text_edits(source, edits)
 
 
@@ -1229,8 +1817,10 @@ def _extension_import_edits(
     if len(imports) != 1:
         raise UpgradeError(f"{path}: expected one import from harnest.extension")
     imported = [item.name for item in imports[0].names if item.name != "Extension"]
-    names = sorted(set((*imported, "lifecycle")))
-    replacement = f"from harnest.lifecycle import {', '.join(names)}"
+    replacement = "from harnest import lifecycle"
+    if imported:
+        names = ", ".join(sorted(set(imported)))
+        replacement += f"\nfrom harnest.lifecycle import {names}"
     return [_node_edit(source, imports[0], replacement)]
 
 
@@ -1242,7 +1832,7 @@ def _native_extension_source(path: Path, framework: str) -> str | None:
     if not any(_assignment_name(item) == "extension" for item in module.body):
         raise UpgradeError(f"{path}: expected a legacy native export named 'extension'")
     suffix = (
-        "\n\nfrom harnest.lifecycle import lifecycle as _harnest_lifecycle\n\n"
+        "\n\nfrom harnest import lifecycle as _harnest_lifecycle\n\n"
         f"@_harnest_lifecycle.{phase}\n"
         f"def harnest_{phase}():\n"
         "    return extension\n"

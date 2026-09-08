@@ -18,7 +18,9 @@ from google.adk.evaluation.eval_set import EvalSet
 from google.adk.models import BaseLlm, LlmResponse
 from google.genai import types
 
-from harnest import Agent, context, tool
+from harnest import context
+from harnest.agent import tool
+from harnest.agent import Agent
 from harnest.application import CompiledApplication
 from harnest.bundle import EvalSuite
 from harnest.context import ContextUnavailableError, ContextValue, optional_active_context

@@ -185,7 +185,7 @@ authentication and TLS through a trusted proxy before exposing it.
 
 Agent-owned source imports its compiler-provided types explicitly. The root uses
 `from harnest.agent import Agent`; tool files use
-`from harnest.tool import tool`; model connectors use
+`from harnest.agent import tool`; model connectors use
 `from harnest.model import LiteLLMModel`; and MCP files use
 `from harnest.mcp import MCPClient`. Harnest belongs to the compiler/runtime, so
 it is not listed in the agent's `pyproject.toml`. The compiler examines

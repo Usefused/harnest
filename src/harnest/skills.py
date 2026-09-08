@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from .tool import tool
+from ._agent_tool import tool
 from .authoring_errors import authoring_guidance
 
 
@@ -927,7 +927,7 @@ def scoped_skill_sources(
 def _active_context() -> Any:
     """Resolve model-tool authority lazily to avoid compiler-time context access."""
 
-    from .context import context
+    from . import context
 
     return context.current()
 

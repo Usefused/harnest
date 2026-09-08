@@ -3,9 +3,9 @@
 import json
 from urllib.parse import urlsplit
 
-from harnest.context import context
+from harnest import context
 from harnest.sandbox import SandboxStatus
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 ALLOWED_HOSTS = frozenset({"example.com", "playwright.dev"})

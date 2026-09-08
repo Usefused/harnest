@@ -1,4 +1,4 @@
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 @tool

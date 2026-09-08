@@ -41,7 +41,7 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
         self._write(
             root / "lib" / "memory" / "read.py",
             """
-            from harnest.context import context
+            from harnest import context
             from harnest.graph import Event
 
 
@@ -72,8 +72,8 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
             from contextlib import contextmanager
             from pathlib import Path
 
-            from harnest.context import context
-            from harnest.lifecycle import lifecycle
+            from harnest import context
+            from harnest import lifecycle
 
 
             _journal = Path({str(journal)!r})
@@ -86,7 +86,7 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
 
 
             @lifecycle.resource
-            @context("memory")
+            @context.provider("memory")
             @contextmanager
             def memory():
                 _record("memory:start")
@@ -96,7 +96,7 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
                     _record("memory:stop")
 
 
-            @context("request_cache")
+            @context.provider("request_cache")
             def request_cache():
                 global _request_serial
                 _request_serial += 1
@@ -113,7 +113,7 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
             from google.genai import types
 
             from harnest.agent import Agent
-            from harnest.context import context
+            from harnest import context
 
 
             class RootModel(BaseLlm):

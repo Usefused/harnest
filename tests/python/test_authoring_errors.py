@@ -6,7 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from harnest import Agent, BundleConventionError, bundle_agent
+from harnest.agent import Agent
+from harnest.bundle import BundleConventionError, bundle_agent
 from harnest._library import _AuthoredNamespace, _validate_namespace_file
 from harnest.bundle import (
     _discover_evals, _discover_sandboxes, _eval_file_kind, _load_export,
@@ -146,7 +147,7 @@ class AuthoringErrorTests(unittest.TestCase):
 
     def test_cli_compile_prints_guidance_and_exits_unsuccessfully(self):
         write_session_store(self.root)
-        self.write("agent.py", "from harnest import Agent\nroot_agent = Agent(name='test', model='unused')\n")
+        self.write("agent.py", "from harnest.agent import Agent\nroot_agent = Agent(name='test', model='unused')\n")
         self.write("instructions.md", "Be useful.\n")
         self.write("sandbox/notes.txt")
         stderr = StringIO()

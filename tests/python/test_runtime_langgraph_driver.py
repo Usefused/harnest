@@ -15,7 +15,7 @@ from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
-from harnest.context import context
+from harnest import context
 from harnest.checkpoint_langgraph import _decode_thread_id
 from harnest.durable import NativeDurableSuspended
 from harnest.graph import START, Edge, Graph

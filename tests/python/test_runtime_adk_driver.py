@@ -64,7 +64,7 @@ from harnest.transient_media import (
     TransientMediaLeaseStore,
     TransientMediaScope,
 )
-from harnest.tool import tool
+from harnest.agent import tool
 
 
 _MODEL_PNG = (

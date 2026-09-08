@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from _session_store_fixture import write_session_store
 from harnest.application import CompiledApplication
 from harnest.bundle import compile_artifact
-from harnest.context import context
+from harnest import context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.lifecycle import LifecycleListener
 from harnest.neutral_runtime import (
@@ -93,7 +93,7 @@ def _write_contract_extensions(root: Path) -> None:
         root / "extensions" / "gateway.py",
         """
         from fastapi import APIRouter, Request
-        from harnest.lifecycle import lifecycle
+        from harnest import lifecycle
         from harnest.runtime_auth import AuthPrincipal, AuthenticationError
 
 

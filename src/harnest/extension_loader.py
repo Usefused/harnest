@@ -27,7 +27,11 @@ from .http_routes import (
     create_http_route_extension,
     validate_http_route_extensions,
 )
-from .lifecycle import LifecycleListener, registrations_for
+from .lifecycle import (
+    LifecycleListener,
+    _decorator_path_for_phase,
+    registrations_for,
+)
 from .output import OutputPolicy
 from .session import SessionStore
 from .skills import SkillSource
@@ -456,8 +460,8 @@ def _validate_storage_ownership(
 
     if isinstance(checkpointer, ADKStore) and session_store is not checkpointer:
         raise ExtensionDiscoveryError(
-            "native ADK storage requires @lifecycle.session_store and "
-            "@lifecycle.checkpointer to return the same ADKStore object"
+            "native ADK storage requires @lifecycle.storage.sessions and "
+            "@lifecycle.storage.checkpoints to return the same ADKStore object"
         )
 
 
@@ -671,7 +675,7 @@ def _validate_context_provider(
     if phase not in allowed:
         raise ExtensionDiscoveryError(
             f"context provider {relative}:{name} cannot also use "
-            f"@lifecycle.{phase}"
+            f"@lifecycle.{_decorator_path_for_phase(phase)}"
         )
 
 

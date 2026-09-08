@@ -57,9 +57,24 @@ harnest init support-agent --framework adk
 harnest init support-agent --framework langgraph
 ```
 
-The default scaffold is a small, runnable managed agent. Add `--example` for
-ignored code samples in folders that otherwise contain only guides. Existing
-agent and storage code stays unchanged; rename a sample to opt into a feature:
+The default scaffold is a runnable managed agent with optional, guide-only
+folders. Ask for only the runnable core, then add capabilities as needed:
+
+```bash
+harnest init minimal-agent --framework adk --minimal
+cd minimal-agent
+harnest add tool customer-lookup
+harnest add subagent researcher
+```
+
+`harnest add` also scaffolds `task`, `lifecycle`, and `context` resources without
+overwriting existing files. Managed ADK agents discover added subagents
+automatically; the CLI rejects resource types owned directly by another mode or
+framework. When running outside the agent folder, pass `--project <agent-root>`.
+
+Add `--example` for ignored code samples in folders that otherwise contain only
+guides. Existing agent and storage code stays unchanged; rename a sample to opt
+into a feature:
 
 ```bash
 harnest init support-agent --framework adk --example
@@ -68,9 +83,10 @@ harnest init support-agent --framework adk --example
 Synchronize the isolated project environment and run its offline tests:
 
 ```bash
-harnest env sync support-agent
-harnest env sync support-agent --profile development
-harnest test support-agent
+cd support-agent
+harnest env sync .
+harnest env sync . --profile development
+harnest test .
 ```
 
 `compile` alone selects the lean production runtime profile. `serve`, `run`,
@@ -105,18 +121,19 @@ capabilities into the managed structure when useful.
 Preview the repository migration first. This command is read-only:
 
 ```bash
-harnest upgrade existing-agent
+cd existing-agent
+harnest upgrade .
 ```
 
 After reviewing the plan and preserving the current work, apply it:
 
 ```bash
-harnest upgrade existing-agent --apply
-harnest test existing-agent
+harnest upgrade . --apply
+harnest test .
 ```
 
 Harnest verifies the planned source hashes and backs up affected files under
-`existing-agent/.harnest/upgrade-backups/` before changing them. It reports
+`.harnest/upgrade-backups/` before changing them. It reports
 ambiguous business logic as a manual blocker instead of guessing.
 
 ### Switch between ADK and LangGraph
@@ -133,8 +150,8 @@ spec:
 Then validate the target framework:
 
 ```bash
-harnest test existing-agent
-harnest serve existing-agent
+harnest test .
+harnest serve .
 ```
 
 Before switching, review native extensions, ADK eval sets, sandboxes, custom
@@ -144,16 +161,16 @@ Follow the [framework migration checklist](https://docs.usefused.com/harnest/run
 
 ## Serve a project
 
-Compile and start the standalone development server:
+From the agent folder, compile and start the standalone development server:
 
 ```bash
-harnest serve support-agent
+harnest serve .
 ```
 
 During development, recompile and replace the local process after source changes:
 
 ```bash
-harnest serve support-agent --reload
+harnest serve . --reload
 ```
 
 Reload uses fresh immutable artifacts and never mutates a running ADK or LangGraph graph. It is restricted to loopback development serving.

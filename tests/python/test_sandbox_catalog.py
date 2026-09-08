@@ -5,7 +5,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from harnest import Agent, BundleConventionError, BundleExportError, bundle_agent
+from harnest.agent import Agent
+from harnest.bundle import BundleConventionError, BundleExportError, bundle_agent
 from harnest.bundle import _discover_sandboxes, _resolve_graph_resources
 from harnest.graph import Edge, Graph, START
 from harnest.sandbox_catalog import sandbox_catalog_scope
@@ -33,7 +34,7 @@ class SandboxCatalogTests(unittest.TestCase):
         """Declare a portable provider without permitting eager construction."""
         self.write(
             f"{prefix}sandbox/{name}.py",
-            "from harnest import Sandbox\n"
+            "from harnest.sandbox import Sandbox\n"
             "def build():\n    raise AssertionError('provider constructed during compilation')\n"
             f"{name} = Sandbox.provider(build, name={name!r}, metadata={{'profile': {name!r}}})\n",
         )
@@ -62,15 +63,15 @@ class SandboxCatalogTests(unittest.TestCase):
         self.assertIn("Available names: calculations, research, restricted", str(caught.exception))
 
     def test_flat_children_require_their_own_assignments(self):
-        self.write("subagents/worker.py", "from harnest import Agent\nworker = Agent(name='worker', model='unused', instruction='Work.', sandboxes=['research'])\n")
-        self.write("subagents/observer.py", "from harnest import Agent\nobserver = Agent(name='observer', model='unused', instruction='Observe.')\n")
+        self.write("subagents/worker.py", "from harnest.agent import Agent\nworker = Agent(name='worker', model='unused', instruction='Work.', sandboxes=['research'])\n")
+        self.write("subagents/observer.py", "from harnest.agent import Agent\nobserver = Agent(name='observer', model='unused', instruction='Observe.')\n")
         definition = self.compose(["calculations"])
         children = {child.name: child for child in definition.subagents}
         self.assertEqual(tuple(children["worker"]._sandbox_bindings), ("research",))
         self.assertEqual(dict(children["observer"]._sandbox_bindings), {})
 
     def test_nested_child_can_assign_root_and_local_definitions(self):
-        self.write("subagents/worker/agent.py", "from harnest import Agent\nworker = Agent(name='worker', model='unused', sandboxes=['research', 'private_work'])\n")
+        self.write("subagents/worker/agent.py", "from harnest.agent import Agent\nworker = Agent(name='worker', model='unused', sandboxes=['research', 'private_work'])\n")
         self.write("subagents/worker/instructions.md", "Work.\n")
         self.sandbox("private_work", "subagents/worker/")
         definition = self.compose()
@@ -80,7 +81,7 @@ class SandboxCatalogTests(unittest.TestCase):
             self.compose(["private_work"])
 
     def test_nested_child_cannot_shadow_ancestor_configuration(self):
-        self.write("subagents/worker/agent.py", "from harnest import Agent\nworker = Agent(name='worker', model='unused')\n")
+        self.write("subagents/worker/agent.py", "from harnest.agent import Agent\nworker = Agent(name='worker', model='unused')\n")
         self.write("subagents/worker/instructions.md", "Work.\n")
         self.sandbox("research", "subagents/worker/")
         with self.assertRaisesRegex(BundleConventionError, "duplicate an ancestor declaration"):
@@ -105,10 +106,10 @@ class SandboxCatalogTests(unittest.TestCase):
             bundle_agent(other / "agent.py", Agent(name="other", model="unused", sandboxes=["research"]))
 
     def test_named_export_and_single_declaration_per_file_are_required(self):
-        self.write("sandbox/wrong.py", "from harnest import Sandbox\nother = Sandbox.provider(lambda: None)\n")
+        self.write("sandbox/wrong.py", "from harnest.sandbox import Sandbox\nother = Sandbox.provider(lambda: None)\n")
         with self.assertRaisesRegex(BundleExportError, "must export 'wrong'"):
             _discover_sandboxes(self.root / "sandbox")
-        self.write("sandbox/wrong.py", "from harnest import Sandbox\nwrong = Sandbox.provider(lambda: None)\nextra = Sandbox.provider(lambda: None)\n")
+        self.write("sandbox/wrong.py", "from harnest.sandbox import Sandbox\nwrong = Sandbox.provider(lambda: None)\nextra = Sandbox.provider(lambda: None)\n")
         with self.assertRaisesRegex(BundleExportError, "additional sandbox resources"):
             _discover_sandboxes(self.root / "sandbox")
 

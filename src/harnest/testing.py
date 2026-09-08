@@ -831,21 +831,25 @@ def run_agent_tests(
 
 
 def _selected_test_directories(artifact: Path, include_smoke: bool) -> list[Path]:
+    """Select present optional suites and reject paths that block a suite."""
+
     tests = artifact / "source" / "tests"
     selected = [tests / "unit"]
     if include_smoke:
         selected.append(tests / "smoke")
-    missing = [path for path in selected if not path.is_dir()]
-    if missing:
+    invalid = [path for path in selected if path.exists() and not path.is_dir()]
+    if invalid:
         expected = ", ".join(
-            str(path.relative_to(artifact / "source")) for path in missing
+            str(path.relative_to(artifact / "source")) for path in invalid
         )
-        raise AgentTestError(f"missing authored test directory: {expected}")
-    return selected
+        raise AgentTestError(f"authored test path must be a directory: {expected}")
+    # Test suites are optional capabilities, so deleting an unused folder must
+    # behave exactly like keeping its ignored guide without a public test file.
+    return [path for path in selected if path.is_dir()]
 
 
 def _authored_test_directories(selected: list[Path]) -> list[Path]:
-    """Skip placeholder-only suites while keeping missing folders actionable."""
+    """Skip placeholder-only suites while keeping public tests actionable."""
 
     return [
         path

@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unittest
 
-from harnest.context import activate_context, context, create_agent_context, revoke_context
+from harnest import context
+from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.context_storage import StorageContext
 
 

@@ -223,7 +223,7 @@ performs the migration deliberately after reviewing the report.
 
 The root and resource files explicitly import their authoring types but do not
 import or register one another. For example, tools use
-`from harnest.tool import tool` and MCP client definitions use
+`from harnest.agent import tool` and MCP client definitions use
 `from harnest.mcp import MCPClient`. The compiler/runtime owns this namespace,
 so agents do not declare Harnest in `pyproject.toml`. Normal standard-library
 and third-party imports remain valid. Root `models/` supplies Pydantic contracts
@@ -252,7 +252,7 @@ marked root-only:
 | `plugins/<folder>/plugin.json` (root-only) | Agent Plugins 1.0 manifest; declares the unique portable package name. |
 | `plugins/<folder>/mcp.json` (root-only) | Optional standard MCP servers, adapted to the selected framework without importing package Python. |
 | `plugins/<folder>/skills/<skill>/SKILL.md` (root-only) | Optional plugin-owned progressive skills, independent of MCP availability. |
-| `lifecycle/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context` providers. |
+| `lifecycle/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context.provider` providers. |
 | `sandbox/<name>.py` | One matching framework-neutral `Sandbox` variable per file; each agent explicitly grants authored-tool access with `sandboxes=[...]`, then tools call `context.sandboxes["<name>"].execute(code)` or `aexecute(code)`. No automatic model tool is added. Discovery alone grants no access. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
 | `evals/<id>.evalset.json` (root test lane) | A test-only ADK `EvalSet`, executable against ADK or LangGraph, whose `eval_set_id` matches its filename. |
@@ -368,7 +368,7 @@ order with source path as a deterministic tie-breaker. Portable behavior covers
 authentication, invocation, normalized events, errors, and managed model calls.
 Explicit ADK-plugin and LangGraph-middleware factories preserve native callbacks
 without exposing native request types through portable hooks. Zero-argument
-`@context` providers publish invocation-scoped values. Adding
+`@context.provider` providers publish invocation-scoped values. Adding
 `@lifecycle.resource` transfers application startup and shutdown ownership but
 does not publish the entered value by itself. Providers are discovered but not
 called by the compiler. See [Runtime extensions](extensions.md).
@@ -755,7 +755,7 @@ server-only.
 The standalone server does not interpret deployment resources, resolve secrets,
 enforce permissions, scale replicas, or choose an identity provider. Session
 storage and authentication are separate boundaries. Every compiled application
-must contain exactly one root `@lifecycle.session_store` factory. Harnest owns the
+must contain exactly one root `@lifecycle.storage.sessions` factory. Harnest owns the
 returned `SessionStore`, adapts it to the selected framework, and shares it
 across neutral and native session routes until shutdown. Ordered root
 `@lifecycle.authenticate` listeners or an injected `Authenticator` resolve HTTP
@@ -765,12 +765,12 @@ middleware authenticates advanced ADK native routes, but deployment policy must
 still authorize their native user fields. Health and discovery remain public.
 
 The generated storage extensions return one shared development `MemoryStore`.
-Exactly one `@lifecycle.session_store` and one `@lifecycle.checkpointer`
+Exactly one `@lifecycle.storage.sessions` and one `@lifecycle.storage.checkpoints`
 factory are required. Removing either or declaring duplicates fails
 compilation. Production and advanced ownership rules are detailed in
 [checkpoints.md](checkpoints.md).
 Other database, vector, embedding, and HTTP clients belong in optional
-zero-argument context providers. `@context` exposes a value once per invocation;
+zero-argument context providers. `@context.provider` exposes a value once per invocation;
 combining it with `@lifecycle.resource` makes startup and shutdown
 application-scoped. Compilation never establishes those external connections.
 Production stores must use durable writes, set-based listing, distributed

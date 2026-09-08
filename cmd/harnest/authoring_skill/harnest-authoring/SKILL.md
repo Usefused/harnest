@@ -1,6 +1,6 @@
 ---
 name: harnest-authoring
-description: Build, modify, test, review Harnest agents and source. Use for agent folders, harnest.* imports, libraries, ADK or LangGraph graphs, durable tools, queued/cron tasks, Harnest Extensions, continuations, agent-plugins, lifecycle, MCP, static or dynamic skills, evals, compilation, running, serving, and Harnest source changes.
+description: Build, modify, test, or review Harnest agents and source, including folders, APIs, frameworks, resources, extensions, plugins, lifecycle, MCP, skills, evals, compilation, running, and serving.
 ---
 
 # Harnest authoring
@@ -9,9 +9,11 @@ Produce agents. Never edit `.harnest/`.
 
 ## Modify safely
 
-1. Preserve unrelated changes. For legacy projects, inspect `harnest upgrade
-   AGENT_DIR` before editing. Never run `init` over existing work; request
-   `--example` for samples.
+1. Preserve unrelated changes. Inspect `harnest upgrade AGENT_DIR` for legacy
+   projects. Never run `init` over existing work. Use `--minimal` for core files
+   or `--example` for samples. Prefer
+   `harnest add tool|subagent|task|lifecycle|context NAME` from the agent root
+   when adding one supported resource.
 2. Preserve framework, mode, and `Agent.history` unless migration is requested.
    Preserve session/checkpoint authorities; read `docs/checkpoints.md`
    before changing checkpoint ownership.
@@ -19,12 +21,12 @@ Produce agents. Never edit `.harnest/`.
    tools, MCP clients, Agent Plugins, skills, and subagents; do not import or
    register them manually. Use extension public APIs without registration.
    Nested agents do not inherit parent resources.
-4. Keep authored imports side-effect free. Put Pydantic contracts in root
-   `models/` and code in root `lib/`; import via `harnest.models.*` and
-   `harnest.lib.*`. Neither needs `__init__.py`. Publish values with `@context`.
+4. Keep imports side-effect free. Put Pydantic contracts in root `models/` and
+   shared code in root `lib/`; import via `harnest.models.*` and `harnest.lib.*`.
+   Publish values with `@context.provider`.
    Inline media is transient; `Stored(...)` requires named storage and an async
    `@tool`.
-5. Import authoring symbols from `harnest.*`; prefer canonical APIs over legacy compatibility aliases.
+5. Import authoring symbols from canonical `harnest.*` APIs.
 6. Match path/export contracts. MCP `client()` factories take no arguments;
    `@client_tool` stubs run in callers, never the agent server. Decorate
    lifecycle listeners with `@lifecycle.*`; tool/HTTP interceptors return

@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .context import ContextResourceError, context
+from . import context
+from .context import ContextResourceError
 
 
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")

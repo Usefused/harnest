@@ -114,7 +114,8 @@ def main() -> int:
 
 
 _AGENT = '''import os
-from harnest import Agent, LiteLLMModel
+from harnest.agent import Agent
+from harnest.model import LiteLLMModel
 from harnest.lib.provider import ModelEvidence
 from harnest.lib.sandbox_config import sandbox
 
@@ -138,21 +139,22 @@ the result, report its sha256 plus the receipt from provider metadata exactly.
 Do not execute again after success. Ignore other capabilities.
 '''
 
-_STORAGE = '''from harnest import lifecycle, MemoryStore
+_STORAGE = '''from harnest import lifecycle
+from harnest.store import MemoryStore
 from harnest.session import InMemorySessionStore
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def sessions():
     """Use test-owned ephemeral session storage."""
     return InMemorySessionStore()
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpoints():
     """Keep the live probe independent of external persistence."""
     return MemoryStore()
 '''
 
-_SANDBOX = '''from harnest import Sandbox
+_SANDBOX = '''from harnest.sandbox import Sandbox
 from harnest.lib.provider import build
 
 sandbox = Sandbox.provider(
@@ -174,7 +176,7 @@ from pathlib import Path
 import time
 import uuid
 
-from harnest import Sandbox, SandboxResult
+from harnest.sandbox import Sandbox, SandboxResult
 from harnest_extension_docker.extension import docker_sandbox
 from harnest.model_lifecycle import LiteLLMLifecycle
 from harnest.sandbox_types import sandbox_metadata_to_dict

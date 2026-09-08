@@ -1,4 +1,4 @@
-"""Keep public domain imports compatible with the existing implementation types."""
+"""Keep every public contract inside its owning Harnest domain."""
 
 import importlib
 import inspect
@@ -15,7 +15,22 @@ CONTRACTS = {
         "agent_principal": [
             "AgentRuntimePermissionError",
             "AgentRuntimePrincipal",
-        ]
+        ],
+        "_agent_tool": ["tool"],
+        "client_tool": [
+            "client_tool",
+            "client_tool_execution",
+            "ClientToolError",
+            "ClientToolExecution",
+            "InMemoryClientToolStore",
+            "PendingClientTool",
+            "current_transient_media",
+        ],
+        "tool_lifecycle": [
+            "ToolCallRequest",
+            "ToolLifecycleContext",
+            "ToolLifecycleError",
+        ],
     },
     "auth": {"runtime_auth": ["AuthPrincipal", "AuthenticationError", "Authenticator", "principal_for"]},
     "http": {
@@ -23,10 +38,6 @@ CONTRACTS = {
         "http_lifecycle": ["HTTPCallRequest", "HTTPLifecycleContext", "HTTPLifecycleError", "HTTPResponseHead"],
     },
     "server": {"server_config": ["ServerConfig", "ServerConfigError", "ServerLimits", "load_server_config"]},
-    "tool": {
-        "client_tool": ["client_tool", "ClientToolError", "ClientToolExecution", "PendingClientTool", "current_transient_media"],
-        "tool_lifecycle": ["ToolCallRequest", "ToolLifecycleContext", "ToolLifecycleError"],
-    },
     "mcp": {"mcp_context": ["MCPContext", "MCPToolCallRequest", "MCPToolCallError", "ManagedMCPClient"]},
     "model": {"model_lifecycle": ["LiteLLMContext"], "model_hooks": ["ModelLifecycleError"]},
     "lifecycle": {"lifecycle_coverage": ["LifecycleCoverage", "CoverageLevel", "lifecycle_coverage"]},
@@ -206,6 +217,20 @@ class PublicImportTests(unittest.TestCase):
                     with self.subTest(domain=domain, symbol=name):
                         self.assertIs(getattr(public, name), getattr(original, name))
 
+    def test_root_exports_only_feature_modules(self):
+        """Prevent classes, functions, and decorators from returning to the root."""
+
+        import harnest
+
+        for name in harnest.__all__:
+            with self.subTest(name=name):
+                self.assertTrue(inspect.ismodule(getattr(harnest, name)))
+        for removed in ("Agent", "MCPClient", "Stored", "tool"):
+            with self.subTest(removed=removed):
+                self.assertIsNone(getattr(harnest, removed, None))
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("harnest.tool")
+
     def test_public_callables_have_hover_docs_and_complete_signatures(self):
         """Keep IDE documentation and types complete across the reviewed API."""
 
@@ -262,11 +287,48 @@ for name in sys.argv[1:]:
             getattr(module, "UnknownPublicContract")
 
     def test_lifecycle_coverage_uses_domain_namespace(self):
-        from harnest.lifecycle import CoverageLevel, lifecycle
+        from harnest import lifecycle
+        from harnest.lifecycle import CoverageLevel
 
         coverage = lifecycle.coverage("langgraph", "managed")
         self.assertEqual(coverage.framework, "langgraph")
         self.assertIsInstance(coverage.application, CoverageLevel)
+
+    def test_lifecycle_and_context_are_first_class_modules(self):
+        """Keep package attributes identical to their importable domain modules."""
+
+        import harnest
+
+        lifecycle_module = importlib.import_module("harnest.lifecycle")
+        context_module = importlib.import_module("harnest.context")
+        self.assertIs(harnest.lifecycle, lifecycle_module)
+        self.assertIs(harnest.context, context_module)
+        self.assertIs(harnest.lifecycle.storage, lifecycle_module.storage)
+        self.assertTrue(callable(harnest.context.provider))
+        self.assertFalse(hasattr(lifecycle_module, "lifecycle"))
+        self.assertFalse(hasattr(context_module, "context"))
+        for name in (
+            "session_store",
+            "checkpointer",
+            "asset_store",
+            "before_invoke",
+            "after_invoke",
+            "on_event",
+            "on_error",
+            "before_model",
+            "after_model",
+            "on_model_error",
+            "before_tool",
+            "after_tool",
+            "on_tool_error",
+            "before_http",
+            "after_http",
+            "on_http_error",
+            "before_mcp",
+            "after_mcp",
+            "on_mcp_error",
+        ):
+            self.assertFalse(hasattr(lifecycle_module, name))
 
     def test_authored_examples_do_not_recommend_helper_module_imports(self):
         """Keep public authoring examples on domain imports as new guides are added."""

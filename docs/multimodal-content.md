@@ -128,7 +128,7 @@ from typing import Annotated
 
 from pydantic import BaseModel
 
-from harnest import Stored
+from harnest.assets import Stored
 from harnest.content import Image, ImageConstraints
 
 
@@ -156,11 +156,12 @@ lifecycle:
 
 ```python
 # lifecycle/assets.py
-from harnest import AssetStorage, lifecycle
+from harnest import lifecycle
+from harnest.assets import AssetStorage
 from harnest.lib.assets import S3AssetStorage
 
 
-@lifecycle.asset_store(name="media")
+@lifecycle.storage.assets(name="media")
 def media_assets() -> AssetStorage:
     return S3AssetStorage(bucket="agent-media")
 ```
@@ -182,7 +183,7 @@ Managed agent code accesses a stored reference through the invocation-scoped
 capability rather than the backend object:
 
 ```python
-from harnest.context import context
+from harnest import context
 
 
 record = await context.assets.stat(result.screenshot)

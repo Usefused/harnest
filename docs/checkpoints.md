@@ -1,7 +1,7 @@
 # Checkpoints and storage ownership
 
 Every compiled agent declares exactly one checkpoint authority with a
-synchronous, zero-argument `@lifecycle.checkpointer` factory. Compilation
+synchronous, zero-argument `@lifecycle.storage.checkpoints` factory. Compilation
 rejects missing, duplicate, raw, framework-mismatched, and hidden providers.
 Changing the provider requires recompiling the immutable agent artifact; the
 running server never rewires storage.
@@ -31,13 +31,13 @@ store = PostgresStore(os.environ["DATABASE_URL"])
 ```python
 # lifecycle/storage.py
 from harnest.lib.storage import store
-from harnest.lifecycle import lifecycle
+from harnest import lifecycle
 
-@lifecycle.session_store
+@lifecycle.storage.sessions
 def session_store():
     return store
 
-@lifecycle.checkpointer
+@lifecycle.storage.checkpoints
 def checkpointer():
     return store
 ```
@@ -46,11 +46,11 @@ Both values remain runtime-private by default. Publish direct access only when
 agent code genuinely needs the store API:
 
 ```python
-from harnest.context import context
+from harnest import context
 
 
-@lifecycle.session_store
-@context("storage")
+@lifecycle.storage.sessions
+@context.provider("storage")
 def session_store():
     return store
 ```
@@ -109,7 +109,7 @@ checkpoints = LangGraphStore(native_saver)
 graph = builder.compile(checkpointer=checkpoints)
 ```
 
-Return `checkpoints` from `@lifecycle.checkpointer`, and keep a separate
+Return `checkpoints` from `@lifecycle.storage.checkpoints`, and keep a separate
 `SessionStore` factory for committed conversation state. For
 ADK-native ownership, create `ADKStore(session_service)` once in
 `lib/storage.py` and return that same object from both storage factories.

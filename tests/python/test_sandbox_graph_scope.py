@@ -8,9 +8,11 @@ from unittest.mock import Mock
 from google.adk.workflow import BaseNode
 from langgraph.graph import END, START as LG_START, StateGraph
 
-from harnest import Agent, Sandbox
+from harnest.agent import Agent
+from harnest.sandbox import Sandbox
+from harnest import context
 from harnest.context import (
-    ContextUnavailableError, activate_context, context, create_agent_context,
+    ContextUnavailableError, activate_context, create_agent_context,
 )
 from harnest.context_sandboxes import SandboxRegistry
 from harnest.graph import START, Edge, Event, Graph

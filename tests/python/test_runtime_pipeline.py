@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from harnest.application import RuntimeCapabilities
-from harnest.context import context
+from harnest import context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.lifecycle import LifecycleListener
 from harnest.plugin_runtime_driver import PluginRuntimeDriver

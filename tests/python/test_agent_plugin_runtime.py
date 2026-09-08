@@ -136,7 +136,7 @@ class AgentPluginRuntimeTests(unittest.TestCase):
         self._write("agent-card.yaml", "name: Portable proof\ndescription: Agent Plugin runtime test.\n")
         self._write("lifecycle/storage.py", '''
             from harnest.checkpoint import MemoryStore
-            from harnest.lifecycle import lifecycle
+            from harnest import lifecycle
             from harnest.session import InMemorySessionStore
 
             @lifecycle.storage.sessions

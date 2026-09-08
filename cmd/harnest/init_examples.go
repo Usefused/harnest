@@ -15,7 +15,7 @@ func managedExampleScaffoldFiles(files map[string]string, agentName, framework s
 	}
 	// Reuse the default profile unchanged: resources with existing code need no
 	// second example, and placeholders must not activate capabilities implicitly.
-	files = minimalScaffoldFiles(files, agentName, framework, "managed")
+	files = guidedScaffoldFiles(files, agentName, framework, "managed")
 	for path, source := range samples {
 		files[path] = source
 	}
@@ -143,6 +143,8 @@ extension = StarterExtension()
 `,
 		"plugins/_README.md": `# Plugin samples
 
+Optional: Yes. Delete this folder if the agent uses no portable plugins.
+
 Copy _example_agent/ to starter/ to enable this skills-only Agent Plugin.
 Its plugin.json manifest follows Agent Plugins 1.0. Skills and MCP servers are
 optional components: a plugin can provide either or both.
@@ -154,15 +156,17 @@ Install a local portable package atomically by running:
 To add an MCP server, create starter/mcp.json after replacing the HTTPS
 placeholder endpoint with your server's address:
 
-    {
-      "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-      "mcpServers": {
-        "knowledge": {
-          "type": "streamable-http",
-          "url": "https://mcp.example.com/mcp"
-        }
-      }
+` + "```json" + `
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "knowledge": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/mcp"
     }
+  }
+}
+` + "```" + `
 
 Use declarative mcp.json, not Python factories, inside Agent Plugins. Keep
 credentials out of committed files. Application lifecycle hooks and resource
@@ -173,16 +177,53 @@ Harnest Extension samples live separately in extensions/_example/.
 `,
 		"skills/_README.md": `# Skill sample
 
+Optional: Yes. Delete this folder if the agent needs no progressively loaded guidance.
+
 Copy _example/ to getting-started/ to enable SKILL.md. The directory name must
 match its frontmatter name. Put longer guidance in references/ and link it from
 SKILL.md; keep the entrypoint at 400 words or fewer.
+
+` + "```markdown" + `
+---
+name: getting-started
+description: Apply the agent's core instructions to general requests.
+---
+` + "```" + `
 `,
 		"evals/_README.md": `# Evaluation sample
+
+Optional: Yes. Delete this folder if the agent has no shared evaluation suites.
 
 Copy _example.evalset.json to starter.evalset.json to enable the shared EvalSet
 for ADK or LangGraph; the filename must match eval_set_id. Run it explicitly
 with harnest test --evals after configuring a model. Optional test_config.json
 selects metrics. Underscore-prefixed examples do not run as eval suites.
+
+` + "```json" + `
+{
+  "eval_set_id": "starter",
+  "name": "Starter evaluation",
+  "eval_cases": [
+    {
+      "evalId": "answers_greeting",
+      "conversation": [
+        {
+          "userContent": {"role": "user", "parts": [{"text": "Say hello."}]},
+          "finalResponse": {"role": "model", "parts": [{"text": "Hello!"}]}
+        }
+      ],
+      "sessionInput": {
+        "appName": "guide_agent",
+        "userId": "eval-user",
+        "state": {}
+      }
+    }
+  ]
+}
+` + "```" + `
+
+Replace guide_agent with the name exported by agent.py when copying this
+inline shape; the generated _example file already uses the scaffolded name.
 `,
 	}
 }

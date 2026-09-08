@@ -151,7 +151,7 @@ class HarnestExtensionTests(unittest.TestCase):
         tmp_path = self.root
         agent(tmp_path)
         directory = package(tmp_path)
-        write(directory / "lifecycle" / "audit.py", "from harnest.lifecycle import lifecycle\n"
+        write(directory / "lifecycle" / "audit.py", "from harnest import lifecycle\n"
               "@lifecycle.tool.before\ndef audit(context, call):\n    return call\n")
         backend = SimpleNamespace(lower_managed=lambda value, **kwargs: value,
                                   wrap_managed=lambda *args, **kwargs: None)

@@ -12,7 +12,7 @@ small.
 - Keep one source of truth for shared behavior. Prefer a small shared helper or
   boundary type over copied framework, command, transport, or validation logic.
 - Expose authoring contracts through public domain modules such as `harnest.auth`,
-  `harnest.tool`, and `harnest.context`. Keep implementation helper-module paths
+  `harnest.agent`, and `harnest.context`. Keep implementation helper-module paths
   out of public examples. Re-export the original objects so existing exception
   handlers, decorators, and type checks remain compatible when imports change.
 - Treat every name in `__all__` for a snapshotted public Python module as a

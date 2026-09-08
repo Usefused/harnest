@@ -11,7 +11,7 @@ import unittest
 from google.genai import types
 from pydantic import BaseModel
 
-from harnest import Stored
+from harnest.assets import Stored
 from harnest.approval import ApprovalRun
 from harnest.application import CompiledApplication
 from harnest.assets import AssetScope, AssetStoreError, MemoryAssetStore
@@ -29,7 +29,8 @@ from harnest.runtime_langgraph import (
     _materialize_model_message,
     _message_tool_events,
 )
-from harnest.tool import client_tool, tool
+from harnest.agent import tool
+from harnest.agent import client_tool
 
 
 _PNG = base64.b64decode(

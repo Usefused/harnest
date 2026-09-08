@@ -30,6 +30,13 @@ and extended examples into that skill's linked `references/` files.
 
 ## Route the change
 
+For a single supported resource, prefer `harnest add
+tool|subagent|task|lifecycle|context NAME` from the agent root; the command
+validates framework ownership, creates a missing optional folder, and refuses to
+overwrite authored code. Use `--project AGENT_DIR` when running elsewhere. Use
+the table for the resulting ownership contract and for resource types without
+an additive scaffold command.
+
 | Intent | Managed-mode location | Important follow-up |
 | --- | --- | --- |
 | Add or reuse Pydantic request, response, or tool contracts | Root `models/**/*.py` | Import below `harnest.models`; keep schema definitions out of `agent.py` and discovered resources. |
@@ -76,7 +83,7 @@ and extended examples into that skill's linked `references/` files.
   extension. Use `lib/` for implementation shared by resources, not to disguise
   persistence, auditing, or guardrails that must surround every call.
 - Put zero-argument context providers in root `lifecycle/`. Use
-  `@context("name")` to publish a value once per invocation, or combine it with
+  `@context.provider("name")` to publish a value once per invocation, or combine it with
   `@lifecycle.resource` for application startup and shutdown. Consumers in
   nodes, tools, listeners, and subagents call `context.resource("name")`;
   lifecycle ownership alone does not expose the value.

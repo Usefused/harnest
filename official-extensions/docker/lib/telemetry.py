@@ -6,7 +6,8 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from harnest import get_logger, get_tracer
+from harnest.logging import get_logger
+from harnest.tracing import get_tracer
 from opentelemetry.trace import Status, StatusCode
 
 

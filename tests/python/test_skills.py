@@ -6,9 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from harnest.bundle import compile_application
+from harnest import context
 from harnest.context import (
     activate_context,
-    context,
     create_agent_context,
     derive_agent_context,
     revoke_context,
@@ -340,7 +340,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
         self._write(
             root / "extensions" / "skills.py",
             "from harnest.lib.wex import WexSource\n"
-            "from harnest.lifecycle import lifecycle\n"
+            "from harnest import lifecycle\n"
             "@lifecycle.skills.source('wex')\n"
             "def wex(): return WexSource()\n",
         )
@@ -378,7 +378,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
             root = agent / "extensions"
             self._write(
                 root / "skills.py",
-                "from harnest.lifecycle import lifecycle\n"
+                "from harnest import lifecycle\n"
                 "@lifecycle.skills.source('wex')\n"
                 "def wex(): return object()\n",
             )

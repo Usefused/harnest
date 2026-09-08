@@ -25,15 +25,26 @@ identify any remaining non-writable or unrelated command collision.
 harnest init support-agent --framework adk
 harnest init support-graph --framework langgraph
 harnest init direct-graph --framework langgraph --mode advanced
+harnest init minimal-agent --framework adk --minimal
+cd minimal-agent
+harnest add subagent researcher
+harnest add tool customer-lookup
 harnest init example-agent --framework adk --example
 harnest env sync support-agent
 harnest doctor
 ```
 
 `init` refuses a non-empty destination. Treat generated source as editable
-starter material; treat `.harnest/` as disposable build output. By default,
-optional folders contain ignored `_README.md` routing guides, except for the
-ignored resource guides, and the root is one simple agent. Add
+starter material; treat `.harnest/` as disposable build output. Use `--minimal`
+to create only runnable core files. Add a named `tool`, `subagent`, `task`,
+`lifecycle`, or `context` later with `harnest add`; it recreates the optional
+folder and never overwrites an existing resource. Managed ADK discovers added
+subagents automatically. Unsupported mode/framework combinations fail with an
+ownership-specific instruction. These examples run from the agent root; use
+`--project AGENT_DIR` when invoking them elsewhere.
+
+By default, optional folders contain ignored `_README.md` routing guides and
+the root is one simple agent. Add
 `--example` for ignored code samples in otherwise guide-only managed folders.
 The default agent and storage code stay unchanged. Copy or rename a sample to
 its documented public filename to activate it; preserve required exports and
@@ -127,6 +138,8 @@ harnest test support-agent --smoke --evals
 ```
 
 - The default lane compiles first and runs `tests/unit/test_*.py` offline.
+  When that optional folder has no public tests or is absent, the lane reports
+  that there are no authored Python tests and succeeds after compilation.
 - MCP descriptors are compiled in that unit lane, but `MCPClientLifecycle`
   setup and remote discovery remain lazy. Unit-test gateway helpers without a
   network handshake.

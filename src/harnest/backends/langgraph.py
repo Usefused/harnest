@@ -433,7 +433,8 @@ def _require_principal_tool(request: Any) -> None:
 def _managed_agent_scope(agent_name: str):
     """Derive nested identity while sharing the root's revocable capabilities."""
 
-    from ..context import activate_context, context, derive_agent_context
+    from .. import context
+    from ..context import activate_context, derive_agent_context
 
     try:
         active = context.current()
