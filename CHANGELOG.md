@@ -32,6 +32,15 @@
   preserve cancellation across recovery, and isolate worker startup from the
   caller's invocation permissions.
 
+## [0.18.0](https://github.com/Usefused/harnest/compare/v0.17.0...v0.18.0) (2026-09-09)
+
+
+### Features
+
+* add portable durable task and cron storage ([69af6b9](https://github.com/Usefused/harnest/commit/69af6b9daa40be9eea2e17d36a95cfa0d4eeb0dd))
+* bundle database providers with the Harnest runtime ([397334c](https://github.com/Usefused/harnest/commit/397334ccd3bc38a100ca8ae3b4c5407391a23168))
+* default agents and evaluations to Ollama ([22367ac](https://github.com/Usefused/harnest/commit/22367ac0023a746da9a82b7f595f05deb16ac284))
+
 ## [0.17.0](https://github.com/Usefused/harnest/compare/v0.16.0...v0.17.0) (2026-09-08)
 
 ### Features
