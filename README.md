@@ -1,11 +1,12 @@
 # Harnest by [Fused](https://usefused.com)
 
-Harnest is a production application harness for ADK and LangGraph agents.
+Harnest is an agent harness for teams moving beyond “the model responded” to
+“this needs to work in production.”
 
-It manages the work around your agent:
-project structure, dependencies, capability discovery, compilation, tests,
-serving, sessions, approvals, authentication, storage, telemetry, and a
-development playground.
+It handles the day-two work around ADK and LangGraph agents: repeatable builds
+and tests, serving, authentication, approvals, persistent sessions, durable
+background tasks, and telemetry. You own the agent’s behavior; Harnest provides
+the structure and runtime around it.
 
 Every Harnest agent is compiled from the capabilities you add. Tools, subagents,
 MCP connections, agent skills, Agent Plugins, Harnest Extensions, sandboxes, and
