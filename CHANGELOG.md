@@ -9,6 +9,13 @@
   limits, configurable history and tool-text reductions, custom strategies,
   and trusted invocation overrides while preserving stored transcripts.
 
+## [0.18.1](https://github.com/Usefused/harnest/compare/v0.18.0...v0.18.1) (2026-09-09)
+
+
+### Fixes
+
+* make token utilisation configurable and opt-in ([c839c54](https://github.com/Usefused/harnest/commit/c839c543f64882f7731958babee8e46e309dbc3f))
+
 ## [0.18.0](https://github.com/Usefused/harnest/compare/v0.17.0...v0.18.0) (2026-09-09)
 
 ### Features
