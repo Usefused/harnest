@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.18.0](https://github.com/Usefused/harnest/compare/v0.17.0...v0.18.0) (2026-09-09)
 
 ### Features
 
@@ -31,9 +31,6 @@
 * With explicit Task storage, reconcile removed and retargeted static schedules,
   preserve cancellation across recovery, and isolate worker startup from the
   caller's invocation permissions.
-
-## [0.18.0](https://github.com/Usefused/harnest/compare/v0.17.0...v0.18.0) (2026-09-09)
-
 
 ### Features
 
