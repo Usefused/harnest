@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.18.1](https://github.com/Usefused/harnest/compare/v0.18.0...v0.18.1) (2026-09-09)
 
 ### Fixes
 
@@ -8,9 +8,6 @@
   policies for managed ADK and LangGraph agents. Support observation, explicit
   limits, configurable history and tool-text reductions, custom strategies,
   and trusted invocation overrides while preserving stored transcripts.
-
-## [0.18.1](https://github.com/Usefused/harnest/compare/v0.18.0...v0.18.1) (2026-09-09)
-
 
 ### Fixes
 
