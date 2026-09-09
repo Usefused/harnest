@@ -56,6 +56,23 @@ class ModelTransportBinding:
         memo[id(self)] = self
         return self
 
+    def same_authority_as(self, other: "ModelTransportBinding") -> bool:
+        """Compare static routing safely while keeping clients identity-bound."""
+
+        return (
+            type(other) is type(self)
+            and self._borrowed_client is other._borrowed_client
+            and _same_transport_value(self._transport_options(), other._transport_options())
+        )
+
+    def _transport_options(self) -> dict[str, Any]:
+        """Exclude generation settings from the transport ownership boundary."""
+
+        return {
+            key: value for key, value in self._completion_args.items()
+            if key in _TRANSPORT_ARGUMENTS
+        }
+
     def build_eval_model(self, model_name: str) -> Any:
         """Build an ADK adapter sharing transport but never cleanup ownership."""
 
@@ -63,11 +80,7 @@ class ModelTransportBinding:
 
         # Agent generation settings must not replace a judge's temperature,
         # sampling, or output contract; only transport/auth choices are shared.
-        arguments = {
-            key: value
-            for key, value in self._completion_args.items()
-            if key in _TRANSPORT_ARGUMENTS
-        }
+        arguments = self._transport_options()
         if self._borrowed_client is not None:
             # Hooks and lazy initialization belong to the original controller;
             # constructing another lifecycle would create a second transport.
@@ -77,6 +90,32 @@ class ModelTransportBinding:
         # Explicit native `client` options remain untouched in the arguments.
         # In particular, no lifecycle resource is attached to this borrower.
         return LiteLlm(model=model_name, **arguments)
+
+
+def _same_transport_value(left: Any, right: Any) -> bool:
+    """Never invoke user-defined equality to authorize transport sharing."""
+
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    if type(left) in (str, bytes, int, float, bool, type(None)):
+        return left == right
+    if type(left) in (dict, MappingProxyType):
+        return _same_transport_mapping(left, right)
+    # Clients, callbacks, auth wrappers, and other opaque values can carry
+    # distinct authority even when their custom __eq__ claims equivalence.
+    return False
+
+
+def _same_transport_mapping(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Compare static option/header mappings with ordinary string keys only."""
+
+    if any(type(key) is not str for key in (*left, *right)):
+        return False
+    return left.keys() == right.keys() and all(
+        _same_transport_value(value, right[key]) for key, value in left.items()
+    )
 
 
 def _borrow_adk_client(client: Any, client_type: type[Any]) -> Any:

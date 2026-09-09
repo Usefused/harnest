@@ -257,9 +257,12 @@ Third-party dependencies used by library code still belong in
 
 ## Models
 
-`harnest.model.LiteLLMModel(provider/model, **completion_args)` is the default
-provider-neutral connector. `OllamaModel` is an optional convenience that still
-routes through LiteLLM. Pass provider options such as `api_base` and `api_key`
+New agents use `harnest.model.OllamaModel.from_environment()`, reading
+`OLLAMA_MODEL` (default `qwen3.5:cloud`) and `OLLAMA_BASE_URL` (default
+`http://localhost:11434`). Start Ollama and authenticate for the cloud model,
+or select a downloaded local model. `OllamaModel` routes through LiteLLM;
+`harnest.model.LiteLLMModel(provider/model, **completion_args)` remains the
+explicit provider-neutral connector. Pass provider options such as `api_base` and `api_key`
 through the connector or runtime environment. Managed ADK and LangGraph both
 resolve a `ModelConnector` lazily without contacting the model during compile.
 

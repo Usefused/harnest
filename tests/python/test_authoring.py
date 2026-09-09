@@ -1784,7 +1784,7 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OPENAI_MODEL": "local-judge"}, clear=False
+                os.environ, {"OLLAMA_MODEL": "local-judge", "OPENAI_MODEL": "unused"}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((), config), "business")
 
@@ -1793,11 +1793,11 @@ raise SystemExit(main(sys.argv[1:]))
         )
         self.assertEqual(
             criterion["judgeModelOptions"]["judgeModel"],
-            "openai/local-judge",
+            "ollama_chat/local-judge",
         )
-        self.assertEqual(loaded.user_simulator_config.model, "openai/local-judge")
+        self.assertEqual(loaded.user_simulator_config.model, "ollama_chat/local-judge")
 
-    def test_eval_config_preserves_explicit_non_openai_model_overrides(self):
+    def test_eval_config_preserves_explicit_non_default_model_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "test_config.json"
             self._write(
@@ -1808,7 +1808,7 @@ raise SystemExit(main(sys.argv[1:]))
                             "final_response_match_v2": {
                                 "threshold": 0.8,
                                 "judgeModelOptions": {
-                                    "judgeModel": "gemini-2.5-flash"
+                                    "judgeModel": "openai/gpt-4.1-mini"
                                 },
                             }
                         },
@@ -1820,7 +1820,7 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OPENAI_MODEL": "ollama_chat/unused"}, clear=False
+                os.environ, {"OLLAMA_MODEL": "", "OLLAMA_BASE_URL": ""}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((), config), "business")
 
@@ -1829,7 +1829,7 @@ raise SystemExit(main(sys.argv[1:]))
         )
         self.assertEqual(
             criterion["judgeModelOptions"]["judgeModel"],
-            "gemini-2.5-flash",
+            "openai/gpt-4.1-mini",
         )
         self.assertEqual(loaded.user_simulator_config.model, "gemini-2.5-flash")
 
@@ -1847,12 +1847,12 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OPENAI_MODEL": "shared-simulator"}, clear=False
+                os.environ, {"OLLAMA_MODEL": "shared-simulator"}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((eval_set,)), "business")
 
         self.assertEqual(
-            loaded.user_simulator_config.model, "openai/shared-simulator"
+            loaded.user_simulator_config.model, "ollama_chat/shared-simulator"
         )
 
     def test_authored_test_runner_rejects_unknown_eval_trajectory(self):

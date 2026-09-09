@@ -35,7 +35,7 @@ func TestRunCompilesAndInvokesGeneratedLauncherLocally(t *testing.T) {
 	if lines[2] != "INPUT\tprivate prompt" {
 		t.Fatalf("launcher stdin = %q", lines[2])
 	}
-	if lines[3] != "ENV\tgpt-4.1-mini\thttps://api.openai.com/v1" {
+	if lines[3] != "ENV\tqwen3.5:cloud\thttp://localhost:11434" {
 		t.Fatalf("launcher environment = %q", lines[3])
 	}
 	assertEphemeralArtifactRemoved(t, launcher)
@@ -220,7 +220,7 @@ if [ "$1" = "-m" ]; then
 fi
 IFS= read -r payload || true
 printf 'INPUT\t%s\n' "$payload" >> "$HARNEST_TEST_RECORD"
-printf 'ENV\t%s\t%s\n' "$OPENAI_MODEL" "$OPENAI_BASE_URL" >> "$HARNEST_TEST_RECORD"
+printf 'ENV\t%s\t%s\n' "$OLLAMA_MODEL" "$OLLAMA_BASE_URL" >> "$HARNEST_TEST_RECORD"
 printf 'agent-result\n'
 printf 'agent-diagnostic\n' >&2
 `)

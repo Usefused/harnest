@@ -1,10 +1,10 @@
 from harnest.agent import Agent
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 technical_specialist = Agent(
     name="technical_specialist",
-    model=LiteLLMModel.from_openai_environment(),
+    model=OllamaModel.from_environment(),
     description="Diagnoses technical API and integration problems.",
     instruction=(
         "Diagnose technical support issues. Ask for the smallest useful set of "

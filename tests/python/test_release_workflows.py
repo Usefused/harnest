@@ -336,6 +336,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         command = makefile.partition("example-test:\n")[2].splitlines()[0]
 
         self.assertIn("OPENAI_API_KEY=", command)
+        self.assertIn("OLLAMA_API_KEY=", command)
         self.assertIn("KNOWLEDGE_MCP_TOKEN=", command)
         self.assertNotIn("OPENAI_BASE_URL=", command)
         self.assertNotIn("--smoke", command)

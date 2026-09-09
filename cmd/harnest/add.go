@@ -251,15 +251,15 @@ def %s(request: str) -> str:
 `, name, strings.ReplaceAll(name, "_", " "))
 }
 
-// subagentResourceSource returns a provider-neutral managed Agent definition.
+// subagentResourceSource keeps delegated agents on the same Ollama defaults as their root.
 func subagentResourceSource(name string) string {
 	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 %s = Agent(
     name=%q,
-    model=LiteLLMModel.from_openai_environment(),
+    model=OllamaModel.from_environment(),
     description=%q,
     instruction=%q,
     history="session",

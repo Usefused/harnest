@@ -15,6 +15,7 @@ from . import context
 from .context import ContextUnavailableError
 from .logging import get_logger
 from .runtime_cron_store import StoredCronRuntime, next_occurrence
+from .runtime_contract import SessionConflictError
 from .runtime_task import (
     TaskRuntimeManager, TaskRuntimeError, _capture_invocation,
     _capture_agent_permissions, _native_idempotency_key, _validated_snapshot,
@@ -258,6 +259,7 @@ class ProviderTaskRuntimeManager(TaskRuntimeManager):
             if compiled is None:
                 raise TaskRuntimeError("task target is unavailable")
             snapshot = _record_snapshot(record, self._application.name)
+            await self._ensure_cron_session(record, snapshot)
             result = await self._call_authored(
                 compiled, safe_task_arguments(record.arguments),
                 snapshot,
@@ -271,6 +273,26 @@ class ProviderTaskRuntimeManager(TaskRuntimeManager):
         if await self._finish(record, status="completed", result=result):
             await self._publish_outcome(record.job_id, ("completed", result))
             _audit("execute", record.trigger, "committed")
+
+    async def _ensure_cron_session(self, record: TaskRecord, snapshot: Any) -> None:
+        """Provision only the scheduled occurrence's owner-scoped session before leasing."""
+
+        store = self._session_store()
+        if record.trigger != "cron" or snapshot is None or store is None:
+            return
+        scope = {"session_id": snapshot["session_id"], "user_id": snapshot["user_id"]}
+        if await store.get(**scope) is not None:
+            return
+        try:
+            # Cron uses a fresh occurrence session, not the scheduling HTTP
+            # session. Atomic create preserves earlier retry state and never
+            # resurrects deleted sessions for ordinary deferred agent tasks.
+            await store.create(**scope, state={})
+        except SessionConflictError:
+            # A concurrent/reclaimed attempt may win creation; the subsequent
+            # ordinary scoped lease remains the only execution authority.
+            return
+        _audit("session.create", "cron", "committed")
 
     async def _failed_attempt(self, record: TaskRecord) -> None:
         """Persist retry time or terminal failure without exception payloads."""

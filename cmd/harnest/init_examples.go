@@ -83,18 +83,13 @@ Import with from subagents.helper import helper, then add it to Graph.nodes
 and connect it with an Edge. A flat subagent has no private resource folders.
 """
 
-import os
-
 from harnest.agent import Agent
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 helper = Agent(
     name="helper",
-    model=LiteLLMModel(
-        model=os.getenv("LITELLM_MODEL", "ollama_chat/qwen3.5:cloud"),
-        api_base=os.getenv("LITELLM_API_BASE", "http://127.0.0.1:11434"),
-    ),
+    model=OllamaModel.from_environment(),
     instruction="Summarize the request clearly; acknowledge missing information.",
 )
 `,

@@ -52,7 +52,15 @@ def _select_binding(bindings: tuple[Any, ...], model: str) -> Any | None:
         if separator and binding.model.partition("/")[0] == provider
     ]
     candidates = exact or compatible
-    if len(candidates) > 1:
+    return _require_single_authority(candidates)
+
+
+def _require_single_authority(candidates: list[Any]) -> Any | None:
+    """Collapse repeated static defaults without choosing between different gateways."""
+
+    if candidates and any(
+        not candidates[0].same_authority_as(candidate) for candidate in candidates[1:]
+    ):
         # Authenticated clients are authority boundaries. Picking a convenient
         # graph node could silently send evaluation data to the wrong gateway.
         raise EvaluationError(
@@ -65,18 +73,23 @@ def _select_binding(bindings: tuple[Any, ...], model: str) -> Any | None:
 class _EvalTransportScope:
     """Keep authenticated bindings out of ADK's process-wide model registry."""
 
-    def __init__(self, bindings: tuple[Any, ...]) -> None:
+    def __init__(self, bindings: tuple[Any, ...], defaults: tuple[Any, ...] = ()) -> None:
         """Allocate a unique run namespace without retaining any global authority."""
 
         self.active = True
         self.bindings = bindings
+        self.defaults = defaults
         self.prefix = f"harnest_eval/{uuid.uuid4().hex}/"
         self.aliases: dict[str, tuple[str, Any]] = {}
 
     def alias(self, model: str) -> str:
-        """Bind only models that can safely use an agent-owned transport."""
+        """Prefer authored transports, then the evaluation's captured Ollama default."""
 
         binding = _select_binding(self.bindings, model)
+        if binding is None:
+            # A non-Ollama agent still needs the default evaluator's configured
+            # endpoint; never replace authored gateway authority with defaults.
+            binding = _select_binding(self.defaults, model)
         if binding is None:
             return model
         for alias, (original, candidate) in self.aliases.items():
@@ -100,6 +113,7 @@ class _EvalTransportScope:
 
         self.active = False
         self.bindings = ()
+        self.defaults = ()
         self.aliases.clear()
 
 
@@ -169,14 +183,15 @@ def _bind_criterion(criterion: Any, scope: _EvalTransportScope) -> Any:
 
 @contextmanager
 def eval_model_transports(target: Any, config: Any) -> Iterator[Any]:
-    """Lend compatible agent transports to judge and simulator models for one run."""
+    """Scope evaluator transports using authored bindings or captured Ollama defaults."""
 
     bindings = _transport_bindings(target)
-    if not bindings:
+    defaults = model_transport_bindings(config)
+    if not bindings and not defaults:
         yield config
         return
     _register_proxy_model()
-    scope = _EvalTransportScope(bindings)
+    scope = _EvalTransportScope(bindings, defaults)
     token = _ACTIVE_SCOPE.set(scope)
     try:
         prepared = config.model_copy(deep=True)

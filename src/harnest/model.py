@@ -29,6 +29,8 @@ else:
 
 
 DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+DEFAULT_OLLAMA_MODEL = "qwen3.5:cloud"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 def _openai_model_name_from_environment(
@@ -307,13 +309,15 @@ class OllamaModel(ModelConnector):
 
     def __init__(
         self,
-        model: str = "qwen3.5:cloud",
+        model: str = DEFAULT_OLLAMA_MODEL,
         *,
         api_base: str | None = None,
         chat: bool = True,
         thinking: bool | None = None,
         **completion_args: Any,
     ) -> None:
+        """Retain explicit Ollama configuration without connecting or loading a model."""
+
         if not isinstance(model, str) or not model.strip():
             raise ValueError("Ollama model name is required")
         if api_base is not None and (
@@ -331,6 +335,30 @@ class OllamaModel(ModelConnector):
             "completion_args",
             _with_thinking_mode(completion_args, thinking),
         )
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        default_model: str = DEFAULT_OLLAMA_MODEL,
+        chat: bool = True,
+        thinking: bool | None = None,
+        **completion_args: Any,
+    ) -> "OllamaModel":
+        """Read OLLAMA_MODEL, OLLAMA_BASE_URL and optional OLLAMA_API_KEY.
+
+        OpenAI settings are never consulted. Explicit completion options take
+        precedence over the environment; no model is downloaded automatically.
+        The default cloud-tagged model needs an authenticated Ollama daemon.
+        """
+
+        model = os.getenv("OLLAMA_MODEL", default_model)
+        api_base = completion_args.pop(
+            "api_base", os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
+        )
+        if "api_key" not in completion_args and os.getenv("OLLAMA_API_KEY"):
+            completion_args["api_key"] = os.environ["OLLAMA_API_KEY"]
+        return cls(model, api_base=api_base, chat=chat, thinking=thinking, **completion_args)
 
     @property
     def litellm_model(self) -> str:
@@ -355,7 +383,13 @@ class OllamaModel(ModelConnector):
         kwargs = dict(self.completion_args)
         if self.api_base is not None:
             kwargs["api_base"] = self.api_base
-        return LiteLlm(model=self.litellm_model, **kwargs)
+        adapter = LiteLlm(model=self.litellm_model, **kwargs)
+        # Evaluation must borrow this endpoint and credential instead of
+        # silently reconnecting to a provider's unrelated default server.
+        return attach_model_transport_binding(
+            adapter, model=self.litellm_model, completion_args=kwargs,
+            borrowed_client=kwargs.get("llm_client"),
+        )
 
     def build_langgraph(self) -> Any:
         """Build LangChain's LiteLLM chat model for Ollama."""
@@ -370,7 +404,10 @@ class OllamaModel(ModelConnector):
         if self.api_base is not None:
             kwargs["api_base"] = self.api_base
         adapter_kwargs = _langgraph_completion_args(ChatLiteLLM, kwargs)
-        return ChatLiteLLM(model=self.litellm_model, **adapter_kwargs)
+        adapter = ChatLiteLLM(model=self.litellm_model, **adapter_kwargs)
+        return attach_model_transport_binding(
+            adapter, model=self.litellm_model, completion_args=kwargs,
+        )
 
 
 def resolve_model(model: ModelInput) -> Any:

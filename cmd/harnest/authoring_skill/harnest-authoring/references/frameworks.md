@@ -125,8 +125,11 @@ remains the committed conversation authority.
 
 ## Models and Ollama
 
-Use a LiteLLM-qualified name such as `ollama_chat/qwen3.5:cloud`. Ollama's native
-API base is commonly `http://127.0.0.1:11434` locally or `https://ollama.com`
+New projects use `OllamaModel.from_environment()` with `OLLAMA_MODEL=qwen3.5:cloud`
+and `OLLAMA_BASE_URL=http://localhost:11434`. Start Ollama and authenticate for
+this cloud model, or set `OLLAMA_MODEL` to a downloaded local model. Explicit
+`LiteLLMModel` connectors use qualified names such as `ollama_chat/qwen3.5:cloud`.
+Ollama's native API base is `http://localhost:11434` locally or `https://ollama.com`
 for Ollama Cloud; an OpenAI-compatible `/v1` base is not the native Ollama
 `/api/chat` base used by the `ollama_chat` provider. Credentials remain runtime
 environment or secret configuration.

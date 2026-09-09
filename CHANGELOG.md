@@ -4,6 +4,13 @@
 
 ### Features
 
+* Default newly scaffolded agents, SubAgents, the helpdesk example, and implicit
+  evaluation judges/simulators to Ollama instead of OpenAI. Add
+  `OllamaModel.from_environment()` with `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, and
+  optional `OLLAMA_API_KEY`; retain explicit OpenAI configurations. The default
+  `qwen3.5:cloud` uses Ollama's cloud service through its local daemon. Preserve
+  configured Ollama transports across framework and evaluation adapters.
+
 * Add database-neutral durable Task and cron storage contracts, selected through
   `lifecycle.storage.tasks` and `lifecycle.storage.cron`. Harnest owns execution,
   retries, lease renewal and continuation recovery; providers atomically claim
@@ -16,6 +23,10 @@
   explicitly switch after draining their existing work.
 
 ### Fixes
+
+* Create owner-scoped cron occurrence sessions before task execution acquires
+  their leases, so scheduled tasks run with PostgreSQL, Redis, or custom session
+  stores after restart without resetting session state on retries.
 
 * With explicit Task storage, reconcile removed and retargeted static schedules,
   preserve cancellation across recovery, and isolate worker startup from the

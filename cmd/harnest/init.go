@@ -373,10 +373,10 @@ spec:
   scaling:
     minReplicas: 0
     maxReplicas: 1
-  # Supply OPENAI_API_KEY through the command environment or deployment secrets.
+  # Use the local Ollama service; select a downloaded model or an authenticated cloud model.
   environment:
-    OPENAI_MODEL: gpt-4.1-mini
-    OPENAI_BASE_URL: https://api.openai.com/v1
+    OLLAMA_MODEL: qwen3.5:cloud
+    OLLAMA_BASE_URL: http://localhost:11434
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
 `, name, title, framework),
@@ -402,7 +402,7 @@ skills:
 		"agent.py": fmt.Sprintf(`
 from harnest.agent import Agent
 from harnest.graph import START, Edge, Graph
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 root_agent = Graph(
@@ -411,7 +411,7 @@ root_agent = Graph(
     nodes={
         "respond": Agent(
             name="responder",
-            model=LiteLLMModel.from_openai_environment(),
+            model=OllamaModel.from_environment(),
             instruction="Answer clearly and use available tools when they help.",
             history="session",
         ),
@@ -614,7 +614,7 @@ description: Apply the agent's core instructions when answering a general reques
 from google.adk.apps import App
 from google.adk.apps.app import ResumabilityConfig
 from harnest.agent import Agent
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 # Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
@@ -626,7 +626,7 @@ root_agent = Agent.advanced(
         resumability_config=ResumabilityConfig(is_resumable=True),
         root_agent=LlmAgent(
             name=%q,
-            model=LiteLLMModel.from_openai_environment().build(),
+            model=OllamaModel.from_environment().build(),
             instruction="You are a clear and helpful assistant.",
         ),
     )
@@ -653,7 +653,7 @@ def state_store():
 			files["agent.py"] = fmt.Sprintf(`from langchain.agents import create_agent
 from harnest.agent import Agent
 from harnest.lib.storage import store
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 # Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
@@ -661,7 +661,7 @@ from harnest.model import LiteLLMModel
 root_agent = Agent.advanced(
     name=%q,
     target=create_agent(
-        model=LiteLLMModel.from_openai_environment().build_langgraph(),
+        model=OllamaModel.from_environment().build_langgraph(),
         tools=[],
         system_prompt="You are a clear and helpful assistant.",
         name=%q,
@@ -753,13 +753,13 @@ package = false
 // connector used by both runtime frameworks and evaluation models.
 func minimalManagedAgentSource(agentName string) string {
 	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
+from harnest.model import OllamaModel
 
 
 root_agent = Agent(
     name=%q,
     history="session",
-    model=LiteLLMModel.from_openai_environment(),
+    model=OllamaModel.from_environment(),
 )
 `, agentName)
 }

@@ -43,17 +43,17 @@ serve. URLs and secret references remain deployment placeholders.
 ## Live local run
 
 The helpdesk agent and its technical subagent use
-`LiteLLMModel.from_openai_environment()`. They share `OPENAI_MODEL`,
-`OPENAI_BASE_URL`, and `OPENAI_API_KEY` with evaluation judges and simulators.
-The checked-in non-secret configuration selects `gpt-4.1-mini` at
-`https://api.openai.com/v1`. Export `OPENAI_API_KEY` from your shell or CI secret
-store; Harnest does not load `.env` files. The `spec.secrets` entry is an
-illustrative deployment mapping and is not resolved by local commands.
+`OllamaModel.from_environment()`. They share `OLLAMA_MODEL`,
+`OLLAMA_BASE_URL`, and optional `OLLAMA_API_KEY` with evaluation judges and
+simulators. The checked-in configuration selects `qwen3.5:cloud` through
+`http://localhost:11434`. Start Ollama and sign in for this cloud-backed model;
+it is not offline inference. No OpenAI key is needed. To run locally, select an
+installed, tool-capable local model instead. Harnest does not load `.env` files
+or download models automatically.
 
 From the repository root:
 
 ```bash
-export OPENAI_API_KEY="..."
 make example-install
 make live-run
 ```
@@ -62,11 +62,10 @@ This installs Harnest from the working tree, including its ADK and LiteLLM
 runtime dependencies, compiles the flat source folder into
 `.harnest/helpdesk`, and starts the ADK interactive CLI against that generated
 artifact. The Make target exports model and endpoint settings for direct
-launcher use. For an OpenAI-compatible Ollama endpoint, use
-`OPENAI_MODEL=openai/qwen3.5:9b` and
-`OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, with that model installed locally.
-Use `OPENAI_API_KEY` for any endpoint credential; do not introduce an
-`OLLAMA_API_KEY`. Update the same non-secret values in `config.yaml` for
+launcher use. Override them with `make live-run OLLAMA_MODEL=<installed-model>`
+and `OLLAMA_BASE_URL=<ollama-server-url>` as needed. The endpoint is the native
+Ollama base URL, without `/v1`. Set `OLLAMA_API_KEY` only if your endpoint needs
+a key. Update the same non-secret values in `config.yaml` for
 `harnest test`, `run`, and `serve`, because `spec.environment` overrides matching
 shell values. See the canonical
 [model credential process](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials).
@@ -74,8 +73,8 @@ shell values. See the canonical
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition
 and call `triage_request` directly; it does not invoke a model. The target also
-clears the example's model and MCP credentials so CI cannot make an authenticated
-external request even if a future unit test crosses that boundary accidentally.
+clears explicit model and MCP keys. This is not a network sandbox: a local
+Ollama daemon can retain its own cloud sign-in independently of those keys.
 
 Run `make example-smoke` (or the retained `make live-test` alias) for the
 explicit live acceptance check. The `smoke` fixture sends only benign synthetic

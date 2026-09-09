@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from functools import lru_cache
 import json
 import sys
 from types import ModuleType
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 import uuid
 
 from .bundle import EvalSuite
-from .model import _openai_model_name_from_environment
+from .model import OllamaModel
+from .model_transport import attach_model_transport_binding
 
 
 EVAL_TRAJECTORIES = frozenset({"business", "strict"})
@@ -45,14 +47,14 @@ def _eval_config_payload(suite: EvalSuite) -> dict[str, Any] | None:
     return json.loads(suite.config.read_text(encoding="utf-8"))
 
 
-def _set_default_judge_model(criterion: Any) -> Any:
+def _set_default_judge_model(criterion: Any, default_model: Callable[[], str]) -> Any:
     """Add the canonical judge model while preserving an authored override."""
 
     if isinstance(criterion, (int, float)):
         return {
             "threshold": float(criterion),
             "judgeModelOptions": {
-                "judgeModel": _openai_model_name_from_environment()
+                "judgeModel": default_model()
             },
         }
     if not isinstance(criterion, dict):
@@ -66,14 +68,14 @@ def _set_default_judge_model(criterion: Any) -> Any:
     if isinstance(options, dict):
         model_key = "judgeModel" if "judge_model" not in options else "judge_model"
         # Resolve lazily so explicit custom models do not depend on an unused
-        # OPENAI_MODEL value in the process environment.
+        # OLLAMA_MODEL value in the process environment.
         if model_key not in options:
-            options[model_key] = _openai_model_name_from_environment()
+            options[model_key] = default_model()
     return criterion
 
 
-def _apply_openai_eval_model_defaults(
-    payload: dict[str, Any], suite: EvalSuite
+def _apply_eval_model_defaults(
+    payload: dict[str, Any], suite: EvalSuite, default_model: Callable[[], str]
 ) -> dict[str, Any]:
     """Route implicit judge and simulator models through the agent model contract."""
 
@@ -84,7 +86,7 @@ def _apply_openai_eval_model_defaults(
             # Future/custom criteria with judge options receive the same
             # default without changing unrelated static or service metrics.
             if _uses_judge_model(name, criterion):
-                criteria[name] = _set_default_judge_model(criterion)
+                criteria[name] = _set_default_judge_model(criterion, default_model)
     simulator_key = (
         "userSimulatorConfig"
         if "user_simulator_config" not in payload
@@ -98,7 +100,7 @@ def _apply_openai_eval_model_defaults(
         payload[simulator_key] = simulator
     if isinstance(simulator, dict):
         if "model" not in simulator:
-            simulator["model"] = _openai_model_name_from_environment()
+            simulator["model"] = default_model()
     return payload
 
 
@@ -142,7 +144,7 @@ def eval_config(suite: EvalSuite, trajectory: str) -> Any:
         payload = get_evaluation_criteria_or_default(None).model_dump(
             by_alias=True, exclude_none=True
         )
-    config = EvalConfig.model_validate(_apply_openai_eval_model_defaults(payload, suite))
+    config = _configured_eval_models(payload, suite, EvalConfig)
     criterion = config.criteria.get("tool_trajectory_avg_score")
     if criterion is None:
         return config
@@ -154,6 +156,29 @@ def eval_config(suite: EvalSuite, trajectory: str) -> Any:
         threshold=threshold,
         match_type=match_type,
     )
+    return config
+
+
+def _configured_eval_models(payload: dict[str, Any], suite: EvalSuite, config_type: Any) -> Any:
+    """Capture implicit Ollama transport without altering explicitly authored models."""
+
+    @lru_cache(maxsize=1)
+    def connector() -> OllamaModel:
+        """Resolve only when a model default is needed, once per configuration."""
+
+        return OllamaModel.from_environment()
+
+    config = config_type.model_validate(
+        _apply_eval_model_defaults(payload, suite, lambda: connector().litellm_model)
+    )
+    if connector.cache_info().currsize:
+        default = connector()
+        # ADK constructs judges from model IDs, so keep the endpoint beside the
+        # config for the run-scoped transport adapter rather than changing env.
+        attach_model_transport_binding(
+            config, model=default.litellm_model,
+            completion_args={**default.completion_args, "api_base": default.api_base},
+        )
     return config
 
 
