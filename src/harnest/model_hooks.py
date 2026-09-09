@@ -39,9 +39,12 @@ def model_invocation_scope(context: Any):
         user_id=context.user_id,
         session_id=context.session_id,
     )
+    from .tokens import _invocation_token_state
+
     token = _ACTIVE_MODEL_CONTEXT.set(value)
     try:
-        yield
+        with _invocation_token_state(context):
+            yield
     finally:
         _ACTIVE_MODEL_CONTEXT.reset(token)
 

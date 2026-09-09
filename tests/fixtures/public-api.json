@@ -36,6 +36,7 @@
     "task",
     "telemetry",
     "testing",
+    "tokens",
     "tracing"
   ],
   "harnest.a2a": [
@@ -481,6 +482,15 @@
     "SmokeClient",
     "TaskStoreConformanceMixin",
     "run_agent_tests"
+  ],
+  "harnest.tokens": [
+    "TokenBudgetExceeded",
+    "TokenCount",
+    "TokenPolicy",
+    "TokenPolicyError",
+    "TokenReport",
+    "TokenRequest",
+    "token_policy_scope"
   ],
   "harnest.tracing": [
     "Tracer",

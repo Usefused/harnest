@@ -337,6 +337,8 @@ def _build_ready_agent(
             "building a LangGraph agent requires langchain"
         ) from exc
 
+    from ..token_langgraph import token_middleware
+
     model = _resolve_langchain_model(definition.model)
     kwargs = {
         "model": model,
@@ -349,6 +351,7 @@ def _build_ready_agent(
                 bind_model_extension(item, agent_name=definition.name)
                 for item in middleware
             ),
+            *token_middleware(definition.token_policy, definition.name),
         ],
     }
     if definition.output_schema is not None:

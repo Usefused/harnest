@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Make model context and token budgets controllable through opt-in per-agent
+  policies for managed ADK and LangGraph agents. Support observation, explicit
+  limits, configurable history and tool-text reductions, custom strategies,
+  and trusted invocation overrides while preserving stored transcripts.
+
 ## [0.18.0](https://github.com/Usefused/harnest/compare/v0.17.0...v0.18.0) (2026-09-09)
 
 ### Features

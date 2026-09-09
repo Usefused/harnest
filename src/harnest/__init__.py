@@ -43,6 +43,7 @@ __all__ = [
     "task",
     "telemetry",
     "testing",
+    "tokens",
     "tracing",
 ]
 _PUBLIC_DOMAINS = frozenset(__all__)
