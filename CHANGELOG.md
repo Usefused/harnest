@@ -8,6 +8,13 @@
   verdict parsing, including rubric evaluations for ADK and LangGraph agents.
   Preserve the final answer, provider configuration, and authored model output.
 
+## [0.18.2](https://github.com/Usefused/harnest/compare/v0.18.1...v0.18.2) (2026-09-09)
+
+
+### Fixes
+
+* parse only final judge responses in evaluations ([10205eb](https://github.com/Usefused/harnest/commit/10205eb69b3b1500f0247e14e69aa49d1c7eb8fb))
+
 ## [0.18.1](https://github.com/Usefused/harnest/compare/v0.18.0...v0.18.1) (2026-09-09)
 
 ### Fixes
