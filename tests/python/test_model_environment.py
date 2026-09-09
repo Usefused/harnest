@@ -36,7 +36,9 @@ class _CompletionRecorder:
         })
         return httpx.Response(200, request=request, json={
             "model": payload["model"], "done": True, "done_reason": "stop",
-            "message": {"role": "assistant", "content": next(self._replies)},
+            "message": {"role": "assistant", "content": next(self._replies),
+                        "thinking": ('{"is_the_agent_response_valid": "invalid"}'
+                                     if len(self.requests) == 2 else "")},
             "prompt_eval_count": 1, "eval_count": 1,
         })
 

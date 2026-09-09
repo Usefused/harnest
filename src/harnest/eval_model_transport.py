@@ -80,26 +80,28 @@ class _EvalTransportScope:
         self.bindings = bindings
         self.defaults = defaults
         self.prefix = f"harnest_eval/{uuid.uuid4().hex}/"
-        self.aliases: dict[str, tuple[str, Any]] = {}
+        self.aliases: dict[str, tuple[str, Any, bool]] = {}
+        self._model_aliases: dict[tuple[str, int, bool], str] = {}
 
-    def alias(self, model: str) -> str:
-        """Prefer authored transports, then the evaluation's captured Ollama default."""
+    def alias(self, model: str, *, judge: bool = False) -> str:
+        """Scope judge output independently from optional borrowed transport authority."""
 
         binding = _select_binding(self.bindings, model)
         if binding is None:
             # A non-Ollama agent still needs the default evaluator's configured
             # endpoint; never replace authored gateway authority with defaults.
             binding = _select_binding(self.defaults, model)
-        if binding is None:
+        if binding is None and not judge:
             return model
-        for alias, (original, candidate) in self.aliases.items():
-            if original == model and candidate is binding:
-                return alias
+        key = (model, id(binding), judge)
+        if key in self._model_aliases:
+            return self._model_aliases[key]
         alias = f"{self.prefix}{len(self.aliases)}"
-        self.aliases[alias] = (model, binding)
+        self.aliases[alias] = (model, binding, judge)
+        self._model_aliases[key] = alias
         return alias
 
-    def require(self, alias: str) -> tuple[str, Any]:
+    def require(self, alias: str) -> tuple[str, Any, bool]:
         """Reject escaped adapters and aliases belonging to another invocation."""
 
         if not self.active or _ACTIVE_SCOPE.get() is not self:
@@ -115,6 +117,30 @@ class _EvalTransportScope:
         self.bindings = ()
         self.defaults = ()
         self.aliases.clear()
+        self._model_aliases.clear()
+
+
+def _judge_final_response(response: Any) -> Any | None:
+    """Exclude provider thoughts and intermediate chunks without editing final prose."""
+
+    from .runtime_adk import _customer_facing_parts
+
+    # ADK's non-streaming judge loop parses its first yielded response. A
+    # provider can still emit an initial thought-only or partial event.
+    if getattr(response, "partial", False):
+        return None
+    content = getattr(response, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts:
+        return response
+    visible = list(_customer_facing_parts(parts))
+    if not visible:
+        return None
+    if len(visible) == len(parts):
+        return response
+    # Preserve usage, finish/error metadata and the provider-owned response;
+    # only the copy lent to a judge parser loses private reasoning parts.
+    return response.model_copy(update={"content": content.model_copy(update={"parts": visible})})
 
 
 @lru_cache(maxsize=1)
@@ -136,11 +162,16 @@ def _register_proxy_model() -> type[Any]:
             scope = _ACTIVE_SCOPE.get()
             if scope is None:
                 raise EvaluationError("evaluation model transport scope is unavailable")
-            original, binding = scope.require(model)
+            original, binding, _ = scope.require(model)
             super().__init__(model=original, **kwargs)
             self._scope = scope
             self._alias = model
-            self._delegate = binding.build_eval_model(original)
+            # Unbound native judges keep exactly ADK's original model factory
+            # and credential path; only their output boundary is wrapped.
+            self._delegate = (
+                binding.build_eval_model(original) if binding is not None
+                else LLMRegistry.resolve(original)(model=original)
+            )
 
         @classmethod
         def supported_models(cls) -> list[str]:
@@ -155,13 +186,15 @@ def _register_proxy_model() -> type[Any]:
             return self._delegate.capabilities
 
         async def generate_content_async(self, llm_request: Any, stream: bool = False):
-            """Forward copied requests through the borrowed client without aliases."""
+            """Forward requests and expose only final, non-thought output to judges."""
 
-            original, _ = self._scope.require(self._alias)
+            original, _, judge = self._scope.require(self._alias)
             request = llm_request.model_copy(update={"model": original})
             async for response in self._delegate.generate_content_async(request, stream):
                 self._scope.require(self._alias)
-                yield response
+                prepared = _judge_final_response(response) if judge else response
+                if prepared is not None:
+                    yield prepared
 
     LLMRegistry.register(HarnestEvalTransportModel)
     return HarnestEvalTransportModel
@@ -177,19 +210,16 @@ def _bind_criterion(criterion: Any, scope: _EvalTransportScope) -> Any:
     if isinstance(options, dict):
         key = "judgeModel" if "judge_model" not in options else "judge_model"
         if isinstance(options.get(key), str):
-            options[key] = scope.alias(options[key])
+            options[key] = scope.alias(options[key], judge=True)
     return type(criterion).model_validate(payload)
 
 
 @contextmanager
 def eval_model_transports(target: Any, config: Any) -> Iterator[Any]:
-    """Scope evaluator transports using authored bindings or captured Ollama defaults."""
+    """Protect judge verdicts and scope authored or default evaluator transports."""
 
     bindings = _transport_bindings(target)
     defaults = model_transport_bindings(config)
-    if not bindings and not defaults:
-        yield config
-        return
     _register_proxy_model()
     scope = _EvalTransportScope(bindings, defaults)
     token = _ACTIVE_SCOPE.set(scope)

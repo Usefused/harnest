@@ -316,7 +316,8 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
         config = _config("gemini-2.5-flash", "anthropic/claude-test")
         original = config.model_dump(by_alias=True)
         with eval_model_transports(_target(), config) as prepared:
-            self.assertEqual(prepared.model_dump(by_alias=True), original)
+            self.assertEqual(restore_eval_model_names(prepared.model_dump(by_alias=True)), original)
+            self.assertEqual(prepared.user_simulator_config.model, "anthropic/claude-test")
         self.assertEqual(config.model_dump(by_alias=True), original)
 
     async def test_propagated_binding_and_cyclic_owners_are_deduplicated(self):
@@ -331,12 +332,14 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
                 await _responses(LLMRegistry.new_llm(_judge(prepared)))
         self.assertEqual(len(records[0].calls), 1)
 
-    def test_target_without_explicit_transport_preserves_config(self):
-        """Ordinary environment-only agents need no scoped ADK adapter."""
+    def test_target_without_explicit_transport_scopes_only_judge_output(self):
+        """Native judge output is protected without changing provider configuration."""
 
         config = _config()
         with eval_model_transports(SimpleNamespace(), config) as prepared:
-            self.assertIs(prepared, config)
+            self.assertIsNot(prepared, config)
+            self.assertEqual(restore_eval_model_names(prepared.model_dump(by_alias=True)), config.model_dump(by_alias=True))
+            self.assertEqual(prepared.user_simulator_config.model, config.user_simulator_config.model)
 
     async def test_borrowing_does_not_close_owner_and_cleanup_deduplicates(self):
         """Only the explicit CLI ownership boundary closes shared resources."""

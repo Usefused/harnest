@@ -2055,6 +2055,10 @@ raise SystemExit(main(sys.argv[1:]))
         self.assertEqual(result["evalSetResults"][0]["evalCaseResults"], [])
 
     def test_adk_eval_error_result_captures_infrastructure_details(self):
+        """Retain sanitized infrastructure failures with a real evaluation config."""
+
+        from google.adk.evaluation.eval_config import EvalConfig
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "eval-result.json"
@@ -2063,7 +2067,7 @@ raise SystemExit(main(sys.argv[1:]))
                 "harnest.testing._eval_dependencies",
                 return_value=(object(), object()),
             ), patch(
-                "harnest.testing._eval_config", return_value=object()
+                "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
                 "harnest.testing._adk_eval_output_filter"
             ), patch(
@@ -2092,6 +2096,10 @@ raise SystemExit(main(sys.argv[1:]))
         self.assertNotIn("synthetic-api-key", json.dumps(result))
 
     def test_adk_scored_failure_artifact_retains_case_metric_details(self):
+        """Preserve scored failure artifacts across the scoped judge boundary."""
+
+        from google.adk.evaluation.eval_config import EvalConfig
+
         case_payload = {
             "evalSetId": "quality",
             "evalId": "failed-case",
@@ -2136,7 +2144,7 @@ raise SystemExit(main(sys.argv[1:]))
                 "harnest.testing._eval_dependencies",
                 return_value=(object(), object()),
             ), patch(
-                "harnest.testing._eval_config", return_value=object()
+                "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
                 "harnest.testing._adk_eval_output_filter"
             ), patch(
@@ -2167,6 +2175,10 @@ raise SystemExit(main(sys.argv[1:]))
         self.assertEqual(rubric["rationale"], "The answer lacks evidence.")
 
     def test_langgraph_eval_publishes_structured_result(self):
+        """Publish neutral results using ADK's actual configuration contract."""
+
+        from google.adk.evaluation.eval_config import EvalConfig
+
         application = types.SimpleNamespace(target=None)
 
         @asynccontextmanager
@@ -2180,7 +2192,7 @@ raise SystemExit(main(sys.argv[1:]))
             root = Path(directory)
             output = root / "langgraph-result.json"
             suite = EvalSuite((), root / "test_config.json")
-            config = types.SimpleNamespace(live_model_config=None)
+            config = EvalConfig(criteria={})
             with patch(
                 "harnest.testing._eval_dependencies",
                 return_value=(object(), object()),
