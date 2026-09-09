@@ -1,15 +1,12 @@
 # Changelog
 
-## Unreleased
+## [0.18.2](https://github.com/Usefused/harnest/compare/v0.18.1...v0.18.2) (2026-09-09)
 
 ### Fixes
 
 * Exclude provider reasoning and intermediate response chunks from ADK judge
   verdict parsing, including rubric evaluations for ADK and LangGraph agents.
   Preserve the final answer, provider configuration, and authored model output.
-
-## [0.18.2](https://github.com/Usefused/harnest/compare/v0.18.1...v0.18.2) (2026-09-09)
-
 
 ### Fixes
 
