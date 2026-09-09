@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import replace
 import os
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -24,7 +26,6 @@ from harnest.agent_principal import (
     create_agent_principal_binding,
     revoke_agent_principal,
 )
-from harnest.checkpoint import RunScope
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.cron import CompiledCron
 from harnest.durable import NativeResumeInput, ResumeArtifact, native_durable_call
@@ -86,6 +87,8 @@ class _A2ADurableTaskDriver(FakeDriver):
         application_id: str,
         schedule_in: float,
     ) -> None:
+        """Use one application identity for both native and outer storage ownership."""
+
         super().__init__()
         self.authored_task = authored_task
         self.store = store
@@ -93,6 +96,7 @@ class _A2ADurableTaskDriver(FakeDriver):
         self.schedule_in = schedule_in
         self.info = replace(
             self.info,
+            id=application_id,
             card=_a2a_card(),
             framework="adk",
             mode="managed",
@@ -121,22 +125,15 @@ class _A2ADurableTaskDriver(FakeDriver):
             yield event
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
-        """Turn the callback replica's private resume into a public result."""
+        """Return the resumed result; outer storage owns durable completion."""
 
         if not isinstance(request.input, NativeResumeInput):
             raise AssertionError("durable callback did not use NativeResumeInput")
         value = request.input.value
         events = _result_events(value)
-        await self.store.transition(
-            scope=RunScope(
-                self.application_id,
-                request.user_id,
-                request.session_id,
-                request.invocation_id,
-            ),
-            expected_status="running",
-            status="completed",
-        )
+        # Match native adapters: StorageRuntimeDriver commits the result before
+        # transitioning the run. Completing here exposes a result-less terminal
+        # window and prevents the outer wrapper from persisting its checkpoint.
         return InvocationResult(
             text=f"delivered: {value}",
             events=events,
@@ -274,16 +271,63 @@ def _a2a_task_app(
 
 
 def _wait_for_a2a_state(client, task_id: str, expected: str) -> dict[str, object]:
-    """Poll only the explicit A2A status endpoint until one terminal boundary."""
+    """Bound polling while allowing the native worker's five-second fetch interval."""
 
-    for _attempt in range(100):
+    deadline = time.monotonic() + 15
+    last_status, last_state = None, None
+    terminal = {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"}
+    while time.monotonic() < deadline:
         response = client.get(f"/a2a/tasks/{task_id}", headers=_a2a_headers())
+        last_status = response.status_code
         if response.status_code == 200:
             task_value = response.json()
-            if task_value["status"]["state"] == expected:
+            last_state = task_value["status"]["state"]
+            if last_state == expected:
                 return task_value
+            if last_state in terminal:
+                break
         time.sleep(0.05)
-    raise AssertionError(f"A2A task did not reach {expected}")
+    # Do not include response bodies: artifacts and error details may be private.
+    raise AssertionError(f"A2A task did not reach {expected}; last HTTP status={last_status}, state={last_state}")
+
+
+@contextmanager
+def _hold_a2a_completion():
+    """Expose the backend-return window deterministically, without delaying the database."""
+
+    returned, release = threading.Event(), threading.Event()
+    original = _A2ADurableTaskDriver.invoke
+
+    async def invoke(driver, request):
+        """Hold only the test backend's result before the outer storage commit."""
+
+        result = await original(driver, request)
+        returned.set()
+        if not await asyncio.to_thread(release.wait, 15):
+            raise AssertionError("test did not release the A2A completion gate")
+        return result
+
+    try:
+        with patch.object(_A2ADurableTaskDriver, "invoke", invoke):
+            yield returned, release
+    finally:
+        release.set()
+
+
+def _assert_a2a_completion_pending(test, client, task_id, gate):
+    """A poll before result persistence must not permanently publish failure."""
+
+    returned, release = gate
+    try:
+        test.assertTrue(returned.wait(15), "native resume did not return a result")
+        response = client.get(f"/a2a/tasks/{task_id}", headers=_a2a_headers())
+        test.assertEqual(response.status_code, 200)
+        test.assertEqual(response.json()["status"]["state"], "TASK_STATE_WORKING")
+        durable = asyncio.run(_continuation_database_evidence(task_id))
+        test.assertEqual(durable["run_status"], "running")
+        test.assertEqual(durable["continuation_status"], "claimed")
+    finally:
+        release.set()
 
 
 async def _task_database_evidence(task_name: str) -> dict[str, object]:
@@ -671,13 +715,16 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
     def test_completed_task_is_retrieved_by_a_fresh_a2a_replica(self):
         """Cross A2A, Procrastinate, PostgreSQL, and a restarted app boundary."""
 
-        @task(queue="integration")
+        # Native workers select by queue, not task name. Keep independent
+        # fixtures from claiming jobs whose callables they have not registered.
+        unique = uuid.uuid4().hex
+
+        @task(queue=f"a2a-{unique}")
         async def deliver(value):
             """Return one value from the real task worker."""
 
             return {"delivered": value}
 
-        unique = uuid.uuid4().hex
         application_id = f"a2a_completion_{unique}"
         task_name = f"harnest.{application_id}.tasks.deliver"
         first_app = _a2a_task_app(
@@ -686,7 +733,7 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
             task_name=task_name,
             schedule_in=0.05,
         )
-        with TestClient(first_app) as client:
+        with _hold_a2a_completion() as gate, TestClient(first_app) as client:
             submitted = client.post(
                 "/a2a/message:send",
                 json=_send_payload("private-value"),
@@ -694,6 +741,7 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(submitted.status_code, 200)
             task_id = submitted.json()["task"]["id"]
+            _assert_a2a_completion_pending(self, client, task_id, gate)
             completed = _wait_for_a2a_state(
                 client, task_id, "TASK_STATE_COMPLETED"
             )
@@ -720,13 +768,14 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
     def test_a2a_cancel_atomically_stops_real_task_and_durable_wait(self):
         """Assert transport cancellation against committed database state."""
 
-        @task(queue="integration")
+        unique = uuid.uuid4().hex
+
+        @task(queue=f"a2a-{unique}")
         async def deliver(value):
             """Remain queued long enough for transport cancellation."""
 
             return {"delivered": value}
 
-        unique = uuid.uuid4().hex
         application_id = f"a2a_cancel_{unique}"
         task_name = f"harnest.{application_id}.tasks.deliver"
         app = _a2a_task_app(
