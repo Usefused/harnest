@@ -67,7 +67,7 @@ prefix, commonly `/v1`. Set `OPENAI_API_KEY` only if your endpoint needs
 a key. Update the same non-secret values in `config.yaml` for
 `harnest test`, `run`, and `serve`, because `spec.environment` overrides matching
 shell values. See the canonical
-[model credential process](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials).
+[model configuration guide](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model).
 
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition

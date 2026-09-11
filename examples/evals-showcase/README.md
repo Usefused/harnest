@@ -69,7 +69,7 @@ export OPENAI_API_KEY="..."
 export GOOGLE_API_KEY="..."  # Reference lane's Google services; ADC is an alternative.
 ```
 
-See the canonical [model credential process](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials). Never put credential values in `spec.environment`, agent source, or `evals/test_config.json`.
+See the canonical [model configuration guide](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model). Never put credential values in `spec.environment`, agent source, or `evals/test_config.json`.
 
 ## Run every metric
 

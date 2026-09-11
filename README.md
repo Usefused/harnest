@@ -65,10 +65,61 @@ New agents use the OpenAI-compatible API specification, not a default provider
 or GPT model. Replace `OPENAI_MODEL` and `OPENAI_BASE_URL` placeholders in
 `config.yaml` with your server's model ID and API URL. Set `OPENAI_API_KEY` in
 your runtime environment only if that server requires authentication. See
-[model configuration](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials).
+[Configure a model](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model).
 
-The default scaffold is a runnable managed agent with optional, guide-only
-folders. Ask for only the runnable core, then add capabilities as needed:
+The default scaffold creates this agent folder. Files beginning with `_` are
+ignored guides; replace only the ones for capabilities you need.
+
+```text
+support-agent/
+├── agent.py
+├── instructions.md
+├── config.yaml
+├── agent-card.yaml
+├── pyproject.toml
+├── harnest.lock
+├── .gitignore
+├── lifecycle/
+│   ├── storage.py
+│   └── _README.md
+├── lib/
+│   └── _README.md
+├── models/
+│   └── _README.md
+├── tools/
+│   └── _README.md
+├── tasks/
+│   └── _README.md
+├── cron/
+│   └── _README.md
+├── subagents/
+│   └── _README.md
+├── mcp/
+│   └── _README.md
+├── extensions/
+│   └── _README.md
+├── plugins/
+│   └── _README.md
+├── sandbox/
+│   └── _README.md
+├── skills/
+│   └── _README.md
+├── evals/
+│   └── _README.md
+└── tests/
+    ├── unit/_README.md
+    └── smoke/_README.md
+```
+
+Choose a scaffold profile:
+
+| Profile | Result |
+| --- | --- |
+| Default | Runnable managed agent plus ignored guides for optional capabilities |
+| `--minimal` | Only the files required to compile and run |
+| `--example` | Default scaffold plus ignored, opt-in examples |
+
+Start with only the runnable core, then add capabilities as needed:
 
 ```bash
 harnest init minimal-agent --framework adk --minimal
@@ -78,17 +129,8 @@ harnest add subagent researcher
 ```
 
 `harnest add` also scaffolds `task`, `lifecycle`, and `context` resources without
-overwriting existing files. Managed ADK agents discover added subagents
-automatically; the CLI rejects resource types owned directly by another mode or
-framework. When running outside the agent folder, pass `--project <agent-root>`.
-
-Add `--example` for ignored code samples in folders that otherwise contain only
-guides. Existing agent and storage code stays unchanged; rename a sample to opt
-into a feature:
-
-```bash
-harnest init support-agent --framework adk --example
-```
+overwriting existing files. When running outside the agent folder, pass
+`--project <agent-root>`.
 
 Synchronize the isolated project environment and run its offline tests:
 
