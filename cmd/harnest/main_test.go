@@ -66,8 +66,8 @@ func TestInitRejectsConflictingProfiles(t *testing.T) {
 	}
 }
 
-// TestInitCreatesMinimalLoadableKebabNamedOllamaAgent checks runnable defaults without extra server YAML.
-func TestInitCreatesMinimalLoadableKebabNamedOllamaAgent(t *testing.T) {
+// TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent checks runnable defaults without extra server YAML.
+func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "support-agent")
 	stdout, _, err := executeForTest(t, defaultSystem(), "init", target)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestInitCreatesMinimalLoadableKebabNamedOllamaAgent(t *testing.T) {
 		`history="session"`,
 		"from harnest.agent import Agent",
 		"root_agent = Agent(",
-		"model=OllamaModel.from_environment(),",
+		"model=LiteLLMModel.from_openai_environment(),",
 	})
 	if strings.Contains(string(agentSource), "Graph(") {
 		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
@@ -280,31 +280,32 @@ func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	assertAdvancedLangGraphScaffold(t, advanced)
 }
 
-// TestInitProfilesUseOllama keeps every authoring path from silently selecting OpenAI.
-func TestInitProfilesUseOllama(t *testing.T) {
+// TestInitProfilesUseCompatibleAPI keeps scaffolds free of vendor defaults.
+func TestInitProfilesUseCompatibleAPI(t *testing.T) {
 	for _, framework := range []string{"adk", "langgraph"} {
 		for _, mode := range []string{"managed", "advanced"} {
 			for _, profile := range []scaffoldProfile{scaffoldGuidedProfile, scaffoldMinimalProfile, scaffoldExampleProfile} {
 				t.Run(framework+"/"+mode+"/"+string(profile), func(t *testing.T) {
-					files := scaffoldFilesForProfile("ollama-agent", framework, mode, profile)
+					files := scaffoldFilesForProfile("compatible-agent", framework, mode, profile)
 					assertContainsAll(t, "root model", files["agent.py"], []string{
-						"from harnest.model import OllamaModel", "OllamaModel.from_environment()",
+						"from harnest.model import LiteLLMModel", "LiteLLMModel.from_openai_environment()",
 					})
 					assertContainsAll(t, "model defaults", files["config.yaml"], []string{
-						"OLLAMA_MODEL: qwen3.5:cloud", "OLLAMA_BASE_URL: http://localhost:11434",
+						"OPENAI_MODEL: your-model", "OPENAI_BASE_URL: https://models.example.invalid/v1",
 					})
-					assertNoDefaultOpenAI(t, files)
+					assertNoDefaultVendor(t, files)
 				})
 			}
 		}
 	}
 }
 
-// assertNoDefaultOpenAI covers inert examples as well as runnable source files.
-func assertNoDefaultOpenAI(t *testing.T, files map[string]string) {
+// assertNoDefaultVendor covers inert examples as well as runnable source files.
+func assertNoDefaultVendor(t *testing.T, files map[string]string) {
 	t.Helper()
 	for path, contents := range files {
-		for _, forbidden := range []string{"from_openai_environment", "OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY"} {
+		assertNoOllamaReference(t, path, contents)
+		for _, forbidden := range []string{"gpt-", "api.openai.com"} {
 			if strings.Contains(contents, forbidden) {
 				t.Fatalf("generated %s unexpectedly contains %q", path, forbidden)
 			}
@@ -312,9 +313,9 @@ func assertNoDefaultOpenAI(t *testing.T, files map[string]string) {
 	}
 }
 
-// TestInitAdvancedADKUsesCanonicalOllamaEnvironment keeps native ADK scaffolds
+// TestInitAdvancedADKUsesCanonicalModelEnvironment keeps native ADK scaffolds
 // on the same model credential contract as managed and LangGraph projects.
-func TestInitAdvancedADKUsesCanonicalOllamaEnvironment(t *testing.T) {
+func TestInitAdvancedADKUsesCanonicalModelEnvironment(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "advanced-adk-agent")
 	if _, _, err := executeForTest(
 		t, defaultSystem(), "init", target, "--framework", "adk", "--mode", "advanced",
@@ -323,8 +324,8 @@ func TestInitAdvancedADKUsesCanonicalOllamaEnvironment(t *testing.T) {
 	}
 	source := string(mustReadTestFile(t, filepath.Join(target, "agent.py")))
 	assertContainsAll(t, "advanced ADK scaffold", source, []string{
-		"from harnest.model import OllamaModel",
-		"model=OllamaModel.from_environment().build(),",
+		"from harnest.model import LiteLLMModel",
+		"model=LiteLLMModel.from_openai_environment().build(),",
 	})
 }
 
@@ -332,11 +333,11 @@ func TestInitAdvancedADKUsesCanonicalOllamaEnvironment(t *testing.T) {
 // generated projects do not advertise the retired provider-specific defaults.
 func assertScaffoldModelEnvironment(t *testing.T, bundle engine.Bundle) {
 	t.Helper()
-	if bundle.Config.Spec.Environment["OLLAMA_MODEL"] != "qwen3.5:cloud" ||
-		bundle.Config.Spec.Environment["OLLAMA_BASE_URL"] != "http://localhost:11434" {
-		t.Fatalf("generated environment is missing Ollama defaults: %v", bundle.Config.Spec.Environment)
+	if bundle.Config.Spec.Environment["OPENAI_MODEL"] != "your-model" ||
+		bundle.Config.Spec.Environment["OPENAI_BASE_URL"] != "https://models.example.invalid/v1" {
+		t.Fatalf("generated environment is missing model placeholders: %v", bundle.Config.Spec.Environment)
 	}
-	for _, forbidden := range []string{"LITELLM_MODEL", "LITELLM_API_BASE", "OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OLLAMA_API_KEY"} {
+	for _, forbidden := range []string{"LITELLM_MODEL", "LITELLM_API_BASE", "OLLAMA_MODEL", "OLLAMA_BASE_URL", "OPENAI_API_KEY"} {
 		if _, exists := bundle.Config.Spec.Environment[forbidden]; exists {
 			t.Fatalf("generated environment contains unsupported or secret setting %q", forbidden)
 		}
@@ -391,7 +392,7 @@ func assertManagedLangGraphScaffold(t *testing.T, directory string) {
 	assertContainsAll(t, "managed scaffold", string(source), []string{
 		"from harnest.agent import Agent",
 		"root_agent = Agent(",
-		"model=OllamaModel.from_environment(),",
+		"model=LiteLLMModel.from_openai_environment(),",
 	})
 	if _, err := os.Stat(filepath.Join(directory, "subagents", "helper.py")); !os.IsNotExist(err) {
 		t.Fatalf("managed LangGraph scaffold must not create an implicit subagent: %v", err)
@@ -427,7 +428,7 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"root_agent = Agent.advanced(",
 		"from langchain.agents import create_agent",
 		"from harnest.lib.storage import store",
-		"model=OllamaModel.from_environment().build_langgraph(),",
+		"model=LiteLLMModel.from_openai_environment().build_langgraph(),",
 	})
 	if strings.Contains(string(source), "NativeApp") {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
@@ -629,7 +630,7 @@ printf '%s\n' "$@" > "$HARNEST_TEST_RECORD"
 	})
 }
 
-// TestEvalCommandReceivesCanonicalModelEnvironment preserves configured Ollama
+// TestEvalCommandReceivesCanonicalModelEnvironment preserves configured compatible API
 // selection and secret handling across the evaluator subprocess boundary.
 func TestEvalCommandReceivesCanonicalModelEnvironment(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "eval-environment-agent")
@@ -639,8 +640,8 @@ func TestEvalCommandReceivesCanonicalModelEnvironment(t *testing.T) {
 	configPath := filepath.Join(target, "config.yaml")
 	configured := strings.Replace(
 		string(mustReadTestFile(t, configPath)),
-		"OLLAMA_MODEL: qwen3.5:cloud",
-		"OLLAMA_MODEL: qwen3.5:configured-for-eval",
+		"OPENAI_MODEL: your-model",
+		"OPENAI_MODEL: qwen3.5:configured-for-eval",
 		1,
 	)
 	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
@@ -648,16 +649,16 @@ func TestEvalCommandReceivesCanonicalModelEnvironment(t *testing.T) {
 	}
 
 	record := filepath.Join(t.TempDir(), "environment.txt")
-	providerSecret := "ollama-secret-must-not-be-recorded"
+	providerSecret := "compatible-secret-must-not-be-recorded"
 	t.Setenv("HARNEST_TEST_RECORD", record)
-	t.Setenv("OLLAMA_API_KEY", providerSecret)
-	t.Setenv("OLLAMA_MODEL", "qwen3.5:parent-must-be-overridden")
+	t.Setenv("OPENAI_API_KEY", providerSecret)
+	t.Setenv("OPENAI_MODEL", "qwen3.5:parent-must-be-overridden")
 	// Record presence markers only: captured test output must never disclose
 	// credentials while verifying Harnest's canonical model environment.
 	python := writeExecutable(t, `#!/bin/sh
 api_key=missing
-if [ -n "$OLLAMA_API_KEY" ]; then api_key=present; fi
-printf 'api_key=%s\nmodel=%s\n' "$api_key" "$OLLAMA_MODEL" > "$HARNEST_TEST_RECORD"
+if [ -n "$OPENAI_API_KEY" ]; then api_key=present; fi
+printf 'api_key=%s\nmodel=%s\n' "$api_key" "$OPENAI_MODEL" > "$HARNEST_TEST_RECORD"
 `)
 	stdout, stderr, err := executeForTest(
 		t, defaultSystem(), "--python", python, "test", target, "--evals",
@@ -671,7 +672,7 @@ printf 'api_key=%s\nmodel=%s\n' "$api_key" "$OLLAMA_MODEL" > "$HARNEST_TEST_RECO
 		"model=qwen3.5:configured-for-eval",
 	})
 	if strings.Contains(markers, "qwen3.5:parent-must-be-overridden") {
-		t.Fatalf("configured OLLAMA_MODEL did not override the parent environment")
+		t.Fatalf("configured OPENAI_MODEL did not override the parent environment")
 	}
 	for label, value := range map[string]string{
 		"record": markers,

@@ -16,7 +16,7 @@ root_agent = Graph(
     nodes={
         "respond": Agent(
             name="responder",
-            model=LiteLLMModel("ollama_chat/qwen3.5:cloud"),
+            model=LiteLLMModel("openai/your-model"),
             history="session",
         ),
     },
@@ -257,10 +257,10 @@ Third-party dependencies used by library code still belong in
 
 ## Models
 
-New agents use `harnest.model.OllamaModel.from_environment()`, reading
-`OLLAMA_MODEL` (default `qwen3.5:cloud`) and `OLLAMA_BASE_URL` (default
-`http://localhost:11434`). Start Ollama and authenticate for the cloud model,
-or select a downloaded local model. `OllamaModel` routes through LiteLLM;
+New agents use `harnest.model.LiteLLMModel.from_openai_environment()`, reading
+required `OPENAI_MODEL` and `OPENAI_BASE_URL` settings and optional `OPENAI_API_KEY`.
+Replace the generated placeholders before live calls. Harnest selects neither
+a provider endpoint nor a model automatically;
 `harnest.model.LiteLLMModel(provider/model, **completion_args)` remains the
 explicit provider-neutral connector. Pass provider options such as `api_base` and `api_key`
 through the connector or runtime environment. Managed ADK and LangGraph both

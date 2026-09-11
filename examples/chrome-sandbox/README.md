@@ -16,8 +16,9 @@ sandbox; the model never receives a general code execution tool.
 - About 5 GB of free Docker storage for the Playwright image and build layers.
 - Capacity for the sandbox's one CPU, 1 GiB memory, 128 processes, and 256 MiB
   scratch-space limits.
-- An OpenAI API key. The example's `config.yaml` selects `gpt-4.1-mini` through
-  `https://api.openai.com/v1`.
+- A tool-capable model served by an OpenAI-compatible API. Replace `OPENAI_MODEL`
+  and `OPENAI_BASE_URL` placeholders in `config.yaml`; provide `OPENAI_API_KEY`
+  only if your endpoint requires authentication.
 
 You do not need to install Python or Playwright locally. `harnest env sync`
 creates the isolated agent environment and installs Harnest's managed framework

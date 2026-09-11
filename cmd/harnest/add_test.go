@@ -43,7 +43,7 @@ func TestAddResourcesBuildsUpMinimalAgent(t *testing.T) {
 		})
 	}
 	assertContainsAll(t, "added subagent model", string(mustReadTestFile(t, filepath.Join(root, "subagents", "researcher.py"))), []string{
-		"from harnest.model import OllamaModel", "model=OllamaModel.from_environment()",
+		"from harnest.model import LiteLLMModel", "model=LiteLLMModel.from_openai_environment()",
 	})
 
 	_, _, err := executeForTest(

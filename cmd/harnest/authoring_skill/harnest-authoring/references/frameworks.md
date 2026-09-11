@@ -123,21 +123,18 @@ earlier conversation. Do not carry a duplicate transcript in graph state. The re
 checkpoint lifecycle persists in-progress execution; Harnest session storage
 remains the committed conversation authority.
 
-## Models and Ollama
+## OpenAI-compatible models
 
-New projects use `OllamaModel.from_environment()` with `OLLAMA_MODEL=qwen3.5:cloud`
-and `OLLAMA_BASE_URL=http://localhost:11434`. Start Ollama and authenticate for
-this cloud model, or set `OLLAMA_MODEL` to a downloaded local model. Explicit
-`LiteLLMModel` connectors use qualified names such as `ollama_chat/qwen3.5:cloud`.
-Ollama's native API base is `http://localhost:11434` locally or `https://ollama.com`
-for Ollama Cloud; an OpenAI-compatible `/v1` base is not the native Ollama
-`/api/chat` base used by the `ollama_chat` provider. Credentials remain runtime
-environment or secret configuration.
+New projects use `LiteLLMModel.from_openai_environment()`. Replace `OPENAI_MODEL`
+and `OPENAI_BASE_URL` placeholders in `config.yaml` with your server's model ID
+and OpenAI-compatible API URL, including its API prefix (commonly `/v1`). No
+provider or model is selected automatically. Keep optional `OPENAI_API_KEY` in
+runtime environment or secret configuration. Explicit `LiteLLMModel` connectors
+remain available for other protocols using qualified `provider/model` names.
 
 Both managed frameworks use the same model mode contract. `thinking=True`
 requests reasoning, `thinking=False` requests no reasoning, and omission uses
-the provider default. LiteLLM maps the non-thinking mode to Ollama's
-`think: false`. Use `reasoning_effort` directly when a specific supported level
+the provider default. Support depends on your endpoint. Use `reasoning_effort` directly when a specific supported level
 is required. Harnest filters native ADK and LangGraph reasoning signatures,
 state, and raw metadata at its public boundary. Provider-readable reasoning
 text is private by default; `OutputPolicy(thinking=True)` emits it as

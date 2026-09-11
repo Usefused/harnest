@@ -9,6 +9,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import yaml
 
 from harnest.bundle import compile_application, discover_evals
 from harnest.plugins import release_runtime_plugins
@@ -42,13 +45,20 @@ class InitExampleTests(unittest.TestCase):
         )
         return root
 
+    def _compile_scaffold(self, root, framework):
+        """Apply generated non-secret settings as the CLI does before compiling."""
+        config = yaml.safe_load((root / "config.yaml").read_text())
+        environment = {key: str(value) for key, value in config["spec"]["environment"].items()}
+        with patch.dict(os.environ, environment):
+            return compile_application(root, entrypoint="agent:root_agent", framework=framework)
+
     def test_samples_are_valid_source_but_never_imported_by_default(self):
         """Ignored examples cannot activate tools, tasks, plugins, or evals."""
         for framework in ("adk", "langgraph"):
             with self.subTest(framework=framework):
                 root = self._scaffold(framework)
                 self._validate_and_poison_samples(root)
-                application = compile_application(root, entrypoint="agent:root_agent", framework=framework)
+                application = self._compile_scaffold(root, framework)
                 self.assertEqual(application.kind, "agent")
                 self.assertEqual(application.tasks, ())
                 self.assertEqual(application.crons, ())
@@ -73,7 +83,7 @@ class InitExampleTests(unittest.TestCase):
                 root = self._scaffold(framework)
                 self._activate_samples(root)
                 self._install_docker_extension(root)
-                application = compile_application(root, entrypoint="agent:root_agent", framework=framework)
+                application = self._compile_scaffold(root, framework)
                 try:
                     self._assert_activated_samples(root, application)
                 finally:

@@ -39,10 +39,10 @@ answer against the prior conversation and requires no redundant tool call.
 ## Credentials
 
 Both agents use `LiteLLMModel.from_openai_environment()`. Omitted judge and
-simulator model IDs use the same `OPENAI_MODEL`, defaulting to `gpt-4.1-mini`.
+simulator model IDs use the same explicitly configured `OPENAI_MODEL`.
 Set `OPENAI_API_KEY` in the process environment before local `harnest test`,
-`run`, or `serve` commands. `OPENAI_BASE_URL` selects an OpenAI-compatible
-endpoint, including Ollama's compatible API; no `OLLAMA_API_KEY` is needed.
+`run`, or `serve` commands if your server requires authentication.
+`OPENAI_BASE_URL` selects your OpenAI-compatible API endpoint.
 Edit the non-secret model and endpoint values in each `config.yaml` when using
 a different backend, because `spec.environment` overrides matching shell values.
 

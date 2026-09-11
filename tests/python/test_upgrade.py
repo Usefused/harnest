@@ -12,6 +12,24 @@ from harnest.upgrade import UpgradeError, apply_upgrade, plan_upgrade
 
 
 class RepositoryUpgradeTests(unittest.TestCase):
+    def test_retired_model_requires_explicit_transport_migration(self):
+        """Do not silently reroute a legacy agent or rewrite its credential mapping."""
+        sources = (
+            "from harnest.model import OllamaModel as Model\nmodel = Model.from_environment()\n",
+            "from harnest import OllamaModel\n",
+            "import harnest.model as models\nmodel = models.OllamaModel()\n",
+        )
+        for source in sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.legacy_agent(root)
+                self.write(root / "agent.py", source)
+                plan = plan_upgrade(root)
+                self.assertTrue(any("OllamaModel was removed" in blocker for blocker in plan.blockers))
+                with self.assertRaisesRegex(UpgradeError, "manual blockers"):
+                    apply_upgrade(plan)
+                self.assertEqual((root / "agent.py").read_text(), source)
+
     def write(self, path: Path, value: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")

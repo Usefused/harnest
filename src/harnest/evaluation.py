@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterator
 import uuid
 
 from .bundle import EvalSuite
-from .model import OllamaModel
+from .model import LiteLLMModel
 from .model_transport import attach_model_transport_binding
 
 
@@ -68,7 +68,7 @@ def _set_default_judge_model(criterion: Any, default_model: Callable[[], str]) -
     if isinstance(options, dict):
         model_key = "judgeModel" if "judge_model" not in options else "judge_model"
         # Resolve lazily so explicit custom models do not depend on an unused
-        # OLLAMA_MODEL value in the process environment.
+        # OPENAI_MODEL value in the process environment.
         if model_key not in options:
             options[model_key] = default_model()
     return criterion
@@ -160,24 +160,24 @@ def eval_config(suite: EvalSuite, trajectory: str) -> Any:
 
 
 def _configured_eval_models(payload: dict[str, Any], suite: EvalSuite, config_type: Any) -> Any:
-    """Capture implicit Ollama transport without altering explicitly authored models."""
+    """Capture implicit OpenAI-compatible transport without altering explicitly authored models."""
 
     @lru_cache(maxsize=1)
-    def connector() -> OllamaModel:
+    def connector() -> LiteLLMModel:
         """Resolve only when a model default is needed, once per configuration."""
 
-        return OllamaModel.from_environment()
+        return LiteLLMModel.from_openai_environment()
 
     config = config_type.model_validate(
-        _apply_eval_model_defaults(payload, suite, lambda: connector().litellm_model)
+        _apply_eval_model_defaults(payload, suite, lambda: connector().model)
     )
     if connector.cache_info().currsize:
         default = connector()
         # ADK constructs judges from model IDs, so keep the endpoint beside the
         # config for the run-scoped transport adapter rather than changing env.
         attach_model_transport_binding(
-            config, model=default.litellm_model,
-            completion_args={**default.completion_args, "api_base": default.api_base},
+            config, model=default.model,
+            completion_args=default.completion_args,
         )
     return config
 

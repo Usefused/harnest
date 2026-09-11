@@ -88,7 +88,7 @@ class _EvalTransportScope:
 
         binding = _select_binding(self.bindings, model)
         if binding is None:
-            # A non-Ollama agent still needs the default evaluator's configured
+            # A agent using another provider still needs the default evaluator's configured
             # endpoint; never replace authored gateway authority with defaults.
             binding = _select_binding(self.defaults, model)
         if binding is None and not judge:

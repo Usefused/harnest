@@ -1041,6 +1041,7 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
         module = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         raise UpgradeError(f"{path}: cannot parse Python source") from exc
+    _check_retired_model_imports(path, module)
     lifecycle_prefixes = _namespace_prefixes(module, "lifecycle")
     context_prefixes = _namespace_prefixes(module, "context")
     edits = _retired_tool_import_edits(source, module)
@@ -1052,6 +1053,30 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
     )
     edits.extend(_context_provider_edits(source, module, context_prefixes))
     return _apply_text_edits(source, edits) if edits else None
+
+
+def _check_retired_model_imports(path: Path, module: ast.Module) -> None:
+    """Require endpoint review instead of rewriting a native provider blindly."""
+
+    qualified = {f"{prefix}.OllamaModel" for prefix in _namespace_prefixes(module, "model")}
+    for node in ast.walk(module):
+        if _retired_model_import(node) or _dotted_name(node) in qualified:
+            raise UpgradeError(
+                f"{path}:{node.lineno}: OllamaModel was removed; migrate to "
+                "LiteLLMModel.from_openai_environment() and explicitly configure "
+                "OPENAI_MODEL, OPENAI_BASE_URL (compatible API, usually /v1), "
+                "and optional OPENAI_API_KEY before upgrading"
+            )
+
+
+def _retired_model_import(node: ast.AST) -> bool:
+    """Recognize direct and aliased imports without importing user code."""
+
+    return (
+        isinstance(node, ast.ImportFrom)
+        and node.module in {"harnest", "harnest.model"}
+        and any(name.name == "OllamaModel" for name in node.names)
+    )
 
 
 def _retired_tool_import_edits(

@@ -77,11 +77,11 @@ mode checks.
 The general `LiteLLMModel("provider/model", **completion_args)` connector
 supports any LiteLLM provider and constructs either ADK's LiteLLM adapter or a
 LangChain `ChatLiteLLM` adapter lazily. The scaffold and examples use
-`LiteLLMModel.from_openai_environment()`, which reads `OPENAI_MODEL` and defaults
-to `gpt-4.1-mini`. Raw names are normalized to `openai/<model>`; a native provider
-prefix is rejected on this path. The OpenAI-compatible adapter consumes
-`OPENAI_BASE_URL` and `OPENAI_API_KEY`, including for compatible backends such as
-Ollama. Non-secret model and endpoint settings belong in `spec.environment`;
+`LiteLLMModel.from_openai_environment()`, which requires `OPENAI_MODEL` and
+`OPENAI_BASE_URL`. Raw server model IDs, including namespaced IDs, are normalized
+to `openai/<model>`. The factory captures the explicit endpoint and optional
+`OPENAI_API_KEY` for agent and evaluation adapters. It has no vendor or model
+default. Non-secret model and endpoint settings belong in `spec.environment`;
 credentials are inherited locally or injected from deployment `spec.secrets`.
 Omitted eval judge and simulator model IDs use the same canonical model, while
 explicit model IDs and native evaluation services retain their own providers.

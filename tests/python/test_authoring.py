@@ -18,7 +18,7 @@ from harnest.agent import tool
 from harnest.agent import Agent, instruction_file
 from harnest.orchestrator import AgentSource, Orchestrator
 from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEvalError, BundleExportError, BundleImportError, BundleSkillError, EvalSuite, bundle_agent, compile_agent, compile_artifact, discover_evals
-from harnest.model import LiteLLMModel, OllamaModel
+from harnest.model import LiteLLMModel
 from harnest.mcp import MCPClient
 from harnest.cli import load_orchestrator, main as cli_main
 from harnest.runtime import create_fastapi_app, run_agent_message
@@ -422,33 +422,6 @@ class AuthoringTests(unittest.TestCase):
         self.assertNotIn("metadata", built.kwargs["output_schema"].model_fields)
         self.assertIn("metadata", Answer.model_fields)
 
-    def test_ollama_model_builds_adk_litellm_lazily(self):
-        connector = OllamaModel(
-            "qwen3:8b",
-            api_base=" http://ollama:11434 ",
-            temperature=0.2,
-            num_retries=2,
-        )
-        self.assertEqual(connector.litellm_model, "ollama_chat/qwen3:8b")
-
-        modules = _fake_adk_modules()
-        with patch.dict(sys.modules, modules):
-            built_model = connector.build()
-            built_agent = Agent(
-                name="local_agent",
-                model=connector,
-                instruction="Help.",
-            ).build()
-
-        expected = {
-            "model": "ollama_chat/qwen3:8b",
-            "api_base": "http://ollama:11434",
-            "temperature": 0.2,
-            "num_retries": 2,
-        }
-        self.assertEqual(built_model.kwargs, expected)
-        self.assertEqual(built_agent.kwargs["model"].kwargs, expected)
-
     def test_litellm_model_is_provider_neutral_and_forwards_completion_args(self):
         connector = LiteLLMModel(
             " openai/gpt-4.1-mini ",
@@ -492,28 +465,27 @@ class AuthoringTests(unittest.TestCase):
             connector = LiteLLMModel.from_openai_environment()
 
         self.assertEqual(connector.model, "openai/local-compatible-model")
-        # The OpenAI-compatible adapter owns key and endpoint lookup, which is
-        # also how ADK judge and simulator models receive the same settings.
-        self.assertEqual(connector.completion_args, {})
+        self.assertEqual(connector.completion_args, {
+            "api_base": "http://models.example.test/v1", "api_key": "synthetic-openai-key",
+        })
         self.assertNotIn("synthetic-openai-key", repr(connector))
 
-    def test_openai_model_environment_rejects_native_provider_prefix(self):
+    def test_openai_model_environment_accepts_server_namespaces(self):
         with patch.dict(
             os.environ,
-            {"OPENAI_MODEL": "ollama_chat/qwen3.5:cloud"},
+            {"OPENAI_MODEL": "team/custom-model", "OPENAI_BASE_URL": "https://models.test/v1"},
             clear=False,
         ):
-            with self.assertRaisesRegex(ValueError, "'openai/' prefix"):
-                LiteLLMModel.from_openai_environment()
+            self.assertEqual(LiteLLMModel.from_openai_environment().model, "openai/team/custom-model")
 
     def test_openai_model_environment_accepts_qualified_names_and_default(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"OPENAI_BASE_URL": "https://models.test/v1"}, clear=True):
             self.assertEqual(
-                LiteLLMModel.from_openai_environment().model,
-                "openai/gpt-4.1-mini",
+                LiteLLMModel.from_openai_environment(default_model="chosen-model").model,
+                "openai/chosen-model",
             )
         with patch.dict(
-            os.environ, {"OPENAI_MODEL": "openai/custom/model"}, clear=False
+            os.environ, {"OPENAI_MODEL": "openai/custom/model", "OPENAI_BASE_URL": "https://models.test/v1"}, clear=False
         ):
             self.assertEqual(
                 LiteLLMModel.from_openai_environment().model,
@@ -521,11 +493,11 @@ class AuthoringTests(unittest.TestCase):
             )
 
     def test_litellm_model_supports_thinking_and_non_thinking_modes(self):
-        thinking = LiteLLMModel("ollama_chat/qwen3.5:cloud", thinking=True)
+        thinking = LiteLLMModel("openai/your-model", thinking=True)
         non_thinking = LiteLLMModel(
-            "ollama_chat/qwen3.5:cloud", thinking=False
+            "openai/your-model", thinking=False
         )
-        provider_default = LiteLLMModel("ollama_chat/qwen3.5:cloud")
+        provider_default = LiteLLMModel("openai/your-model")
 
         self.assertEqual(thinking.completion_args, {"reasoning_effort": "medium"})
         self.assertEqual(
@@ -553,27 +525,16 @@ class AuthoringTests(unittest.TestCase):
         self.assertEqual(
             built.kwargs,
             {
-                "model": "ollama_chat/qwen3.5:cloud",
+                "model": "openai/your-model",
                 "model_kwargs": {"reasoning_effort": "none"},
             },
-        )
-        ollama = OllamaModel(
-            "qwen3.5:cloud",
-            api_base="https://ollama.example",
-            thinking=True,
-        )
-        with patch.dict(sys.modules, {"langchain_litellm": langgraph_module}):
-            built_ollama = ollama.build_langgraph()
-        self.assertEqual(built_ollama.kwargs["api_base"], "https://ollama.example")
-        self.assertEqual(
-            built_ollama.kwargs["model_kwargs"], {"reasoning_effort": "medium"}
         )
 
     def test_model_thinking_mode_rejects_ambiguous_configuration(self):
         with self.assertRaisesRegex(TypeError, "thinking must be a boolean"):
-            LiteLLMModel("ollama_chat/qwen3.5:cloud", thinking="yes")
+            LiteLLMModel("openai/your-model", thinking="yes")
         with self.assertRaisesRegex(ValueError, "cannot be used together"):
-            OllamaModel(
+            LiteLLMModel("openai/your-model",
                 thinking=True,
                 reasoning_effort="high",
             )
@@ -587,38 +548,6 @@ class AuthoringTests(unittest.TestCase):
             LiteLLMModel("openai/a model")
 
         connector = LiteLLMModel("anthropic/claude-sonnet-4")
-        with patch.dict(sys.modules, {"google.adk.models.lite_llm": None}):
-            with self.assertRaisesRegex(RuntimeError, "LiteLLM support"):
-                connector.build()
-
-    def test_ollama_model_supports_completion_and_chat_providers(self):
-        cloud = OllamaModel(api_key="ollama-cloud-token")
-        completion = OllamaModel("qwen3:8b", chat=False)
-        qualified = OllamaModel("ollama_chat/qwen3:8b", chat=False)
-        nested_name = OllamaModel("hf.co/team/model:latest")
-
-        self.assertEqual(cloud.litellm_model, "ollama_chat/qwen3.5:cloud")
-        self.assertEqual(
-            cloud.completion_args,
-            {"api_key": "ollama-cloud-token"},
-        )
-        self.assertNotIn("ollama-cloud-token", repr(cloud))
-        self.assertEqual(completion.litellm_model, "ollama/qwen3:8b")
-        self.assertEqual(qualified.litellm_model, "ollama_chat/qwen3:8b")
-        self.assertEqual(
-            nested_name.litellm_model,
-            "ollama_chat/hf.co/team/model:latest",
-        )
-
-    def test_ollama_model_validation_and_missing_dependency_error(self):
-        with self.assertRaisesRegex(ValueError, "model name"):
-            OllamaModel(" ")
-        with self.assertRaisesRegex(ValueError, "api_base"):
-            OllamaModel("qwen3", api_base=" ")
-        with self.assertRaisesRegex(TypeError, "chat must be a boolean"):
-            OllamaModel("qwen3", chat="yes")
-
-        connector = OllamaModel("qwen3")
         with patch.dict(sys.modules, {"google.adk.models.lite_llm": None}):
             with self.assertRaisesRegex(RuntimeError, "LiteLLM support"):
                 connector.build()
@@ -1755,7 +1684,8 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
 
-            loaded = _eval_config(EvalSuite((), config), "business")
+            with patch.dict(os.environ, {"OPENAI_MODEL": "test-judge", "OPENAI_BASE_URL": "https://models.test/v1"}, clear=True):
+                loaded = _eval_config(EvalSuite((), config), "business")
 
         self.assertEqual(set(loaded.criteria), metric_names | {"custom_quality"})
         self.assertEqual(
@@ -1784,7 +1714,7 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OLLAMA_MODEL": "local-judge", "OPENAI_MODEL": "unused"}, clear=True
+                os.environ, {"OPENAI_MODEL": "local-judge", "OPENAI_BASE_URL": "https://models.test/v1"}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((), config), "business")
 
@@ -1793,9 +1723,9 @@ raise SystemExit(main(sys.argv[1:]))
         )
         self.assertEqual(
             criterion["judgeModelOptions"]["judgeModel"],
-            "ollama_chat/local-judge",
+            "openai/local-judge",
         )
-        self.assertEqual(loaded.user_simulator_config.model, "ollama_chat/local-judge")
+        self.assertEqual(loaded.user_simulator_config.model, "openai/local-judge")
 
     def test_eval_config_preserves_explicit_non_default_model_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1820,7 +1750,7 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OLLAMA_MODEL": "", "OLLAMA_BASE_URL": ""}, clear=True
+                os.environ, {"OPENAI_MODEL": "", "OPENAI_BASE_URL": ""}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((), config), "business")
 
@@ -1847,12 +1777,12 @@ raise SystemExit(main(sys.argv[1:]))
                 ),
             )
             with patch.dict(
-                os.environ, {"OLLAMA_MODEL": "shared-simulator"}, clear=True
+                os.environ, {"OPENAI_MODEL": "shared-simulator", "OPENAI_BASE_URL": "https://models.test/v1"}, clear=True
             ):
                 loaded = _eval_config(EvalSuite((eval_set,)), "business")
 
         self.assertEqual(
-            loaded.user_simulator_config.model, "ollama_chat/shared-simulator"
+            loaded.user_simulator_config.model, "openai/shared-simulator"
         )
 
     def test_authored_test_runner_rejects_unknown_eval_trajectory(self):

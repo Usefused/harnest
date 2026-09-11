@@ -3,10 +3,12 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from harnest.bundle import compile_application
 from harnest.context import activate_context, create_agent_context
@@ -76,9 +78,10 @@ class ChromeSandboxExampleTests(unittest.TestCase):
             for name in ("extension.py", "extension.yaml", "pyproject.toml"):
                 shutil.copy2(_DOCKER_EXTENSION / name, installed / name)
             shutil.copytree(_DOCKER_EXTENSION / "lib", installed / "lib")
-            application = compile_application(
-                source, entrypoint="agent:root_agent", framework="adk"
-            )
+            with patch.dict(os.environ, {"OPENAI_MODEL": "test-model", "OPENAI_BASE_URL": "https://models.test/v1"}):
+                application = compile_application(
+                    source, entrypoint="agent:root_agent", framework="adk"
+                )
             try:
                 runtime = application.sandbox_registry._runtime(
                     "chrome_researcher", "chrome"

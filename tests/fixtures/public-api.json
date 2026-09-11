@@ -341,7 +341,6 @@
     "ModelLifecycleContext",
     "ModelLifecycleError",
     "ModelMessage",
-    "OllamaModel",
     "resolve_model",
     "resolve_model_for"
   ],

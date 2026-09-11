@@ -203,12 +203,12 @@ subagent definitions explicitly as graph nodes. For example,
 
 ` + "```python" + `
 from harnest.agent import Agent
-from harnest.model import OllamaModel
+from harnest.model import LiteLLMModel
 
 
 helper = Agent(
     name="helper",
-    model=OllamaModel.from_environment(),
+    model=LiteLLMModel.from_openai_environment(),
     instruction="Summarize the request clearly.",
 )
 ` + "```" + `

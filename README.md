@@ -61,10 +61,10 @@ harnest init support-agent --framework adk
 harnest init support-agent --framework langgraph
 ```
 
-New agents use Ollama at `http://localhost:11434`, with `OLLAMA_MODEL` and
-`OLLAMA_BASE_URL` in `config.yaml`. The default `qwen3.5:cloud` model requires
-Ollama sign-in and uses its cloud service; select an installed local model for
-local inference. No OpenAI API key is needed. See
+New agents use the OpenAI-compatible API specification, not a default provider
+or GPT model. Replace `OPENAI_MODEL` and `OPENAI_BASE_URL` placeholders in
+`config.yaml` with your server's model ID and API URL. Set `OPENAI_API_KEY` in
+your runtime environment only if that server requires authentication. See
 [model configuration](https://docs.usefused.com/harnest/build/project-configuration#configure-model-credentials).
 
 The default scaffold is a runnable managed agent with optional, guide-only

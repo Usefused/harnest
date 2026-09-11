@@ -1,7 +1,7 @@
 PYTHON ?= $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.10 2>/dev/null || command -v python3)
 GOCACHE ?= $(CURDIR)/.cache/go-build
-OLLAMA_BASE_URL ?= http://localhost:11434
-OLLAMA_MODEL ?= qwen3.5:cloud
+OPENAI_BASE_URL ?= https://models.example.invalid/v1
+OPENAI_MODEL ?= your-model
 COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
 AGENT_URL ?= http://127.0.0.1:8080
 DEMO_SESSION_ID ?= demo-session
@@ -49,10 +49,10 @@ example-install:
 	$(PYTHON) -m pip install -e .
 
 compile-example:
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli compile examples/self-serve/agents/helpdesk --output $(COMPILED_HELPDESK)
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli compile examples/self-serve/agents/helpdesk --output $(COMPILED_HELPDESK)
 
 serve-example: compile-example
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) $(COMPILED_HELPDESK)/harnest-agent
 
 demo-agent:
 	curl -sS $(AGENT_URL)/agent
@@ -67,18 +67,18 @@ demo-stream:
 	curl -N -sS -X POST $(AGENT_URL)/responses -H 'Content-Type: application/json' --data '{"input":"What should I collect next?","sessionId":"$(DEMO_SESSION_ID)","stream":true}'
 
 live-run: compile-example
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m google.adk.cli run $(COMPILED_HELPDESK)
 
 example-test:
-	OPENAI_API_KEY= OLLAMA_API_KEY= KNOWLEDGE_MCP_TOKEN= PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) OPENAI_API_KEY= KNOWLEDGE_MCP_TOKEN= PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk
 
 example-smoke:
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke
 
 live-test: example-smoke
 
 example-eval:
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --evals
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --evals
 
 example-all:
-	OLLAMA_BASE_URL=$(OLLAMA_BASE_URL) OLLAMA_MODEL=$(OLLAMA_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke --evals
+	OPENAI_BASE_URL=$(OPENAI_BASE_URL) OPENAI_MODEL=$(OPENAI_MODEL) PYTHONPATH=src $(PYTHON) -m harnest.cli test examples/self-serve/agents/helpdesk --smoke --evals

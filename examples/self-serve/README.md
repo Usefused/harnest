@@ -43,13 +43,12 @@ serve. URLs and secret references remain deployment placeholders.
 ## Live local run
 
 The helpdesk agent and its technical subagent use
-`OllamaModel.from_environment()`. They share `OLLAMA_MODEL`,
-`OLLAMA_BASE_URL`, and optional `OLLAMA_API_KEY` with evaluation judges and
-simulators. The checked-in configuration selects `qwen3.5:cloud` through
-`http://localhost:11434`. Start Ollama and sign in for this cloud-backed model;
-it is not offline inference. No OpenAI key is needed. To run locally, select an
-installed, tool-capable local model instead. Harnest does not load `.env` files
-or download models automatically.
+`LiteLLMModel.from_openai_environment()`. They share `OPENAI_MODEL`,
+`OPENAI_BASE_URL`, and optional `OPENAI_API_KEY` with evaluation judges and
+simulators. Replace the checked-in `your-model` and
+`https://models.example.invalid/v1` placeholders with your tool-capable model
+and OpenAI-compatible endpoint before live calls. Harnest does not choose a
+vendor, load `.env` files, or download models automatically.
 
 From the repository root:
 
@@ -62,9 +61,9 @@ This installs Harnest from the working tree, including its ADK and LiteLLM
 runtime dependencies, compiles the flat source folder into
 `.harnest/helpdesk`, and starts the ADK interactive CLI against that generated
 artifact. The Make target exports model and endpoint settings for direct
-launcher use. Override them with `make live-run OLLAMA_MODEL=<installed-model>`
-and `OLLAMA_BASE_URL=<ollama-server-url>` as needed. The endpoint is the native
-Ollama base URL, without `/v1`. Set `OLLAMA_API_KEY` only if your endpoint needs
+launcher use. Override them with `make live-run OPENAI_MODEL=<model-id>`
+and `OPENAI_BASE_URL=<compatible-api-url>` as needed. Include your server's API
+prefix, commonly `/v1`. Set `OPENAI_API_KEY` only if your endpoint needs
 a key. Update the same non-secret values in `config.yaml` for
 `harnest test`, `run`, and `serve`, because `spec.environment` overrides matching
 shell values. See the canonical
@@ -73,8 +72,7 @@ shell values. See the canonical
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition
 and call `triage_request` directly; it does not invoke a model. The target also
-clears explicit model and MCP keys. This is not a network sandbox: a local
-Ollama daemon can retain its own cloud sign-in independently of those keys.
+clears explicit model and MCP keys. This is not a network sandbox.
 
 Run `make example-smoke` (or the retained `make live-test` alias) for the
 explicit live acceptance check. The `smoke` fixture sends only benign synthetic

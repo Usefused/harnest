@@ -251,14 +251,14 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.model_dump(by_alias=True), original)
 
     async def test_equivalent_static_subagent_transports_share_one_eval_adapter(self):
-        """Separate defaults pointing at one Ollama server are one authority."""
+        """Separate defaults pointing at one compatible API server are one authority."""
 
-        first = _target("ollama_chat/qwen3.5:cloud", label="ollama")
-        second = _target("ollama_chat/qwen3.5:cloud", label="ollama")
+        first = _target("openai/your-model", label="compatible")
+        second = _target("openai/your-model", label="compatible")
         root = SimpleNamespace(sub_agents=[first, second])
         with _recording_transports(first, second) as records:
             with eval_model_transports(root, _config(
-                "ollama_chat/qwen3.5:cloud", "ollama_chat/qwen3.5:cloud"
+                "openai/your-model", "openai/your-model"
             )) as prepared:
                 judge = LLMRegistry.new_llm(_judge(prepared))
                 await _responses(judge)
@@ -271,13 +271,13 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
         targets = []
         for key in ("synthetic-first", "synthetic-second"):
             target = SimpleNamespace(sub_agents=[])
-            attach_model_transport_binding(target, model="ollama_chat/local", completion_args={
-                "api_base": "http://ollama.invalid:11434", "api_key": key,
+            attach_model_transport_binding(target, model="openai/local", completion_args={
+                "api_base": "http://compatible.invalid/v1", "api_key": key,
             })
             targets.append(target)
         with self.assertRaisesRegex(EvaluationError, "ambiguous agent model transport"):
             with eval_model_transports(SimpleNamespace(sub_agents=targets), _config(
-                "ollama_chat/local", "ollama_chat/local"
+                "openai/local", "openai/local"
             )):
                 self.fail("distinct credentials unexpectedly authorized")
 
@@ -290,12 +290,12 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
 
                 raise AssertionError("client equality must not execute")
 
-        first = ModelTransportBinding("ollama_chat/local", {"client": EqualClient()})
-        second = ModelTransportBinding("ollama_chat/local", {"client": EqualClient()})
+        first = ModelTransportBinding("openai/local", {"client": EqualClient()})
+        second = ModelTransportBinding("openai/local", {"client": EqualClient()})
         self.assertFalse(first.same_authority_as(second))
         shared = EqualClient()
-        self.assertTrue(ModelTransportBinding("ollama_chat/local", {"client": shared}).same_authority_as(
-            ModelTransportBinding("ollama_chat/local", {"client": shared})
+        self.assertTrue(ModelTransportBinding("openai/local", {"client": shared}).same_authority_as(
+            ModelTransportBinding("openai/local", {"client": shared})
         ))
 
     async def test_exact_model_wins_over_other_compatible_transports(self):

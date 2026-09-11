@@ -251,15 +251,15 @@ def %s(request: str) -> str:
 `, name, strings.ReplaceAll(name, "_", " "))
 }
 
-// subagentResourceSource keeps delegated agents on the same Ollama defaults as their root.
+// subagentResourceSource keeps delegated agents on the shared model configuration as their root.
 func subagentResourceSource(name string) string {
 	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import OllamaModel
+from harnest.model import LiteLLMModel
 
 
 %s = Agent(
     name=%q,
-    model=OllamaModel.from_environment(),
+    model=LiteLLMModel.from_openai_environment(),
     description=%q,
     instruction=%q,
     history="session",

@@ -1,4 +1,4 @@
-"""Offline native-provider coverage for Harnest's canonical model environment."""
+"""Real framework adapters against an intercepted OpenAI-compatible HTTP API."""
 
 import json
 import os
@@ -13,12 +13,12 @@ import httpx
 from harnest.bundle import EvalSuite
 from harnest.evaluation import eval_config
 from harnest.eval_model_transport import eval_model_transports
-from harnest.model import OllamaModel
+from harnest.model import LiteLLMModel
 from test_eval_transport_http import _exercise_models
 
 
 class _CompletionRecorder:
-    """Return native Ollama completions and retain sanitized wire metadata only."""
+    """Return OpenAI-compatible completions and retain sanitized wire metadata only."""
 
     def __init__(self):
         """Prepare one response for each model lane without real credentials."""
@@ -27,7 +27,7 @@ class _CompletionRecorder:
         self._replies = iter(("Paris.", '{"is_the_agent_response_valid": "valid"}', "Confirm Paris."))
 
     def respond(self, request):
-        """Observe endpoint selection at the final native Ollama HTTP boundary."""
+        """Observe endpoint selection at the final OpenAI-compatible HTTP boundary."""
 
         payload = json.loads(request.content)
         self.requests.append({
@@ -35,11 +35,14 @@ class _CompletionRecorder:
             "model": payload["model"], "bearer_auth": "authorization" in request.headers,
         })
         return httpx.Response(200, request=request, json={
-            "model": payload["model"], "done": True, "done_reason": "stop",
-            "message": {"role": "assistant", "content": next(self._replies),
-                        "thinking": ('{"is_the_agent_response_valid": "invalid"}'
-                                     if len(self.requests) == 2 else "")},
-            "prompt_eval_count": 1, "eval_count": 1,
+            "id": "test-completion", "object": "chat.completion", "created": 1,
+            "model": payload["model"],
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": next(self._replies),
+                "reasoning_content": ('{"is_the_agent_response_valid": "invalid"}'
+                                      if len(self.requests) == 2 else ""),
+            }}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         })
 
 
@@ -56,14 +59,14 @@ def _authored_eval_config(path):
 
 
 class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_agent_judge_and_simulator_share_native_ollama_http_contract(self):
+    async def test_agent_judge_and_simulator_share_compatible_http_contract(self):
         """Exercise real ADK and LangGraph callers without OpenAI credential fallback."""
 
         for framework in ("adk", "langgraph"):
             with self.subTest(framework=framework):
-                await self._assert_native_ollama_routing(framework)
+                await self._assert_compatible_routing(framework)
 
-    async def _assert_native_ollama_routing(self, framework):
+    async def _assert_compatible_routing(self, framework):
         """Keep each framework's native HTTP requests isolated from process settings."""
 
         recorder = _CompletionRecorder()
@@ -71,12 +74,12 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
         async def send(_client, request, **_kwargs):
             """Intercept final HTTP after LiteLLM has selected the provider."""
 
+            self.assertEqual(request.headers["authorization"], "Bearer synthetic-compatible-key")
             return recorder.respond(request)
 
         environment = {
-            "OLLAMA_MODEL": "qwen3:8b", "OLLAMA_BASE_URL": "http://ollama-contract.invalid:11434",
-            "OPENAI_MODEL": "unused-openai", "OPENAI_API_KEY": "synthetic-unused-key",
-            "OPENAI_BASE_URL": "https://must-not-call-openai.invalid/v1",
+            "OPENAI_MODEL": "team/chosen", "OPENAI_BASE_URL": "http://models-contract.invalid/v1",
+            "OPENAI_API_KEY": "synthetic-compatible-key",
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         }
         with tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -84,16 +87,19 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
         ), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
         ), patch("litellm.telemetry", False):
-            owner = OllamaModel.from_environment().build_for(framework)
+            owner = LiteLLMModel.from_openai_environment().build_for(framework)
             config = _authored_eval_config(Path(directory) / "test_config.json")
+            # Runtime transport must retain the captured authority, not read
+            # a later command's process-wide provider settings.
+            os.environ.update(OPENAI_BASE_URL="https://unrelated.invalid/v1", OPENAI_API_KEY="unrelated-key")
             score, follow_up, models = await _exercise_models(owner, framework, config)
 
         self.assertEqual(score, 1.0)
         self.assertEqual(follow_up, "Confirm Paris.")
-        self.assertEqual(models, ("ollama_chat/qwen3:8b",) * 2)
+        self.assertEqual(models, ("openai/team/chosen",) * 2)
         self.assertEqual(recorder.requests, [{
-            "host": "ollama-contract.invalid", "path": "/api/chat",
-            "model": "qwen3:8b", "bearer_auth": False,
+            "host": "models-contract.invalid", "path": "/v1/chat/completions",
+            "model": "team/chosen", "bearer_auth": True,
         }] * 3)
 
     async def test_implicit_evaluator_endpoint_does_not_require_an_agent_binding(self):
@@ -108,11 +114,11 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
         async def send(_client, request, **_kwargs):
             """Verify default transport configuration reaches native HTTP."""
 
+            self.assertEqual(request.headers["authorization"], "Bearer not-required")
             return recorder.respond(request)
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-            "OLLAMA_MODEL": "qwen3:8b", "OLLAMA_BASE_URL": "http://custom-ollama.invalid:11434",
-            "OPENAI_API_KEY": "synthetic-unused-key",
+            "OPENAI_MODEL": "team/chosen", "OPENAI_BASE_URL": "http://custom-models.invalid/v1",
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         }, clear=True), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
@@ -127,6 +133,6 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(responses[0].content.parts[0].text, "Paris.")
         self.assertEqual(recorder.requests, [{
-            "host": "custom-ollama.invalid", "path": "/api/chat",
-            "model": "qwen3:8b", "bearer_auth": False,
+            "host": "custom-models.invalid", "path": "/v1/chat/completions",
+            "model": "team/chosen", "bearer_auth": True,
         }])

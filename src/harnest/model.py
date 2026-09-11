@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import os
 from typing import TYPE_CHECKING, Any, Mapping, TypeAlias
+from urllib.parse import urlsplit
 
 from .model_lifecycle import (
     LiteLLMContext,
@@ -28,29 +29,37 @@ else:
     ModelInput: TypeAlias = Any
 
 
-DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
-DEFAULT_OLLAMA_MODEL = "qwen3.5:cloud"
-DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-
-
 def _openai_model_name_from_environment(
-    default_model: str = DEFAULT_OPENAI_MODEL,
+    default_model: str | None = None,
 ) -> str:
     """Resolve Harnest's canonical OpenAI-compatible model environment."""
 
-    configured = os.getenv("OPENAI_MODEL", default_model).strip()
+    configured = os.getenv("OPENAI_MODEL", default_model or "").strip()
     if not configured:
-        raise ValueError("OPENAI_MODEL cannot be empty")
-    if "/" not in configured:
-        configured = f"openai/{configured}"
-    if configured.startswith("openai/"):
-        return _litellm_model_name(configured)
-    # OPENAI_MODEL deliberately selects the OpenAI-compatible transport so the
-    # agent and evaluator share OPENAI_API_KEY and OPENAI_BASE_URL. Explicitly
-    # authored LiteLLMModel instances remain available for native providers.
-    raise ValueError(
-        "OPENAI_MODEL must be an OpenAI model name or use the 'openai/' prefix"
+        raise ValueError("OPENAI_MODEL is required; choose a model served by your endpoint")
+    # A slash can belong to the server's model ID, not a LiteLLM provider.
+    return _litellm_model_name(
+        configured if configured.startswith("openai/") else f"openai/{configured}"
     )
+
+
+def _openai_environment_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture explicit endpoint and credentials without a provider fallback."""
+
+    resolved = dict(arguments)
+    endpoint = resolved.get("api_base", os.getenv("OPENAI_BASE_URL", ""))
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise ValueError("OPENAI_BASE_URL is required; set your OpenAI-compatible API URL")
+    endpoint = endpoint.strip()
+    parsed = urlsplit(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("OPENAI_BASE_URL must be an absolute HTTP(S) URL")
+    resolved["api_base"] = endpoint
+    # Capture settings now so agent, judge and simulator retain the same
+    # authority even if the process environment changes after compilation.
+    # Compatible servers without authentication still need an SDK key value.
+    resolved["api_key"] = resolved.get("api_key", os.getenv("OPENAI_API_KEY")) or "not-required"
+    return resolved
 
 
 class ModelConnector(ABC):
@@ -94,9 +103,8 @@ def _with_thinking_mode(
         raise TypeError("model thinking must be a boolean or None")
     if "reasoning_effort" in arguments:
         raise ValueError("thinking and reasoning_effort cannot be used together")
-    # LiteLLM maps `none` to Ollama's `think: false`; an enabled default keeps
-    # provider-specific wire details out of agent definitions while callers
-    # can still pass reasoning_effort directly when they need an exact level.
+    # Exact support depends on the endpoint; callers can pass reasoning_effort
+    # directly when their provider requires a particular level.
     arguments["reasoning_effort"] = "medium" if thinking else "none"
     return arguments
 
@@ -207,22 +215,24 @@ class LiteLLMModel(ModelConnector):
     def from_openai_environment(
         cls,
         *,
-        default_model: str = DEFAULT_OPENAI_MODEL,
+        default_model: str | None = None,
         thinking: bool | None = None,
         lifecycle: LiteLLMLifecycle | None = None,
         **completion_args: Any,
     ) -> "LiteLLMModel":
-        """Use OPENAI_MODEL with the adapter's OPENAI_API_KEY/OPENAI_BASE_URL.
+        """Use an explicitly configured OpenAI-compatible API, not a default vendor.
 
-        This reads the process environment; it does not load a dotenv file.
-        Explicit completion arguments retain their normal adapter precedence.
+        OPENAI_MODEL and OPENAI_BASE_URL are required; OPENAI_API_KEY is optional.
+        This reads the process environment without loading dotenv. Explicit
+        completion arguments override environment values. Model IDs may contain
+        slashes; the optional ``openai/`` prefix selects the wire protocol only.
         """
 
         return cls(
             _openai_model_name_from_environment(default_model),
             thinking=thinking,
             lifecycle=lifecycle,
-            **completion_args,
+            **_openai_environment_arguments(completion_args),
         )
 
     def build(self) -> Any:
@@ -292,124 +302,6 @@ class LiteLLMModel(ModelConnector):
         )
 
 
-@dataclass(frozen=True, slots=True, init=False)
-class OllamaModel(ModelConnector):
-    """An Ollama model routed through the selected LiteLLM integration.
-
-    ``chat=True`` uses LiteLLM's ``ollama_chat`` provider, which is the better
-    default for agents that call tools. ``thinking`` has the same portable
-    semantics as ``LiteLLMModel``. Additional keyword arguments pass to the
-    selected framework adapter and then LiteLLM's completion API.
-    """
-
-    model: str
-    api_base: str | None
-    chat: bool
-    completion_args: Mapping[str, Any] = field(repr=False)
-
-    def __init__(
-        self,
-        model: str = DEFAULT_OLLAMA_MODEL,
-        *,
-        api_base: str | None = None,
-        chat: bool = True,
-        thinking: bool | None = None,
-        **completion_args: Any,
-    ) -> None:
-        """Retain explicit Ollama configuration without connecting or loading a model."""
-
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("Ollama model name is required")
-        if api_base is not None and (
-            not isinstance(api_base, str) or not api_base.strip()
-        ):
-            raise ValueError("Ollama api_base must be a non-empty URL")
-        if not isinstance(chat, bool):
-            raise TypeError("Ollama chat must be a boolean")
-
-        object.__setattr__(self, "model", model.strip())
-        object.__setattr__(self, "api_base", api_base.strip() if api_base else None)
-        object.__setattr__(self, "chat", chat)
-        object.__setattr__(
-            self,
-            "completion_args",
-            _with_thinking_mode(completion_args, thinking),
-        )
-
-    @classmethod
-    def from_environment(
-        cls,
-        *,
-        default_model: str = DEFAULT_OLLAMA_MODEL,
-        chat: bool = True,
-        thinking: bool | None = None,
-        **completion_args: Any,
-    ) -> "OllamaModel":
-        """Read OLLAMA_MODEL, OLLAMA_BASE_URL and optional OLLAMA_API_KEY.
-
-        OpenAI settings are never consulted. Explicit completion options take
-        precedence over the environment; no model is downloaded automatically.
-        The default cloud-tagged model needs an authenticated Ollama daemon.
-        """
-
-        model = os.getenv("OLLAMA_MODEL", default_model)
-        api_base = completion_args.pop(
-            "api_base", os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
-        )
-        if "api_key" not in completion_args and os.getenv("OLLAMA_API_KEY"):
-            completion_args["api_key"] = os.environ["OLLAMA_API_KEY"]
-        return cls(model, api_base=api_base, chat=chat, thinking=thinking, **completion_args)
-
-    @property
-    def litellm_model(self) -> str:
-        """Return the provider-qualified LiteLLM model name."""
-
-        if self.model.startswith(("ollama/", "ollama_chat/")):
-            return self.model
-        provider = "ollama_chat" if self.chat else "ollama"
-        return f"{provider}/{self.model}"
-
-    def build(self) -> Any:
-        """Build ADK's ``LiteLlm`` without contacting the Ollama server."""
-
-        try:
-            from google.adk.models.lite_llm import LiteLlm
-        except ImportError as exc:  # pragma: no cover - optional runtime import
-            raise RuntimeError(
-                "OllamaModel requires Google ADK's LiteLLM support; install "
-                "harnest with its runtime dependencies"
-            ) from exc
-
-        kwargs = dict(self.completion_args)
-        if self.api_base is not None:
-            kwargs["api_base"] = self.api_base
-        adapter = LiteLlm(model=self.litellm_model, **kwargs)
-        # Evaluation must borrow this endpoint and credential instead of
-        # silently reconnecting to a provider's unrelated default server.
-        return attach_model_transport_binding(
-            adapter, model=self.litellm_model, completion_args=kwargs,
-            borrowed_client=kwargs.get("llm_client"),
-        )
-
-    def build_langgraph(self) -> Any:
-        """Build LangChain's LiteLLM chat model for Ollama."""
-
-        try:
-            from langchain_litellm import ChatLiteLLM
-        except ImportError as exc:  # pragma: no cover - optional backend
-            raise RuntimeError(
-                "OllamaModel with LangGraph requires langchain-litellm"
-            ) from exc
-        kwargs = dict(self.completion_args)
-        if self.api_base is not None:
-            kwargs["api_base"] = self.api_base
-        adapter_kwargs = _langgraph_completion_args(ChatLiteLLM, kwargs)
-        adapter = ChatLiteLLM(model=self.litellm_model, **adapter_kwargs)
-        return attach_model_transport_binding(
-            adapter, model=self.litellm_model, completion_args=kwargs,
-        )
-
-
 def resolve_model(model: ModelInput) -> Any:
     """Resolve a Harnest connector while preserving strings and ADK models."""
 
@@ -428,7 +320,6 @@ __all__ = [
     "LiteLLMLifecycle",
     "LiteLLMModel",
     "ModelConnector",
-    "OllamaModel",
     "resolve_model",
     "resolve_model_for",
 ]
