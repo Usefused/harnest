@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## [0.18.3](https://github.com/Usefused/harnest/compare/v0.18.2...v0.18.3) (2026-09-11)
 
 ### Fixes
 
 * **Models:** Fix provider-specific defaults by using `LiteLLMModel.from_openai_environment()` and a generic OpenAI-compatible API contract. Configure `OPENAI_MODEL` and `OPENAI_BASE_URL` explicitly; Harnest no longer selects a vendor endpoint or GPT model. New agents, examples, judges, and simulators share this configuration, with optional `OPENAI_API_KEY` authentication. Remove `OllamaModel`; existing agents must migrate their imports and endpoint settings.
+
+### Fixes
+
+* use generic OpenAI-compatible model configuration ([a2a8be0](https://github.com/Usefused/harnest/commit/a2a8be04fdbe21071a21d29f1a1f3044c000892a))
 
 ## [0.18.2](https://github.com/Usefused/harnest/compare/v0.18.1...v0.18.2) (2026-09-09)
 
