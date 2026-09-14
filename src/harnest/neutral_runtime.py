@@ -46,6 +46,10 @@ from .client_tool import (
     ClientToolError,
     InMemoryClientToolStore,
 )
+from .dynamic_agent_plugins import (
+    DynamicAgentPluginError,
+    forward_session_plugins,
+)
 from .server_config import format_byte_size, validate_max_request_bytes
 from .http_routes import (
     HTTPRouteExtension,
@@ -394,25 +398,38 @@ def create_neutral_router(
 
     @router.post("/sessions", status_code=201)
     async def create_session(request: Request) -> dict[str, Any]:
-        """Create one caller-owned session with optional initial state."""
+        """Create one caller-owned session with optional fixed plugin snapshots."""
 
         payload = await read_json(request)
-        if not set(payload) <= {"id", "state"}:
+        if not set(payload) <= {"id", "state", "plugins"}:
             raise HTTPException(status_code=400, detail="Invalid session request")
         session_id = payload.get("id", uuid.uuid4().hex)
         state = payload.get("state", {})
+        plugins = payload.get("plugins", ())
         if not isinstance(session_id, str) or not session_id.strip():
             raise HTTPException(status_code=400, detail="id must be non-empty")
         if not isinstance(state, dict):
             raise HTTPException(status_code=400, detail="state must be an object")
         try:
-            session = await driver.create_session(
-                session_id=session_id,
-                user_id=principal_for(request).user_id,
-                state=state,
-            )
+            user_id = principal_for(request).user_id
+            if "plugins" in payload:
+                session = await forward_session_plugins(
+                    driver,
+                    session_id=session_id,
+                    user_id=user_id,
+                    state=state,
+                    plugins=plugins,
+                )
+            else:
+                session = await driver.create_session(
+                    session_id=session_id,
+                    user_id=user_id,
+                    state=state,
+                )
         except SessionConflictError as exc:
             raise HTTPException(status_code=409, detail="Session already exists") from exc
+        except DynamicAgentPluginError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _session_payload(session)
 
     @router.get("/sessions")

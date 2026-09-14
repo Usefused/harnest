@@ -498,6 +498,32 @@ class SkillScope:
             for name, source in self._sources.items()
         )
 
+    def with_filesystem_directories(
+        self, directories: Sequence[str | Path]
+    ) -> "SkillScope":
+        """Return a scope whose filesystem route also owns new immutable skills."""
+
+        added = tuple(Path(path) for path in directories)
+        if not added:
+            return self
+        sources = dict(self._sources)
+        current = sources.pop(_FILESYSTEM_SOURCE, None)
+        existing = (
+            tuple(path for _descriptor, path in current.routing_identity)
+            if isinstance(current, FilesystemSkillSource)
+            else ()
+        )
+        if current is not None and not isinstance(current, FilesystemSkillSource):
+            raise SkillValidationError("filesystem skill source has an invalid owner")
+        # Keep the reserved filesystem route first so source-free loads retain
+        # their established meaning after a session adds plugin-owned skills.
+        return SkillScope(
+            {
+                _FILESYSTEM_SOURCE: FilesystemSkillSource((*existing, *added)),
+                **sources,
+            }
+        )
+
     async def list(
         self,
         context: SkillContext,
@@ -680,6 +706,12 @@ class SkillRegistry:
         """Return compiled identities for diagnostics without exposing sources."""
 
         return tuple(self._scopes)
+
+    def scope(self, agent_name: str) -> SkillScope:
+        """Return one immutable compiled scope for runtime-safe augmentation."""
+
+        _require_text(agent_name, "agent name", maximum=128)
+        return self._scopes.get(agent_name, SkillScope())
 
     def access(self, active: Any) -> "SkillAccess":
         """Bind a registry view to one revocable invocation context."""

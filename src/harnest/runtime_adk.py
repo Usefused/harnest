@@ -340,6 +340,9 @@ class ADKRuntimeDriver(RuntimeDriver):
             raise ValueError("compiled ADK application does not contain an App")
 
         self.application = application
+        self._card = dict(card or {})
+        self._extra_endpoints = dict(extra_endpoints or {})
+        self._plugin_manager = plugin_manager
         self._info = _adk_agent_info(application, card, extra_endpoints)
         stores = _adk_asset_stores(application, asset_store, asset_stores)
 
@@ -354,6 +357,20 @@ class ADKRuntimeDriver(RuntimeDriver):
         )
         self._closed = False
         self._close_lock = asyncio.Lock()
+
+    def fork_application(self, application: CompiledApplication) -> "ADKRuntimeDriver":
+        """Create a dynamic target that shares this driver's session authority."""
+
+        self._ensure_open()
+        return ADKRuntimeDriver(
+            application,
+            card=self._card,
+            extra_endpoints=self._extra_endpoints,
+            session_service=self._runner.session_service,
+            asset_store=self._asset_store,
+            asset_stores=self._asset_stores,
+            plugin_manager=self._plugin_manager,
+        )
 
     @property
     def app_name(self) -> str:

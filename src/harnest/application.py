@@ -101,6 +101,9 @@ class CompiledApplication:
     mode: str
     target: Any
     native_app: Any | None = None
+    managed_definition: Any | None = field(default=None, repr=False)
+    native_extensions: Sequence[Any] = field(default=(), repr=False)
+    native_checkpointer: Any | None = field(default=None, repr=False)
     kind: str = "agent"
     bridge: _AdvancedAgentDefinition | None = None
     extensions: Sequence[Any] = ()
@@ -168,6 +171,7 @@ class CompiledApplication:
             lifecycle_coverage(self.framework, self.mode),
         )
         object.__setattr__(self, "extensions", tuple(self.extensions))
+        object.__setattr__(self, "native_extensions", tuple(self.native_extensions))
         object.__setattr__(self, "tasks", _compiled_tasks(self.tasks))
         object.__setattr__(self, "crons", _compiled_crons(self.crons, self.tasks))
         object.__setattr__(self, "plugins", _runtime_plugins(self.plugins))

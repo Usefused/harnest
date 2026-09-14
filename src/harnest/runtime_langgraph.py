@@ -137,6 +137,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     ) -> None:
         plan = _runtime_plan(application, recursion_limit)
         card_value = dict(card or {})
+        self._card = card_value
         self._application = application
         self._plan = plan
         self._target = None if plan is not None else application.target
@@ -170,6 +171,21 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._asset_stores = stores
         self._asset_store = stores.get("default")
         self._closed = False
+
+    def fork_application(
+        self, application: CompiledApplication
+    ) -> "LangGraphRuntimeDriver":
+        """Create a dynamic target that shares this driver's session authority."""
+
+        self._ensure_open()
+        return LangGraphRuntimeDriver(
+            application,
+            card=self._card,
+            recursion_limit=self._recursion_limit,
+            session_store=self._session_store,
+            asset_store=self._asset_store,
+            asset_stores=self._asset_stores,
+        )
 
     @property
     def info(self) -> AgentInfo:

@@ -46,6 +46,26 @@ class ExternalContinuationRuntimeDriver(RuntimeDriver):
             session_id=session_id, user_id=user_id, state=state
         )
 
+    async def create_session_with_plugins(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        state: Mapping[str, Any],
+        plugins: Sequence[Mapping[str, Any]],
+    ) -> SessionRecord:
+        """Forward session capabilities through continuation ownership."""
+
+        from .dynamic_agent_plugins import forward_session_plugins
+
+        return await forward_session_plugins(
+            self._driver,
+            session_id=session_id,
+            user_id=user_id,
+            state=state,
+            plugins=plugins,
+        )
+
     async def get_session(
         self, *, session_id: str, user_id: str
     ) -> SessionRecord | None:

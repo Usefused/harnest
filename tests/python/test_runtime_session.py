@@ -18,6 +18,7 @@ from harnest.runtime import (
     _attach_driver_lifecycle,
     _runtime_driver,
 )
+from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.runtime_session import StorageRuntimeDriver
@@ -379,7 +380,10 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
         self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
-        self.assertIs(selected._driver._driver, backend)
+        self.assertIsInstance(
+            selected._driver._driver, DynamicAgentPluginRuntimeDriver
+        )
+        self.assertIs(selected._driver._driver._driver, backend)
         self.assertIs(constructor.call_args.kwargs["session_store"], store)
 
     def test_adk_lifecycle_store_is_adapted_and_runtime_owned(self):

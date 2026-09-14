@@ -127,6 +127,31 @@ class SessionContextTests(unittest.IsolatedAsyncioTestCase):
                         await session.namespace("checkout").set("step", 1)
         revoke_context(active)
 
+    async def test_runtime_owned_plugin_record_is_not_agent_accessible(self):
+        active = _agent_context()
+        with activate_context(active):
+            async with self.store.acquire(
+                session_id="session-1", user_id="user-1"
+            ) as lease:
+                await lease.replace_application_data(
+                    {"_harnest_dynamic_agent_plugins": [{"source": "private"}]}
+                )
+                with activate_session_context(
+                    lease,
+                    framework="langgraph",
+                    invocation_id="invocation-1",
+                ):
+                    for operation in (
+                        lambda: session.get("_harnest_dynamic_agent_plugins"),
+                        lambda: session.set("_harnest_dynamic_agent_plugins", []),
+                        lambda: session.delete("_harnest_dynamic_agent_plugins"),
+                    ):
+                        with self.assertRaisesRegex(SessionDataError, "reserved"):
+                            await operation()
+                    with self.assertRaisesRegex(SessionDataError, "reserved"):
+                        session.namespace("_harnest_dynamic_agent_plugins")
+        revoke_context(active)
+
     async def test_foreign_agent_context_cannot_use_bound_session(self):
         active = _agent_context(user_id="other-user")
         with activate_context(active):

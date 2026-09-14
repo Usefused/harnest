@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Let Agent Desktop attach immutable Agent Plugin ZIP snapshots when it creates
+  a managed-agent session. Restore the bounded snapshots from session storage,
+  expose plugin skills and remote HTTP/SSE MCP servers in ADK and LangGraph,
+  and reject URL sources, unsafe archives, mutable session changes, and dynamic
+  stdio execution without a sandbox boundary.
+
 ## [0.18.3](https://github.com/Usefused/harnest/compare/v0.18.2...v0.18.3) (2026-09-11)
 
 ### Fixes

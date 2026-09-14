@@ -14,6 +14,7 @@ from .context import ContextUnavailableError
 from .logging import get_logger
 from .session import SessionLease
 from .session import SessionStore
+from .session import _PRIVATE_SESSION_APPLICATION_KEYS
 
 
 _AUDIT = get_logger("session.audit")
@@ -52,6 +53,7 @@ class SessionContext:
         """Return a detached value without exposing mutable store-owned state."""
 
         _require_key(key)
+        _require_public_key(key)
         container = self._container(create=False)
         if container is None or key not in container:
             return json_value(default)
@@ -61,6 +63,7 @@ class SessionContext:
         """Persist one value without projecting it into framework model state."""
 
         _require_key(key)
+        _require_public_key(key)
         normalized = json_value(value)
         document = self._document()
         self._container(document=document, create=True)[key] = normalized
@@ -70,6 +73,7 @@ class SessionContext:
         """Persist a bounded mapping in one lease-owned write."""
 
         normalized = _application_mapping(values)
+        _require_public_keys(normalized)
         if not normalized:
             return
         document = self._document()
@@ -80,6 +84,7 @@ class SessionContext:
         """Delete one value and report whether the current namespace contained it."""
 
         _require_key(key)
+        _require_public_key(key)
         document = self._document()
         container = self._container(document=document, create=False)
         if container is None or key not in container:
@@ -92,6 +97,7 @@ class SessionContext:
         """Return a nested view so teams and plugins can avoid key collisions."""
 
         _require_key(name)
+        _require_public_key(name)
         self._require_active()
         return SessionContext(self._binding, (*self._path, name))
 
@@ -308,6 +314,20 @@ def _application_mapping(values: Mapping[str, Any]) -> dict[str, Any]:
 def _require_key(value: Any) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("session data keys and namespaces must be non-empty strings")
+
+
+def _require_public_key(value: str) -> None:
+    """Keep runtime-owned application records outside authored session access."""
+
+    if value in _PRIVATE_SESSION_APPLICATION_KEYS:
+        raise SessionDataError("session data key is reserved by Harnest")
+
+
+def _require_public_keys(values: Mapping[str, Any]) -> None:
+    """Reject bulk writes that could replace a runtime-owned record."""
+
+    for key in values:
+        _require_public_key(key)
 
 
 __all__ = [

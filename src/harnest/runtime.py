@@ -198,6 +198,12 @@ def _runtime_driver(
         )
     else:
         raise AgentRuntimeError(f"unsupported framework: {application.framework}")
+    if application.mode == "managed" and application.kind == "agent":
+        from .dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
+
+        # The backend fork shares session authority while each immutable plugin
+        # set receives its own provider target and MCP connection lifecycle.
+        driver = DynamicAgentPluginRuntimeDriver(driver, application)
     pipeline = _wrap_runtime_driver(
         application,
         driver,

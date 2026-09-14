@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from pydantic import BaseModel
 
 from .runtime_contract import SessionMessage, SessionRecord
+from .session import _PRIVATE_SESSION_APPLICATION_KEYS
 
 
 _BINARY_FIELD_NAMES = frozenset(
@@ -45,7 +46,11 @@ def session_payload(session: SessionRecord) -> dict[str, Any]:
         "id": session.id,
         "userId": session.user_id,
         "state": dict(session.state),
-        "applicationData": dict(session.application_data),
+        "applicationData": {
+            key: value
+            for key, value in session.application_data.items()
+            if key not in _PRIVATE_SESSION_APPLICATION_KEYS
+        },
         "createdAt": session.created_at,
         "updatedAt": session.updated_at,
         "metadata": dict(session.metadata),

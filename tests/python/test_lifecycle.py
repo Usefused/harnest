@@ -12,6 +12,7 @@ from harnest.bundle import (
 )
 from harnest.lifecycle import LifecycleListener
 from harnest.runtime import _runtime_driver
+from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.session import InMemorySessionStore
 
@@ -191,7 +192,8 @@ class ExtensionCompilerTests(unittest.TestCase):
         with patch("harnest.runtime_adk.ADKRuntimeDriver", return_value=raw_driver):
             driver = _runtime_driver(application)
         self.assertIsInstance(driver, ExtensionRuntimeDriver)
-        self.assertIs(driver._driver, raw_driver)
+        self.assertIsInstance(driver._driver, DynamicAgentPluginRuntimeDriver)
+        self.assertIs(driver._driver._driver, raw_driver)
 
     def test_advanced_mode_accepts_portable_extensions(self):
         with tempfile.TemporaryDirectory() as directory:

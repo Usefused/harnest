@@ -12,6 +12,12 @@ from ._json import json_value
 from .runtime_contract import SessionConflictError, SessionRecord
 
 
+_DYNAMIC_AGENT_PLUGINS_APPLICATION_KEY = "_harnest_dynamic_agent_plugins"
+_PRIVATE_SESSION_APPLICATION_KEYS = frozenset(
+    {_DYNAMIC_AGENT_PLUGINS_APPLICATION_KEY}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ADKSessionStorage:
     """Deployment-owned ADK session backend configuration."""

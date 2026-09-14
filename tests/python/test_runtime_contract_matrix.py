@@ -23,6 +23,7 @@ from harnest.neutral_runtime import (
 from harnest.runtime import _runtime_driver, create_fastapi_app
 from harnest.runtime_extensions import ExtensionRuntimeDriver
 from harnest.runtime_session import StorageRuntimeDriver
+from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.session import InMemorySessionStore
 
 
@@ -362,6 +363,11 @@ class RecordingDriver:
             metadata=request.metadata,
         )
 
+    async def get_session(self, *, session_id: str, user_id: str) -> None:
+        """Model an externally established session without a plugin snapshot."""
+
+        return None
+
     async def close(self) -> None:
         """Record framework shutdown before outer resource cleanup."""
 
@@ -417,7 +423,10 @@ class RuntimeCompositionContractTests(unittest.TestCase):
 
         self.assertIsInstance(runtime, StorageRuntimeDriver)
         self.assertIsInstance(runtime._driver, ExtensionRuntimeDriver)
-        self.assertIs(runtime._driver._driver, backend)
+        self.assertIsInstance(
+            runtime._driver._driver, DynamicAgentPluginRuntimeDriver
+        )
+        self.assertIs(runtime._driver._driver._driver, backend)
         request = InvocationRequest(
             input="hello",
             user_id="alice",
