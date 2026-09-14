@@ -11,6 +11,12 @@ from harnest.bundle import (
     compile_application,
 )
 from harnest.lifecycle import LifecycleListener
+from harnest.lifecycle_coverage import (
+    CoverageLevel,
+    LifecycleCoverage,
+    lifecycle_coverage,
+)
+from harnest.lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
 from harnest.runtime import _runtime_driver
 from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.runtime_extensions import ExtensionRuntimeDriver
@@ -276,6 +282,60 @@ class ExtensionCompilerTests(unittest.TestCase):
                     compile_application(
                         root, entrypoint="agent:root_agent", framework="adk"
                     )
+
+
+class LifecycleTransitionTests(unittest.TestCase):
+    def test_next_without_replacement_is_distinct_from_none(self):
+        context = TransitionContext()
+
+        unchanged = context.next()
+        replaced = context.next(None)
+
+        self.assertIsInstance(unchanged, Next)
+        self.assertIs(unchanged.value, UNCHANGED)
+        self.assertFalse(unchanged.replaces)
+        self.assertTrue(replaced.replaces)
+        self.assertIsNone(replaced.value)
+
+    def test_finish_preserves_the_terminal_result(self):
+        result = object()
+
+        self.assertEqual(TransitionContext().finish(result), Finish(result))
+
+
+class LifecycleCoverageTests(unittest.TestCase):
+    def test_managed_mode_reports_full_portable_coverage(self):
+        coverage = lifecycle_coverage("adk", "managed")
+
+        self.assertIsInstance(coverage, LifecycleCoverage)
+        self.assertEqual(coverage.tool, CoverageLevel.FULL)
+        self.assertEqual(coverage.mcp, CoverageLevel.FULL)
+        self.assertEqual(coverage.subagent, CoverageLevel.BEST_EFFORT)
+        self.assertEqual(coverage.report()["framework"], "adk")
+        with self.assertRaises(TypeError):
+            coverage.report()["tool"] = "unavailable"  # type: ignore[index]
+
+    def test_advanced_mode_reports_native_ownership_without_overclaiming(self):
+        coverage = lifecycle_coverage("langgraph", "advanced")
+
+        self.assertEqual(coverage.invocation, CoverageLevel.FULL)
+        self.assertEqual(coverage.tool, CoverageLevel.WRAPPED_ONLY)
+        self.assertEqual(coverage.mcp, CoverageLevel.WRAPPED_ONLY)
+        self.assertEqual(coverage.subagent, CoverageLevel.BEST_EFFORT)
+        self.assertEqual(coverage.checkpoint, CoverageLevel.FRAMEWORK_OWNED)
+
+    def test_adapter_can_narrow_observed_coverage(self):
+        coverage = lifecycle_coverage(
+            "adk",
+            "advanced",
+            overrides={"model": CoverageLevel.UNAVAILABLE},
+        )
+
+        self.assertEqual(coverage.stage("model"), CoverageLevel.UNAVAILABLE)
+        with self.assertRaises(KeyError):
+            coverage.stage("unknown")
+        with self.assertRaises(TypeError):
+            coverage.with_overrides({"tool": "full"})  # type: ignore[dict-item]
 
 
 if __name__ == "__main__":

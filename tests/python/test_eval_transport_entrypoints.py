@@ -17,6 +17,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from harnest.bundle import EvalSuite
+from harnest.eval_langgraph import _adk_events
 from harnest.eval_model_transport import (
     close_owned_eval_model_transports,
     restore_eval_model_names,
@@ -27,6 +28,7 @@ from harnest.model_transport import (
     attach_model_transport_binding,
     propagate_model_transport_bindings,
 )
+from harnest.runtime_contract import InvocationResult
 from harnest.testing import _model_json, _run_adk_evals, _run_langgraph_evals
 
 
@@ -218,3 +220,42 @@ class EvalTransportEntrypointTests(unittest.TestCase):
             ), 0)
         cli_close.assert_not_awaited()
         self.assertEqual(events, ["start", "evaluate", "close"])
+
+
+class LangGraphEvalAdapterTests(unittest.TestCase):
+    def test_neutral_tool_trajectory_maps_to_adk_events(self):
+        result = InvocationResult(
+            text="done",
+            events=(
+                {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "lookup",
+                    "arguments": {"query": "status"},
+                },
+                {
+                    "type": "tool_result",
+                    "id": "call-1",
+                    "name": "lookup",
+                    "result": {"healthy": True},
+                },
+                {"type": "message", "role": "assistant", "text": "done"},
+            ),
+            result=None,
+            session_id="session-1",
+            metadata={},
+        )
+
+        call_event, result_event, final_event = _adk_events(
+            result, "invocation-1", "eval_agent"
+        )
+
+        call = call_event.content.parts[0].function_call
+        response = result_event.content.parts[0].function_response
+        self.assertEqual((call.id, call.name, call.args), (
+            "call-1", "lookup", {"query": "status"}
+        ))
+        self.assertEqual(response.id, "call-1")
+        self.assertEqual(response.name, "lookup")
+        self.assertEqual(response.response, {"healthy": True})
+        self.assertEqual(final_event.content.parts[0].text, "done")

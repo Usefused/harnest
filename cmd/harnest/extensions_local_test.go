@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -30,6 +33,103 @@ func TestExtensionInitCreatesCanonicalLocalPackage(t *testing.T) {
 	}
 	if manifest.Metadata.Name != "docker_provider" || manifest.Metadata.Version != "0.1.0" {
 		t.Fatalf("generated manifest identity = %#v", manifest.Metadata)
+	}
+}
+
+// TestExtensionWheelUsesCanonicalIdentity verifies static packaging without executing Python.
+func TestExtensionWheelUsesCanonicalIdentity(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	files := map[string]string{
+		"clock-1.0.0.dist-info/entry_points.txt": "[harnest.extensions]\nclock = clock.extension:extension\n",
+		"clock/extension.yaml":                   "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: clock\n  version: 1.0.0\nruntime:\n  entrypoint: extension:extension\n",
+		"clock/extension.py":                     "raise AssertionError('search must not execute this')\n",
+	}
+	for name, source := range files {
+		file, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = file.Write([]byte(source)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := inspectPluginWheel(buffer.Bytes(), "harnest-extension-clock", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inspectPluginWheel(buffer.Bytes(), "harnest-extension-clock", "2.0.0"); err == nil {
+		t.Fatal("release identity mismatch accepted")
+	}
+}
+
+// TestExtensionSearchCommandPreservesLegacyCatalog proves the command is functional.
+func TestExtensionSearchCommandPreservesLegacyCatalog(t *testing.T) {
+	var catalogs, metadata, wheels int
+	sys := pluginSearchTestSystem(pluginCatalogFixture(t, &catalogs, &metadata, &wheels), t.TempDir())
+	output, _, err := executeForTest(t, sys, "extensions", "search", "postgres")
+	if err != nil || !strings.Contains(output, "Harnest_Plugin_Postgres") {
+		t.Fatalf("search: %v %s", err, output)
+	}
+}
+
+// TestExtensionDependenciesJoinRootEnvironment keeps SDK dependencies in the existing solve.
+func TestExtensionDependenciesJoinRootEnvironment(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "extensions", "clock", "pyproject.toml")
+	if err := os.MkdirAll(filepath.Dir(project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEnvironmentFixture(t, filepath.Join(root, "extensions", "clock", "extension.yaml"), "kind: Extension\n")
+	mustWriteEnvironmentFixture(t, project, "[project]\nname = 'clock'\nversion = '1.0.0'\ndependencies = ['httpx>=0.28']\n")
+	values, files, err := pluginRuntimeRequirements(root)
+	if err != nil || len(files) != 1 || files[0] != project || len(values) != 1 || values[0] != "httpx>=0.28" {
+		t.Fatalf("extension dependency solve: %v %v %v", values, files, err)
+	}
+}
+
+func TestOfficialExtensionsJoinRuntimeDependencyPlan(t *testing.T) {
+	// Exercise the same filesystem-only collection used by env sync so the
+	// official catalog cannot drift from installable extension metadata.
+	extensions := filepath.Join("..", "..", "official-extensions")
+	requirements, projects, err := packageRuntimeRequirements(extensions, true)
+	if err != nil {
+		t.Fatalf("inspect bundled extensions: %v", err)
+	}
+	for _, requirement := range []string{"docker>=7.1,<8", "hatchet-sdk>=1.38,<2"} {
+		if !slices.Contains(requirements, requirement) {
+			t.Errorf("runtime requirements %v do not contain %s", requirements, requirement)
+		}
+	}
+	for _, name := range []string{"docker", "hatchet"} {
+		expected := filepath.Join(extensions, name, "pyproject.toml")
+		if !slices.Contains(projects, expected) {
+			t.Errorf("runtime projects %v do not contain %s", projects, expected)
+		}
+	}
+}
+
+// TestOfficialExtensionsInstallFromCheckout keeps the published examples aligned
+// with the same closed local-package layout enforced for third-party authors.
+func TestOfficialExtensionsInstallFromCheckout(t *testing.T) {
+	for _, name := range []string{"docker", "hatchet"} {
+		t.Run(name, func(t *testing.T) {
+			project := extensionTestProject(t)
+			source := filepath.Join("..", "..", "official-extensions", name)
+			if _, _, err := executeForTest(
+				t, defaultSystem(), "extensions", "install", source, "--project", project,
+			); err != nil {
+				t.Fatalf("install official %s extension: %v", name, err)
+			}
+			destination := filepath.Join(project, "extensions", name)
+			for _, required := range []string{"README.md", "extension.py", "extension.yaml", "pyproject.toml"} {
+				if info, err := os.Stat(filepath.Join(destination, required)); err != nil || !info.Mode().IsRegular() {
+					t.Errorf("installed %s/%s is not a regular file: %v", name, required, err)
+				}
+			}
+		})
 	}
 }
 

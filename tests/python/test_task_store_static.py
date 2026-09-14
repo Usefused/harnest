@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 from harnest import cron
 from harnest.context import activate_context, revoke_context
-from harnest.cron import CompiledCron, CronNotFoundError, CronRuntimeError
+from harnest.cron import CompiledCron, CronNotFoundError, CronRuntimeError, CronStore
 from harnest.runtime_task import TaskExecutionError, TaskRuntimeError
 from harnest.runtime_task_store import _record_snapshot
-from harnest.task import MemoryTaskStore, TaskRecord
+from harnest.task import MemoryTaskStore, TaskRecord, TaskStore
+from harnest.testing import TaskStoreConformanceMixin
 
 from test_task_store_recovery import ControlledWorkerManager
 from test_task_store_runtime import application_for, invocation
@@ -129,6 +130,21 @@ class ProviderSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(TaskRuntimeError, "application scope"):
             _record_snapshot(replace(record, user_id="alice"), "other-app")
         self.assertEqual(_record_snapshot(replace(record, user_id="alice"), "app")["user_id"], "alice")
+
+
+class MemoryTaskStoreTests(TaskStoreConformanceMixin, unittest.IsolatedAsyncioTestCase):
+    """Run the custom-provider conformance contract against the memory reference."""
+
+    async def make_store(self):
+        """Construct one independent reference provider for each behavior check."""
+
+        return MemoryTaskStore()
+
+    async def test_public_protocols_recognize_reference_provider(self):
+        """Feature namespaces expose usable runtime structural contracts."""
+
+        self.assertIsInstance(self.store, TaskStore)
+        self.assertIsInstance(self.store, CronStore)
 
 
 if __name__ == "__main__":
