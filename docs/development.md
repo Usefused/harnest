@@ -61,6 +61,20 @@ change crosses a compiler/backend, process, transport, datastore, or framework
 boundary. Add an end-to-end test only when the behavior cannot be established at
 a smaller boundary or when a released user journey is at risk.
 
+Every Python test module is assigned exactly one default tier in
+`tests/python/suites.json`. A narrow override may assign an individual class or
+method to a broader tier when a module contains both local and external-provider
+coverage. The suite runner rejects missing files, unclassified modules, duplicate
+assignments, and stale overrides.
+
+- `make test-unit` runs isolated domain behavior without infrastructure boundaries.
+- `make test-integration` runs compiler, framework, process, transport, and local
+  datastore boundaries.
+- `make test-e2e` runs a small set of released authoring and serving journeys.
+- `make test-live` runs credential- or service-dependent provider checks; unavailable
+  services remain explicit skips.
+- `make test` runs every Python tier plus all Go tests.
+
 Run the complete local gate before submitting a change:
 
 ```bash

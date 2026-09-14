@@ -6,6 +6,7 @@ import unittest
 
 from scripts.check_python_complexity import _violations
 from scripts.check_skill_quality import _violations as _skill_violations
+from scripts.run_python_tests import TestSuiteManifestError, load_manifest, validate_manifest
 
 
 class PythonComplexityGateTests(unittest.TestCase):
@@ -82,6 +83,49 @@ class SkillQualityGateTests(unittest.TestCase):
         generated.write_text("word " * 401, encoding="utf-8")
 
         self.assertEqual(_skill_violations([Path(directory.name)], 400), [])
+
+
+class TestSuiteManifestTests(unittest.TestCase):
+    def test_repository_manifest_classifies_every_python_test_module(self):
+        assignments = validate_manifest(load_manifest())
+
+        self.assertIn("test_quality_gate", assignments)
+        self.assertEqual(assignments["test_neutral_runtime"], "e2e")
+
+    def test_manifest_rejects_duplicate_modules(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "test_one.py").write_text("", encoding="utf-8")
+        (root / "test_two.py").write_text("", encoding="utf-8")
+        manifest = {
+            "modules": {
+                "unit": ["test_one"],
+                "integration": ["test_one"],
+                "e2e": [],
+                "live": [],
+            }
+        }
+
+        with self.assertRaisesRegex(TestSuiteManifestError, "multiple tiers"):
+            validate_manifest(manifest, root)
+
+    def test_manifest_rejects_unclassified_modules(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "test_one.py").write_text("", encoding="utf-8")
+        manifest = {
+            "modules": {
+                "unit": [],
+                "integration": [],
+                "e2e": [],
+                "live": [],
+            }
+        }
+
+        with self.assertRaisesRegex(TestSuiteManifestError, "unclassified: test_one"):
+            validate_manifest(manifest, root)
 
 if __name__ == "__main__":
     unittest.main()

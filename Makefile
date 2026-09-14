@@ -6,11 +6,25 @@ COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
 AGENT_URL ?= http://127.0.0.1:8080
 DEMO_SESSION_ID ?= demo-session
 
-.PHONY: test quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
 
-test: schemas
-	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests/python -v
+test: schemas test-python
 	GOCACHE=$(GOCACHE) go test ./...
+
+test-python:
+	$(PYTHON) scripts/run_python_tests.py all
+
+test-unit:
+	$(PYTHON) scripts/run_python_tests.py unit
+
+test-integration:
+	$(PYTHON) scripts/run_python_tests.py integration
+
+test-e2e:
+	$(PYTHON) scripts/run_python_tests.py e2e
+
+test-live:
+	$(PYTHON) scripts/run_python_tests.py live
 
 quality: test complexity skill-quality format-check vet validate-examples
 
