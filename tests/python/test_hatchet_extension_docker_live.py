@@ -28,7 +28,7 @@ _CLIENT_SOURCE = (
     _LIVE and _SDK_AVAILABLE,
     "set HARNEST_HATCHET_LIVE=1 and install hatchet-sdk for Docker live test",
 )
-class HatchetPluginDockerLiveTests(unittest.IsolatedAsyncioTestCase):
+class HatchetExtensionDockerLiveTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_worker_run_is_correlated_released_and_completed(self):
         """Exercise the official SDK against the separately deployed Docker worker."""
 
@@ -60,7 +60,7 @@ class HatchetPluginDockerLiveTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _load_client_module():
-    """Load the real reusable adapter without requiring an active plugin namespace."""
+    """Load the real adapter without requiring an active extension namespace."""
 
     package_name = "_harnest_hatchet_live"
     lib_name = f"{package_name}.lib"
@@ -114,7 +114,7 @@ async def _wait_for_evidence(
 
 
 async def _wait_for_status(transport, job, expected) -> None:
-    """Poll the public plugin transport until Hatchet commits completion."""
+    """Poll the public extension transport until Hatchet commits completion."""
 
     for _attempt in range(120):
         if await transport.status(job) is expected:

@@ -13,6 +13,7 @@ code under Harnest lifecycle management.
 ## Table of contents
 
 - [What the extension provides](#what-the-extension-provides)
+- [RAG and Harnest long-term memory](#rag-and-harnest-long-term-memory)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Supply an embedder](#supply-an-embedder)
@@ -51,6 +52,19 @@ Read the detailed public guide at
 The extension does not choose an embedding model, expose retrieval as a Tool
 automatically, or install a PostgreSQL server. Application code retains those
 decisions.
+
+## RAG and Harnest long-term memory
+
+Use this extension for application knowledge: documents are chunked, optionally
+embedded, filtered, and ranked for grounded retrieval. Use Harnest's built-in
+`context.memory` for deliberate, user-scoped facts and preferences that Agent
+Tools save and retrieve across sessions. Core memory performs literal text
+search and does not automatically add records to a model prompt.
+
+The similarly named `rag.memory(...)` factory is only the process-local test
+backend for this RAG API; it is unrelated to `context.memory`. An agent may use
+both systems: core memory for explicit user facts and RAG for a searchable
+document corpus.
 
 ## Install
 

@@ -127,7 +127,7 @@
       "test_agent_plugin_runtime",
       "test_authoring",
       "test_frameworks",
-      "test_hatchet_plugin_consumer",
+      "test_hatchet_extension_consumer",
       "test_init_examples",
       "test_neutral_runtime",
       "test_upgrade",
@@ -135,7 +135,7 @@
     ],
     "live": [
       "test_asset_storage_integration",
-      "test_hatchet_plugin_docker_live",
+      "test_hatchet_extension_docker_live",
       "test_store_integration",
       "test_task_store_postgres",
       "test_task_store_postgres_runtime",
@@ -146,8 +146,8 @@
   },
   "overrides": {
     "live": [
-      "test_hatchet_plugin_consumer.HatchetConsumerDockerLiveTests",
-      "test_hatchet_plugin_consumer.HatchetConsumerRealModelPostgresLiveTests",
+      "test_hatchet_extension_consumer.HatchetConsumerDockerLiveTests",
+      "test_hatchet_extension_consumer.HatchetConsumerRealModelPostgresLiveTests",
       "test_task_runtime_integration.A2ADurableTaskIntegrationTests",
       "test_task_runtime_integration.ProviderTaskIntegrationTests",
       "test_task_store_cron_sessions.CronSessionTests.test_postgres_cron_creates_session_before_real_lease",

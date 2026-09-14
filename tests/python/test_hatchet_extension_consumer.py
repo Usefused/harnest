@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-import harnest.extensions as plugin_namespace
+import harnest.extensions as extension_namespace
 from harnest.bundle import compile_artifact
 from harnest.checkpoint import RunScope
 from harnest.runtime import create_fastapi_app
@@ -42,15 +42,15 @@ REAL_LIVE_READY = REAL_MODEL_LIVE and all(
 )
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer"
 _REAL_FIXTURE = Path(__file__).parents[1] / "fixtures" / "hatchet_consumer_real"
-_PRODUCER_PLUGIN = Path(__file__).parents[2] / "official-extensions" / "hatchet"
+_PRODUCER_EXTENSION = Path(__file__).parents[2] / "official-extensions" / "hatchet"
 
 
-def _install_hatchet_plugin(source: Path) -> Path:
-    """Install the producer-owned plugin exactly as a consumer would attach it."""
+def _install_hatchet_extension(source: Path) -> Path:
+    """Install the producer extension exactly as a consumer would attach it."""
 
-    plugin = source / "extensions" / "hatchet"
-    shutil.copytree(_PRODUCER_PLUGIN, plugin)
-    return plugin
+    extension = source / "extensions" / "hatchet"
+    shutil.copytree(_PRODUCER_EXTENSION, extension)
+    return extension
 
 
 def _real_consumer_source(source: Path) -> None:
@@ -63,7 +63,7 @@ def _real_consumer_source(source: Path) -> None:
         target = source / path.relative_to(_REAL_FIXTURE)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    _install_hatchet_plugin(source)
+    _install_hatchet_extension(source)
 
 
 class _HeaderAuthenticator:
@@ -106,7 +106,7 @@ class _FakeHatchetService:
 
 
 class _FakeHatchetTransport:
-    """Implement the producer plugin's narrow external transport contract."""
+    """Implement the producer extension's narrow external transport contract."""
 
     def __init__(self, service: _FakeHatchetService) -> None:
         self.service = service
@@ -338,18 +338,18 @@ async def _delete_postgres_live_records(dsn: str, scope: RunScope) -> None:
 
 @unittest.skipUnless(ADK_AVAILABLE, "Google ADK is required")
 class HatchetConsumerCompilerTests(unittest.TestCase):
-    def test_fresh_agent_compiles_against_only_the_plugin_public_api(self):
+    def test_fresh_agent_compiles_against_only_the_extension_public_api(self):
         """Prove filesystem installation and namespace discovery stay decoupled."""
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, artifact = root / "source", root / "artifact"
             shutil.copytree(_FIXTURE, source)
-            plugin = _install_hatchet_plugin(source)
+            extension = _install_hatchet_extension(source)
 
             # The external-runtime adapter is a native capability, not an
-            # agent-plugin: the consumer must remain the sole tool author.
-            self.assertFalse((plugin / "tools").exists())
+            # The runtime extension contributes no Tool; the agent remains its author.
+            self.assertFalse((extension / "tools").exists())
             compile_artifact(source, artifact, framework="adk")
 
             manifest = json.loads(
@@ -366,12 +366,12 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
             )
 
         # Artifact compilation must release the temporary public namespace so
-        # the next independently compiled agent cannot inherit this plugin.
-        self.assertFalse(hasattr(plugin_namespace, "hatchet"))
+        # the next independently compiled agent cannot inherit this extension.
+        self.assertFalse(hasattr(extension_namespace, "hatchet"))
         self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
-    def test_consumer_does_not_import_the_external_sdk_or_plugin_internals(self):
-        """Keep the reusable adapter boundary observable in the static fixture."""
+    def test_consumer_avoids_the_external_sdk_and_retired_runtime_imports(self):
+        """Keep the reusable extension boundary observable in the static fixture."""
 
         tool_source = (_FIXTURE / "tools" / "create_report_job.py").read_text(
             "utf-8"
@@ -381,7 +381,7 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
         self.assertNotIn("plugins.hatchet.plugin", tool_source)
         self.assertIn("await hatchet.run(", tool_source)
         self.assertIn("await hatchet.wait(", tool_source)
-        project = (_PRODUCER_PLUGIN / "pyproject.toml").read_text("utf-8")
+        project = (_PRODUCER_EXTENSION / "pyproject.toml").read_text("utf-8")
         self.assertIn('name = "harnest-extension-hatchet"', project)
         self.assertIn('"hatchet-sdk>=1.38,<2"', project)
 
@@ -414,14 +414,14 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
             self.assertIn('"asyncpg>=0.30,<1"', project)
             self.assertIn('"litellm>=1.84,<2"', project)
 
-        self.assertFalse(hasattr(plugin_namespace, "hatchet"))
+        self.assertFalse(hasattr(extension_namespace, "hatchet"))
         self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
 
 @unittest.skipUnless(ADK_AVAILABLE, "Google ADK is required")
 class HatchetConsumerRuntimeTests(unittest.TestCase):
     def test_external_completion_resumes_adk_model_loop_and_session(self):
-        """Cross compiler, plugin, continuation, HTTP, framework, and shutdown."""
+        """Cross compiler, extension, continuation, HTTP, framework, and shutdown."""
 
         from fastapi.testclient import TestClient
 
@@ -430,7 +430,7 @@ class HatchetConsumerRuntimeTests(unittest.TestCase):
             source, artifact = root / "source", root / "artifact"
             evidence = root / "consumer-events.jsonl"
             shutil.copytree(_FIXTURE, source)
-            _install_hatchet_plugin(source)
+            _install_hatchet_extension(source)
             compile_artifact(source, artifact, framework="adk")
 
             with patch.dict(
@@ -442,8 +442,8 @@ class HatchetConsumerRuntimeTests(unittest.TestCase):
                     authenticator=_HeaderAuthenticator(),
                     playground_enabled=False,
                 )
-                module = plugin_namespace.hatchet
-                plugin = module.extension
+                module = extension_namespace.hatchet
+                extension = module.extension
                 service = _FakeHatchetService(module)
                 with patch.object(
                     module,
@@ -452,12 +452,12 @@ class HatchetConsumerRuntimeTests(unittest.TestCase):
                 ):
                     self._exercise_runtime(TestClient, app, service, evidence)
 
-                self.assertFalse(plugin._started)
+                self.assertFalse(extension._started)
                 self.assertTrue(service.alive)
                 self.assertEqual(service.cancel_count, 0)
                 self.assertGreaterEqual(service.close_count, 2)
 
-            self.assertFalse(hasattr(plugin_namespace, "hatchet"))
+            self.assertFalse(hasattr(extension_namespace, "hatchet"))
             self.assertNotIn("harnest.extensions.hatchet", sys.modules)
 
     def _exercise_runtime(self, test_client, app, service, evidence: Path) -> None:
@@ -570,7 +570,7 @@ class HatchetConsumerDockerLiveTests(unittest.TestCase):
             source, artifact = root / "source", root / "artifact"
             evidence = root / "consumer-events.jsonl"
             shutil.copytree(_FIXTURE, source)
-            _install_hatchet_plugin(source)
+            _install_hatchet_extension(source)
             compile_artifact(source, artifact, framework="adk")
             with patch.dict(
                 "os.environ",
@@ -583,7 +583,7 @@ class HatchetConsumerDockerLiveTests(unittest.TestCase):
                 )
                 self._exercise_docker(TestClient, app, evidence)
 
-            self.assertFalse(hasattr(plugin_namespace, "hatchet"))
+            self.assertFalse(hasattr(extension_namespace, "hatchet"))
             self.assertEqual(_control_request("/healthz"), {"status": "ok"})
 
     def _exercise_docker(self, test_client, app, evidence: Path) -> None:
@@ -686,7 +686,7 @@ class HatchetConsumerRealModelPostgresLiveTests(unittest.TestCase):
                 )
                 self._export_public_transcript(transcript)
                 self._assert_execution_evidence(evidence)
-                self.assertFalse(hasattr(plugin_namespace, "hatchet"))
+                self.assertFalse(hasattr(extension_namespace, "hatchet"))
                 self.assertEqual(_control_request("/healthz"), {"status": "ok"})
                 _wait_for_worker(correlation_id, expected_state="completed")
             finally:

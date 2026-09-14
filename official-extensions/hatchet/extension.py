@@ -47,10 +47,10 @@ class HatchetContext(ExtensionContext):
 
     __slots__ = ("_owner",)
 
-    def __init__(self, plugin_name: str, owner: "HatchetExtension") -> None:
+    def __init__(self, extension_name: str, owner: "HatchetExtension") -> None:
         """Bind operations to the application-owned extension singleton."""
 
-        super().__init__(plugin_name)
+        super().__init__(extension_name)
         self._owner = owner
 
     async def run(

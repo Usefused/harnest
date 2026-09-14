@@ -71,10 +71,10 @@ def provider_continuations(start_context: Any) -> ContinuationProviderPort:
     return value
 
 
-def invocation_continuations(plugin_context: Any) -> InvocationContinuationPort:
+def invocation_continuations(extension_context: Any) -> InvocationContinuationPort:
     """Resolve the provider-bound invocation port without retaining context state."""
 
-    return plugin_context.continuations
+    return extension_context.continuations
 
 
 __all__ = [

@@ -85,7 +85,7 @@ class HatchetSDKTransport:
         correlation_id: str,
         idempotency_key: str | None = None,
     ) -> HatchetRun:
-        """Submit replay-safe work while workers remain external to the plugin."""
+        """Submit replay-safe work while workers remain external to the extension."""
 
         _require_text(workflow_name, "workflow name")
         _require_text(correlation_id, "correlation id")
@@ -170,7 +170,7 @@ class HatchetSDKTransport:
             ) from None
 
     async def status(self, job: HatchetRun) -> HatchetRunStatus:
-        """Map provider enums into the plugin's stable public status contract."""
+        """Map provider enums into the extension's stable public status contract."""
 
         _require_run(job)
         provider_status = await self._call(

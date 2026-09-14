@@ -140,7 +140,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/python/test_hatchet_extension_example.py
-          tests/python/test_hatchet_plugin_consumer.py
+          tests/python/test_hatchet_extension_consumer.py
 
       - name: Test RAG extension contracts
         if: steps.selection.outputs.active == 'true' && matrix.extension == 'rag'

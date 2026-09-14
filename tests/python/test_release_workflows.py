@@ -185,7 +185,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("official-extensions/docker/_tests/test_telemetry.py", scripts)
         self.assertIn("official-extensions/docker/_tests/test_topology.py", scripts)
         self.assertIn("tests/python/test_hatchet_extension_example.py", scripts)
-        self.assertIn("tests/python/test_hatchet_plugin_consumer.py", scripts)
+        self.assertIn("tests/python/test_hatchet_extension_consumer.py", scripts)
         self.assertIn("official-extensions/rag/_tests", scripts)
         self.assertIn("check_python_complexity.py --max 10", scripts)
 
@@ -215,9 +215,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             },
         }
         expected_requirements = {
-            "docker": {"docker": "<8,>=7.1", "harnest": "<0.16,>=0.15"},
+            "docker": {"docker": "<8,>=7.1", "harnest": "<0.19,>=0.18"},
             "hatchet": {
-                "harnest": "<0.16,>=0.15",
+                "harnest": "<0.19,>=0.18",
                 "hatchet-sdk": "<2,>=1.38",
             },
             "rag": {
@@ -310,9 +310,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 extension = tomllib.loads(
                     (root / "pyproject.toml").read_text("utf-8")
                 )
+                manifest = yaml.safe_load(
+                    (root / "extension.yaml").read_text("utf-8")
+                )
                 readme = (root / "README.md").read_text("utf-8")
+                documentation = (
+                    f"https://docs.usefused.com/harnest/build/extensions/official/{slug}"
+                )
 
                 self.assertEqual(extension["project"]["readme"], "README.md")
+                self.assertEqual(
+                    extension["project"]["version"],
+                    manifest["metadata"]["version"],
+                )
+                self.assertEqual(
+                    extension["project"]["urls"]["Documentation"], documentation
+                )
                 self.assertIn(
                     "README.md",
                     extension["tool"]["setuptools"]["package-data"][
@@ -324,7 +337,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
                         quality_requirements
                     )
                 )
-                self.assertIn("https://docs.usefused.com/harnest", readme)
+                self.assertIn("## Table of contents", readme)
+                self.assertIn(documentation, readme)
                 self.assertIn("https://github.com/Usefused/harnest", readme)
 
     def test_ci_only_validates_source_changes(self):
