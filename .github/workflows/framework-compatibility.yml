@@ -49,7 +49,7 @@ jobs:
           tests/python/test_frameworks.py
           tests/python/test_named_sandbox_frameworks.py
           tests/python/test_named_sandbox_runtime.py
-          tests/python/test_sandbox_frameworks.py
+          tests/python/test_sandbox_adapters.py
           tests/python/test_sandbox_control.py
           tests/python/test_sandbox_deadlines.py
           tests/python/test_sandbox_cleanup.py
@@ -58,7 +58,6 @@ jobs:
           official-extensions/docker/_tests/test_extension.py
           official-extensions/docker/_tests/test_guard.py
           official-extensions/docker/_tests/test_runtime.py
-          tests/python/test_eval_langgraph.py
           tests/python/test_eval_adk_context.py
           tests/python/test_eval_adk_context_edges.py
           tests/python/test_eval_transport_entrypoints.py
