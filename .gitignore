@@ -15,3 +15,11 @@ internal/runtimewheel/assets/*.whl
 internal/uvbootstrap/assets/release/
 coverage.out
 bin/
+
+# Harnest Studio is a local-only experiment and is not part of the main product tree.
+/studio/
+/cmd/harnest/studio.go
+/cmd/harnest/studio_test.go
+/src/harnest/_studio/
+/src/harnest/studio_*.py
+/tests/python/test_studio_*.py

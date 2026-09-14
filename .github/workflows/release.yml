@@ -11,8 +11,8 @@ on:
         required: true
         type: string
       release_sha:
-        description: Optional expected commit for the tag
-        required: false
+        description: Expected reviewed commit for the tag
+        required: true
         type: string
 
 permissions:
@@ -30,10 +30,11 @@ jobs:
       EXPECTED_SHA: ${{ inputs.release_sha }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # releases/v6
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Target the current repository
         env:
@@ -42,6 +43,7 @@ jobs:
         run: |
           # Tagged source may retain a pre-transfer destination; origin is authoritative.
           git remote set-url origin "https://github.com/${CURRENT_REPOSITORY}.git"
+          git fetch --no-tags origin main:refs/remotes/origin/main
           python3 - <<'PY'
           import re
           from pathlib import Path
@@ -59,13 +61,13 @@ jobs:
           echo "GoReleaser will publish to ${CURRENT_REPOSITORY}"
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # releases/v6
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # releases/v6
         with:
           python-version: "3.12"
           cache: pip
@@ -86,6 +88,16 @@ jobs:
           tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
           if [ "$(git rev-parse HEAD)" != "${tagged_sha}" ]; then
             echo "Checkout does not match ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -z "${EXPECTED_SHA}" ]; then
+            echo "Manual releases require the expected reviewed commit." >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${tagged_sha}" "origin/main"; then
+            echo "Release tags must point to a reviewed commit on main." >&2
             exit 1
           fi
 
@@ -111,7 +123,7 @@ jobs:
           gh release view "${RELEASE_TAG}" >/dev/null
 
       - name: Attach release artifacts
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
           version: "~> v2"

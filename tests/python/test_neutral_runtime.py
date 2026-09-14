@@ -28,6 +28,9 @@ from harnest.neutral_runtime import (
 )
 from harnest.assets import MemoryAssetStore
 from harnest.content import Image, ImageConstraints
+from harnest.checkpoint import MemoryStore, RunScope
+from harnest.durable import ResumeArtifact, native_durable_call
+from harnest.external_continuation import ExternalContinuationRuntime
 from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
@@ -247,6 +250,110 @@ class CancellableLiveDriver(FakeDriver):
         except asyncio.CancelledError:
             self.cancelled += 1
             raise
+
+
+class ExternalLiveDriver(FakeDriver):
+    """Exercise an attached external wait through the complete live transport."""
+
+    def __init__(self, *, complete: bool) -> None:
+        super().__init__()
+        self.store = MemoryStore()
+        self.external_continuations = ExternalContinuationRuntime(
+            self.store, application_id=self.info.id
+        )
+        self.external_continuations.bind_driver(self)
+        self.invocation_port = self.external_continuations.invocation_port("wex")
+        self.application_port = self.external_continuations.application_port("wex")
+        self.external_continuations.register_cancel_handler(
+            "wex", self._cancel_wait
+        )
+        self.complete = complete
+        self.cancelled_waits = 0
+        self.verified_results: list[object] = []
+        self.model_resumes = 0
+
+    async def start(self) -> None:
+        """Start the shared durable store before the first live request."""
+
+        await self.store.start()
+
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        """Detect an incorrect model-level continuation fallback."""
+
+        self.model_resumes += 1
+        return await super().invoke(request)
+
+    async def stream(
+        self, request: InvocationRequest
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Suspend Wex work and verify its result inside the original frame."""
+
+        self.invocations.append(request)
+        await self.store.begin_run(
+            application_id=self.info.id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=request.invocation_id,
+            framework="adk",
+        )
+        artifact = ResumeArtifact(
+            "adk", f"native-{request.invocation_id}", "call-wex", "wex_verify"
+        )
+        with native_durable_call(artifact):
+            handle = await self.invocation_port.suspend(
+                f"job-{request.invocation_id}",
+                capability="wex.verify",
+                schema_id="wex-verification/v1",
+                validate=self._validate_result,
+            )
+            if self.complete:
+                asyncio.create_task(self._complete_wait(request.invocation_id))
+            result = await handle.result()
+            self.verified_results.append(result)
+        await self.store.transition(
+            scope=RunScope(
+                self.info.id,
+                request.user_id,
+                request.session_id,
+                request.invocation_id,
+            ),
+            expected_status="running",
+            status="completed",
+        )
+        yield {
+            "type": "message",
+            "role": "assistant",
+            "text": f"verified:{result['value']}",
+        }
+
+    async def _complete_wait(self, response_id: str) -> None:
+        """Let the transport publish its pending boundary before completion."""
+
+        await asyncio.sleep(0.01)
+        await self.application_port.complete(
+            f"job-{response_id}", {"value": "ready"}
+        )
+
+    @staticmethod
+    def _validate_result(value: object) -> object:
+        """Keep one stable verifier identity across sequential live requests."""
+
+        return value
+
+    async def _cancel_wait(self, pending: Any) -> bool:
+        """Cancel provider and Harnest ownership in one test adapter callback."""
+
+        self.cancelled_waits += 1
+        await self.application_port.cancel(pending.record, "transport_cancelled")
+        self.complete = True
+        return True
+
+    async def close(self) -> None:
+        """Release continuation state before closing its backing store."""
+
+        await self.external_continuations.close()
+        await self.store.close()
+        await super().close()
 
 
 class StructuredInput(BaseModel):
@@ -1580,7 +1687,9 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertEqual(live_trace["transport"], "live")
 
     def test_live_cancel_stops_active_work_and_keeps_the_socket_reusable(self):
-        driver = CancellableLiveDriver()
+        """Cancel an external wait, then resume one on the same live socket."""
+
+        driver = ExternalLiveDriver(complete=False)
         app = create_neutral_app(driver)
         with (
             TestClient(app) as client,
@@ -1601,9 +1710,9 @@ class NeutralRuntimeTests(unittest.TestCase):
                 )
                 created = websocket.receive_json()
                 self.assertEqual(created["type"], "response.created")
-                self.assertEqual(
-                    websocket.receive_json()["type"], "response.text.delta"
-                )
+                waiting = websocket.receive_json()
+                self.assertEqual(waiting["type"], "response.in_progress")
+                self.assertEqual(waiting["status"], "in_progress")
                 websocket.send_json(
                     {
                         "type": "response.cancel",
@@ -1618,19 +1727,23 @@ class NeutralRuntimeTests(unittest.TestCase):
                 self.assertEqual(cancelled["outputText"], "")
                 self.assertEqual(cancelled["output"], [])
                 self.assertEqual(cancelled["requestId"], "cancel-request")
-                self.assertEqual(driver.cancelled, 1)
+                self.assertEqual(driver.cancelled_waits, 1)
 
                 # Cancellation owns only the active response; the same live
-                # session must remain usable for the caller's next turn.
+                # session must deliver the next external result through the
+                # original tool frame rather than a model-level resume.
                 websocket.send_json(
                     {"type": "response.create", "input": "second"}
                 )
-                completed = None
-                while completed is None:
-                    candidate = websocket.receive_json()
-                    if candidate["type"] == "response.completed":
-                        completed = candidate
+                second_created = websocket.receive_json()
+                second_waiting = websocket.receive_json()
+                second_delta = websocket.receive_json()
+                completed = websocket.receive_json()
+                self.assertEqual(second_created["type"], "response.created")
+                self.assertEqual(second_waiting["type"], "response.in_progress")
+                self.assertEqual(second_delta["type"], "response.text.delta")
                 self.assertEqual(completed["status"], "completed")
+                self.assertEqual(completed["outputText"], "verified:ready")
                 websocket.send_json({"type": "session.close"})
 
             traces = client.get(
@@ -1640,6 +1753,8 @@ class NeutralRuntimeTests(unittest.TestCase):
 
         self.assertTrue(any("live.response_cancel" in item for item in audit.output))
         self.assertFalse(any(created["responseId"] in item for item in audit.output))
+        self.assertEqual(driver.verified_results, [{"value": "ready"}])
+        self.assertEqual(driver.model_resumes, 0)
 
     def test_live_cancel_rejects_a_stale_response_id(self):
         driver = CancellableLiveDriver()
@@ -1829,6 +1944,24 @@ class NeutralRuntimeTests(unittest.TestCase):
                     websocket.receive_json()["type"], "session.connected"
                 )
                 websocket.send_json({"type": "session.close"})
+
+    def test_authenticator_failures_are_sanitized_and_detached(self):
+        secret = "Bearer private-authentication-token"
+
+        class FailingAuthenticator:
+            async def authenticate(self, connection):
+                raise RuntimeError(connection.headers["authorization"])
+
+        app = create_neutral_app(FakeDriver(), authenticator=FailingAuthenticator())
+        with TestClient(app) as client:
+            with self.assertRaisesRegex(
+                RuntimeError, "^authenticator failed with RuntimeError$"
+            ) as failure:
+                client.get("/sessions", headers={"authorization": secret})
+
+        self.assertNotIn(secret, repr(failure.exception))
+        self.assertIsNone(failure.exception.__context__)
+        self.assertIsNone(failure.exception.__cause__)
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")

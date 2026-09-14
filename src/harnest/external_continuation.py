@@ -84,6 +84,7 @@ class _ResponseState:
     provider: str
     pending: PendingExternalContinuation
     final: dict[str, Any] | None = None
+    local_waiter: asyncio.Future[Any] | None = field(default=None, repr=False)
     updated_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -96,16 +97,26 @@ _CURRENT: ContextVar[_Execution | None] = ContextVar(
 class ContinuationHandle:
     """One plugin-owned handle that enters framework-native suspension."""
 
-    __slots__ = ("_call", "_pending")
+    __slots__ = ("_call", "_local_waiter", "_pending")
 
-    def __init__(self, call: Any, pending: PendingExternalContinuation) -> None:
+    def __init__(
+        self,
+        call: Any,
+        pending: PendingExternalContinuation,
+        local_waiter: asyncio.Future[Any] | None = None,
+    ) -> None:
         self._call = call
         self._pending = pending
+        self._local_waiter = local_waiter
 
     async def result(self) -> Any:
-        """Pause through ADK or LangGraph instead of retaining this coroutine."""
+        """Resume an attached live frame or enter native durable suspension."""
 
-        value = self._call.suspend(self._pending)
+        value = (
+            await self._local_waiter
+            if self._local_waiter is not None
+            else self._call.suspend(self._pending)
+        )
         if isinstance(value, dict) and set(value) == {_FAILURE_KEY}:
             raise ExternalContinuationFailed(value[_FAILURE_KEY])
         return value
@@ -361,7 +372,7 @@ class ExternalContinuationRuntime:
         request = execution.request
         existing = await self.provider(provider).lookup(external_id)
         if existing is not None:
-            return self._restore_wait(
+            return await self._restore_wait(
                 execution,
                 provider=provider,
                 capability=capability,
@@ -374,6 +385,7 @@ class ExternalContinuationRuntime:
         reserved = self._reserve_response(
             execution.run, request, provider, capability
         )
+        local_waiter = self._prepare_local_waiter(request, native, provider)
         try:
             record = await self.provider(provider).suspend(
                 user_id=request.user_id,
@@ -388,15 +400,18 @@ class ExternalContinuationRuntime:
                 ),
             )
         except BaseException:
+            self._discard_local_waiter(request.invocation_id, local_waiter)
             if reserved:
                 self._discard_response(request.invocation_id, execution.run)
             raise
         pending = PendingExternalContinuation(record.continuation_id, capability)
         self._set_pending_response(request.invocation_id, pending)
         execution.run.notifications.put_nowait(("external_continuation", pending))
-        return ContinuationHandle(native, pending)
+        return await self._continuation_handle(
+            provider, record, native, pending, local_waiter
+        )
 
-    def _restore_wait(
+    async def _restore_wait(
         self,
         execution: _Execution,
         *,
@@ -421,6 +436,7 @@ class ExternalContinuationRuntime:
         if not valid:
             raise ContinuationConflictError("external continuation ownership changed")
         self._reserve_response(execution.run, request, provider, capability)
+        local_waiter = self._prepare_local_waiter(request, native, provider)
         pending = PendingExternalContinuation(record.continuation_id, capability)
         self._set_pending_response(request.invocation_id, pending)
         # Native resume already owns the value that consumes this interrupt.
@@ -429,7 +445,69 @@ class ExternalContinuationRuntime:
             execution.run.notifications.put_nowait(
                 ("external_continuation", pending)
             )
-        return ContinuationHandle(native, pending)
+        return await self._continuation_handle(
+            provider, record, native, pending, local_waiter
+        )
+
+    async def _continuation_handle(
+        self,
+        provider: str,
+        record: ContinuationRecord,
+        native: Any,
+        pending: PendingExternalContinuation,
+        local_waiter: asyncio.Future[Any] | None,
+    ) -> ContinuationHandle:
+        """Arm an attached ADK wait or retain the framework-native fallback."""
+
+        if local_waiter is None:
+            return ContinuationHandle(native, pending)
+        try:
+            # ADK persists the function-call event before entering the tool.
+            # Arming here lets the callback resume this attached live frame
+            # without first unwinding it into a model-level FunctionResponse.
+            armed = await self._arm_record(provider, record)
+            await self._resume_if_ready(provider, armed)
+        except BaseException:
+            self._discard_local_waiter(record.run_id, local_waiter)
+            raise
+        return ContinuationHandle(native, pending, local_waiter)
+
+    def _prepare_local_waiter(
+        self, request: InvocationRequest, native: Any, provider: str
+    ) -> asyncio.Future[Any] | None:
+        """Retain an ADK tool frame only while its live transport stays attached."""
+
+        if native.artifact.framework != "adk" or request.transport != "live":
+            return None
+        waiter = asyncio.get_running_loop().create_future()
+        with self._response_lock:
+            state = self._responses.get(request.invocation_id)
+            if state is None:
+                raise ExternalContinuationUnavailableError(
+                    "external continuation response reservation was lost"
+                )
+            previous = state.local_waiter
+            if previous is not None and not previous.done():
+                raise ExternalContinuationUnavailableError(
+                    "external continuation already has an attached live waiter"
+                )
+            state.provider = provider
+            state.local_waiter = waiter
+        return waiter
+
+    def _discard_local_waiter(
+        self, response_id: str, waiter: asyncio.Future[Any] | None
+    ) -> None:
+        """Release only the matching attached frame after setup or transport loss."""
+
+        if waiter is None:
+            return
+        with self._response_lock:
+            state = self._responses.get(response_id)
+            if state is not None and state.local_waiter is waiter:
+                state.local_waiter = None
+        if not waiter.done():
+            waiter.cancel()
 
     async def complete(
         self, *, provider: str, external_id: str, result: Any
@@ -485,37 +563,67 @@ class ExternalContinuationRuntime:
         """Cancel an exact durable wait only through its registered provider."""
 
         self._require_open()
+        pending = await self._pending_response_wait(
+            response_id=response_id, user_id=user_id, session_id=session_id
+        )
+        if pending is None:
+            return False
+        handler = self._cancel_handlers.get(pending.record.provider)
+        if handler is None:
+            return False
+        return await handler(pending)
+
+    async def cancel_response_wait(
+        self, *, response_id: str, user_id: str, session_id: str
+    ) -> bool:
+        """Cancel a live response even when its provider cannot stop remote work."""
+
+        self._require_open()
+        pending = await self._pending_response_wait(
+            response_id=response_id, user_id=user_id, session_id=session_id
+        )
+        if pending is None:
+            return False
+        handler = self._cancel_handlers.get(pending.record.provider)
+        if handler is not None and await handler(pending):
+            return True
+        try:
+            await self.provider(pending.record.provider).cancel(
+                pending.record, ContinuationFailure("transport_cancelled")
+            )
+        except ContinuationConflictError:
+            return False
+        return True
+
+    async def _pending_response_wait(
+        self, *, response_id: str, user_id: str, session_id: str
+    ) -> ProviderPendingContinuation | None:
+        """Resolve one waiting continuation through its complete owner scope."""
+
         scope = RunScope(self._application_id, user_id, session_id, response_id)
         get_run = getattr(self._store, "get_run", None)
         if not callable(get_run):
-            return False
+            return None
         run = await get_run(scope=scope)
-        pending_action = None if run is None else run.pending_action
+        action = None if run is None else run.pending_action
         if (
             run is None
             or run.status != "waiting"
-            or pending_action is None
-            or pending_action.type != "external_continuation"
+            or action is None
+            or action.type != "external_continuation"
         ):
-            return False
+            return None
         record = await self._store.get_continuation(
-            scope=scope,
-            continuation_id=pending_action.action_id,
+            scope=scope, continuation_id=action.action_id
         )
         if record is None:
-            return False
-        handler = self._cancel_handlers.get(record.provider)
-        if handler is None:
-            return False
-        pending = await self.provider(record.provider).get_pending(
+            return None
+        return await self.provider(record.provider).get_pending(
             user_id=user_id,
             session_id=session_id,
             run_id=response_id,
             continuation_id=record.continuation_id,
         )
-        if pending is None:
-            return False
-        return await handler(pending)
 
     async def arm(
         self, *, response_id: str, user_id: str, session_id: str
@@ -735,7 +843,15 @@ class ExternalContinuationRuntime:
         self._closed = True
         self._cancel_handlers.clear()
         with self._response_lock:
+            waiters = tuple(
+                state.local_waiter
+                for state in self._responses.values()
+                if state.local_waiter is not None
+            )
             self._responses.clear()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.cancel()
 
     async def _record_for_external(
         self, provider: str, external_id: str
@@ -814,8 +930,28 @@ class ExternalContinuationRuntime:
             if latest is not None and latest.status == "claimed":
                 return latest
             raise
+        if self._deliver_local_waiter(claimed):
+            return claimed
         await self._resume(claimed)
         return claimed
+
+    def _deliver_local_waiter(self, record: ContinuationRecord) -> bool:
+        """Resume an attached live ADK tool before model-level fallback."""
+
+        with self._response_lock:
+            state = self._responses.get(record.run_id)
+            waiter = None if state is None else state.local_waiter
+            if (
+                state is None
+                or state.provider != record.provider
+                or waiter is None
+                or waiter.done()
+            ):
+                return False
+            state.local_waiter = None
+            state.updated_at = time.monotonic()
+            waiter.set_result(_local_resume_value(record))
+        return True
 
     async def _resume(self, record: ContinuationRecord) -> None:
         """Re-enter the wrapped runtime with the persisted framework identity."""
@@ -998,6 +1134,14 @@ def _resume_value(record: ContinuationRecord) -> Any:
             "retryable": record.failure.retryable,
         }
     }
+
+
+def _local_resume_value(record: ContinuationRecord) -> Any:
+    """Restore the authored exception contract inside an attached tool frame."""
+
+    if record.failure is None:
+        return record.result
+    return {_FAILURE_KEY: record.failure.code}
 
 
 __all__ = [

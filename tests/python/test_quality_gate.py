@@ -84,6 +84,17 @@ class SkillQualityGateTests(unittest.TestCase):
 
         self.assertEqual(_skill_violations([Path(directory.name)], 400), [])
 
+    def test_ignores_installed_node_package_skills(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        installed = (
+            Path(directory.name) / "studio" / "node_modules" / "package" / "SKILL.md"
+        )
+        installed.parent.mkdir(parents=True)
+        installed.write_text("word " * 401, encoding="utf-8")
+
+        self.assertEqual(_skill_violations([Path(directory.name)], 400), [])
+
 
 class TestSuiteManifestTests(unittest.TestCase):
     def test_repository_manifest_classifies_every_python_test_module(self):

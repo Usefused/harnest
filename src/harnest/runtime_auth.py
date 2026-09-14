@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -234,10 +235,38 @@ async def _authenticate_scope(
 ) -> AuthPrincipal:
     from starlette.requests import HTTPConnection
 
-    principal = await authenticator.authenticate(_connection_context(HTTPConnection(scope)))
+    principal, failure = await _invoke_authenticator(
+        authenticator, _connection_context(HTTPConnection(scope))
+    )
+    if failure is not None:
+        # Raise after the provider's exception handler has returned so a
+        # secret-bearing original cannot survive as implicit exception context.
+        raise failure
     if not isinstance(principal, AuthPrincipal):
         raise TypeError("authenticator must return AuthPrincipal")
     return principal
+
+
+async def _invoke_authenticator(
+    authenticator: Authenticator, connection: ConnectionContext
+) -> tuple[Any, BaseException | None]:
+    """Call an authenticator while detaching secret-bearing provider failures."""
+
+    try:
+        principal = await authenticator.authenticate(connection)
+    except AuthenticationError as error:
+        # Reconstruct expected denials so even an authored traceback is not
+        # retained beyond the authentication boundary.
+        return None, AuthenticationError(
+            error.detail, status_code=error.status_code
+        )
+    except asyncio.CancelledError:
+        return None, asyncio.CancelledError()
+    except Exception as error:
+        return None, RuntimeError(
+            f"authenticator failed with {type(error).__name__}"
+        )
+    return principal, None
 
 
 def _connection_context(connection: Any) -> ConnectionContext:

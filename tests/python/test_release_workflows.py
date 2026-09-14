@@ -374,7 +374,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_run.head_branch == 'main'", release_job["if"])
         self.assertIn("RELEASE_PLEASE_TOKEN", token_step["run"])
         self.assertEqual(
-            release_step["uses"], "googleapis/release-please-action@v4"
+            release_step["uses"],
+            "googleapis/release-please-action@"
+            "5c625bfb5d1ff62eadeeb3772007f7f66fdcf071",
+        )
+        self.assertEqual(
+            checkout_step["uses"],
+            "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
         )
         self.assertEqual(workflow["permissions"]["issues"], "write")
         self.assertEqual(
@@ -425,11 +431,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertEqual(events["release"]["types"], ["published"])
         self.assertNotIn("workflow_call", events)
+        self.assertTrue(
+            events["workflow_dispatch"]["inputs"]["release_sha"]["required"]
+        )
         self.assertEqual(
             release_job["env"]["RELEASE_TAG"],
             "${{ github.event.release.tag_name || inputs.tag_name }}",
         )
         self.assertIn('tagged_sha=$(git rev-list -n 1 "${RELEASE_TAG}")', scripts)
+        self.assertIn(
+            "git fetch --no-tags origin main:refs/remotes/origin/main", scripts
+        )
+        self.assertIn(
+            '"${GITHUB_EVENT_NAME}" = "workflow_dispatch"', scripts
+        )
+        self.assertIn(
+            'git merge-base --is-ancestor "${tagged_sha}" "origin/main"',
+            scripts,
+        )
         self.assertIn('pathlib.Path("pyproject.toml")', scripts)
         self.assertIn("src/harnest/compatibility.py", scripts)
         self.assertIn(
@@ -439,6 +458,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('gh release view "${RELEASE_TAG}"', scripts)
         self.assertNotIn("git tag --annotate", scripts)
         self.assertNotIn("git push origin", scripts)
+        expected_actions = {
+            "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
+            "actions/setup-go": "924ae3a1cded613372ab5595356fb5720e22ba16",
+            "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+            "goreleaser/goreleaser-action": (
+                "f06c13b6b1a9625abc9e6e439d9c05a8f2190e94"
+            ),
+        }
+        for step in release_job["steps"]:
+            action = step.get("uses")
+            if action is None:
+                continue
+            repository, revision = action.split("@", 1)
+            self.assertEqual(revision, expected_actions[repository])
 
     def test_goreleaser_embeds_the_versioned_wheel_before_go_build(self):
         config = load_yaml(".goreleaser.yaml")

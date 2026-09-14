@@ -20,6 +20,7 @@ from harnest.durable import (
     native_durable_call,
 )
 from harnest.external_continuation import (
+    ExternalContinuationFailed,
     ExternalContinuationRuntime,
     ExternalContinuationUnavailableError,
 )
@@ -33,6 +34,7 @@ def _request(
     *,
     session_id: str = "session-1",
     agent_principal: AgentRuntimePrincipal | None = None,
+    transport: str | None = None,
 ) -> InvocationRequest:
     """Build one fully scoped invocation without private provider content."""
 
@@ -44,6 +46,7 @@ def _request(
         metadata={},
         state_delta={},
         agent_principal=agent_principal,
+        transport=transport,
     )
 
 
@@ -193,8 +196,107 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "provider-run-success", {"report": "duplicate"}
             )
 
+    async def test_live_adk_completion_resumes_attached_tool_frame(self):
+        """Continue post-wait verification before ADK returns to its model loop."""
+
+        request = _request("run-live", transport="live")
+        await _begin(self.store, request)
+        run = _run(request)
+        verified: list[object] = []
+        with self.runtime.execution(run, request), native_durable_call(
+            _artifact(request.invocation_id)
+        ):
+            handle = await self.port.suspend(
+                "provider-run-live",
+                capability="hatchet.run",
+                schema_id="report/v1",
+                validate=_validate,
+            )
+
+            async def verify_after_wait() -> object:
+                """Model the provider adapter's suspended verification frame."""
+
+                result = await handle.result()
+                verified.append(result)
+                return result
+
+            verification = asyncio.create_task(verify_after_wait())
+            await asyncio.sleep(0)
+            claimed = await self.runtime.application_port("hatchet").complete(
+                "provider-run-live", {"report": "verified"}
+            )
+            result = await verification
+
+        self.assertEqual(claimed.status, "claimed")
+        self.assertEqual(result, {"report": "verified"})
+        self.assertEqual(verified, [{"report": "verified"}])
+        self.assertEqual(self.driver.requests, [])
+        self.assertEqual((await run.notifications.get())[0], "external_continuation")
+
+    async def test_live_adk_failure_reenters_attached_exception_frame(self):
+        """Raise a provider failure inside the retained live tool coroutine."""
+
+        request = _request("run-live-failure", transport="live")
+        await _begin(self.store, request)
+        run = _run(request)
+        with self.runtime.execution(run, request), native_durable_call(
+            _artifact(request.invocation_id)
+        ):
+            handle = await self.port.suspend(
+                "provider-run-live-failure",
+                capability="hatchet.run",
+                schema_id="report/v1",
+                validate=_validate,
+            )
+            verification = asyncio.create_task(handle.result())
+            await asyncio.sleep(0)
+            await self.runtime.application_port("hatchet").fail(
+                "provider-run-live-failure", "verification_failed"
+            )
+            with self.assertRaisesRegex(
+                ExternalContinuationFailed, "verification_failed"
+            ):
+                await verification
+
+        self.assertEqual(self.driver.requests, [])
+
+    async def test_live_response_can_cancel_without_provider_stop_support(self):
+        """Cancel Harnest ownership even when remote work is independently durable."""
+
+        request = _request("run-live-cancel")
+        await _begin(self.store, request)
+        await self._suspend(request)
+        await self.runtime.arm(
+            response_id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+        )
+
+        cancelled = await self.runtime.cancel_response_wait(
+            response_id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+        )
+        durable = await self.store.get_run(
+            scope=RunScope(
+                "consumer",
+                request.user_id,
+                request.session_id,
+                request.invocation_id,
+            )
+        )
+
+        self.assertTrue(cancelled)
+        self.assertIsNotNone(durable)
+        assert durable is not None
+        self.assertEqual(durable.status, "cancelled")
+        with self.assertRaises(ContinuationConflictError):
+            await self.runtime.application_port("hatchet").complete(
+                "provider-run-live-cancel", {"report": "late"}
+            )
+
     async def test_checkpoint_before_completion_resumes_on_callback_replica(self):
-        """Let any replica claim work after the initial process has armed it."""
+        """Verify provider output before a callback replica resumes ADK."""
 
         request = _request("run-later")
         await _begin(self.store, request)
@@ -210,16 +312,32 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         replica = ExternalContinuationRuntime(self.store, application_id="consumer")
         replica_driver = _ResumeDriver()
         replica.bind_driver(replica_driver)
-        replica.application_port("hatchet").register_schema("report/v1", _validate)
+        verification_started = asyncio.Event()
+        release_verification = asyncio.Event()
+
+        async def verify(value: object) -> object:
+            """Hold restart-safe verification to prove resume cannot overtake it."""
+
+            verification_started.set()
+            await release_verification.wait()
+            return {"verified": value}
+
+        replica.application_port("hatchet").register_schema("report/v1", verify)
         try:
             pending_boundary = await replica.response_boundary(
                 response_id="run-later",
                 user_id="user-1",
                 session_id="session-1",
             )
-            claimed = await replica.application_port("hatchet").complete(
-                "provider-run-later", {"report": "cross-replica"}
+            completing = asyncio.create_task(
+                replica.application_port("hatchet").complete(
+                    "provider-run-later", {"report": "cross-replica"}
+                )
             )
+            await verification_started.wait()
+            self.assertEqual(replica_driver.requests, [])
+            release_verification.set()
+            claimed = await completing
             await self.store.transition(
                 scope=RunScope("consumer", "user-1", "session-1", "run-later"),
                 expected_status="running",
@@ -245,7 +363,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(replica_driver.requests), 1)
         self.assertEqual(
             replica_driver.requests[0].input.value,
-            {"report": "cross-replica"},
+            {"verified": {"report": "cross-replica"}},
         )
         self.assertEqual(origin_boundary[0], "durable_terminal")
         self.assertEqual(replica_boundary[0], "result")

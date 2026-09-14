@@ -259,6 +259,12 @@ class PlaygroundTraceRuntimeDriver(RuntimeDriver):
     def info(self) -> AgentInfo:
         return self._driver.info
 
+    @property
+    def external_continuations(self) -> Any | None:
+        """Preserve continuation ownership through the tracing decorator."""
+
+        return getattr(self._driver, "external_continuations", None)
+
     async def create_session(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
     ) -> SessionRecord:

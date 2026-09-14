@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import inspect
 import json
 import re
 import secrets
@@ -19,7 +20,7 @@ from .logging import get_logger
 
 
 ContinuationStatus = Literal["pending", "completed", "failed", "claimed"]
-ContinuationValidator = Callable[[Any], Any]
+ContinuationValidator = Callable[[Any], Any | Awaitable[Any]]
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _SCHEMA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,255}$")
 _AUDIT = get_logger("continuation.audit")
@@ -392,7 +393,7 @@ class ContinuationProvider:
     ) -> ContinuationRecord:
         """Validate provider output before committing its private result."""
 
-        normalized = _validated_result(result, validate)
+        normalized = await _validated_result(result, validate)
         return await self._resolve(
             user_id=user_id,
             session_id=session_id,
@@ -541,13 +542,16 @@ def audit_continuation(
     )
 
 
-def _validated_result(value: Any, validate: ContinuationValidator) -> Any:
+async def _validated_result(value: Any, validate: ContinuationValidator) -> Any:
     """Normalize untrusted output only after the provider's schema accepts it."""
 
     if not callable(validate):
         raise ContinuationValidationError("result validator must be callable")
     try:
-        return json_value(validate(value))
+        normalized = validate(value)
+        if inspect.isawaitable(normalized):
+            normalized = await normalized
+        return json_value(normalized)
     except Exception as exc:
         raise ContinuationValidationError("external continuation result is invalid") from exc
 

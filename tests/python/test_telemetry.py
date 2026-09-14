@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
@@ -117,8 +122,50 @@ class TelemetryTests(unittest.TestCase):
 
         excluded = instrument.call_args.kwargs["excluded_urls"]
         self.assertIn("/sessions/.*", excluded)
+        self.assertIn("/responses/.*", excluded)
         self.assertIn("/approvals/.*", excluded)
         self.assertIn("/client-tools/.*", excluded)
+
+    def test_default_http_spans_never_export_response_poll_identifiers(self):
+        spans = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(spans))
+        state = SimpleNamespace(enabled=True, tracer_provider=provider)
+        app = FastAPI()
+
+        @app.get("/responses/{response_id}")
+        def response_status(response_id: str, sessionId: str):
+            return {"responseId": response_id, "sessionId": sessionId}
+
+        @app.get("/safe")
+        def safe_route():
+            return {"ok": True}
+
+        with patch.dict(os.environ, {}, clear=True):
+            instrument_fastapi(app, state)
+        client = TestClient(app)
+        try:
+            self.assertEqual(
+                client.get(
+                    "/responses/private-response-id",
+                    params={"sessionId": "private-session-id"},
+                ).status_code,
+                200,
+            )
+            self.assertEqual(client.get("/safe").status_code, 200)
+            provider.force_flush()
+        finally:
+            client.close()
+            FastAPIInstrumentor.uninstrument_app(app)
+            provider.shutdown()
+
+        exported = json.dumps(
+            [dict(span.attributes) for span in spans.get_finished_spans()],
+            default=str,
+        )
+        self.assertIn("/safe", exported)
+        self.assertNotIn("private-response-id", exported)
+        self.assertNotIn("private-session-id", exported)
 
     def test_manual_spans_and_logs_share_trace_context_and_export(self):
         spans = InMemorySpanExporter()

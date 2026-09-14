@@ -10,6 +10,17 @@
   and reject URL sources, unsafe archives, mutable session changes, and dynamic
   stdio execution without a sandbox boundary.
 
+### Fixes
+
+* Keep external continuations attached to an active WebSocket so later live
+  cancellation reaches durable provider ownership. Resume attached ADK tool
+  frames before returning to the model loop, and await restart-safe provider
+  verification before cross-replica ADK fallback.
+
+* Harden release publishing by requiring reviewed `main` ancestry and immutable
+  action revisions, sanitize authentication-provider failures before logging,
+  and keep response and session polling identifiers out of exported HTTP spans.
+
 ## [0.18.3](https://github.com/Usefused/harnest/compare/v0.18.2...v0.18.3) (2026-09-11)
 
 ### Fixes

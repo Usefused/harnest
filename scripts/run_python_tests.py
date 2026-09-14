@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
@@ -68,7 +69,7 @@ def _validate_module_inventory(
 ) -> None:
     """Keep the manifest and discoverable test files in exact agreement."""
 
-    available = {path.stem for path in test_root.glob("test_*.py")}
+    available = _available_modules(test_root)
     missing = sorted(available - assignments.keys())
     stale = sorted(assignments.keys() - available)
     if missing or stale:
@@ -78,6 +79,32 @@ def _validate_module_inventory(
         if stale:
             details.append(f"missing files: {', '.join(stale)}")
         raise TestSuiteManifestError("; ".join(details))
+
+
+def _available_modules(test_root: Path) -> set[str]:
+    """Include repository tests that Git tracks or would allow to be added."""
+
+    if test_root.resolve() != _TEST_ROOT.resolve():
+        return {path.stem for path in test_root.glob("test_*.py")}
+    result = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "tests/python/test_*.py",
+        ],
+        cwd=_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # Source archives have no Git metadata and cannot contain ignored local files.
+        return {path.stem for path in test_root.glob("test_*.py")}
+    return {Path(line).stem for line in result.stdout.splitlines() if line}
 
 
 def _validated_overrides(manifest: dict[str, object]) -> dict[str, tuple[str, ...]]:
@@ -209,7 +236,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "tiers",
         nargs="*",
-        choices=(*TIERS, "all"),
+        metavar="TIER",
         help="test tiers to run (default: all)",
     )
     parser.add_argument(
@@ -227,6 +254,11 @@ def main(argv: list[str] | None = None) -> int:
     sys.path[:0] = [str(_TEST_ROOT), str(_ROOT / "src"), str(_ROOT)]
     try:
         requested = arguments.tiers or ["all"]
+        unknown = sorted(set(requested) - {*TIERS, "all"})
+        if unknown:
+            raise TestSuiteManifestError(
+                f"unknown test tiers: {', '.join(unknown)}"
+            )
         selected = TIERS if "all" in requested else tuple(dict.fromkeys(requested))
         classified = classified_tests(load_manifest(), selected=selected)
     except (OSError, json.JSONDecodeError, TestSuiteManifestError) as error:

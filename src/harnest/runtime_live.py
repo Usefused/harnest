@@ -70,6 +70,7 @@ class LiveStreamState:
     approval_decision_received: bool = field(default=False, repr=False)
     pending_client_tool: PendingClientTool | None = field(default=None, repr=False)
     client_tool_result_received: bool = field(default=False, repr=False)
+    pending_external: Any | None = field(default=None, repr=False)
 
 
 async def _consume_live_run(
@@ -81,14 +82,24 @@ async def _consume_live_run(
     client_tools: InMemoryClientToolStore,
     response_statuses: InMemoryResponseStatusStore,
     deadline: float,
+    request_timeout: float,
     response_id: str,
     session_id: str,
     request_id: str | None,
 ) -> InvocationResult | None:
     """Forward run boundaries until the live response completes or suspends."""
 
+    active_deadline = deadline
     while True:
-        kind, value = await _next_live_boundary(run, deadline)
+        kind, value = await _next_live_boundary(
+            run, _live_boundary_deadline(state, active_deadline)
+        )
+        active_deadline = _advance_live_deadline(
+            state,
+            boundary_kind=kind,
+            current=active_deadline,
+            request_timeout=request_timeout,
+        )
         _clear_resolved_approval(state, boundary_kind=kind)
         if kind == "event":
             await _forward_live_event(
@@ -113,6 +124,7 @@ async def _consume_live_run(
             )
             continue
         if kind == "external_continuation":
+            state.pending_external = value
             status = external_in_progress_payload(
                 value,
                 response_id=response_id,
@@ -127,7 +139,8 @@ async def _consume_live_run(
                 payload=status,
             )
             await websocket.send_json(status)
-            return None
+            state.sequence += 1
+            continue
         if kind == "client_tool":
             await _consume_client_tool(
                 websocket,
@@ -136,7 +149,7 @@ async def _consume_live_run(
                 inbound_frames=inbound_frames,
                 client_tools=client_tools,
                 response_statuses=response_statuses,
-                deadline=deadline,
+                deadline=active_deadline,
                 response_id=response_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -150,11 +163,36 @@ async def _consume_live_run(
         raise RuntimeError("unexpected approval run notification")
 
 
+def _live_boundary_deadline(
+    state: LiveStreamState, deadline: float
+) -> float | None:
+    """Suspend transport timeout while external work owns forward progress."""
+
+    return None if state.pending_external is not None else deadline
+
+
+def _advance_live_deadline(
+    state: LiveStreamState,
+    *,
+    boundary_kind: str,
+    current: float,
+    request_timeout: float,
+) -> float:
+    """Give resumed work a fresh timeout after an unbounded external wait."""
+
+    if state.pending_external is None or boundary_kind == "external_continuation":
+        return current
+    state.pending_external = None
+    return asyncio.get_running_loop().time() + request_timeout
+
+
 async def _next_live_boundary(
-    run: ApprovalRun, deadline: float
+    run: ApprovalRun, deadline: float | None
 ) -> tuple[str, Any]:
     """Wait only for the invocation's remaining transport timeout."""
 
+    if deadline is None:
+        return await run.notifications.get()
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
         raise asyncio.TimeoutError
@@ -431,6 +469,29 @@ def _record_live_cancellation(
     return cancelled
 
 
+def _record_transport_loss(
+    statuses: InMemoryResponseStatusStore,
+    *,
+    response_id: str,
+    session: SessionRecord,
+    state: LiveStreamState,
+    metadata: Mapping[str, Any],
+    request_id: str | None,
+) -> None:
+    """Keep durable external waits pollable after their live socket disappears."""
+
+    if state.pending_external is not None:
+        return
+    _record_live_cancellation(
+        statuses,
+        response_id=response_id,
+        session=session,
+        state=state,
+        metadata=metadata,
+        request_id=request_id,
+    )
+
+
 def _route_active_frame(
     frame: Any,
     *,
@@ -566,6 +627,29 @@ async def _cancel_live_execution(
         await _settle_cancelled_task(run.task)
 
 
+async def _cancel_live_continuation(
+    runtime: Any | None,
+    *,
+    response_id: str,
+    user_id: str,
+    session_id: str,
+) -> None:
+    """Commit cancellation through durable ownership before ending live work."""
+
+    if runtime is None:
+        return
+    cancel = getattr(runtime, "cancel_response_wait", None)
+    if not callable(cancel):
+        raise LiveProtocolError("External continuation cannot be cancelled")
+    cancelled = await cancel(
+        response_id=response_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+    if not cancelled:
+        raise LiveProtocolError("External continuation is no longer cancellable")
+
+
 def _audit_live_cancel(outcome: str) -> None:
     """Record user cancellation without response, session, prompt, or output data."""
 
@@ -652,6 +736,7 @@ async def _execute_live_response(
     client_tools: InMemoryClientToolStore,
     response_statuses: InMemoryResponseStatusStore,
     deadline: float,
+    request_timeout: float,
     response_id: str,
     session_id: str,
     request_id: str | None,
@@ -670,6 +755,7 @@ async def _execute_live_response(
                 client_tools=client_tools,
                 response_statuses=response_statuses,
                 deadline=deadline,
+                request_timeout=request_timeout,
                 response_id=response_id,
                 session_id=session_id,
                 request_id=request_id,
@@ -780,6 +866,7 @@ async def serve_live_frame(
             client_tools=client_tool_store,
             response_statuses=response_statuses,
             deadline=deadline,
+            request_timeout=request_timeout,
             response_id=response_id,
             session_id=session.id,
             request_id=request_id,
@@ -801,6 +888,13 @@ async def serve_live_frame(
             request_id=request_id,
         )
     except LiveResponseCancelled:
+        if state.pending_external is not None:
+            await _cancel_live_continuation(
+                external_continuations,
+                response_id=response_id,
+                user_id=session.user_id,
+                session_id=session.id,
+            )
         await _cancel_live_execution(approval_store, approval_run, execution)
         _audit_live_cancel("committed")
         cancelled = _record_live_cancellation(
@@ -813,6 +907,13 @@ async def serve_live_frame(
         )
         await websocket.send_json(cancelled)
     except LiveSessionClosed:
+        if state.pending_external is not None:
+            await _cancel_live_continuation(
+                external_continuations,
+                response_id=response_id,
+                user_id=session.user_id,
+                session_id=session.id,
+            )
         await _cancel_live_execution(approval_store, approval_run, execution)
         _record_live_cancellation(
             response_statuses,
@@ -826,10 +927,10 @@ async def serve_live_frame(
         raise
     except asyncio.CancelledError:
         # ASGI servers cancel the connection task during disconnect/shutdown.
-        # Cleanup is complete here, so propagating it only leaks transport
-        # lifecycle into callers such as Starlette's test and lifespan clients.
+        # An external wait remains pollable and may resume on another replica;
+        # only process-local work becomes a terminal transport cancellation.
         await _cancel_live_execution(approval_store, approval_run, execution)
-        _record_live_cancellation(
+        _record_transport_loss(
             response_statuses,
             response_id=response_id,
             session=session,
@@ -840,7 +941,7 @@ async def serve_live_frame(
         return
     except WebSocketDisconnect:
         await _cancel_live_execution(approval_store, approval_run, execution)
-        _record_live_cancellation(
+        _record_transport_loss(
             response_statuses,
             response_id=response_id,
             session=session,

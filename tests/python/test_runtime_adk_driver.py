@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import types as python_types
@@ -365,7 +366,9 @@ def _durable_resume_application(
                 schema_id="report/v1",
                 validate=lambda value: value,
             )
-            return await handle.result()
+            result = await handle.result()
+            observations.setdefault("verified", []).append(result)
+            return result
         await store.transition(
             scope=scope,
             expected_status="running",
@@ -959,6 +962,75 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(completed)
         assert completed is not None
         self.assertEqual(completed.status, "completed")
+
+    async def test_live_external_continuation_resumes_real_adk_tool_frame(self):
+        """Resume attached verification before real ADK continues its model loop."""
+
+        store = _RecordingCheckpointStore()
+        service = InMemorySessionService()
+        observations: dict[str, list[Any]] = {
+            "executions": [],
+            "artifacts": [],
+            "checkpoint_payloads": [],
+            "verified": [],
+        }
+        DurableResumeLlm.responses.clear()
+        await store.start()
+        runtime = ExternalContinuationRuntime(
+            store, application_id="durable_resume"
+        )
+        application = _durable_resume_application(
+            store, observations, runtime.invocation_port("hatchet")
+        )
+        driver = ADKRuntimeDriver(application, session_service=service)
+        runtime.bind_driver(driver)
+        request = InvocationRequest(
+            input="start",
+            user_id="test-user",
+            session_id="durable-session",
+            invocation_id="portable-run",
+            metadata={},
+            state_delta={},
+            transport="live",
+        )
+        run = ApprovalRun(
+            id=request.invocation_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            call_id=request.invocation_id,
+        )
+        try:
+            await driver.create_session(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                state={},
+            )
+            with runtime.execution(run, request):
+                invocation = asyncio.create_task(driver.invoke(request))
+                boundary = await asyncio.wait_for(run.notifications.get(), timeout=1)
+                await runtime.application_port("hatchet").complete(
+                    "provider-job-1", {"report": "ready"}
+                )
+                result = await invocation
+        finally:
+            await runtime.close()
+            await driver.close()
+            await store.close()
+
+        self.assertEqual(boundary[0], "external_continuation")
+        self.assertEqual(result.text, "resumed:ready")
+        self.assertEqual(observations["executions"], ["job-1"])
+        self.assertEqual(observations["verified"], [{"report": "ready"}])
+        self.assertEqual(
+            DurableResumeLlm.responses,
+            [
+                {
+                    "id": observations["artifacts"][0].tool_call_id,
+                    "name": observations["artifacts"][0].tool_name,
+                    "response": {"report": "ready"},
+                }
+            ],
+        )
 
     async def test_external_continuation_restores_principal_on_adk_replica(self):
         """Resume real ADK execution with a fresh copy of persisted grants."""

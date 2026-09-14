@@ -38,7 +38,7 @@ jobs:
 
       - name: Propose or create release
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
           # The user token lets both release PR validation and the published
           # release event start their independent workflows.
@@ -49,7 +49,7 @@ jobs:
 
       - name: Check out release proposal
         if: ${{ steps.release.outputs.prs_created == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # releases/v6
         with:
           ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

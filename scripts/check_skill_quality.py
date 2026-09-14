@@ -15,6 +15,7 @@ _IGNORED_DIRECTORIES = {
     "__pycache__",
     "build",
     "dist",
+    "node_modules",
 }
 
 

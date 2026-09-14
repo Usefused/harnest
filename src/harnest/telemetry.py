@@ -665,7 +665,7 @@ def instrument_fastapi(app: Any, state: TelemetryState) -> None:
             "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
             (
                 "/healthz,/.well-known/agent-card.json,"
-                "/sessions/.*,/approvals/.*,/client-tools/.*"
+                "/sessions/.*,/responses/.*,/approvals/.*,/client-tools/.*"
             ),
         )
     FastAPIInstrumentor.instrument_app(
