@@ -1,17 +1,14 @@
-"""Optional Procrastinate ownership for compiler-discovered Harnest tasks."""
+"""Shared invocation and continuation ownership for storage-backed task workers."""
 
 from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager, nullcontext
 import hashlib
-import importlib
 import inspect
 import json
-import os
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Mapping, Sequence
-import uuid
 
 from ._exception_notes import add_exception_note
 from .agent_principal import (
@@ -41,7 +38,6 @@ from .external_continuation import (
     ExternalContinuationFailed,
     ExternalContinuationRuntime,
 )
-from .logging import get_logger
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -51,157 +47,45 @@ from .runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
-from .runtime_cron import DynamicCronRuntime
 from .session import SessionStore
 from .task import (
     CompiledTask,
     TaskCallable,
     TaskHandle,
     TaskUnavailableError,
-    bind_task_runtime,
-    release_task_runtime,
     safe_task_arguments,
     safe_task_result,
 )
 
 
-_AUDIT = get_logger("task.audit")
 _CONTINUATION_PROVIDER = "harnest.task"
 _RESULT_CAPABILITY = "task.result"
 _RESULT_SCHEMA = "harnest.task.result.v1"
-_FAILED = "task_failed"
 _CANCELLED = "task_cancelled"
 _AUTOMATION_USER_ID = "_harnest_automation"
-_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 10
-_PAYLOAD_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS harnest_task_payloads (
-    payload_id text PRIMARY KEY,
-    task_name text NOT NULL,
-    arguments jsonb NOT NULL,
-    invocation jsonb,
-    agent_permissions jsonb,
-    trigger text NOT NULL DEFAULT 'agent',
-    status text NOT NULL DEFAULT 'pending',
-    result jsonb,
-    failure_code text,
-    completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now()
-)
-"""
-_PAYLOAD_MIGRATION_SQL = (
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
-    "status text NOT NULL DEFAULT 'pending'",
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS result jsonb",
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS failure_code text",
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
-    "completed_at timestamptz",
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
-    "trigger text NOT NULL DEFAULT 'agent'",
-    "ALTER TABLE harnest_task_payloads ADD COLUMN IF NOT EXISTS "
-    "agent_permissions jsonb",
-)
-# Procrastinate adapts Python lists as PostgreSQL arrays rather than JSON. Keep
-# the in-memory contract as a list and convert it explicitly at the SQL boundary.
-_INSERT_PAYLOAD_SQL = """
-INSERT INTO harnest_task_payloads(
-    payload_id, task_name, arguments, invocation, agent_permissions, trigger, status
-)
-VALUES (
-    %(payload_id)s, %(task_name)s, %(arguments)s, %(invocation)s,
-    to_jsonb(%(agent_permissions)s::text[]),
-    %(trigger)s, 'pending'
-)
-ON CONFLICT (payload_id) DO NOTHING
-RETURNING payload_id
-"""
-_GET_NATIVE_JOB_SQL = """
-SELECT id, args
-FROM procrastinate_jobs
-WHERE task_name=%(task_name)s AND queueing_lock=%(queueing_lock)s
-  AND args->>'_harnest_payload_id'=%(payload_id)s
-ORDER BY id
-LIMIT 2
-"""
-_GET_PAYLOAD_SQL = """
-SELECT arguments, invocation, agent_permissions, trigger, status, result, failure_code
-FROM harnest_task_payloads
-WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
-"""
-_GET_PAYLOAD_OUTCOME_SQL = """
-SELECT task_name, status, result, failure_code
-FROM harnest_task_payloads
-WHERE payload_id=%(payload_id)s
-"""
-_COMPLETE_PAYLOAD_SQL = """
-UPDATE harnest_task_payloads
-SET status='completed', result=%(result)s, failure_code=NULL,
-    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
-    completed_at=now()
-WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
-  AND status='pending'
-RETURNING payload_id
-"""
-_FAIL_PAYLOAD_SQL = """
-UPDATE harnest_task_payloads
-SET status='failed', result=NULL, failure_code=%(failure_code)s,
-    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
-    completed_at=now()
-WHERE payload_id=%(payload_id)s AND task_name=%(task_name)s
-  AND status='pending'
-RETURNING payload_id
-"""
-_CANCEL_PAYLOAD_JOB_SQL = """
-WITH target AS (
-    SELECT payload.payload_id, payload.task_name, job.id
-    FROM harnest_task_payloads AS payload
-    JOIN procrastinate_jobs AS job
-      ON job.task_name=payload.task_name
-     AND job.args->>'_harnest_payload_id'=payload.payload_id
-    WHERE payload.payload_id=%(payload_id)s
-      AND payload.status='pending'
-      AND job.status IN ('todo', 'doing')
-    FOR UPDATE OF payload, job
-), cancelled AS (
-    SELECT target.*,
-           procrastinate_cancel_job_v1(target.id, true, false) AS cancelled_id
-    FROM target
-)
-UPDATE harnest_task_payloads AS payload SET
-    status='failed', result=NULL, failure_code='task_cancelled',
-    arguments='{}'::jsonb, invocation=NULL, agent_permissions=NULL,
-    completed_at=now()
-FROM cancelled
-WHERE payload.payload_id=cancelled.payload_id
-  AND cancelled.cancelled_id=cancelled.id
-RETURNING payload.payload_id, cancelled.task_name, cancelled.id
-"""
-_DELETE_PAYLOAD_SQL = """
-DELETE FROM harnest_task_payloads WHERE payload_id=%(payload_id)s
-"""
 
 
 class TaskRuntimeError(RuntimeError):
-    """The optional task backend failed at a payload-safe runtime boundary."""
+    """Task storage or execution failed at a payload-safe runtime boundary."""
 
 
 class TaskExecutionError(RuntimeError):
     """An authored task failed without exposing its exception message."""
 
 
-class TaskRuntimeManager:
-    """Own one lazy Procrastinate app and its compiler-discovered tasks."""
+class TaskExecutionRuntime:
+    """Share task identity, capability scopes, and continuation delivery."""
 
     def __init__(
         self,
         application: Any,
         *,
         extension_manager: Any | None = None,
-        backend: Any | None = None,
         continuation_runtime: ExternalContinuationRuntime | None = None,
         automation_user_id: str = _AUTOMATION_USER_ID,
         enable_cron: bool = True,
     ) -> None:
-        """Retain configuration without importing or connecting to Procrastinate."""
+        """Retain execution ownership without selecting a database or queue library."""
 
         tasks = tuple(application.tasks)
         if not tasks or any(not isinstance(item, CompiledTask) for item in tasks):
@@ -215,24 +99,14 @@ class TaskRuntimeManager:
             raise TypeError("enable_cron must be a bool")
         self._enable_cron = enable_cron
         self._extension_manager = extension_manager
-        self._backend = backend
         self._continuation_runtime: ExternalContinuationRuntime | None = None
         self._invocation_continuations: Any | None = None
         self._application_continuations: Any | None = None
         self._agent_driver: RuntimeDriver | None = None
         self._automation_user_id = _automation_identity(automation_user_id)
-        self._app: Any | None = None
-        self._native: dict[int, Any] = {}
-        self._native_crons: dict[str, Any] = {}
-        self._dynamic_cron_dispatcher: Any | None = None
         self._task_by_name = {item.name: item for item in tasks}
-        self._dynamic_cron = DynamicCronRuntime(
-            application,
-            enabled=enable_cron,
-            enqueue=self._enqueue_dynamic_cron_occurrence,
-        )
+        self._dynamic_cron: Any | None = None
         self._worker: asyncio.Task[Any] | None = None
-        self._worker_controller: Any | None = None
         self._worker_failure: TaskRuntimeError | None = None
         self._lock = asyncio.Lock()
         self._state = "new"
@@ -255,7 +129,7 @@ class TaskRuntimeManager:
         return self._application
 
     @property
-    def cron_runtime(self) -> DynamicCronRuntime:
+    def cron_runtime(self) -> Any:
         """Expose the scoped cron capability to the owning runtime driver."""
 
         return self._dynamic_cron
@@ -313,359 +187,6 @@ class TaskRuntimeManager:
                 ) from None
             self._state = "started"
 
-    async def _start_locked(self) -> None:
-        """Construct the backend only after the compiled application needs it."""
-
-        backend = self._backend or _load_procrastinate()
-        self._backend = backend
-        connector = backend.PsycopgConnector(
-            conninfo=_task_database_dsn(self._application)
-        )
-        self._app = backend.App(connector=connector)
-        self._register_native_tasks()
-        if self._enable_cron:
-            self._register_native_crons()
-            self._register_dynamic_cron_dispatcher()
-        await self._app.open_async()
-        await _ensure_procrastinate_schema(self._app)
-        await self._app.connector.execute_query_async(query=_PAYLOAD_TABLE_SQL)
-        await self._dynamic_cron.start(self._app)
-        # Existing task databases predate result ownership, so additive columns
-        # are installed without discarding already queued opaque payloads.
-        for query in _PAYLOAD_MIGRATION_SQL:
-            await self._app.connector.execute_query_async(query=query)
-        for compiled in self._tasks:
-            bind_task_runtime(compiled.authored, self)
-        options = {
-            "install_signal_handlers": False,
-            "shutdown_graceful_timeout": _WORKER_SHUTDOWN_TIMEOUT_SECONDS,
-        }
-        # Procrastinate shields its internal worker loop from task cancellation.
-        # Retaining the pinned backend's worker lets the server lifespan request
-        # a real stop when startup later fails, such as on an HTTP bind collision.
-        self._worker_controller = self._app._worker(**options)
-        self._worker = asyncio.create_task(
-            self._worker_controller.run(),
-            name=f"harnest-tasks-{self._application.name}",
-        )
-        self._worker.add_done_callback(self._worker_done)
-
-    def _register_native_tasks(self) -> None:
-        """Register opaque-payload wrappers so queue logs never contain arguments."""
-
-        if self._app is None:  # pragma: no cover - caller owns construction
-            raise RuntimeError("task app is unavailable")
-        for compiled in self._tasks:
-            execute = self._native_executor(compiled)
-            native = self._app.task(
-                name=compiled.name,
-                queue=compiled.queue,
-                retry=compiled.max_retries,
-                pass_context=True,
-            )(execute)
-            self._native[id(compiled.authored)] = native
-
-    def _native_executor(self, compiled: CompiledTask) -> Any:
-        """Create a worker entrypoint whose result and failures are sanitized."""
-
-        async def execute(job_context: Any, _harnest_payload_id: str) -> None:
-            await self._execute(compiled, _harnest_payload_id, job_context)
-
-        execute.__name__ = compiled.name.rsplit(".", 1)[-1]
-        execute.__doc__ = "Execute one compiler-owned opaque Harnest task payload."
-        return execute
-
-    def _register_native_crons(self) -> None:
-        """Register periodic dispatchers before workers inspect their schedules."""
-
-        if self._app is None:  # pragma: no cover - caller owns construction
-            raise RuntimeError("task app is unavailable")
-        for compiled in self._crons:
-            execute = self._cron_executor(compiled)
-            native = self._app.task(
-                name=f"{compiled.name}.dispatch",
-                queue=compiled.task.queue,
-                retry=compiled.task.max_retries,
-            )(execute)
-            self._app.periodic(
-                cron=compiled.schedule,
-                periodic_id=compiled.name,
-            )(native)
-            self._native_crons[compiled.name] = native
-
-    def _cron_executor(self, compiled: CompiledCron) -> Any:
-        """Create a payload-free periodic entrypoint for one compiled schedule."""
-
-        async def execute(timestamp: int) -> None:
-            await self._enqueue_cron(compiled, timestamp)
-
-        execute.__name__ = f"{compiled.name.rsplit('.', 1)[-1]}_dispatch"
-        execute.__doc__ = "Enqueue one compiler-owned Harnest cron occurrence."
-        return execute
-
-    def _register_dynamic_cron_dispatcher(self) -> None:
-        """Install one stable minute dispatcher backed by the durable job registry."""
-
-        if self._app is None:  # pragma: no cover - caller owns construction
-            raise RuntimeError("task app is unavailable")
-        name = f"harnest.{self._application.name}.system.dynamic_cron"
-
-        async def execute(timestamp: int) -> None:
-            await self._dynamic_cron.dispatch(timestamp)
-
-        execute.__name__ = "dynamic_cron_dispatch"
-        execute.__doc__ = "Dispatch matching user-owned Harnest cron jobs."
-        native = self._app.task(name=name, queue="default", retry=3)(execute)
-        self._app.periodic(cron="* * * * *", periodic_id=name)(native)
-        self._dynamic_cron_dispatcher = native
-
-    async def defer(
-        self,
-        task_value: TaskCallable[Any],
-        arguments: Mapping[str, Any],
-        *,
-        idempotency_key: str | None,
-        schedule_in: float | None,
-    ) -> TaskHandle:
-        """Persist private arguments before committing an opaque native job."""
-
-        await self.start()
-        self._require_ready()
-        compiled = self._compiled_for(task_value)
-        snapshot = _capture_invocation()
-        agent_permissions = _capture_agent_permissions()
-        trigger = "agent" if snapshot is not None else "user"
-        if idempotency_key is None:
-            idempotency_key = _native_idempotency_key(
-                self._application, compiled, arguments, snapshot
-            )
-        return await self._defer_compiled(
-            compiled,
-            arguments,
-            snapshot,
-            agent_permissions,
-            trigger=trigger,
-            idempotency_key=idempotency_key,
-            schedule_in=schedule_in,
-        )
-
-    async def _enqueue_cron(self, cron: CompiledCron, timestamp: int) -> None:
-        """Turn one native periodic tick into an idempotent private task job."""
-
-        if (
-            not isinstance(timestamp, int)
-            or isinstance(timestamp, bool)
-            or timestamp < 0
-        ):
-            _cron_audit("enqueue", cron.name, "failed")
-            raise TaskRuntimeError("cron timestamp must be a non-negative integer")
-        try:
-            await self._defer_compiled(
-                cron.task,
-                safe_task_arguments(cron.arguments),
-                None,
-                None,
-                trigger="cron",
-                idempotency_key=f"{cron.name}:{timestamp}",
-                schedule_in=None,
-            )
-        except BaseException:
-            _cron_audit("enqueue", cron.name, "failed")
-            raise
-        _cron_audit("enqueue", cron.name, "committed")
-
-    async def _enqueue_dynamic_cron_occurrence(
-        self,
-        compiled: CompiledTask,
-        arguments: Mapping[str, Any],
-        snapshot: Mapping[str, Any],
-        idempotency_key: str,
-    ) -> None:
-        """Commit one cron occurrence through the private task payload path."""
-
-        await self._defer_compiled(
-            compiled,
-            arguments,
-            snapshot,
-            frozenset(),
-            trigger="cron",
-            idempotency_key=idempotency_key,
-            schedule_in=None,
-        )
-
-    async def _defer_compiled(
-        self,
-        compiled: CompiledTask,
-        arguments: Mapping[str, Any],
-        snapshot: Mapping[str, Any] | None,
-        agent_permissions: frozenset[str] | None = None,
-        *,
-        trigger: str,
-        idempotency_key: str | None,
-        schedule_in: float | None,
-    ) -> TaskHandle:
-        """Commit a resolved task through the one private payload transaction."""
-
-        queueing_lock = _queueing_lock(compiled.name, idempotency_key)
-        payload_id = _payload_id(compiled.name, queueing_lock)
-        try:
-            job_id, committed_payload_id = await self._commit_job(
-                compiled,
-                compiled.authored,
-                payload_id,
-                arguments,
-                snapshot,
-                agent_permissions,
-                trigger=trigger,
-                queueing_lock=queueing_lock,
-                schedule_in=schedule_in,
-            )
-        except BaseException as error:
-            try:
-                existing = await self._existing_job(error, compiled, queueing_lock)
-            except Exception:
-                _audit("defer", trigger, "failed")
-                raise
-            if existing is not None:
-                await self._delete_payload_quietly(payload_id)
-                _audit("defer", trigger, "committed")
-                return self._handle(compiled, existing[0], existing[1], trigger)
-            # An I/O failure may happen after PostgreSQL committed the native
-            # job. Retaining the opaque payload avoids converting uncertainty
-            # into guaranteed data loss; later retention cleanup can prune it.
-            _audit("defer", trigger, "failed")
-            if isinstance(error, asyncio.CancelledError):
-                raise
-            raise TaskRuntimeError(
-                f"task defer failed with {type(error).__name__}"
-            ) from None
-        _audit("defer", trigger, "committed")
-        return self._handle(compiled, job_id, committed_payload_id, trigger)
-
-    async def _commit_job(
-        self,
-        compiled: CompiledTask,
-        task_value: TaskCallable[Any],
-        payload_id: str,
-        arguments: Mapping[str, Any],
-        snapshot: Mapping[str, Any] | None,
-        agent_permissions: frozenset[str] | None,
-        *,
-        trigger: str,
-        queueing_lock: str | None,
-        schedule_in: float | None,
-    ) -> tuple[int, str]:
-        """Commit private payload and opaque queue row in one transaction."""
-
-        # Procrastinate 3.9 explicitly supports external Psycopg connections.
-        # Sharing one transaction prevents jobs without payloads and vice versa.
-        async with self._app.connector.pool.connection() as connection:
-            inserted = await self._insert_payload(
-                compiled,
-                payload_id,
-                arguments,
-                snapshot,
-                agent_permissions,
-                trigger=trigger,
-                connection=connection,
-            )
-            if not inserted:
-                return (
-                    await self._job_for_payload(
-                        compiled, payload_id, queueing_lock, connection
-                    ),
-                    payload_id,
-                )
-            job_id = await self._defer_native(
-                task_value,
-                payload_id,
-                queueing_lock=queueing_lock,
-                schedule_in=schedule_in,
-                connection=connection,
-            )
-            return job_id, payload_id
-
-    async def _defer_native(
-        self,
-        task_value: TaskCallable[Any],
-        payload_id: str,
-        *,
-        queueing_lock: str | None,
-        schedule_in: float | None,
-        connection: Any,
-    ) -> int:
-        """Configure scheduling once before the native durable insert."""
-
-        options: dict[str, Any] = {"connection": connection}
-        if queueing_lock is not None:
-            options["queueing_lock"] = queueing_lock
-        if schedule_in is not None:
-            options["schedule_in"] = {"seconds": schedule_in}
-        native = self._native[id(task_value)]
-        return await native.configure(**options).defer_async(
-            _harnest_payload_id=payload_id
-        )
-
-    async def _job_for_payload(
-        self,
-        compiled: CompiledTask,
-        payload_id: str,
-        queueing_lock: str | None,
-        connection: Any,
-    ) -> int:
-        """Resolve one transactionally committed idempotent native job."""
-
-        if queueing_lock is None:  # pragma: no cover - random ids cannot conflict
-            raise TaskRuntimeError("non-idempotent task payload already exists")
-        rows = await self._app.connector.execute_query_all_async_with_connection(
-            connection,
-            query=_GET_NATIVE_JOB_SQL,
-            task_name=compiled.name,
-            queueing_lock=queueing_lock,
-            payload_id=payload_id,
-        )
-        if len(rows) != 1:
-            raise TaskRuntimeError("idempotent task job lookup returned an invalid result")
-        return int(rows[0]["id"])
-
-    async def _existing_job(
-        self,
-        error: BaseException,
-        compiled: CompiledTask,
-        queueing_lock: str | None,
-    ) -> tuple[int, str] | None:
-        """Resolve only the single row protected by a hashed idempotency lock."""
-
-        already = getattr(
-            getattr(self._backend, "exceptions", None), "AlreadyEnqueued", ()
-        )
-        if queueing_lock is None or not isinstance(error, already):
-            return None
-        jobs = tuple(
-            await self._app.job_manager.list_jobs_async(
-                task=compiled.name, queueing_lock=queueing_lock
-            )
-        )
-        if len(jobs) != 1:
-            raise TaskRuntimeError("idempotent task lookup returned an invalid result")
-        payload_id = jobs[0].task_kwargs.get("_harnest_payload_id")
-        if not isinstance(payload_id, str) or not payload_id:
-            raise TaskRuntimeError("idempotent task payload reference is invalid")
-        return int(jobs[0].id), payload_id
-
-    async def status(self, handle: TaskHandle) -> str:
-        """Return one native status without selecting or filtering jobs in memory."""
-
-        self._require_handle(handle)
-        self._require_ready()
-        try:
-            status = await self._app.job_manager.get_job_status_async(int(handle.id))
-        except Exception as error:
-            raise TaskRuntimeError(
-                f"task status failed with {type(error).__name__}"
-            ) from None
-        value = getattr(status, "value", status)
-        return str(value)
 
     async def result(self, handle: TaskHandle) -> Any:
         """Return persisted output or enter the shared native continuation path."""
@@ -701,27 +222,6 @@ class TaskRuntimeManager:
                 f"task result failed: {error.code}"
             ) from None
 
-    async def cancel(self, handle: TaskHandle) -> bool:
-        """Request cancellation for queued or currently executing async work."""
-
-        self._require_handle(handle)
-        self._require_ready()
-        try:
-            cancelled = await self._app.job_manager.cancel_job_by_id_async(
-                int(handle.id), abort=True
-            )
-        except Exception as error:
-            _audit("cancel", handle._trigger, "failed")
-            raise TaskRuntimeError(
-                f"task cancellation failed with {type(error).__name__}"
-            ) from None
-        _audit("cancel", handle._trigger, "committed" if cancelled else "unchanged")
-        if cancelled:
-            outcome = await self._persist_failure(
-                handle.task_name, handle._payload_id, _CANCELLED
-            )
-            await self._publish_outcome(handle._payload_id, outcome)
-        return bool(cancelled)
 
     async def _cancel_provider_wait(
         self, pending: ProviderPendingContinuation
@@ -745,35 +245,14 @@ class TaskRuntimeManager:
         except Exception as error:
             # The native transaction already made cancellation durable. Startup
             # reconciliation will converge a callback race or store outage.
-            _audit("cancel", "agent", "failed")
+            self._audit_runtime("cancel", "agent", "failed")
             raise TaskRuntimeError(
                 "durable task cancellation failed with "
                 f"{type(error).__name__}"
             ) from None
-        _audit("cancel", "agent", "committed")
+        self._audit_runtime("cancel", "agent", "committed")
         return True
 
-    async def _cancel_payload_job(self, payload_id: str) -> bool:
-        """Atomically stop native execution and erase its private task payload."""
-
-        self._require_ready()
-        try:
-            rows = await self._app.connector.execute_query_all_async(
-                query=_CANCEL_PAYLOAD_JOB_SQL,
-                payload_id=payload_id,
-            )
-        except Exception as error:
-            raise TaskRuntimeError(
-                f"task cancellation failed with {type(error).__name__}"
-            ) from None
-        if len(rows) > 1:
-            raise TaskRuntimeError("task cancellation matched multiple native jobs")
-        if rows:
-            return True
-        # A retry after the queue transaction committed must still be able to
-        # finish the separate checkpoint-store cancellation step.
-        outcome = await self._read_provider_outcome(payload_id)
-        return outcome == ("failed", _CANCELLED)
 
     async def reconcile_continuations(self) -> None:
         """Converge retained task outcomes after callbacks or replicas restart."""
@@ -815,60 +294,6 @@ class TaskRuntimeManager:
         except Exception:
             self._audit_runtime("result.reconcile", "agent", "failed")
 
-    async def _read_provider_outcome(
-        self, payload_id: str
-    ) -> tuple[str, Any] | None:
-        """Read a provider-indexed outcome without requiring an in-memory handle."""
-
-        try:
-            row = await self._app.connector.execute_query_one_async(
-                query=_GET_PAYLOAD_OUTCOME_SQL,
-                payload_id=payload_id,
-            )
-        except Exception as error:
-            # Connector implementations use lookup failures for an absent row.
-            if _is_no_result(self._backend, error):
-                return None
-            raise TaskRuntimeError(
-                f"task result read failed with {type(error).__name__}"
-            ) from None
-        return _validated_outcome(row)
-
-    async def _execute(
-        self, compiled: CompiledTask, payload_id: str, job_context: Any
-    ) -> None:
-        """Restore safe invocation capabilities around one authored callable."""
-
-        arguments, snapshot, agent_permissions, trigger = await self._get_payload(
-            compiled, payload_id
-        )
-        try:
-            result = await self._call_authored(
-                compiled,
-                arguments,
-                snapshot,
-                agent_permissions,
-                payload_id=payload_id,
-                trigger=trigger,
-            )
-        except asyncio.CancelledError:
-            _audit("execute", trigger, "cancelled")
-            raise
-        except Exception as error:
-            if _is_final_attempt(job_context, compiled.max_retries):
-                outcome = await self._persist_failure(
-                    compiled.name, payload_id, _FAILED
-                )
-                await self._publish_outcome(payload_id, outcome)
-            _audit("execute", trigger, "failed")
-            raise TaskExecutionError(
-                f"task execution failed with {type(error).__name__}"
-            ) from None
-        outcome = await self._persist_result(compiled.name, payload_id, result)
-        # Continuation delivery is recoverable from the retained task row, so a
-        # callback outage must not rerun an already-successful authored effect.
-        await self._publish_outcome(payload_id, outcome)
-        _audit("execute", trigger, "committed")
 
     async def _call_authored(
         self,
@@ -953,6 +378,8 @@ class TaskRuntimeManager:
             resources=resources,
             asset_stores=capabilities.asset_stores,
             custom_stores=capabilities.custom_stores,
+            memory_store=capabilities.memory_store,
+            memory_application_id=self._application.name,
             skill_registry=capabilities.skill_registry,
             sandbox_registry=capabilities.sandbox_registry,
             extension_bindings=bindings,
@@ -974,122 +401,6 @@ class TaskRuntimeManager:
             else _activate_credential_provider(provider)
         )
 
-    async def _insert_payload(
-        self,
-        compiled: CompiledTask,
-        payload_id: str,
-        arguments: Mapping[str, Any],
-        snapshot: Mapping[str, Any] | None,
-        agent_permissions: frozenset[str] | None,
-        *,
-        trigger: str,
-        connection: Any,
-    ) -> bool:
-        """Store private content outside Procrastinate's argument-bearing logs."""
-
-        try:
-            rows = await self._app.connector.execute_query_all_async_with_connection(
-                connection,
-                query=_INSERT_PAYLOAD_SQL,
-                payload_id=payload_id,
-                task_name=compiled.name,
-                arguments=dict(arguments),
-                invocation=None if snapshot is None else dict(snapshot),
-                agent_permissions=(
-                    None if agent_permissions is None else sorted(agent_permissions)
-                ),
-                trigger=trigger,
-            )
-        except Exception as error:
-            raise TaskRuntimeError(
-                f"task payload persistence failed with {type(error).__name__}"
-            ) from None
-        if len(rows) > 1:
-            raise TaskRuntimeError("task payload insert returned an invalid result")
-        return bool(rows)
-
-    async def _get_payload(
-        self, compiled: CompiledTask, payload_id: str
-    ) -> tuple[
-        dict[str, Any], Mapping[str, Any] | None, frozenset[str] | None, str
-    ]:
-        """Read one task-owned payload with its stable task-name predicate."""
-
-        try:
-            row = await self._app.connector.execute_query_one_async(
-                query=_GET_PAYLOAD_SQL,
-                payload_id=payload_id,
-                task_name=compiled.name,
-            )
-            arguments = safe_task_arguments(row["arguments"])
-            snapshot = _validated_snapshot(row.get("invocation"))
-            agent_permissions = _validated_agent_permissions(
-                row.get("agent_permissions")
-            )
-            trigger = _validated_trigger(row.get("trigger", "agent"))
-        except Exception as error:
-            raise TaskRuntimeError(
-                f"task payload read failed with {type(error).__name__}"
-            ) from None
-        return arguments, snapshot, agent_permissions, trigger
-
-    async def _read_outcome(self, handle: TaskHandle) -> tuple[str, Any]:
-        """Read one task result through its payload and compiled-name predicates."""
-
-        try:
-            row = await self._app.connector.execute_query_one_async(
-                query=_GET_PAYLOAD_SQL,
-                payload_id=handle._payload_id,
-                task_name=handle.task_name,
-            )
-            return _validated_outcome(row)
-        except Exception as error:
-            if isinstance(error, TaskExecutionError):
-                raise
-            raise TaskRuntimeError(
-                f"task result read failed with {type(error).__name__}"
-            ) from None
-
-    async def _persist_result(
-        self, task_name: str, payload_id: str, result: Any
-    ) -> tuple[str, Any]:
-        """Commit one JSON-safe result before acknowledging worker success."""
-
-        envelope = {"value": safe_task_result(result)}
-        await self._update_outcome(
-            _COMPLETE_PAYLOAD_SQL,
-            payload_id=payload_id,
-            task_name=task_name,
-            result=envelope,
-        )
-        return "completed", envelope["value"]
-
-    async def _persist_failure(
-        self, task_name: str, payload_id: str, failure_code: str
-    ) -> tuple[str, Any]:
-        """Commit a payload-free terminal code before notifying a waiter."""
-
-        await self._update_outcome(
-            _FAIL_PAYLOAD_SQL,
-            payload_id=payload_id,
-            task_name=task_name,
-            failure_code=failure_code,
-        )
-        return "failed", failure_code
-
-    async def _update_outcome(self, query: str, **values: Any) -> None:
-        """Apply one pending-only outcome transition with a database predicate."""
-
-        try:
-            rows = await self._app.connector.execute_query_all_async(
-                query=query, **values
-            )
-        except Exception as error:
-            raise TaskRuntimeError(
-                f"task result persistence failed with {type(error).__name__}"
-            ) from None
-        if len(rows) != 1:
-            raise TaskRuntimeError("task result transition did not own a pending row")
 
     async def _publish_outcome(
         self, payload_id: str, outcome: tuple[str, Any]
@@ -1111,15 +422,6 @@ class TaskRuntimeManager:
         except Exception:
             self._audit_runtime("result.notify", "agent", "failed")
 
-    async def _delete_payload_quietly(self, payload_id: str) -> None:
-        """Best-effort rollback keeps the original queue failure authoritative."""
-
-        try:
-            await self._app.connector.execute_query_async(
-                query=_DELETE_PAYLOAD_SQL, payload_id=payload_id
-            )
-        except Exception:
-            return
 
     def _compiled_for(self, task_value: TaskCallable[Any]) -> CompiledTask:
         """Resolve only a callable bound by this compiler-owned runtime."""
@@ -1129,16 +431,6 @@ class TaskRuntimeManager:
                 return compiled
         raise TaskRuntimeError("task callable does not belong to this runtime")
 
-    def _handle(
-        self,
-        compiled: CompiledTask,
-        job_id: int,
-        payload_id: str,
-        trigger: str,
-    ) -> TaskHandle:
-        """Issue an opaque handle tied to this runtime and private payload."""
-
-        return TaskHandle(str(job_id), compiled.name, self, payload_id, trigger)
 
     def _require_handle(self, handle: TaskHandle) -> None:
         """Reject forged or cross-runtime handles before native database access."""
@@ -1148,13 +440,6 @@ class TaskRuntimeManager:
         if handle.task_name not in self._task_by_name:
             raise TaskRuntimeError("task handle references an unknown task")
 
-    def _require_ready(self) -> None:
-        """Surface worker termination before accepting more task operations."""
-
-        if self._state != "started" or self._app is None:
-            raise TaskRuntimeError("task runtime is not started")
-        if self._worker_failure is not None:
-            raise self._worker_failure
 
     def _worker_done(self, worker: asyncio.Task[Any]) -> None:
         """Consume terminal worker state so background failures are never lost."""
@@ -1166,85 +451,15 @@ class TaskRuntimeManager:
         self._worker_failure = TaskRuntimeError(f"task worker stopped {suffix}")
         self._audit_runtime("worker", "agent", "failed")
 
-    def _audit_runtime(self, operation: str, trigger: str, outcome: str) -> None:
-        """Let shared continuation paths preserve their actual runtime identity."""
-
-        _audit(operation, trigger, outcome)
-
-    async def close(self) -> None:
-        """Stop queue execution before releasing authored runtime capabilities."""
-
-        failure: BaseException | None = None
-        async with self._lock:
-            if self._state == "closed":
-                return
-            self._state = "closing"
-            failure = await _cleanup_failure(self._stop_worker)
-            for compiled in self._tasks:
-                release_task_runtime(compiled.authored, self)
-            self._dynamic_cron.close()
-            app = self._app
-            self._app = None
-            if app is not None:
-                try:
-                    await app.close_async()
-                except BaseException as error:
-                    if failure is None:
-                        failure = error
-                    else:
-                        add_exception_note(
-                            failure,
-                            "task connector cleanup also failed with "
-                            f"{type(error).__name__}",
-                        )
-            self._state = "closed"
-        if failure is not None:
-            if isinstance(failure, asyncio.CancelledError):
-                raise failure
-            raise TaskRuntimeError(
-                "task runtime cleanup failed with "
-                f"{type(failure).__name__}"
-            ) from None
-
-    async def _unwind_start(self) -> None:
-        """Release every task binding and connector acquired before startup failed."""
-
-        await _cleanup_failure(self._stop_worker)
-        for compiled in self._tasks:
-            release_task_runtime(compiled.authored, self)
-        self._dynamic_cron.close()
-        app = self._app
-        self._app = None
-        if app is not None:
-            try:
-                await app.close_async()
-            except Exception:
-                return
-
-    async def _stop_worker(self) -> None:
-        """Stop the owned native loop before closing its PostgreSQL connector."""
-
-        worker = self._worker
-        controller = self._worker_controller
-        self._worker = None
-        self._worker_controller = None
-        if worker is None:
-            return
-        if controller is None:
-            worker.cancel()
-        else:
-            controller.stop()
-        await _await_cancelled(worker)
-
 
 class TaskRuntimeDriver(RuntimeDriver):
     """Start queue workers after inner capabilities and stop them before teardown."""
 
-    def __init__(self, driver: RuntimeDriver, manager: TaskRuntimeManager) -> None:
+    def __init__(self, driver: RuntimeDriver, manager: TaskExecutionRuntime) -> None:
         """Retain explicit ownership without importing the optional backend."""
 
-        if not isinstance(manager, TaskRuntimeManager):
-            raise TypeError("manager must be TaskRuntimeManager")
+        if not isinstance(manager, TaskExecutionRuntime):
+            raise TypeError("manager must be a storage-backed task runtime")
         self._driver = driver
         self._manager = manager
         # Tasks must re-enter this outer wrapper so storage, plugins, context,
@@ -1449,48 +664,6 @@ class TaskRuntimeDriver(RuntimeDriver):
             raise failure
 
 
-async def _ensure_procrastinate_schema(app: Any) -> None:
-    """Apply the native schema once, tolerating a concurrent replica winner."""
-
-    if await app.check_connection_async():
-        return
-    try:
-        await app.schema_manager.apply_schema_async()
-    except Exception:
-        # Multiple replicas may observe an empty database simultaneously. Only
-        # accept a failed migration when the winner left a complete schema.
-        if not await app.check_connection_async():
-            raise
-
-
-def _task_database_dsn(application: Any) -> str:
-    """Resolve an explicit override or one unambiguous shared Postgres store."""
-
-    configured = os.environ.get("HARNEST_TASK_DATABASE_URL")
-    if configured is not None:
-        if not configured.strip():
-            raise TaskRuntimeError("HARNEST_TASK_DATABASE_URL cannot be empty")
-        return configured
-    from .store_postgres import PostgresStore
-
-    candidates = tuple(
-        resource
-        for resource in (
-            application.runtime_capabilities.storage_registry.owned_resources()
-        )
-        if isinstance(resource, PostgresStore)
-    )
-    if len(candidates) == 1:
-        return candidates[0]._task_database_dsn()
-    if not candidates:
-        raise TaskRuntimeError(
-            "compiled tasks require HARNEST_TASK_DATABASE_URL or a PostgresStore"
-        )
-    raise TaskRuntimeError(
-        "multiple PostgresStore resources require HARNEST_TASK_DATABASE_URL"
-    )
-
-
 def _automation_identity(value: Any) -> str:
     """Validate the non-secret owner used by scheduler-triggered task sessions."""
 
@@ -1592,14 +765,6 @@ def _validated_snapshot(value: Any) -> Mapping[str, Any] | None:
     return MappingProxyType(snapshot)
 
 
-def _validated_trigger(value: Any) -> str:
-    """Accept only bounded task origins persisted by this runtime."""
-
-    if value not in {"agent", "user", "cron"}:
-        raise ValueError("task payload trigger is invalid")
-    return value
-
-
 async def _resolve_task_call(
     function: Any, arguments: Mapping[str, Any]
 ) -> Any:
@@ -1625,7 +790,7 @@ def _native_idempotency_key(
     if native is None or snapshot is None:
         return None
     # Including safe arguments distinguishes separate submissions from one tool
-    # without persisting their values in Procrastinate's queueing lock or logs.
+    # without persisting their values in the idempotency key or logs.
     encoded = json.dumps(
         dict(arguments), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -1637,32 +802,6 @@ def _native_idempotency_key(
         run_id=snapshot["invocation_id"],
         provider=_CONTINUATION_PROVIDER,
         capability=f"task.defer:{compiled.name}:{argument_key}",
-    )
-
-
-def _validated_outcome(row: Mapping[str, Any]) -> tuple[str, Any]:
-    """Validate private task state before a result crosses into authored code."""
-
-    status = row.get("status", "pending")
-    if status == "pending":
-        return "pending", None
-    if status == "completed":
-        result = row.get("result")
-        if not isinstance(result, Mapping) or set(result) != {"value"}:
-            raise TaskRuntimeError("persisted task result envelope is invalid")
-        return "completed", safe_task_result(result["value"])
-    failure = row.get("failure_code")
-    if status != "failed" or failure not in {_FAILED, _CANCELLED}:
-        raise TaskRuntimeError("persisted task result state is invalid")
-    return "failed", failure
-
-
-def _is_no_result(backend: Any, error: BaseException) -> bool:
-    """Recognize an absent connector row without importing the lazy backend."""
-
-    no_result = getattr(getattr(backend, "exceptions", None), "NoResult", None)
-    return isinstance(error, LookupError) or (
-        isinstance(no_result, type) and isinstance(error, no_result)
     )
 
 
@@ -1682,59 +821,6 @@ def _validate_continuation_result(value: Any) -> Any:
     return safe_task_result(value["value"])
 
 
-def _is_final_attempt(job_context: Any, max_retries: int) -> bool:
-    """Match Procrastinate's retry decision before publishing terminal failure."""
-
-    job = getattr(job_context, "job", None)
-    attempts = getattr(job, "attempts", None)
-    if type(attempts) is not int or attempts < 0:
-        raise TaskRuntimeError("task worker attempt metadata is invalid")
-    return attempts >= max_retries
-
-
-def _queueing_lock(task_name: str, idempotency_key: str | None) -> str | None:
-    """Hash caller keys so neither native rows nor logs contain customer values."""
-
-    if idempotency_key is None:
-        return None
-    digest = hashlib.sha256(
-        f"{task_name}\0{idempotency_key}".encode("utf-8")
-    ).hexdigest()
-    return f"harnest:{digest}"
-
-
-def _payload_id(task_name: str, queueing_lock: str | None) -> str:
-    """Use stable private identity only when the submission is idempotent."""
-
-    if queueing_lock is None:
-        return uuid.uuid4().hex
-    return hashlib.sha256(
-        f"{task_name}\0{queueing_lock}".encode("utf-8")
-    ).hexdigest()
-
-
-def _load_procrastinate() -> Any:
-    """Import the compiler-selected backend only for applications with tasks."""
-
-    try:
-        return importlib.import_module("procrastinate")
-    except ImportError:
-        raise TaskRuntimeError(
-            "compiled tasks require the Procrastinate runtime dependency"
-        ) from None
-
-
-async def _await_cancelled(task: asyncio.Task[Any]) -> None:
-    """Consume worker cancellation without suppressing an earlier startup failure."""
-
-    try:
-        await task
-    except asyncio.CancelledError:
-        return
-    except Exception:
-        return
-
-
 async def _cleanup_failure(callback: Any) -> BaseException | None:
     """Capture cleanup failures so all owners still receive their close call."""
 
@@ -1745,31 +831,4 @@ async def _cleanup_failure(callback: Any) -> BaseException | None:
     return None
 
 
-def _audit(operation: str, trigger: str, outcome: str) -> None:
-    """Write one payload-free user/agent mutation signal through OTEL logging."""
-
-    event = f"task.{operation}"
-    _AUDIT.info(
-        event,
-        operation=event,
-        trigger=trigger,
-        outcome=outcome,
-        backend="procrastinate",
-    )
-
-
-def _cron_audit(operation: str, schedule: str, outcome: str) -> None:
-    """Write a payload-free cron mutation signal with stable schedule identity."""
-
-    event = f"task.cron.{operation}"
-    _AUDIT.info(
-        event,
-        operation=event,
-        trigger="cron",
-        outcome=outcome,
-        backend="procrastinate",
-        schedule=schedule,
-    )
-
-
-__all__ = ["TaskRuntimeDriver", "TaskRuntimeError", "TaskRuntimeManager"]
+__all__ = ["TaskRuntimeDriver", "TaskRuntimeError", "TaskExecutionRuntime"]

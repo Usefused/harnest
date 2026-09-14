@@ -40,6 +40,7 @@ def build_runtime_pipeline(
         context_values=capabilities.context_values,
         asset_stores=capabilities.asset_stores,
         custom_stores=capabilities.custom_stores,
+        memory_store=capabilities.memory_store,
         skill_registry=capabilities.skill_registry,
         sandbox_registry=capabilities.sandbox_registry,
         session_store=session_store,
@@ -79,6 +80,7 @@ def _with_storage(
         or capabilities.custom_stores
         or capabilities.task_store is not None
         or capabilities.cron_store is not None
+        or capabilities.memory_store is not None
     ):
         return driver
     return StorageRuntimeDriver(

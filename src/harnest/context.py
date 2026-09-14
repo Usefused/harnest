@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 if TYPE_CHECKING:
     from .context_session import SessionContext, SessionDataError
     from .context_storage import StorageContext
+    from .context_memory import MemoryContext
     from .context_assets import ScopedAssets
     from .context_agent import (
         AgentContinuationUnsupportedError, AgentInvocationTimeout,
@@ -79,6 +80,8 @@ class AgentContext:
     _resources: Mapping[str, Any] = field(repr=False)
     _asset_stores: Mapping[str, Any] = field(repr=False)
     _custom_stores: Mapping[str, Any] = field(repr=False)
+    _memory_store: Any = field(repr=False)
+    _memory_application_id: str = field(repr=False)
     _skill_registry: Any = field(repr=False)
     _sandbox_registry: Any = field(repr=False)
     _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
@@ -219,6 +222,12 @@ class _ContextAccess:
         return storage
 
     @property
+    def memory(self) -> "MemoryContext":
+        """Return explicit cross-session memory bound to this invocation's owner."""
+        from .context_memory import MemoryContext
+        return MemoryContext(self.current())
+
+    @property
     def mcp(self) -> Any:
         """Return governed MCP access when the runtime installed a dispatcher."""
 
@@ -314,6 +323,8 @@ def create_agent_context(
     resources: Mapping[str, Any],
     asset_stores: Mapping[str, Any] | None = None,
     custom_stores: Mapping[str, Any] | None = None,
+    memory_store: Any = None,
+    memory_application_id: str | None = None,
     skill_registry: Any | None = None,
     sandbox_registry: Any | None = None,
     extension_bindings: Mapping[str, Any] | None = None,
@@ -350,6 +361,8 @@ def create_agent_context(
         _resources=MappingProxyType(registry),
         _asset_stores=MappingProxyType(dict(asset_stores or {})),
         _custom_stores=MappingProxyType(dict(custom_stores or {})),
+        _memory_store=memory_store,
+        _memory_application_id=agent_name if memory_application_id is None else memory_application_id,
         _skill_registry=skills,
         _sandbox_registry=sandboxes,
         _skill_pins={},
@@ -376,6 +389,9 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _resources=active._resources,
         _asset_stores=active._asset_stores,
         _custom_stores=active._custom_stores,
+        _memory_store=active._memory_store,
+        # SubAgent display names must not change the cross-session owner scope.
+        _memory_application_id=active._memory_application_id,
         _skill_registry=active._skill_registry,
         _sandbox_registry=active._sandbox_registry,
         _skill_pins=active._skill_pins,
@@ -482,6 +498,7 @@ def resource(name: str, expected_type: type[Any] | None = None) -> Any:
 _PUBLIC_CONTRACTS = {
     "SessionContext": "context_session", "SessionDataError": "context_session",
     "StorageContext": "context_storage", "ScopedAssets": "context_assets",
+    "MemoryContext": "context_memory",
     **dict.fromkeys((
         "AgentContinuationUnsupportedError", "AgentInvocationTimeout",
         "AgentInvocationUnavailableError", "AgentPendingResponse", "AgentResponse",
@@ -501,6 +518,7 @@ _ACCESS_MEMBERS = frozenset(
         "is_root",
         "mcp",
         "metadata",
+        "memory",
         "parent_agent_name",
         "sandboxes",
         "session",

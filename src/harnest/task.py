@@ -147,8 +147,9 @@ def task(
 ) -> Any:
     """Mark a callable for queue, scheduling, and retry execution.
 
-    Procrastinate is intentionally absent from this module. The compiler adds
-    and the runtime imports that backend only when a ``tasks/`` export exists.
+    Deferred execution uses Harnest workers and the application's configured
+    ``lifecycle.storage.tasks`` provider. Durable storage makes queued work
+    recoverable across restarts; importing this API requires no queue library.
     Direct calls remain ordinary Python calls; ``defer`` is queue execution and
     never promises restoration of a suspended Python frame.
     """

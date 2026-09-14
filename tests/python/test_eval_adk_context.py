@@ -297,7 +297,7 @@ class ADKEvalContextTests(unittest.TestCase):
             return context.session_id
 
         application = _application(audit_session, tasks=(compiled,))
-        with patch("harnest.runtime_task.TaskRuntimeManager",
+        with patch("harnest.runtime_task_store.ProviderTaskRuntimeManager",
                    side_effect=AssertionError("evaluation must not start task workers")):
             status, _ = self._cli(application, _eval_set("audit_session"))
         self.assertEqual(status, 0)

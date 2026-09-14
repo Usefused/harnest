@@ -278,6 +278,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         context_values: Sequence[ContextValue] = (),
         asset_stores: Mapping[str, Any] | None = None,
         custom_stores: Mapping[str, Any] | None = None,
+        memory_store: Any = None,
         skill_registry: SkillRegistry | None = None,
         sandbox_registry: Any | None = None,
         session_store: SessionStore | None = None,
@@ -300,6 +301,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         self._context_values = values
         self._asset_stores = dict(asset_stores or {})
         self._custom_stores = dict(custom_stores or {})
+        self._memory_store = memory_store
         self._skill_registry = skill_registry or SkillRegistry()
         from .context_sandboxes import SandboxRegistry
 
@@ -701,6 +703,8 @@ class LifecycleRuntimeDriver(RuntimeDriver):
             resources=self._application_resources,
             asset_stores=self._asset_stores,
             custom_stores=self._custom_stores,
+            memory_store=self._memory_store,
+            memory_application_id=self.info.id,
             skill_registry=self._skill_registry,
             sandbox_registry=self._sandbox_registry,
             extension_bindings=(

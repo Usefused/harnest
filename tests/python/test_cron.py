@@ -447,7 +447,7 @@ class CronCompilerTests(unittest.TestCase):
         self.assertNotIn("arguments", first["crons"][0])
         self.assertNotIn("manifest-secret", json.dumps(first))
         self.assertNotEqual(first["digest"], second["digest"])
-        self.assertEqual(first["runtimeDependencies"], ["procrastinate==3.9.0"])
+        self.assertEqual(first["runtimeDependencies"], [])
 
     @staticmethod
     def _write_task(root: Path) -> None:

@@ -38,12 +38,13 @@ from .skills import SkillSource
 from .storage_registry import CustomStorage, StorageRegistry
 from .task_storage import TaskStore
 from .cron_storage import CronStore
+from .memory import MemoryStore
 
 
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _IGNORED_NAMES = frozenset({"__init__.py", ".DS_Store", "__pycache__"})
 _STORAGE_PHASES = frozenset(
-    {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store"}
+    {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store", "memory_store"}
 )
 _ROOT_EXTENSION_ORIGIN = "root/extensions"
 _PLUGIN_EXTENSION_ORIGIN = re.compile(
@@ -205,6 +206,7 @@ def _create_storage_registry(
         custom=_named_storage_values(custom, values),
         tasks=_optional_storage_value(storage, "task_store", values),
         cron=_optional_storage_value(storage, "cron_store", values),
+        memory=_optional_storage_value(storage, "memory_store", values),
     )
     return registry, storage, remaining
 
@@ -266,7 +268,7 @@ def _storage_factory_value(
 def _validate_storage_value(listener: LifecycleListener, value: Any) -> None:
     """Validate repeatable storage roles without duplicating instantiation logic."""
 
-    contracts = {"task_store": TaskStore, "cron_store": CronStore}
+    contracts = {"task_store": TaskStore, "cron_store": CronStore, "memory_store": MemoryStore}
     contract = contracts.get(listener.phase)
     if contract is not None and not isinstance(value, contract):
         raise ExtensionDiscoveryError(
@@ -309,6 +311,8 @@ def _storage_value_for_listener(
         return registry.tasks
     if listener.phase == "cron_store":
         return registry.cron
+    if listener.phase == "memory_store":
+        return registry.memory
     mapping = registry.assets if listener.phase == "asset_store" else registry.custom
     return mapping[listener.registration_name or "default"]
 
@@ -703,6 +707,7 @@ def _validate_context_provider(
         "custom_store",
         "task_store",
         "cron_store",
+        "memory_store",
     }
     if phase not in allowed:
         raise ExtensionDiscoveryError(
@@ -725,6 +730,7 @@ def _validate_listener_signature(
         "custom_store",
         "task_store",
         "cron_store",
+        "memory_store",
         "credential_provider",
         "http_routes",
         "output_policy",

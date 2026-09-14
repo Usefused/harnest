@@ -21,6 +21,7 @@
     "lifecycle",
     "logging",
     "mcp",
+    "memory",
     "model",
     "orchestrator",
     "output",
@@ -177,6 +178,7 @@
     "ContextResourceError",
     "ContextUnavailableError",
     "LocalAgentRuntime",
+    "MemoryContext",
     "ScopedAssets",
     "SessionContext",
     "SessionDataError",
@@ -468,6 +470,7 @@
   ],
   "harnest.testing": [
     "AgentTestError",
+    "MemoryStoreConformanceMixin",
     "SmokeClient",
     "TaskStoreConformanceMixin",
     "run_agent_tests"
@@ -489,10 +492,22 @@
     "traced"
   ],
   "harnest_postgres": [
+    "PostgresMemoryStore",
     "PostgresStore",
     "PostgresTaskStore"
   ],
   "harnest_redis": [
+    "RedisMemoryStore",
     "RedisStore"
+  ],
+  "harnest.memory": [
+    "InMemoryStore",
+    "MemoryCleanupPage",
+    "MemoryConflictError",
+    "MemoryPage",
+    "MemoryRecord",
+    "MemoryScope",
+    "MemoryStorageError",
+    "MemoryStore"
   ]
 }

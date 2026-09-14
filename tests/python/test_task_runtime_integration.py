@@ -17,8 +17,6 @@ from fastapi.testclient import TestClient
 from google.protobuf.json_format import MessageToDict
 
 from harnest.application import CompiledApplication
-from harnest import context, cron
-from harnest.agent import tool
 from harnest.agent_principal import (
     AgentRuntimePrincipal,
     activate_agent_principal,
@@ -27,7 +25,6 @@ from harnest.agent_principal import (
     revoke_agent_principal,
 )
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.cron import CompiledCron
 from harnest.durable import NativeResumeInput, ResumeArtifact, native_durable_call
 from harnest.external_continuation import ExternalContinuationRuntime
 from harnest.external_continuation_driver import ExternalContinuationRuntimeDriver
@@ -37,9 +34,9 @@ from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.runtime_pipeline import build_runtime_pipeline
 from harnest.runtime_task import (
     TaskRuntimeDriver,
-    TaskRuntimeManager,
 )
-from harnest.store import PostgresStore
+from harnest.runtime_task_store import ProviderTaskRuntimeManager
+from harnest_postgres import PostgresStore
 from harnest.task import CompiledTask, registration_for, task
 
 from test_neutral_runtime import FakeDriver
@@ -143,27 +140,6 @@ class _A2ADurableTaskDriver(FakeDriver):
         )
 
 
-class _DynamicCronToolDriver(FakeDriver):
-    """Invoke one real authored tool inside the normal managed context wrapper."""
-
-    def __init__(self, callback) -> None:
-        super().__init__()
-        self.info = replace(self.info, framework="langgraph")
-        self.callback = callback
-
-    async def invoke(self, request: InvocationRequest) -> InvocationResult:
-        """Let the test select create or cancel without bypassing tool governance."""
-
-        value = await self.callback(request.input)
-        return InvocationResult(
-            text=str(value),
-            events=(),
-            result=value,
-            session_id=request.session_id,
-            metadata=request.metadata,
-        )
-
-
 def _result_events(value: object) -> tuple[dict[str, object], ...]:
     """Build the stable public result projected back into the A2A task."""
 
@@ -221,6 +197,8 @@ def _compiled_a2a_application(
         target=object(),
         tasks=(compiled,),
         checkpointer=store,
+        task_store=store,
+        cron_store=store,
     )
 
 
@@ -257,7 +235,7 @@ def _a2a_task_app(
     pipeline = ExternalContinuationRuntimeDriver(pipeline, continuations)
     pipeline = TaskRuntimeDriver(
         pipeline,
-        TaskRuntimeManager(application, continuation_runtime=continuations),
+        ProviderTaskRuntimeManager(application, continuation_runtime=continuations, manage_storage=False),
     )
     continuations.bind_driver(pipeline)
     app = create_neutral_app(
@@ -337,18 +315,15 @@ async def _task_database_evidence(task_name: str) -> dict[str, object]:
     try:
         row = await connection.fetchrow(
             """
-            SELECT payload.payload_id,
+            SELECT payload.job_id AS payload_id,
                    payload.status AS payload_status,
                    payload.failure_code,
                    payload.arguments::text AS arguments,
                    payload.invocation::text AS invocation,
                    payload.agent_permissions::text AS agent_permissions,
-                   job.id AS job_id,
-                   job.status::text AS job_status
-            FROM harnest_task_payloads AS payload
-            JOIN procrastinate_jobs AS job
-              ON job.task_name=payload.task_name
-             AND job.args->>'_harnest_payload_id'=payload.payload_id
+                   payload.job_id,
+                   payload.status AS job_status
+            FROM harnest_durable_tasks AS payload
             WHERE payload.task_name=$1
             ORDER BY payload.created_at DESC
             LIMIT 1
@@ -388,211 +363,9 @@ async def _continuation_database_evidence(run_id: str) -> dict[str, object]:
         await connection.close()
 
 
-async def _dynamic_cron_database_evidence(
-    application_id: str, schedule_id: str, task_name: str
-) -> dict[str, object]:
-    """Wait for the real worker and return only ownership and occurrence state."""
-
-    connection = await asyncpg.connect(_POSTGRES_DSN)
-    try:
-        for _attempt in range(100):
-            row = await connection.fetchrow(
-                """
-                SELECT cron.user_id, cron.status,
-                       count(payload.payload_id)::int AS occurrence_count,
-                       count(payload.payload_id) FILTER (
-                           WHERE payload.status='completed'
-                       )::int AS completed_count
-                FROM harnest_cron_jobs AS cron
-                LEFT JOIN harnest_task_payloads AS payload
-                  ON payload.task_name=$3 AND payload.trigger='cron'
-                WHERE cron.application_id=$1 AND cron.schedule_id=$2
-                GROUP BY cron.user_id, cron.status
-                """,
-                application_id,
-                schedule_id,
-                task_name,
-            )
-            if row is not None and row["completed_count"]:
-                return dict(row)
-            await asyncio.sleep(0.05)
-        raise AssertionError("dynamic cron occurrence did not complete")
-    finally:
-        await connection.close()
-
-
 @unittest.skipUnless(_POSTGRES_DSN, "requires HARNEST_TEST_POSTGRES_DSN")
-class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_tool_creates_gets_and_cancels_user_owned_dynamic_cron(self):
-        """Cross Tool, managed context, PostgreSQL, scheduler, and worker boundaries."""
+class ProviderTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
-        completed = asyncio.Event()
-        observed = []
-
-        @task(queue="integration")
-        async def deliver(value):
-            """Record the identity reconstructed for a dynamic occurrence."""
-
-            principal = active_agent_principal()
-            observed.append(
-                (
-                    value,
-                    context.user_id,
-                    None if principal is None else principal.permissions,
-                )
-            )
-            completed.set()
-
-        definition = registration_for(deliver)
-        assert definition is not None
-        unique = uuid.uuid4().hex
-        application_id = f"dynamic_cron_{unique}"
-        task_name = f"harnest.{application_id}.tasks.deliver"
-        compiled = CompiledTask(
-            name=task_name,
-            source="tasks/deliver.py",
-            definition=definition,
-            authored=deliver,
-        )
-        application = CompiledApplication(
-            name=application_id,
-            framework="langgraph",
-            mode="managed",
-            target=object(),
-            tasks=(compiled,),
-        )
-        created_id = None
-
-        @tool
-        async def manage_cron(action: str) -> dict[str, object]:
-            """Create or cancel the current user's integration schedule."""
-
-            nonlocal created_id
-            if action == "create":
-                job = await cron.create(
-                    key="weekly-report",
-                    expression="* 8 15 1 *",
-                    task=deliver,
-                    arguments={"value": "private-dynamic-value"},
-                )
-                created_id = job.id
-                return {"id": job.id, "count": len(await cron.list())}
-            assert created_id is not None
-            job = await cron.get(created_id)
-            assert job is not None
-            cancelled = await job.cancel()
-            return {"id": cancelled.id, "status": cancelled.status}
-
-        inner = _DynamicCronToolDriver(manage_cron)
-        pipeline = build_runtime_pipeline(
-            inner, application.runtime_capabilities, ()
-        )
-        manager = TaskRuntimeManager(application)
-        driver = TaskRuntimeDriver(pipeline, manager)
-        create_request = InvocationRequest(
-            input="create",
-            user_id="live-cron-user",
-            session_id=f"session-{unique}",
-            invocation_id=f"create-{unique}",
-            metadata={},
-            state_delta={},
-        )
-        try:
-            with patch.dict(
-                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
-            ):
-                created = await driver.invoke(create_request)
-                assert created_id is not None
-                timestamp = 1_800_000_000
-                await manager.cron_runtime.dispatch(timestamp)
-                await asyncio.wait_for(completed.wait(), timeout=10)
-                evidence = await _dynamic_cron_database_evidence(
-                    application_id, created_id, task_name
-                )
-                cancelled = await driver.invoke(
-                    replace(
-                        create_request,
-                        input="cancel",
-                        invocation_id=f"cancel-{unique}",
-                    )
-                )
-                await manager.cron_runtime.dispatch(timestamp + 60)
-                after_cancel = await _dynamic_cron_database_evidence(
-                    application_id, created_id, task_name
-                )
-            self.assertEqual(created.result["count"], 1)
-            self.assertEqual(cancelled.result["status"], "cancelled")
-            self.assertEqual(evidence["user_id"], "live-cron-user")
-            self.assertEqual(evidence["occurrence_count"], 1)
-            self.assertEqual(after_cancel["occurrence_count"], 1)
-            self.assertEqual(
-                observed,
-                [("private-dynamic-value", "live-cron-user", frozenset())],
-            )
-        finally:
-            await driver.close()
-
-    async def test_cron_dispatcher_commits_one_private_job_per_occurrence(self):
-        """Exercise cron idempotency and opaque payloads against real PostgreSQL."""
-
-        completed = asyncio.Event()
-
-        @task(queue="integration")
-        async def deliver(value):
-            """Deliver one scheduled integration payload."""
-
-            completed.set()
-            return value
-
-        definition = registration_for(deliver)
-        assert definition is not None
-        unique = uuid.uuid4().hex
-        compiled = CompiledTask(
-            name=f"harnest.integration_{unique}.tasks.deliver",
-            source="tasks/deliver.py",
-            definition=definition,
-            authored=deliver,
-        )
-        schedule = CompiledCron(
-            name=f"harnest.integration_{unique}.cron.daily",
-            source="cron/daily.py",
-            schedule="0 0 * * *",
-            timezone="UTC",
-            task=compiled,
-            arguments={"value": "private-cron-value"},
-        )
-        application = CompiledApplication(
-            name=f"integration_{unique}",
-            framework="langgraph",
-            mode="managed",
-            target=object(),
-            tasks=(compiled,),
-            crons=(schedule,),
-        )
-        manager = TaskRuntimeManager(application)
-        try:
-            with patch.dict(
-                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
-            ), self.assertLogs("procrastinate", level="INFO") as native_logs:
-                await manager.start()
-                await manager._enqueue_cron(schedule, 1_800_000_000)
-                await manager._enqueue_cron(schedule, 1_800_000_000)
-                await asyncio.wait_for(completed.wait(), timeout=10)
-                jobs = tuple(
-                    await manager._app.job_manager.list_jobs_async(
-                        task=compiled.name
-                    )
-                )
-                self.assertEqual(len(jobs), 1)
-                payload_id = jobs[0].task_kwargs["_harnest_payload_id"]
-                handle = manager._handle(
-                    compiled, int(jobs[0].id), payload_id, "cron"
-                )
-                await _wait_for_status(handle, "succeeded")
-            self.assertEqual(await handle.result(), "private-cron-value")
-            self.assertNotIn("private-cron-value", " ".join(native_logs.output))
-        finally:
-            await manager.close()
 
     async def test_real_worker_reconstructs_deferred_agent_permissions(self):
         """Carry invocation grants through PostgreSQL into a fresh worker scope."""
@@ -624,7 +397,8 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
             target=object(),
             tasks=(compiled,),
         )
-        manager = TaskRuntimeManager(application)
+        application = replace(application, task_store=PostgresStore(_POSTGRES_DSN))
+        manager = ProviderTaskRuntimeManager(application)
         context_value = create_agent_context(
             framework="langgraph",
             agent_name="integration",
@@ -639,14 +413,11 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         binding = create_agent_principal_binding(principal)
         try:
-            with patch.dict(
-                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
-            ):
-                await manager.start()
-                with activate_context(context_value), activate_agent_principal(binding):
-                    handle = await inspect_principal.defer()
-                await asyncio.wait_for(completed.wait(), timeout=10)
-                await _wait_for_status(handle, "succeeded")
+            await manager.start()
+            with activate_context(context_value), activate_agent_principal(binding):
+                handle = await inspect_principal.defer()
+            await asyncio.wait_for(completed.wait(), timeout=10)
+            await _wait_for_status(handle, "succeeded")
             self.assertEqual(observed, [principal.permissions])
         finally:
             revoke_agent_principal(binding)
@@ -654,7 +425,7 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
 
     async def test_real_worker_schedules_retries_and_hides_payload_from_logs(self):
-        """Exercise the native queue against Postgres without a model runtime."""
+        """Exercise Harnest workers against Postgres without a model runtime."""
 
         attempts = []
         completed = asyncio.Event()
@@ -685,12 +456,11 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
             target=object(),
             tasks=(compiled,),
         )
-        manager = TaskRuntimeManager(application)
+        application = replace(application, task_store=PostgresStore(_POSTGRES_DSN))
+        manager = ProviderTaskRuntimeManager(application)
         started = time.monotonic()
         try:
-            with patch.dict(
-                os.environ, {"HARNEST_TASK_DATABASE_URL": _POSTGRES_DSN}
-            ), self.assertLogs("procrastinate", level="INFO") as native_logs:
+            with self.assertLogs("harnest.agent.task.audit", level="INFO") as native_logs:
                 await manager.start()
                 handle = await deliver.defer("private-task-value", schedule_in=0.2)
                 await asyncio.wait_for(completed.wait(), timeout=10)
@@ -702,10 +472,10 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await handle.result(), {"delivered": "private-task-value"}
             )
             self.assertNotIn("private-task-value", " ".join(native_logs.output))
-            native_job = manager._app.job_manager
-            jobs = tuple(await native_job.list_jobs_async(id=int(handle.id)))
-            self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0].attempts, 2)
+            record = await application.task_store.get_task(
+                application_id=application.name, job_id=handle.id,
+            )
+            self.assertEqual(record.attempt, 2)
         finally:
             await manager.close()
 
@@ -713,10 +483,9 @@ class ProcrastinateTaskIntegrationTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_POSTGRES_DSN, "requires HARNEST_TEST_POSTGRES_DSN")
 class A2ADurableTaskIntegrationTests(unittest.TestCase):
     def test_completed_task_is_retrieved_by_a_fresh_a2a_replica(self):
-        """Cross A2A, Procrastinate, PostgreSQL, and a restarted app boundary."""
+        """Cross A2A, Harnest workers, PostgreSQL, and a restarted app boundary."""
 
-        # Native workers select by queue, not task name. Keep independent
-        # fixtures from claiming jobs whose callables they have not registered.
+        # Keep independent fixtures isolated even when run concurrently.
         unique = uuid.uuid4().hex
 
         @task(queue=f"a2a-{unique}")
@@ -808,15 +577,17 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(before["payload_status"], "pending")
-        self.assertEqual(before["job_status"], "todo")
+        self.assertEqual(before["job_status"], "pending")
         self.assertEqual(before_continuation["run_status"], "waiting")
         self.assertEqual(before_continuation["continuation_status"], "pending")
         self.assertEqual(cancelled.status_code, 200, cancelled.text)
         self.assertEqual(
             cancelled.json()["status"]["state"], "TASK_STATE_CANCELED"
         )
-        self.assertEqual(after["payload_status"], "failed")
-        self.assertEqual(after["failure_code"], "task_cancelled")
+        self.assertEqual(after["payload_status"], "cancelled")
+        # Cancellation has its own provider status; only execution failures
+        # populate failure_code. The continuation still receives task_cancelled.
+        self.assertIsNone(after["failure_code"])
         self.assertEqual(after["arguments"], "{}")
         self.assertIsNone(after["invocation"])
         self.assertIsNone(after["agent_permissions"])

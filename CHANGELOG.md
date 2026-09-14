@@ -4,6 +4,17 @@
 
 ### Features
 
+* Add explicit, async long-term memory under `harnest.memory`, `context.memory`,
+  and `lifecycle.storage.memory`. Support PostgreSQL, Redis, and custom providers
+  with application/user isolation, namespaces, literal text search, bounded
+  pagination, revision-fenced writes, expiry, deletion, and provenance. Memory
+  is opt-in: no automatic extraction, model calls, or prompt injection. Ship
+  provider conformance tests and connection-configuration documentation.
+  Preserve lossless Redis metadata, report uncertain write acknowledgements
+  without automatic replay, and provide trusted-provider-only namespace/user
+  erasure and bounded expiry cleanup. No cleanup HTTP routes or generated tools
+  are exposed. Verify model-selected tools and real database crash recovery.
+
 * Let Agent Desktop attach immutable Agent Plugin ZIP snapshots when it creates
   a managed-agent session. Restore the bounded snapshots from session storage,
   expose plugin skills and remote HTTP/SSE MCP servers in ADK and LangGraph,
@@ -11,6 +22,13 @@
   stdio execution without a sandbox boundary.
 
 ### Fixes
+
+* Remove the Procrastinate task/cron backend, implicit PostgreSQL fallback, and
+  queue-library dependency injection. Queued tasks require an explicit
+  `lifecycle.storage.tasks` provider; recurring work also requires the same
+  provider under `lifecycle.storage.cron`. Report actionable setup errors and
+  document shared connection configuration. Existing deployments must drain
+  old work before switching storage and recompiling; old queue data is not migrated.
 
 * Keep external continuations attached to an active WebSocket so later live
   cancellation reaches durable provider ownership. Resume attached ADK tool

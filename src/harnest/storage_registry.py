@@ -12,6 +12,7 @@ from .checkpoint import ADKStore, CheckpointAuthority
 from .session import SessionStore
 from .task_storage import TaskStore
 from .cron_storage import CronStore
+from .memory import MemoryStore
 
 
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
@@ -38,6 +39,7 @@ class StorageRegistry:
     custom: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     tasks: TaskStore | None = None
     cron: CronStore | None = None
+    memory: MemoryStore | None = None
 
     def __post_init__(self) -> None:
         """Validate contracts and prevent mutation after compilation."""
@@ -46,6 +48,7 @@ class StorageRegistry:
         _validate_optional(self.checkpoints, CheckpointAuthority, "checkpoints")
         _validate_optional(self.tasks, TaskStore, "tasks")
         _validate_optional(self.cron, CronStore, "cron")
+        _validate_optional(self.memory, MemoryStore, "memory")
         if self.cron is not None and self.cron is not self.tasks:
             raise ValueError("task and cron storage must share one provider instance")
         assets = _validated_mapping(self.assets, AssetStore, "assets")
@@ -67,6 +70,7 @@ class StorageRegistry:
             self.checkpoints,
             self.tasks,
             self.cron,
+            self.memory,
             *self.assets.values(),
             *self.custom.values(),
         )

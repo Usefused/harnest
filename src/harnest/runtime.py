@@ -234,17 +234,13 @@ def _runtime_driver(
 
 
 def _task_runtime_manager(application: Any, **options: Any) -> Any:
-    """Select explicit storage providers before considering the legacy queue adapter."""
+    """Require registered storage; workers never select an implicit backend."""
 
-    if application.runtime_capabilities.task_store is not None:
-        from .runtime_task_store import ProviderTaskRuntimeManager
+    from .runtime_task_store import ProviderTaskRuntimeManager
 
-        # The inner storage lifecycle owns the shared provider. The task wrapper
-        # only owns workers, which must stop before that lifecycle closes pools.
-        return ProviderTaskRuntimeManager(application, manage_storage=False, **options)
-    from .runtime_task import TaskRuntimeManager
-
-    return TaskRuntimeManager(application, **options)
+    # The inner storage lifecycle owns the shared provider. The task wrapper
+    # only owns workers, which must stop before that lifecycle closes pools.
+    return ProviderTaskRuntimeManager(application, manage_storage=False, **options)
 
 
 def _extension_runtime_manager(

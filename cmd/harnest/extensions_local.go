@@ -46,7 +46,7 @@ var extensionCapabilities = map[string]struct{}{
 	"lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
 	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {},
 	"storage.checkpoints": {}, "storage.custom": {}, "storage.sessions": {},
-	"storage.tasks": {}, "storage.cron": {}, "telemetry.exporter": {},
+	"storage.tasks": {}, "storage.cron": {}, "storage.memory": {}, "telemetry.exporter": {},
 }
 
 var extensionRootEntries = map[string]bool{

@@ -113,9 +113,6 @@ func createRuntimeLockInput(
 	if pin != "" {
 		lines = append(lines, pin)
 	}
-	if plan.HasTasks {
-		lines = append(lines, procrastinateRequirement)
-	}
 	path, cleanup, err := createRuntimeLockTemporary(bundle, ".runtime-lock-input-*")
 	if err != nil {
 		return "", nil, err
@@ -195,7 +192,7 @@ func runtimeLockInputFingerprint(
 	); err != nil {
 		return "", err
 	}
-	digest.Write([]byte{0, byte(boolByte(plan.HasTasks)), byte(boolByte(plan.HasMCP))})
+	digest.Write([]byte{0, byte(boolByte(plan.HasMCP))})
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 

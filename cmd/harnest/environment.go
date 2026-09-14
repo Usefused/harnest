@@ -216,9 +216,9 @@ func environmentFingerprint(
 			return "", err
 		}
 	}
-	// Task source contents do not change the dependency graph; presence alone
-	// controls whether the compiler-owned queue runtime joins the environment.
-	digest.Write([]byte{byte(0), byte(boolByte(plan.HasTasks)), byte(boolByte(plan.HasMCP))})
+	// Task backends belong to declared project dependencies. Adding task code
+	// or changing a storage factory must not inject a queue library into a lock.
+	digest.Write([]byte{byte(0), byte(boolByte(plan.HasMCP))})
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
