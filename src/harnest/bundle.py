@@ -91,7 +91,6 @@ from .task import CompiledTask, registration_for as task_registration_for
 _T = TypeVar("_T")
 _IGNORED_FILE_NAMES = {"__init__.py"}
 _MAX_METADATA_FILE_BYTES = 16 * 1024 * 1024
-_PROCRASTINATE_REQUIREMENT = "procrastinate==3.9.0"
 _SKILL_TOOL_NAMES = {
     "list_skills",
     "load_skill",
@@ -138,6 +137,7 @@ _EXTENSION_PHASE_CAPABILITIES = {
     "custom_store": "storage.custom",
     "task_store": "storage.tasks",
     "cron_store": "storage.cron",
+    "memory_store": "storage.memory",
     "credential_provider": "context.credentials",
     "skill_source": "lifecycle.skills",
     "http_routes": "http.routes",
@@ -403,6 +403,7 @@ def _compile_advanced_application(
         custom_stores=discovered_extensions.storage_registry.custom,
         task_store=discovered_extensions.storage_registry.tasks,
         cron_store=discovered_extensions.storage_registry.cron,
+        memory_store=discovered_extensions.storage_registry.memory,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
@@ -541,6 +542,7 @@ def _compile_managed_application(
         custom_stores=discovered_extensions.storage_registry.custom,
         task_store=discovered_extensions.storage_registry.tasks,
         cron_store=discovered_extensions.storage_registry.cron,
+        memory_store=discovered_extensions.storage_registry.memory,
         credential_provider=discovered_extensions.credential_provider,
         http_routes=discovered_extensions.http_routes,
         output_policy=discovered_extensions.output_policy,
@@ -802,9 +804,8 @@ def compile_artifact(
             )
             task_records = _compiled_task_records(built.tasks)
             cron_records = _compiled_cron_records(built.crons)
-            runtime_dependencies = _runtime_dependencies(
-                task_records, cron_records, provider=built.task_store
-            )
+            # Workers ship in Harnest; provider dependencies belong to the project.
+            runtime_dependencies: list[str] = []
             interfaces = {"cli": cli_enabled}
             manifest = {
                 "apiVersion": "harnest.dev/v1alpha1",
@@ -894,14 +895,6 @@ def _compiled_cron_records(crons: Sequence[CompiledCron]) -> list[dict[str, Any]
         }
         for item in crons
     ]
-
-
-def _runtime_dependencies(
-    tasks: Sequence[dict[str, Any]], crons: Sequence[dict[str, Any]], *, provider: Any = None
-) -> list[str]:
-    """Retain legacy queue dependencies only without an explicit task provider."""
-
-    return [_PROCRASTINATE_REQUIREMENT] if (tasks or crons) and provider is None else []
 
 
 def _release_compiled_extensions(extensions: Sequence[ActivatedExtension]) -> None:

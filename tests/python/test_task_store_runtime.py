@@ -123,7 +123,7 @@ class ProviderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         manager = ProviderTaskRuntimeManager(application)
         active = invocation()
         try:
-            with patch("harnest.runtime_task._load_procrastinate", side_effect=AssertionError("legacy backend loaded")):
+            with patch.dict("sys.modules", {"procrastinate": None}):
                 await manager.start()
                 with activate_context(active):
                     handle = await authored.defer(value="private", idempotency_key="once")

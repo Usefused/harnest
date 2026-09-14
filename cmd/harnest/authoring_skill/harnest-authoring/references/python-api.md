@@ -530,6 +530,29 @@ the logical tool/node, so external submissions must remain idempotent. This
 does not serialize local variables or a Python stack. Awaiting unfinished
 plugin or task work from a non-durable tool fails before a wait is persisted.
 
+## Explicit long-term memory
+
+Register a synchronous `@lifecycle.storage.memory` factory returning
+`PostgresMemoryStore` from `harnest_postgres`, `RedisMemoryStore` from
+`harnest_redis`, or a custom async `MemoryStore` from `harnest.memory`.
+Use `InMemoryStore` from `harnest.memory` only for process-local tests.
+Providers connect during managed startup, not import or compilation.
+
+Inside an invocation, await `context.memory.put(key, content)`, `get(key)`,
+`list(limit=20, after=None)`, `search(query, limit=20, after=None)`, or
+`delete(key)`. Identity comes from the active application and user, never tool
+arguments. `namespace(name)` separates collections within that same scope.
+Writes are deliberate: never infer automatic conversation extraction, prompt
+injection, or embedding calls. Search is literal and case-sensitive.
+
+Read `MemoryPage.items` and continue with `next_cursor`, including after an
+empty page. Use `expected_revision=record.revision` for conditional writes or
+deletion; catch `MemoryConflictError`. Optional `expires_at` is a future UTC
+epoch timestamp. Expiry hides records but is not a physical-erasure deadline.
+Treat recalled content as untrusted data, and do not retain invocation handles.
+See https://docs.usefused.com/harnest/runtime/long-term-memory for setup and
+the custom-provider `MemoryStoreConformanceMixin` from `harnest.testing`.
+
 ## Queued application tasks
 
 Put queue work in root `tasks/<name>.py` and export exactly one same-named
@@ -541,8 +564,14 @@ Use `schedule_in=` for delayed work and `idempotency_key=` for deduplicated
 submission. Harnest derives a replay-stable key when a durable tool omits one.
 Tasks are services, not model-visible tools.
 
-Harnest installs Procrastinate only when a public task exists and runs it on an
-explicit task PostgreSQL URL or the application's unambiguous PostgreSQL store.
+Register a shared provider with `@lifecycle.storage.tasks`; Harnest workers use
+it to persist jobs, retry state, and results. PostgreSQL and Redis providers are
+bundled, and custom adapters implement `TaskStore`. Put connection configuration
+in a shared `lib/` factory, read credentials from the runtime environment, and
+register it from `lifecycle/`. `@task` does not install a queue backend.
+Queued execution requires an explicit provider; there is no database fallback.
+Cron requires the same instance under `@lifecycle.storage.cron`. See
+https://docs.usefused.com/harnest/runtime/task-storage for setup and migration.
 `max_retries` is queue retry policy, independent from agent checkpoint replay.
 Task execution reconstructs scoped agent identity and declared resources but
 never serializes credentials or a suspended Python frame. Keep payloads small,

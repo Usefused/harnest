@@ -68,7 +68,8 @@
       "test_tool_lifecycle",
       "test_transient_media",
       "test_transient_media_privacy",
-      "test_uv_assets"
+      "test_uv_assets",
+      "test_memory"
     ],
     "integration": [
       "test_a2a",
@@ -119,7 +120,8 @@
       "test_task_store_redis",
       "test_token_policy",
       "test_token_policy_backends",
-      "test_tool_adk"
+      "test_tool_adk",
+      "test_memory_runtime"
     ],
     "e2e": [
       "test_agent_plugin_runtime",
@@ -128,14 +130,18 @@
       "test_hatchet_plugin_consumer",
       "test_init_examples",
       "test_neutral_runtime",
-      "test_upgrade"
+      "test_upgrade",
+      "test_memory_agent"
     ],
     "live": [
       "test_asset_storage_integration",
       "test_hatchet_plugin_docker_live",
       "test_store_integration",
       "test_task_store_postgres",
-      "test_task_store_postgres_runtime"
+      "test_task_store_postgres_runtime",
+      "test_memory_live",
+      "test_memory_model_live",
+      "test_memory_crash_live"
     ]
   },
   "overrides": {
@@ -143,11 +149,13 @@
       "test_hatchet_plugin_consumer.HatchetConsumerDockerLiveTests",
       "test_hatchet_plugin_consumer.HatchetConsumerRealModelPostgresLiveTests",
       "test_task_runtime_integration.A2ADurableTaskIntegrationTests",
-      "test_task_runtime_integration.ProcrastinateTaskIntegrationTests",
+      "test_task_runtime_integration.ProviderTaskIntegrationTests",
       "test_task_store_cron_sessions.CronSessionTests.test_postgres_cron_creates_session_before_real_lease",
       "test_task_store_cron_sessions.CronSessionTests.test_redis_cron_creates_session_before_real_lease",
       "test_task_store_redis.LiveRedisTaskStoreConformance",
-      "test_task_store_redis.LiveRedisTaskStoreTests"
+      "test_task_store_redis.LiveRedisTaskStoreTests",
+      "test_memory_agent.MemoryAgentTests.test_postgres_agent_remembers_after_restart",
+      "test_memory_agent.MemoryAgentTests.test_redis_agent_remembers_after_restart"
     ]
   }
 }

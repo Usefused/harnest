@@ -18,6 +18,7 @@ from typing import Any, Iterator, Mapping
 import pytest
 
 from .testing_storage import TaskStoreConformanceMixin
+from .testing_memory import MemoryStoreConformanceMixin
 from .bundle import (
     EvalSuite,
     _discover_tools,
@@ -887,4 +888,4 @@ def _pytest_args(selected: list[Path]) -> list[str]:
     ]
 
 
-__all__ = ["AgentTestError", "SmokeClient", "TaskStoreConformanceMixin", "run_agent_tests"]
+__all__ = ["AgentTestError", "SmokeClient", "TaskStoreConformanceMixin", "MemoryStoreConformanceMixin", "run_agent_tests"]

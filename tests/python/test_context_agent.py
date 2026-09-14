@@ -27,7 +27,7 @@ from harnest.runtime_contract import (
     SessionConflictError,
     SessionRecord,
 )
-from harnest.runtime_task import TaskRuntimeManager
+from harnest.runtime_task import TaskExecutionRuntime
 from harnest.task import CompiledTask, registration_for, task
 
 
@@ -130,7 +130,7 @@ class _FakeDriver:
 
 
 def _compiled_task(function):
-    """Build only the task metadata required by TaskRuntimeManager."""
+    """Build only the task metadata required by TaskExecutionRuntime."""
 
     authored = task(function)
     definition = registration_for(authored)
@@ -305,7 +305,7 @@ class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         compiled, application = _compiled_task(invoke_child)
         driver = _FakeDriver()
-        manager = TaskRuntimeManager(application, backend=object())
+        manager = TaskExecutionRuntime(application)
         manager.bind_agent_driver(driver)
 
         result = await manager._call_authored(
@@ -332,7 +332,7 @@ class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         compiled, application = _compiled_task(invoke_child)
         driver = _FakeDriver()
-        manager = TaskRuntimeManager(application, backend=object())
+        manager = TaskExecutionRuntime(application)
         manager.bind_agent_driver(driver)
         snapshot = {
             "framework": "langgraph",

@@ -28,6 +28,7 @@ __all__ = [
     "lifecycle",
     "logging",
     "mcp",
+    "memory",
     "model",
     "orchestrator",
     "output",

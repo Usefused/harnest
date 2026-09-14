@@ -653,7 +653,7 @@ func TestCompiledArtifactRejectsUnknownExtensionCapability(t *testing.T) {
 }
 
 func TestCompiledExtensionCapabilitiesIncludeRuntimeAuthorities(t *testing.T) {
-	capabilities := []string{"sandbox.provider", "storage.cron", "storage.tasks"}
+	capabilities := []string{"sandbox.provider", "storage.cron", "storage.memory", "storage.tasks"}
 	if unknown := unknownCompiledExtensionCapability(capabilities); unknown != "" {
 		t.Fatalf("runtime extension capability %q is missing from the engine vocabulary", unknown)
 	}
@@ -753,6 +753,18 @@ func TestCompiledCronScheduleMatchesNumericFiveColumnContract(t *testing.T) {
 	}
 }
 
+// TestCompiledTasksRequireNoQueueLibrary binds tasks to built-in workers and
+// rejects artifacts tied to the removed queue engine before deployment.
+func TestCompiledTasksRequireNoQueueLibrary(t *testing.T) {
+	tasks := []CompiledTask{{Name: "harnest.reporter.tasks.deliver", Queue: "reports", MaxRetries: 2}}
+	if err := validateCompiledTasks(tasks, nil); err != nil {
+		t.Fatalf("storage-backed tasks rejected: %v", err)
+	}
+	if err := validateCompiledTasks(tasks, []string{"procrastinate==3.9.0"}); err == nil || !strings.Contains(err.Error(), "recompile") {
+		t.Fatalf("backend-specific artifact was not rejected with recompile guidance: %v", err)
+	}
+}
+
 func TestCompiledCronDigestMatchesPythonCompilerContract(t *testing.T) {
 	files := []CompiledFile{{Path: "agent.py", SHA256: strings.Repeat("a", 64), Size: 3}}
 	tasks := []CompiledTask{{
@@ -763,8 +775,8 @@ func TestCompiledCronDigestMatchesPythonCompilerContract(t *testing.T) {
 		Name: "harnest.reporter.cron.daily_report", Source: "cron/daily_report.py",
 		Schedule: "0 9 * * *", Timezone: "UTC", Task: tasks[0].Name,
 	}}
-	want := "sha256:390bf45c1b27717ca3422763fbc64da981d344ffe29513f26727f6745be1e499"
-	if got := compiledManifestDigest(files, CompiledInterfaces{}, nil, tasks, crons, []string{procrastinateRuntimeRequirement}); got != want {
+	want := "sha256:1a1d3eb45c0c47a029a9d3caebb88b00de8dccc9693ed7bc82414776dc0ae4c0"
+	if got := compiledManifestDigest(files, CompiledInterfaces{}, nil, tasks, crons, []string{}); got != want {
 		t.Fatalf("compiled cron digest %q does not match Python contract %q", got, want)
 	}
 }
@@ -845,7 +857,7 @@ func compiledCronArtifactFixture(t *testing.T) (Bundle, string) {
 		{Name: "harnest.scheduler.cron.alpha", Source: "cron/alpha.py", Schedule: "0 8 * * *", Timezone: "UTC", Task: task.Name},
 		{Name: "harnest.scheduler.cron.daily_report", Source: "cron/daily_report.py", Schedule: "0 9 * * *", Timezone: "UTC", Task: task.Name},
 	}
-	manifest.RuntimeDependencies = []string{procrastinateRuntimeRequirement}
+	manifest.RuntimeDependencies = []string{}
 	manifest.Digest = compiledManifestDigest(
 		manifest.Files, manifest.Interfaces, manifest.Extensions, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies,
 	)

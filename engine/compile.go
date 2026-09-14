@@ -297,18 +297,11 @@ var compiledCronSourcePattern = regexp.MustCompile(`^cron/([A-Za-z_][A-Za-z0-9_]
 
 var compiledCronFieldLimits = [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
 
-const procrastinateRuntimeRequirement = "procrastinate==3.9.0"
-
-// validateCompiledTasks keeps optional queue dependencies derived from tasks.
+// validateCompiledTasks validates storage-backed tasks without a queue-library
+// requirement. Old backend-specific artifacts must be recompiled, not inferred.
 func validateCompiledTasks(tasks []CompiledTask, dependencies []string) error {
-	if len(tasks) == 0 {
-		if len(dependencies) != 0 {
-			return fmt.Errorf("task-free compiled manifest cannot declare runtime dependencies")
-		}
-		return nil
-	}
-	if len(dependencies) != 1 || dependencies[0] != procrastinateRuntimeRequirement {
-		return fmt.Errorf("compiled tasks require %q", procrastinateRuntimeRequirement)
+	if len(dependencies) != 0 {
+		return fmt.Errorf("compiled manifest cannot declare queue runtime dependencies; configure task storage and recompile the agent")
 	}
 	seen := make(map[string]struct{}, len(tasks))
 	for index, task := range tasks {
@@ -619,7 +612,7 @@ var compiledExtensionCapabilities = map[string]struct{}{
 	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.mcp": {},
 	"lifecycle.model": {}, "lifecycle.skills": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
 	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {}, "storage.checkpoints": {},
-	"storage.cron": {}, "storage.custom": {}, "storage.sessions": {}, "storage.tasks": {}, "telemetry.exporter": {},
+	"storage.cron": {}, "storage.custom": {}, "storage.memory": {}, "storage.sessions": {}, "storage.tasks": {}, "telemetry.exporter": {},
 }
 
 // unknownCompiledExtensionCapability returns the first undeclared authority term.

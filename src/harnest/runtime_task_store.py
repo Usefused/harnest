@@ -17,7 +17,7 @@ from .logging import get_logger
 from .runtime_cron_store import StoredCronRuntime, next_occurrence
 from .runtime_contract import SessionConflictError
 from .runtime_task import (
-    TaskRuntimeManager, TaskRuntimeError, _capture_invocation,
+    TaskExecutionRuntime, TaskRuntimeError, _capture_invocation,
     _capture_agent_permissions, _native_idempotency_key, _validated_snapshot,
     _validated_agent_permissions,
 )
@@ -29,13 +29,8 @@ _AUDIT = get_logger("task.audit")
 _LEASE_SECONDS = 30.0
 
 
-class ProviderTaskRuntimeManager(TaskRuntimeManager):
-    """Reuse managed execution/continuations while replacing queue-specific I/O.
-
-    The inherited invocation machinery is shared with the retained Procrastinate
-    adapter so old databases can drain during adoption of explicit providers.
-    No Procrastinate library, schema, or connection is used by this manager.
-    """
+class ProviderTaskRuntimeManager(TaskExecutionRuntime):
+    """Own Harnest workers over an explicitly registered task-storage provider."""
 
     def __init__(self, application: Any, *, manage_storage: bool = True, **options: Any) -> None:
         """Bind explicit storage and retain ownership of only the worker loop."""
@@ -43,7 +38,11 @@ class ProviderTaskRuntimeManager(TaskRuntimeManager):
         super().__init__(application, **options)
         self._store = application.runtime_capabilities.task_store
         if self._store is None:
-            raise TaskRuntimeError("configure lifecycle.storage.tasks")
+            raise TaskRuntimeError(
+                "queued tasks require an explicit storage provider; register "
+                "@lifecycle.storage.tasks in lifecycle/ using PostgreSQL, Redis, "
+                "or a custom TaskStore. See https://docs.usefused.com/harnest/runtime/task-storage"
+            )
         self._manage_storage = manage_storage
         self._dynamic_cron = StoredCronRuntime(
             self, application.runtime_capabilities.cron_store, enabled=self._enable_cron,
@@ -75,7 +74,7 @@ class ProviderTaskRuntimeManager(TaskRuntimeManager):
             raise self._worker_failure
 
     def _audit_runtime(self, operation: str, trigger: str, outcome: str) -> None:
-        """Keep shared continuation diagnostics independent of the legacy engine."""
+        """Emit payload-safe continuation diagnostics through the worker logger."""
 
         _audit(operation, trigger, outcome)
 

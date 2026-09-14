@@ -363,7 +363,9 @@ func TestRuntimeLockNormalizesMachineLocalWheelAndProjectPaths(t *testing.T) {
 	}
 }
 
-func TestEnvironmentSyncResolvesExtensionAndTaskDependenciesTogether(t *testing.T) {
+// TestEnvironmentSyncResolvesExtensionDependenciesWithoutAssumingTaskBackend
+// keeps source discovery from selecting an undeclared queue engine.
+func TestEnvironmentSyncResolvesExtensionDependenciesWithoutAssumingTaskBackend(t *testing.T) {
 	root := t.TempDir()
 	agent := filepath.Join(root, "joint-agent")
 	if err := createScaffold(agent, "joint-agent"); err != nil {
@@ -398,10 +400,12 @@ dependencies = ["httpx>=0.28,<1"]
 	assertContainsAll(t, "joint dependency calls", contents, []string{
 		"pip compile --python",
 		filepath.Join(resolvedAgent, "extensions", "clock", "pyproject.toml"),
-		procrastinateRequirement,
 		"pip sync --python",
 		"--require-hashes",
 	})
+	if strings.Contains(contents, procrastinateRequirement) {
+		t.Fatal("task discovery injected an undeclared queue backend")
+	}
 	lock := string(mustReadTestFile(t, filepath.Join(agent, runtimeRequirementsLockFile)))
 	if !strings.Contains(lock, "resolved-runtime-dependencies") {
 		t.Fatalf("unexpected generated runtime lock %q", lock)

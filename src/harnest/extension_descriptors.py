@@ -54,6 +54,7 @@ EXTENSION_CAPABILITIES = frozenset(
         "storage.sessions",
         "storage.tasks",
         "storage.cron",
+        "storage.memory",
         "telemetry.exporter",
     }
 )

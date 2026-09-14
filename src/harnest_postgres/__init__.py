@@ -2,6 +2,7 @@
 
 from harnest.store_postgres import PostgresStore as _SessionStore
 from harnest.task_store_postgres import PostgresTaskStore
+from harnest.memory_postgres import PostgresMemoryStore
 
 
 class PostgresStore(_SessionStore, PostgresTaskStore):
@@ -14,4 +15,4 @@ class PostgresStore(_SessionStore, PostgresTaskStore):
         await self._start_task_storage()
 
 
-__all__ = ["PostgresStore", "PostgresTaskStore"]
+__all__ = ["PostgresStore", "PostgresTaskStore", "PostgresMemoryStore"]

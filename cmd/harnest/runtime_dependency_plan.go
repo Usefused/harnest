@@ -12,8 +12,6 @@ import (
 	"harnest.dev/harnest/engine"
 )
 
-const procrastinateRequirement = "procrastinate==3.9.0"
-
 const (
 	runtimeRequirementsLockFile = "harnest-runtime.lock"
 	maxDependencyFileBytes      = 16 * 1024 * 1024
@@ -22,11 +20,11 @@ const (
 // runtimeDependencyPlan is the filesystem-only input used before Python imports.
 type runtimeDependencyPlan struct {
 	ProjectFiles []string
-	HasTasks     bool
 	HasMCP       bool
 }
 
-// inspectRuntimeDependencyPlan joins agent, extension, and optional task requirements.
+// inspectRuntimeDependencyPlan joins declared dependencies without guessing a
+// queue backend before Python storage factories are loaded.
 func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, error) {
 	rootProject := filepath.Join(bundle.Directory, bundle.Config.Spec.Runtime.DependencyFile)
 	_, err := projectRuntimeRequirements(rootProject, "agent")
@@ -37,7 +35,7 @@ func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, 
 	if err != nil {
 		return runtimeDependencyPlan{}, err
 	}
-	hasTasks, err := hasAuthoredTasks(bundle.Directory)
+	_, err = hasAuthoredTasks(bundle.Directory)
 	if err != nil {
 		return runtimeDependencyPlan{}, err
 	}
@@ -47,7 +45,6 @@ func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, 
 	}
 	return runtimeDependencyPlan{
 		ProjectFiles: append([]string{rootProject}, projectFiles...),
-		HasTasks:     hasTasks,
 		HasMCP:       hasMCP,
 	}, nil
 }

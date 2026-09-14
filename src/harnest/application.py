@@ -22,6 +22,7 @@ from .skills import SkillRegistry
 from .storage_registry import CustomStorage, StorageRegistry
 from .task_storage import TaskStore
 from .cron_storage import CronStore
+from .memory import MemoryStore
 from .structured import PydanticModel, validate_output_schema
 
 
@@ -44,6 +45,7 @@ class RuntimeCapabilities:
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     task_store: TaskStore | None = field(default=None, repr=False)
     cron_store: CronStore | None = field(default=None, repr=False)
+    memory_store: MemoryStore | None = field(default=None, repr=False)
     skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
     sandbox_registry: SandboxRegistry = field(default_factory=SandboxRegistry, repr=False)
     storage_registry: StorageRegistry = field(init=False, repr=False, compare=False)
@@ -63,6 +65,7 @@ class RuntimeCapabilities:
             custom=self.custom_stores,
             tasks=self.task_store,
             cron=self.cron_store,
+            memory=self.memory_store,
         )
         object.__setattr__(self, "storage_registry", registry)
         object.__setattr__(self, "asset_stores", registry.assets)
@@ -128,6 +131,7 @@ class CompiledApplication:
     custom_stores: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
     task_store: TaskStore | None = field(default=None, repr=False)
     cron_store: CronStore | None = field(default=None, repr=False)
+    memory_store: MemoryStore | None = field(default=None, repr=False)
     skill_registry: SkillRegistry = field(default_factory=SkillRegistry, repr=False)
     sandbox_registry: SandboxRegistry = field(default_factory=SandboxRegistry, repr=False)
     runtime_capabilities: RuntimeCapabilities = field(
@@ -155,6 +159,7 @@ class CompiledApplication:
             custom_stores=self.custom_stores,
             task_store=self.task_store,
             cron_store=self.cron_store,
+            memory_store=self.memory_store,
             credential_provider=self.credential_provider,
             http_routes=self.http_routes,
             output_policy=self.output_policy,
@@ -207,6 +212,7 @@ def _publish_compatibility_attributes(
         "custom_stores",
         "task_store",
         "cron_store",
+        "memory_store",
         "storage_registry",
         "credential_provider",
         "http_routes",

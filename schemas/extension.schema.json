@@ -110,6 +110,7 @@
           "storage.sessions",
           "storage.tasks",
           "storage.cron",
+          "storage.memory",
           "storage.checkpoints",
           "storage.assets",
           "storage.custom",

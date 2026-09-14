@@ -71,7 +71,7 @@ class PostgresProviderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         owner, other = invocation(), invocation("other-user")
         self.addCleanup(revoke_context, owner)
         self.addCleanup(revoke_context, other)
-        with patch("harnest.runtime_task._load_procrastinate", side_effect=AssertionError("legacy backend loaded")):
+        with patch.dict("sys.modules", {"procrastinate": None}):
             await manager.start()
             with activate_context(owner):
                 handle = await authored.defer(value="private-input", idempotency_key="once")

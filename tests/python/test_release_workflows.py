@@ -679,17 +679,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertIn("httpx[socks]>=0.28,<1", dependencies)
 
-    def test_all_extra_includes_the_task_runtime(self):
-        """Keep the documented development install capable of live task tests."""
+    def test_task_workers_do_not_require_an_optional_queue_engine(self):
+        """Keep built-in workers independent of removed queue extras."""
 
         extras = tomllib.loads(
             (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )["project"]["optional-dependencies"]
 
-        # Compiled bundles remain feature-selective, while `all` must include
-        # every backend exercised by the repository's complete quality gate.
-        self.assertEqual(extras["tasks"], ["procrastinate==3.9.0"])
-        self.assertIn("procrastinate==3.9.0", extras["all"])
+        self.assertNotIn("tasks", extras)
+        self.assertNotIn("procrastinate", repr(extras))
 
     def test_runtime_extras_exclude_eval_and_adk_extension_stacks(self):
         """Keep serving independent from evaluation and broad provider bundles."""

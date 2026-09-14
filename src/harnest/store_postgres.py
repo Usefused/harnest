@@ -141,13 +141,6 @@ class PostgresStore(HarnestStore):
         else:
             await self._validate_schema()
 
-    def _task_database_dsn(self) -> str:
-        """Share connection configuration without exposing it as agent context."""
-
-        # Queue ownership opens an independent pool so Harnest and Procrastinate
-        # cannot unexpectedly consume or close each other's connection leases.
-        return self._dsn
-
     async def create(
         self, *, session_id: str, user_id: str, state: Mapping[str, Any]
     ) -> SessionRecord:
