@@ -5,6 +5,7 @@ on:
     paths:
       - "official-extensions/docker/**"
       - "official-extensions/hatchet/**"
+      - "official-extensions/rag/**"
       - ".github/workflows/publish-extensions.yml"
   push:
     branches:
@@ -12,9 +13,11 @@ on:
     tags:
       - "harnest-extension-docker-v*"
       - "harnest-extension-hatchet-v*"
+      - "harnest-extension-rag-v*"
     paths:
       - "official-extensions/docker/**"
       - "official-extensions/hatchet/**"
+      - "official-extensions/rag/**"
       - ".github/workflows/publish-extensions.yml"
   workflow_dispatch:
     inputs:
@@ -25,6 +28,7 @@ on:
         options:
           - docker
           - hatchet
+          - rag
 
 permissions:
   contents: read
@@ -40,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extension: [docker, hatchet]
+        extension: [docker, hatchet, rag]
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # releases/v6
@@ -112,6 +116,10 @@ jobs:
         if: steps.selection.outputs.active == 'true' && matrix.extension == 'hatchet'
         run: python -m pip install 'hatchet-sdk>=1.38,<2'
 
+      - name: Install RAG contract dependencies
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'rag'
+        run: python -m pip install 'asyncpg>=0.30,<1'
+
       - name: Check extension complexity
         if: steps.selection.outputs.active == 'true'
         run: python scripts/check_python_complexity.py --max 10 official-extensions/${{ matrix.extension }}
@@ -131,8 +139,12 @@ jobs:
         if: steps.selection.outputs.active == 'true' && matrix.extension == 'hatchet'
         run: >-
           python -m pytest -q
-          tests/python/test_hatchet_runtime_plugin_example.py
+          tests/python/test_hatchet_extension_example.py
           tests/python/test_hatchet_plugin_consumer.py
+
+      - name: Test RAG extension contracts
+        if: steps.selection.outputs.active == 'true' && matrix.extension == 'rag'
+        run: python -m pytest -q official-extensions/rag/_tests
 
       - name: Build extension wheel
         if: steps.selection.outputs.active == 'true'
@@ -194,6 +206,29 @@ jobs:
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # releases/v5
         with:
           name: harnest-extension-hatchet-wheel
+          path: dist
+
+      - name: Publish extension to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+
+  publish-rag:
+    name: Publish RAG extension
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.extension == 'rag') ||
+      startsWith(github.ref, 'refs/tags/harnest-extension-rag-v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Restore verified wheel
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # releases/v5
+        with:
+          name: harnest-extension-rag-wheel
           path: dist
 
       - name: Publish extension to PyPI

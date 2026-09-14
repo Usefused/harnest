@@ -16,6 +16,17 @@ harnest extensions install official-extensions/hatchet --project my-agent
 harnest env sync my-agent
 ```
 
+`rag/` is the official PostgreSQL retrieval-augmented generation layer. It gives
+Tools and Tasks one typed API for atomic document replacement, exact fetches,
+and keyword, semantic, and hybrid search. A bounded memory backend supports
+local tests. Future datastore extensions can require `rag` and implement its
+same `RAGBackend` protocol. Install it with:
+
+```bash
+harnest extensions install rag --project my-agent
+harnest env sync my-agent
+```
+
 `docker/` is the official application-local Docker sandbox provider. Docker is
 not part of Harnest core: install the extension into `extensions/docker/`, then
 create a named sandbox such as
@@ -69,8 +80,9 @@ Configure each project's trusted publisher with these values:
 - environment: `pypi`.
 
 The pending publishers must use the exact distribution names
-`harnest-extension-docker` and `harnest-extension-hatchet`; the first matching
-workflow run creates each project. A maintainer can dispatch **Publish Official
+`harnest-extension-docker`, `harnest-extension-hatchet`, and
+`harnest-extension-rag`; the first matching workflow run creates each project.
+A maintainer can dispatch **Publish Official
 Extensions** from `main`, or push a tag whose version matches both
 `pyproject.toml` and `extension.yaml`, for example
 `harnest-extension-docker-v<version>`. Ordinary extension changes build and

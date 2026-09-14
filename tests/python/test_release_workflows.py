@@ -113,6 +113,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             [
                 "harnest-extension-docker-v*",
                 "harnest-extension-hatchet-v*",
+                "harnest-extension-rag-v*",
             ],
         )
         self.assertEqual(
@@ -120,16 +121,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
             [
                 "official-extensions/docker/**",
                 "official-extensions/hatchet/**",
+                "official-extensions/rag/**",
                 ".github/workflows/publish-extensions.yml",
             ],
         )
         self.assertEqual(
             events["workflow_dispatch"]["inputs"]["extension"]["options"],
-            ["docker", "hatchet"],
+            ["docker", "hatchet", "rag"],
         )
         self.assertEqual(
             build_job["strategy"]["matrix"]["extension"],
-            ["docker", "hatchet"],
+            ["docker", "hatchet", "rag"],
         )
         self.assertEqual(workflow["permissions"]["contents"], "read")
         self.assertNotIn("id-token", workflow["permissions"])
@@ -149,7 +151,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     continue
                 repository, revision = action.split("@", 1)
                 self.assertEqual(revision, expected_actions[repository])
-        for slug in ("docker", "hatchet"):
+        for slug in ("docker", "hatchet", "rag"):
             publish_job = workflow["jobs"][f"publish-{slug}"]
             publish_step = next(
                 step
@@ -182,7 +184,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("official-extensions/docker/_tests/test_backend.py", scripts)
         self.assertIn("official-extensions/docker/_tests/test_telemetry.py", scripts)
         self.assertIn("official-extensions/docker/_tests/test_topology.py", scripts)
+        self.assertIn("tests/python/test_hatchet_extension_example.py", scripts)
         self.assertIn("tests/python/test_hatchet_plugin_consumer.py", scripts)
+        self.assertIn("official-extensions/rag/_tests", scripts)
         self.assertIn("check_python_complexity.py --max 10", scripts)
 
     def test_official_extension_wheels_expose_verified_entry_points(self):
@@ -202,6 +206,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "lib/continuations.py",
                 "lib/payloads.py",
             },
+            "rag": {
+                "lib/__init__.py",
+                "lib/contracts.py",
+                "lib/memory.py",
+                "lib/postgres.py",
+                "lib/service.py",
+            },
         }
         expected_requirements = {
             "docker": {"docker": "<8,>=7.1", "harnest": "<0.16,>=0.15"},
@@ -209,8 +220,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "harnest": "<0.16,>=0.15",
                 "hatchet-sdk": "<2,>=1.38",
             },
+            "rag": {
+                "asyncpg": "<1,>=0.30",
+                "harnest": "<0.19,>=0.18",
+            },
         }
-        for slug in ("docker", "hatchet"):
+        for slug in ("docker", "hatchet", "rag"):
             with (
                 self.subTest(extension=slug),
                 tempfile.TemporaryDirectory() as temporary,
@@ -289,7 +304,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         quality_requirements = set(
             project["project"]["optional-dependencies"]["quality"]
         )
-        for slug in ("docker", "hatchet"):
+        for slug in ("docker", "hatchet", "rag"):
             with self.subTest(extension=slug):
                 root = ROOT / "official-extensions" / slug
                 extension = tomllib.loads(
@@ -540,6 +555,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     for path in (
                         "harnest/extensions/docker.pyi",
                         "harnest/extensions/hatchet.pyi",
+                        "harnest/extensions/rag.pyi",
                     )
                     if path in archived_paths
                 }
@@ -560,6 +576,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("harnest-redis", requirements)
         self.assertIn("harnest/extensions/docker.pyi", archived_paths)
         self.assertIn("harnest/extensions/hatchet.pyi", archived_paths)
+        self.assertIn("harnest/extensions/rag.pyi", archived_paths)
         for path, source in extension_stubs.items():
             compile(source, path, "exec")
 

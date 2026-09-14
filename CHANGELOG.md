@@ -4,6 +4,12 @@
 
 ### Features
 
+* Add the official PostgreSQL RAG Harnest Extension with typed chunk, query,
+  hit, embedder, chunker, and backend contracts; atomic document replacement;
+  audited mutations; tenant-scoped keyword, vector, and hybrid retrieval; and
+  bounded in-memory development support. Additional datastore extensions can
+  implement the same lifecycle-owned `RAGBackend` contract.
+
 * Let Agent Desktop attach immutable Agent Plugin ZIP snapshots when it creates
   a managed-agent session. Restore the bounded snapshots from session storage,
   expose plugin skills and remote HTTP/SSE MCP servers in ADK and LangGraph,

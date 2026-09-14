@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=82,<85"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harnest-extension-rag"
+version = "0.1.0"
+description = "Official PostgreSQL RAG extension and provider contract for Harnest"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "Fused" },
+]
+dependencies = [
+  "asyncpg>=0.30,<1",
+  "harnest>=0.18,<0.19",
+]
+
+[project.urls]
+Documentation = "https://docs.usefused.com/harnest/build/extensions/official/rag"
+Repository = "https://github.com/Usefused/harnest"
+
+[project.entry-points."harnest.extensions"]
+rag = "harnest_extension_rag.extension:extension"
+
+[tool.setuptools]
+packages = ["harnest_extension_rag", "harnest_extension_rag.lib"]
+package-dir = { harnest_extension_rag = ".", "harnest_extension_rag.lib" = "lib" }
+
+[tool.setuptools.package-data]
+harnest_extension_rag = ["extension.yaml", "README.md"]

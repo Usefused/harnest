@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,9 @@ from harnest.extension_descriptors import discover_extensions
 
 from _session_store_fixture import write_session_store
 from _skill_fixture import run_skill_tool
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
@@ -632,6 +636,69 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             )
             self.assertNotIn("harnest.extensions.core", sys.modules)
             self.assertFalse(hasattr(extension_namespace, "core"))
+
+    def test_official_rag_contract_compiles_with_a_dependent_extension(self):
+        """Keep RAG imports usable by agents and dependent provider extensions."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent"
+            output = Path(temp) / "compiled"
+            self._root_agent(root)
+            shutil.copytree(
+                ROOT / "official-extensions" / "rag",
+                root / "extensions" / "rag",
+            )
+            provider = self._runtime_extension(
+                root, "search_provider", requires=("rag",)
+            )
+            self._write(
+                provider / "extension.py",
+                "from harnest.extensions import Extension\n"
+                "from harnest.extensions.rag import RAGBackend, RAGQuery\n"
+                "class SearchProviderExtension(Extension):\n"
+                "    contract = (RAGBackend, RAGQuery)\n"
+                "extension = SearchProviderExtension()\n",
+            )
+            self._write(
+                root / "lifecycle" / "knowledge.py",
+                "from harnest import context, lifecycle\n"
+                "from harnest.extensions.rag import RAGService, rag\n"
+                "knowledge = rag.memory(namespace='compiled-test')\n"
+                "@lifecycle.resource\n"
+                "@context.provider('knowledge')\n"
+                "async def knowledge_resource():\n"
+                "    async with knowledge:\n"
+                "        yield knowledge\n",
+            )
+            self._write(
+                root / "tools" / "search.py",
+                "from harnest import context\n"
+                "from harnest.agent import tool\n"
+                "from harnest.extensions.rag import RAGService, SearchMode\n"
+                "@tool\n"
+                "async def search(query: str) -> list[str]:\n"
+                "    \"\"\"Search the compiled knowledge resource.\"\"\"\n"
+                "    service = context.resource('knowledge', RAGService)\n"
+                "    hits = await service.search(query, mode=SearchMode.KEYWORD)\n"
+                "    return [hit.chunk.text for hit in hits]\n",
+            )
+
+            with patch(
+                "harnest.bundle.get_backend", return_value=self._managed_backend()
+            ):
+                manifest = compile_artifact(root, output, framework="langgraph")
+
+            self.assertEqual(
+                [item["name"] for item in manifest["extensions"]],
+                ["rag", "search_provider"],
+            )
+            self.assertIn("asyncpg<1,>=0.30", manifest["extensions"][0]["dependencies"])
+            self.assertEqual(manifest["extensions"][1]["requires"], ["rag"])
+            self.assertTrue(
+                (output / "source" / "extensions" / "rag" / "lib" / "postgres.py").is_file()
+            )
+            self.assertNotIn("harnest.extensions.rag", sys.modules)
+            self.assertNotIn("harnest.extensions.search_provider", sys.modules)
 
 
 if __name__ == "__main__":
