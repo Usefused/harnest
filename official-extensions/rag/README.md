@@ -30,6 +30,9 @@ code under Harnest lifecycle management.
 - [Public API](#public-api)
 - [Validation and safety bounds](#validation-and-safety-bounds)
 
+Read the detailed public guide at
+[docs.usefused.com/harnest/build/extensions/official/rag](https://docs.usefused.com/harnest/build/extensions/official/rag).
+
 ## What the extension provides
 
 | Capability | Behavior |
@@ -462,7 +465,5 @@ embedder or datastore. Current limits are:
 Inputs also reject empty text, duplicate identities, nested metadata, boolean
 vector values, and NaN or infinite numeric values.
 
-Read the canonical guide at
-[docs.usefused.com/harnest/build/extensions/official/rag](https://docs.usefused.com/harnest/build/extensions/official/rag).
 Source and issue tracking live in the
 [Usefused/harnest repository](https://github.com/Usefused/harnest).

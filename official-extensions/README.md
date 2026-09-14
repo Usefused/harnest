@@ -9,6 +9,7 @@ join the agent's root environment solve and committed runtime lock.
 `hatchet/` demonstrates an agentic adapter for an independently deployed
 Hatchet runtime. It intentionally contributes no Harnest tools: the consuming
 agent defines its own domain tool and calls `harnest.extensions.hatchet.hatchet`.
+See the [Hatchet extension guide](https://docs.usefused.com/harnest/build/extensions/official/hatchet).
 Install it with:
 
 ```bash
@@ -20,7 +21,9 @@ harnest env sync my-agent
 Tools and Tasks one typed API for atomic document replacement, exact fetches,
 and keyword, semantic, and hybrid search. A bounded memory backend supports
 local tests. Future datastore extensions can require `rag` and implement its
-same `RAGBackend` protocol. Install it with:
+same `RAGBackend` protocol. See the
+[RAG extension guide](https://docs.usefused.com/harnest/build/extensions/official/rag).
+Install it with:
 
 ```bash
 harnest extensions install rag --project my-agent
@@ -29,7 +32,8 @@ harnest env sync my-agent
 
 `docker/` is the official application-local Docker sandbox provider. Docker is
 not part of Harnest core: install the extension into `extensions/docker/`, then
-create a named sandbox such as
+read the [Docker extension guide](https://docs.usefused.com/harnest/build/extensions/official/docker),
+and create a named sandbox such as
 `sandbox/python.py`:
 
 ```bash

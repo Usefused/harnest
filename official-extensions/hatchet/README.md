@@ -12,6 +12,15 @@ client-facing MCP tools, skills, and UI metadata. This package contributes no
 agent tools; the consuming agent authors domain-specific tools and calls the
 same-process `harnest.extensions.hatchet` API.
 
+## Table of contents
+
+- [Install](#install)
+- [Compatibility and capabilities](#compatibility-and-capabilities)
+- [Security and limitations](#security-and-limitations)
+
+Read the detailed public guide at
+[docs.usefused.com/harnest/build/extensions/official/hatchet](https://docs.usefused.com/harnest/build/extensions/official/hatchet).
+
 ## Install
 
 Install the published package by short slug or full PyPI project name, then
@@ -83,6 +92,5 @@ continuation support before submission. Separate `run` and `wait` calls remain
 available for fire-and-forget and existing-run workflows, but callers own the
 external job if a later wait fails for another reason.
 
-See the [Harnest documentation](https://docs.usefused.com/harnest) for agent
-configuration and operational guidance. Source and issue tracking live in the
+Source and issue tracking live in the
 [Harnest repository](https://github.com/Usefused/harnest).

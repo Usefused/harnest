@@ -11,6 +11,16 @@ client-facing MCP tools, skills, and UI metadata, while this package extends
 Harnest's same-process runtime and declares the privileged `sandbox.provider`
 capability.
 
+## Table of contents
+
+- [Install](#install)
+- [Compatibility and capabilities](#compatibility-and-capabilities)
+- [Multi-container topologies](#multi-container-topologies)
+- [Security and limitations](#security-and-limitations)
+
+Read the detailed public guide at
+[docs.usefused.com/harnest/build/extensions/official/docker](https://docs.usefused.com/harnest/build/extensions/official/docker).
+
 ## Install
 
 Install the published package by short slug or full PyPI project name, then
@@ -123,6 +133,5 @@ host/port allowlists and unrestricted mode with private-network blocking because
 those controls are not yet enforced by this provider. It is a Python execution
 sandbox, not a browser tool, model provider, or general container orchestrator.
 
-See the [Harnest documentation](https://docs.usefused.com/harnest) for agent
-configuration and operational guidance. Source and issue tracking live in the
+Source and issue tracking live in the
 [Harnest repository](https://github.com/Usefused/harnest).
