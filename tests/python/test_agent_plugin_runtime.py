@@ -1,5 +1,8 @@
 """Compiled portable packages cross real framework, HTTP, and MCP boundaries."""
 
+import base64
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +12,7 @@ import textwrap
 import unittest
 from unittest.mock import patch
 import warnings
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -28,11 +32,12 @@ class ProbeModel(BaseLlm):
     async def generate_content_async(self, llm_request, stream=False):
         responses = [part.function_response for content in llm_request.contents
                      for part in content.parts or [] if part.function_response is not None]
-        if len(responses) >= 2:
+        proof_name = next(
+            (name for name in llm_request.tools_dict if name.endswith("_proof")), None)
+        if responses and (proof_name is None or len(responses) >= 2):
             part = types.Part(text=json.dumps([dict(item.response) for item in responses]))
         else:
-            name = "list_skills" if not responses else next(
-                name for name in llm_request.tools_dict if name.endswith("_proof"))
+            name = "list_skills" if not responses else proof_name
             part = types.Part(function_call=types.FunctionCall(
                 id=f"probe-{len(responses)}", name=name, args={}))
         yield LlmResponse(content=types.Content(role="model", parts=[part]))
@@ -58,12 +63,13 @@ class ProbeModel(BaseChatModel):
         names = [tool.name for tool in tools]
         if "list_skills" not in names:
             raise AssertionError("portable skills unavailable")
-        self.proof_name = next(name for name in names if name.endswith("_proof"))
+        self.proof_name = next(
+            (name for name in names if name.endswith("_proof")), "")
         return self
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         responses = [message for message in messages if message.type == "tool"]
-        if len(responses) >= 2:
+        if responses and (not self.proof_name or len(responses) >= 2):
             message = AIMessage(content=json.dumps([item.content for item in responses]))
         else:
             name = "list_skills" if not responses else self.proof_name
@@ -102,7 +108,7 @@ if __name__ == "__main__":
 
 
 class AgentPluginRuntimeTests(unittest.TestCase):
-    """Run two immutable generations against one installation's persistent state."""
+    """Run compiled and session-supplied packages through both frameworks."""
 
     def setUp(self):
         """Scope every process path and client-owned state to a temporary workspace."""
@@ -128,8 +134,9 @@ class AgentPluginRuntimeTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
 
-    def _application(self, framework):
-        """Use deterministic model decisions while retaining genuine framework execution."""
+    def _application(self, framework, *, static_package=True):
+        """Build a deterministic agent with optional compile-time plugin resources."""
+
         model = _ADK_MODEL if framework == "adk" else _LANGGRAPH_MODEL
         self._write("agent.py", model)
         self._write("instructions.md", "List skills, then call the portable proof tool.\n")
@@ -147,7 +154,8 @@ class AgentPluginRuntimeTests(unittest.TestCase):
             def checkpoints():
                 return MemoryStore()
         ''')
-        self._package()
+        if static_package:
+            self._package()
 
     def _package(self):
         """Bundle real server code and an unavailable peer in an unchanged standard package."""
@@ -193,6 +201,55 @@ class AgentPluginRuntimeTests(unittest.TestCase):
             self.assertIn("portable-mcp-ran", output)
             self.assertIn("${UNRECOGNIZED_PROOF_VARIABLE}", output)
 
+    @staticmethod
+    def _dynamic_descriptor():
+        """Package a skill exactly as Agent Desktop would for session creation."""
+
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as package:
+            package.writestr(
+                "plugin.json",
+                json.dumps({"$schema": PLUGIN_SCHEMA, "name": "desktop-plugin"}),
+            )
+            package.writestr(
+                "skills/desktop-proof/SKILL.md",
+                "---\nname: desktop-proof\n"
+                "description: Prove a session plugin loaded.\n---\n"
+                "Report that the desktop plugin is active.\n",
+            )
+        archive = output.getvalue()
+        return {
+            "type": "inline",
+            "name": "desktop-plugin",
+            "sha256": hashlib.sha256(archive).hexdigest(),
+            "source": {
+                "type": "base64",
+                "media_type": "application/zip",
+                "data": base64.b64encode(archive).decode("ascii"),
+            },
+        }
+
+    def _request_dynamic(self, artifact):
+        """Attach a package after compilation and observe its skill over HTTP."""
+
+        application = create_fastapi_app(artifact, playground_enabled=False)
+        with TestClient(application) as client:
+            created = client.post(
+                "/sessions",
+                json={"id": "dynamic", "plugins": [self._dynamic_descriptor()]},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(
+                created.json()["metadata"]["plugins"][0]["name"],
+                "desktop-plugin",
+            )
+            response = client.post(
+                "/responses",
+                json={"input": "What is installed?", "sessionId": "dynamic"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn("desktop-proof", response.json()["outputText"])
+
     def _assert_record(self, record, artifact, expected_data):
         """Distinguish immutable package locations from the stable writable installation."""
         package_root = artifact / "source" / "plugins" / "proof"
@@ -227,11 +284,25 @@ class AgentPluginRuntimeTests(unittest.TestCase):
         unrelated = PortableMCP.create(self.root / "other" / "plugins" / "proof", "portable-proof", "working")
         self.assertNotEqual(unrelated.scope, installation_id(self.source))
 
+    def _exercise_dynamic(self, framework):
+        """Compile without a package, then bind one immutable session snapshot."""
+
+        self._application(framework, static_package=False)
+        artifact = self.root / "dynamic-artifact"
+        compile_artifact(self.source, artifact, framework=framework)
+        self._request_dynamic(artifact)
+
     def test_adk_standard_package_survives_unavailable_server_across_generations(self):
         self._exercise("adk")
 
     def test_langgraph_standard_package_survives_unavailable_server_across_generations(self):
         self._exercise("langgraph")
+
+    def test_adk_session_plugin_skill_is_available_after_compilation(self):
+        self._exercise_dynamic("adk")
+
+    def test_langgraph_session_plugin_skill_is_available_after_compilation(self):
+        self._exercise_dynamic("langgraph")
 
 
 if __name__ == "__main__":
