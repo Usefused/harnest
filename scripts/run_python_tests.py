@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -104,7 +105,13 @@ def _available_modules(test_root: Path) -> set[str]:
     if result.returncode != 0:
         # Source archives have no Git metadata and cannot contain ignored local files.
         return {path.stem for path in test_root.glob("test_*.py")}
-    return {Path(line).stem for line in result.stdout.splitlines() if line}
+    # The index still lists files deleted or renamed in the working tree; only
+    # executable files should participate in the suite contract before commit.
+    return {
+        Path(line).stem
+        for line in result.stdout.splitlines()
+        if line and (_ROOT / line).is_file()
+    }
 
 
 def _validated_overrides(manifest: dict[str, object]) -> dict[str, tuple[str, ...]]:
@@ -247,11 +254,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _install_import_paths() -> None:
+    """Keep this checkout authoritative in this runner and child processes."""
+
+    paths = [str(_TEST_ROOT), str(_ROOT / "src"), str(_ROOT)]
+    sys.path[:0] = paths
+    inherited = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        [*paths, *([inherited] if inherited else [])]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run selected tiers once or report their concrete test counts."""
 
     arguments = _parser().parse_args(argv)
-    sys.path[:0] = [str(_TEST_ROOT), str(_ROOT / "src"), str(_ROOT)]
+    _install_import_paths()
     try:
         requested = arguments.tiers or ["all"]
         unknown = sorted(set(requested) - {*TIERS, "all"})

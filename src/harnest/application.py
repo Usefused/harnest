@@ -106,7 +106,7 @@ class CompiledApplication:
     native_checkpointer: Any | None = field(default=None, repr=False)
     kind: str = "agent"
     bridge: _AdvancedAgentDefinition | None = None
-    extensions: Sequence[Any] = ()
+    lifecycle_extensions: Sequence[Any] = ()
     session_store: SessionStore | ADKStore | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
@@ -121,7 +121,7 @@ class CompiledApplication:
     context_values: Sequence[ContextValue] = ()
     tasks: Sequence[Any] = field(default=(), repr=False)
     crons: Sequence[Any] = field(default=(), repr=False)
-    plugins: Sequence[Any] = field(default=(), repr=False)
+    extensions: Sequence[Any] = field(default=(), repr=False)
     harnest_version: str | None = None
     framework_distribution: str | None = None
     framework_version: str | None = None
@@ -170,11 +170,17 @@ class CompiledApplication:
             "lifecycle_coverage",
             lifecycle_coverage(self.framework, self.mode),
         )
-        object.__setattr__(self, "extensions", tuple(self.extensions))
+        object.__setattr__(
+            self, "lifecycle_extensions", tuple(self.lifecycle_extensions)
+        )
         object.__setattr__(self, "native_extensions", tuple(self.native_extensions))
         object.__setattr__(self, "tasks", _compiled_tasks(self.tasks))
         object.__setattr__(self, "crons", _compiled_crons(self.crons, self.tasks))
-        object.__setattr__(self, "plugins", _runtime_plugins(self.plugins))
+        object.__setattr__(
+            self,
+            "extensions",
+            _compiled_extensions(self.extensions),
+        )
         object.__setattr__(
             self, "checkpoint_metadata", dict(self.checkpoint_metadata or {})
         )
@@ -284,17 +290,19 @@ def _context_capabilities(values: Sequence[Any]) -> tuple[ContextValue, ...]:
     return normalized
 
 
-def _runtime_plugins(values: Sequence[Any]) -> tuple[Any, ...]:
-    """Freeze only compiler-activated plugin singletons on the application."""
+def _compiled_extensions(values: Sequence[Any]) -> tuple[Any, ...]:
+    """Freeze only compiler-activated extension singletons on the application."""
 
-    from .plugins import ActivatedPlugin
+    from .extensions import ActivatedExtension
 
     normalized = tuple(values)
-    if any(not isinstance(item, ActivatedPlugin) for item in normalized):
-        raise TypeError("plugins must contain ActivatedPlugin values")
+    if any(not isinstance(item, ActivatedExtension) for item in normalized):
+        raise TypeError(
+            "CompiledApplication.extensions must contain ActivatedExtension values"
+        )
     names = tuple(item.descriptor.name for item in normalized)
     if len(names) != len(set(names)):
-        raise ValueError("compiled application plugin names must be unique")
+        raise ValueError("compiled application extension names must be unique")
     return normalized
 
 

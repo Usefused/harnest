@@ -61,6 +61,28 @@
         }
       }
     },
+    "contributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "lifecycle": {
+          "$ref": "#/$defs/contributionPaths"
+        },
+        "mcp": {
+          "$ref": "#/$defs/contributionPaths"
+        },
+        "skills": {
+          "$ref": "#/$defs/contributionPaths"
+        },
+        "subagents": {
+          "$ref": "#/$defs/contributionPaths"
+        },
+        "tools": {
+          "$ref": "#/$defs/contributionPaths"
+        }
+      }
+    },
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
@@ -97,6 +119,17 @@
           "sandbox.provider",
           "telemetry.exporter"
         ]
+      }
+    }
+  },
+  "$defs": {
+    "contributionPaths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(?!(?:README\\.md|extension\\.py|extension\\.yaml|lib|pyproject\\.toml)(?:/|$))[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*/?$"
       }
     }
   }

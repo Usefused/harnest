@@ -330,7 +330,7 @@ class ADKRuntimeDriver(RuntimeDriver):
         session_service: Any | None = None,
         asset_store: AssetStore | None = None,
         asset_stores: Mapping[str, AssetStore] | None = None,
-        plugin_manager: Any | None = None,
+        extension_manager: Any | None = None,
     ) -> None:
         """Create one runner without starting application-owned resources."""
 
@@ -342,7 +342,7 @@ class ADKRuntimeDriver(RuntimeDriver):
         self.application = application
         self._card = dict(card or {})
         self._extra_endpoints = dict(extra_endpoints or {})
-        self._plugin_manager = plugin_manager
+        self._extension_manager = extension_manager
         self._info = _adk_agent_info(application, card, extra_endpoints)
         stores = _adk_asset_stores(application, asset_store, asset_stores)
 
@@ -353,7 +353,7 @@ class ADKRuntimeDriver(RuntimeDriver):
             session_service,
             asset_store=self._asset_store,
             asset_stores=self._asset_stores,
-            plugin_manager=plugin_manager,
+            extension_manager=extension_manager,
         )
         self._closed = False
         self._close_lock = asyncio.Lock()
@@ -369,7 +369,7 @@ class ADKRuntimeDriver(RuntimeDriver):
             session_service=self._runner.session_service,
             asset_store=self._asset_store,
             asset_stores=self._asset_stores,
-            plugin_manager=self._plugin_manager,
+            extension_manager=self._extension_manager,
         )
 
     @property
@@ -1494,7 +1494,7 @@ def _create_runner(
     *,
     asset_store: AssetStore | None = None,
     asset_stores: Mapping[str, AssetStore] | None = None,
-    plugin_manager: Any | None = None,
+    extension_manager: Any | None = None,
 ) -> Any:
     """Create ADK's runner while preserving actionable advanced-mode logs."""
 
@@ -1533,15 +1533,15 @@ def _create_runner(
         _register_agent_context_plugins(
             result.plugin_manager,
             root_name=getattr(application.target, "name", None),
-            plugin_manager=plugin_manager,
+            extension_manager=extension_manager,
         )
         _register_mcp_context_plugins(
             result.plugin_manager,
             application.target,
-            application.extensions,
+            application.lifecycle_extensions,
         )
         _register_tool_lifecycle_plugin(
-            result.plugin_manager, application.extensions
+            result.plugin_manager, application.lifecycle_extensions
         )
     stores = dict(asset_stores or {})
     if asset_store is not None:
@@ -1554,13 +1554,13 @@ def _register_agent_context_plugins(
     manager: Any,
     *,
     root_name: str | None = None,
-    plugin_manager: Any | None = None,
+    extension_manager: Any | None = None,
 ) -> None:
     """Bracket authored callbacks with invocation-safe subagent identity."""
 
     from .context_adk import adk_agent_context_plugins
 
-    enter, exit_plugin = adk_agent_context_plugins(root_name, plugin_manager)
+    enter, exit_plugin = adk_agent_context_plugins(root_name, extension_manager)
     reserved = {enter.name, exit_plugin.name}
     if any(item.name in reserved for item in manager.plugins):
         raise ValueError("ADK application uses a reserved Harnest context plugin")

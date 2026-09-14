@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Iterator, TypeVar, overload
 
-from .approval import ApprovalRun, bind_tool_arguments
+from .agent.approval import ApprovalRun, bind_tool_arguments
 from .assets import AssetScope, AssetStorage, AssetStoreError
 from .logging import get_logger
 from .structured import (
@@ -422,7 +422,7 @@ def client_tool(
             setattr(invoke, "__harnest_output_schema__", schema)
         # Approval can sit above or below @client_tool. Resolve the wrapper only
         # after the client-tool marker exists so both authored orders are safe.
-        from .approval import wrap_approved_tool
+        from .agent.approval import wrap_approved_tool
 
         governed = wrap_approved_tool(invoke)
         if permission is not None:

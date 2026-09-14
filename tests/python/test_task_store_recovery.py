@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.durable import NativeDurableSuspended, ResumeArtifact, native_durable_call

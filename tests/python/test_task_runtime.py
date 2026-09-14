@@ -15,7 +15,7 @@ from harnest.agent_principal import (
     create_agent_principal_binding,
     revoke_agent_principal,
 )
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest import context, cron
 from harnest.context import activate_context, create_agent_context, revoke_context

@@ -18,8 +18,8 @@ from harnest.agent_plugin_runtime import (
 from harnest.bundle import _copy_agent_source
 from harnest.mcp import MCPClient, _adk_mcp_toolset_metadata
 from harnest.plugin import discover_plugins
-from harnest.plugins import activate_runtime_plugins, release_runtime_plugins
-from harnest.runtime_plugins import discover_application_extensions
+from harnest.extensions import activate_extensions, release_extensions
+from harnest.extension_descriptors import discover_application_extensions
 
 
 class AgentPluginStandardTests(unittest.TestCase):
@@ -88,7 +88,19 @@ class AgentPluginStandardTests(unittest.TestCase):
         result, _ = self._discover()
         self.assertEqual(len(result[0].mcp_clients), 1)
         self.assertEqual(result[0].skill_directories, ())
-        self.assertEqual(result[0].mcp_sources, ())
+
+    def test_manifestless_package_is_rejected(self):
+        """Do not infer a Harnest-specific package beneath the standard root."""
+
+        self._write(
+            self.plugins / "legacy" / "skills" / "lookup" / "SKILL.md",
+            "# Legacy\n",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "must contain plugin.json.*no longer loads manifestless plugins",
+        ):
+            discover_plugins(self.plugins)
 
     def test_unknown_fields_and_unimplemented_namespaces_do_not_execute(self):
         root = self._package(unknown="PRIVATE-VALUE", extensions={"foreign": ["anything"]})
@@ -115,9 +127,9 @@ capabilities: []
         descriptors = discover_application_extensions(self.plugins.parent)
         self.assertEqual(descriptors, ())
         try:
-            self.assertEqual(activate_runtime_plugins(descriptors), ())
+            self.assertEqual(activate_extensions(descriptors), ())
         finally:
-            release_runtime_plugins(descriptors)
+            release_extensions(descriptors)
         result, _ = self._discover()
         self.assertEqual([item.name for item in result], ["standard-example"])
 

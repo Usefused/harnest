@@ -162,7 +162,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
                     mode="managed",
                 )
             self.assertEqual(
-                [listener.phase for listener in application.extensions],
+                [listener.phase for listener in application.lifecycle_extensions],
                 ["before_invoke", "on_event"],
             )
             self.assertIs(application.session_store, application.checkpointer)
@@ -293,7 +293,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 5",
+                "projectSchema: 6",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
             )
 
@@ -386,6 +386,15 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 "decorator = harnest.tool.tool\n"
                 "aliased_decorator = agent_tools.tool\n",
             )
+            self.write(
+                root / "tests" / "unit" / "test_approval_imports.py",
+                "from harnest.approval import ApprovalPolicy\n"
+                "from harnest import approval, request_human_approval\n"
+                "import harnest.approval\n"
+                "import harnest.approval as approvals\n\n"
+                "policy = harnest.approval.ApprovalPolicy\n"
+                "aliased_policy = approvals.ApprovalPolicy\n",
+            )
 
             apply_upgrade(plan_upgrade(root))
 
@@ -394,6 +403,9 @@ class RepositoryUpgradeTests(unittest.TestCase):
             hooks = (root / "models" / "hooks.py").read_text(encoding="utf-8")
             tool_imports = (
                 root / "tests" / "unit" / "test_tool_imports.py"
+            ).read_text(encoding="utf-8")
+            approval_imports = (
+                root / "tests" / "unit" / "test_approval_imports.py"
             ).read_text(encoding="utf-8")
             self.assertIn("from harnest import context", tool)
             self.assertIn("from harnest.agent import Agent, tool", tool)
@@ -419,6 +431,66 @@ class RepositoryUpgradeTests(unittest.TestCase):
             self.assertIn("import harnest.agent as agent_tools", tool_imports)
             self.assertIn("decorator = harnest.agent.tool", tool_imports)
             self.assertIn("aliased_decorator = agent_tools.tool", tool_imports)
+            self.assertIn(
+                "from harnest.agent.approval import ApprovalPolicy",
+                approval_imports,
+            )
+            self.assertIn("from harnest.agent import approval", approval_imports)
+            self.assertIn(
+                "from harnest.agent.approval import request_human_approval",
+                approval_imports,
+            )
+            self.assertIn("import harnest.agent.approval\n", approval_imports)
+            self.assertIn(
+                "import harnest.agent.approval as approvals", approval_imports
+            )
+            self.assertIn(
+                "policy = harnest.agent.approval.ApprovalPolicy",
+                approval_imports,
+            )
+            self.assertIn("aliased_policy = approvals.ApprovalPolicy", approval_imports)
+
+    def test_runtime_plugin_imports_are_rewritten_as_extensions(self):
+        """Move every retired executable-plugin import without changing local names."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            path = root / "tests" / "unit" / "test_extension_imports.py"
+            self.write(
+                path,
+                "from harnest.plugins import Plugin, PluginContext\n"
+                "from harnest.plugins.clock import plugin\n"
+                "from harnest.context import plugins\n"
+                "from harnest import context\n"
+                "from harnest import plugins as root_plugins\n"
+                "import harnest.plugins\n"
+                "import harnest.plugins.clock as clock_plugin\n\n"
+                "extension_type = harnest.plugins.Plugin\n"
+                "view = context.plugins('clock')\n",
+            )
+
+            apply_upgrade(plan_upgrade(root))
+
+            migrated = path.read_text(encoding="utf-8")
+            self.assertIn(
+                "from harnest.extensions import Extension as Plugin, "
+                "ExtensionContext as PluginContext",
+                migrated,
+            )
+            self.assertIn(
+                "from harnest.extensions.clock import extension as plugin", migrated
+            )
+            self.assertIn(
+                "from harnest.context import extensions as plugins", migrated
+            )
+            self.assertIn(
+                "from harnest import extensions as root_plugins", migrated
+            )
+            self.assertIn("import harnest.extensions\n", migrated)
+            self.assertIn("import harnest.extensions.clock as clock_plugin", migrated)
+            self.assertIn("extension_type = harnest.extensions.Extension", migrated)
+            self.assertIn("view = context.extensions('clock')", migrated)
             self.assertEqual(plan_upgrade(root).actions, ())
 
     def test_flat_root_star_import_is_a_manual_blocker(self):

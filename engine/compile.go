@@ -201,7 +201,7 @@ func validateCompiledManifest(directory string, source Bundle, manifest Compiled
 	if err := validateCompiledCronSources(manifest.Crons, seen); err != nil {
 		return err
 	}
-	if expected := compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies); manifest.Digest != expected {
+	if expected := compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies); manifest.Digest != expected {
 		return fmt.Errorf("compiled manifest digest %q does not match %q", manifest.Digest, expected)
 	}
 	return validateCompiledFileSet(directory, seen)
@@ -281,7 +281,7 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	if err := validateCompiledCheckpoint(manifest); err != nil {
 		return err
 	}
-	if err := validateCompiledPlugins(manifest.Plugins); err != nil {
+	if err := validateCompiledExtensions(manifest.Extensions); err != nil {
 		return err
 	}
 	if err := validateCompiledTasks(manifest.Tasks, manifest.RuntimeDependencies); err != nil {
@@ -522,67 +522,67 @@ func validateCompiledCronSources(crons []CompiledCron, files map[string]struct{}
 	return nil
 }
 
-// validateCompiledPlugins checks provenance and dependency order before Go
+// validateCompiledExtensions checks provenance and dependency order before Go
 // trusts the graph emitted by the Python compiler.
-func validateCompiledPlugins(plugins []CompiledPlugin) error {
-	seen := make(map[string]struct{}, len(plugins))
-	for index, plugin := range plugins {
-		if err := validateCompiledPlugin(index, plugin, seen); err != nil {
+func validateCompiledExtensions(extensions []CompiledExtension) error {
+	seen := make(map[string]struct{}, len(extensions))
+	for index, extension := range extensions {
+		if err := validateCompiledExtension(index, extension, seen); err != nil {
 			return err
 		}
-		seen[plugin.Name] = struct{}{}
+		seen[extension.Name] = struct{}{}
 	}
 	return nil
 }
 
-// validateCompiledPlugin accepts only one dependency-resolved provenance record.
-func validateCompiledPlugin(index int, plugin CompiledPlugin, seen map[string]struct{}) error {
-	if err := validateCompiledPluginIdentity(index, plugin, seen); err != nil {
+// validateCompiledExtension accepts only one dependency-resolved provenance record.
+func validateCompiledExtension(index int, extension CompiledExtension, seen map[string]struct{}) error {
+	if err := validateCompiledExtensionIdentity(index, extension, seen); err != nil {
 		return err
 	}
-	for _, dependency := range plugin.Requires {
+	for _, dependency := range extension.Requires {
 		if _, exists := seen[dependency]; !exists {
 			// Earlier-only dependencies prove the manifest is already in startup
 			// order without maintaining a second graph implementation in Go.
-			return fmt.Errorf("compiled plugin %q requires unresolved plugin %q", plugin.Name, dependency)
+			return fmt.Errorf("compiled extension %q requires unresolved extension %q", extension.Name, dependency)
 		}
 	}
-	return validateCompiledPluginCapabilities(plugin)
+	return validateCompiledExtensionCapabilities(extension)
 }
 
-// validateCompiledPluginIdentity rejects ambiguous provenance before graph checks.
-func validateCompiledPluginIdentity(index int, plugin CompiledPlugin, seen map[string]struct{}) error {
-	if strings.Contains(plugin.Name, ".") || !entrypointPattern.MatchString(plugin.Name+":plugin") {
-		return fmt.Errorf("compiled plugin %d has invalid name %q", index, plugin.Name)
+// validateCompiledExtensionIdentity rejects ambiguous provenance before graph checks.
+func validateCompiledExtensionIdentity(index int, extension CompiledExtension, seen map[string]struct{}) error {
+	if strings.Contains(extension.Name, ".") || !entrypointPattern.MatchString(extension.Name+":extension") {
+		return fmt.Errorf("compiled extension %d has invalid name %q", index, extension.Name)
 	}
-	if !compiledPluginVersionPattern.MatchString(plugin.Version) {
-		return fmt.Errorf("compiled plugin %q has invalid semantic version %q", plugin.Name, plugin.Version)
+	if !compiledExtensionVersionPattern.MatchString(extension.Version) {
+		return fmt.Errorf("compiled extension %q has invalid semantic version %q", extension.Name, extension.Version)
 	}
-	if !validCompiledPluginDigest(plugin.Digest) {
-		return fmt.Errorf("compiled plugin %q has invalid digest", plugin.Name)
+	if !validCompiledExtensionDigest(extension.Digest) {
+		return fmt.Errorf("compiled extension %q has invalid digest", extension.Name)
 	}
-	if _, exists := seen[plugin.Name]; exists {
-		return fmt.Errorf("compiled manifest contains duplicate plugin %q", plugin.Name)
+	if _, exists := seen[extension.Name]; exists {
+		return fmt.Errorf("compiled manifest contains duplicate extension %q", extension.Name)
 	}
 	return nil
 }
 
-// validateCompiledPluginCapabilities checks sorted authority and dependency records.
-func validateCompiledPluginCapabilities(plugin CompiledPlugin) error {
-	if !strictlySortedPluginCapabilities(plugin.Capabilities) {
-		return fmt.Errorf("compiled plugin %q capabilities must be sorted and unique", plugin.Name)
+// validateCompiledExtensionCapabilities checks sorted authority and dependency records.
+func validateCompiledExtensionCapabilities(extension CompiledExtension) error {
+	if !strictlySortedExtensionCapabilities(extension.Capabilities) {
+		return fmt.Errorf("compiled extension %q capabilities must be sorted and unique", extension.Name)
 	}
-	if unknown := unknownCompiledPluginCapability(plugin.Capabilities); unknown != "" {
-		return fmt.Errorf("compiled plugin %q has unknown capability %q", plugin.Name, unknown)
+	if unknown := unknownCompiledExtensionCapability(extension.Capabilities); unknown != "" {
+		return fmt.Errorf("compiled extension %q has unknown capability %q", extension.Name, unknown)
 	}
-	if !strictlySortedPluginDependencies(plugin.Dependencies) {
-		return fmt.Errorf("compiled plugin %q dependencies must be sorted and unique", plugin.Name)
+	if !strictlySortedExtensionDependencies(extension.Dependencies) {
+		return fmt.Errorf("compiled extension %q dependencies must be sorted and unique", extension.Name)
 	}
 	return nil
 }
 
-// strictlySortedPluginDependencies rejects empty or ambiguous PEP 508 records.
-func strictlySortedPluginDependencies(values []string) bool {
+// strictlySortedExtensionDependencies rejects empty or ambiguous PEP 508 records.
+func strictlySortedExtensionDependencies(values []string) bool {
 	for index, value := range values {
 		if strings.TrimSpace(value) == "" || (index > 0 && values[index-1] >= value) {
 			return false
@@ -591,8 +591,8 @@ func strictlySortedPluginDependencies(values []string) bool {
 	return true
 }
 
-// validCompiledPluginDigest keeps plugin identity aligned with source digest framing.
-func validCompiledPluginDigest(value string) bool {
+// validCompiledExtensionDigest keeps extension identity aligned with source digest framing.
+func validCompiledExtensionDigest(value string) bool {
 	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
 		return false
 	}
@@ -600,8 +600,8 @@ func validCompiledPluginDigest(value string) bool {
 	return err == nil
 }
 
-// strictlySortedPluginCapabilities rejects ambiguous or duplicate authority records.
-func strictlySortedPluginCapabilities(values []string) bool {
+// strictlySortedExtensionCapabilities rejects ambiguous or duplicate authority records.
+func strictlySortedExtensionCapabilities(values []string) bool {
 	for index, value := range values {
 		if strings.TrimSpace(value) == "" || (index > 0 && values[index-1] >= value) {
 			return false
@@ -610,22 +610,22 @@ func strictlySortedPluginCapabilities(values []string) bool {
 	return true
 }
 
-// compiledPluginCapabilities mirrors the compiler/schema authority vocabulary so
+// compiledExtensionCapabilities mirrors the compiler/schema authority vocabulary so
 // a rewritten manifest cannot invent a capability the source compiler rejects.
-var compiledPluginCapabilities = map[string]struct{}{
+var compiledExtensionCapabilities = map[string]struct{}{
 	"context.assets": {}, "context.credentials": {}, "context.continuations": {}, "context.mcp": {},
 	"context.resources": {}, "context.session": {}, "context.skills": {}, "context.storage": {},
 	"content.mcp": {}, "content.skills": {}, "content.subagents": {}, "content.tools": {},
 	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.mcp": {},
 	"lifecycle.model": {}, "lifecycle.skills": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
-	"policy.output": {}, "storage.assets": {}, "storage.checkpoints": {},
-	"storage.custom": {}, "storage.sessions": {}, "telemetry.exporter": {},
+	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {}, "storage.checkpoints": {},
+	"storage.cron": {}, "storage.custom": {}, "storage.sessions": {}, "storage.tasks": {}, "telemetry.exporter": {},
 }
 
-// unknownCompiledPluginCapability returns the first undeclared authority term.
-func unknownCompiledPluginCapability(values []string) string {
+// unknownCompiledExtensionCapability returns the first undeclared authority term.
+func unknownCompiledExtensionCapability(values []string) string {
 	for _, value := range values {
-		if _, known := compiledPluginCapabilities[value]; !known {
+		if _, known := compiledExtensionCapabilities[value]; !known {
 			return value
 		}
 	}
@@ -732,7 +732,7 @@ func requireCompiledFiles(seen map[string]struct{}) error {
 }
 
 // compiledManifestDigest binds files and canonical runtime capability metadata.
-func compiledManifestDigest(files []CompiledFile, interfaces CompiledInterfaces, plugins []CompiledPlugin, tasks []CompiledTask, crons []CompiledCron, dependencies []string) string {
+func compiledManifestDigest(files []CompiledFile, interfaces CompiledInterfaces, extensions []CompiledExtension, tasks []CompiledTask, crons []CompiledCron, dependencies []string) string {
 	aggregate := sha256.New()
 	for _, record := range files {
 		_, _ = io.WriteString(aggregate, record.Path)
@@ -743,25 +743,25 @@ func compiledManifestDigest(files []CompiledFile, interfaces CompiledInterfaces,
 		_, _ = io.WriteString(aggregate, "\n")
 	}
 	// Interface policy changes executable artifact behavior, so it belongs in
-	// the same immutable identity as runtime plugins, tasks, and schedules.
+	// the same immutable identity as runtime extensions, tasks, and schedules.
 	writeCompiledDigestField(aggregate, "interface.cli", strconv.FormatBool(interfaces.CLI))
-	for _, plugin := range plugins {
-		// The manifest is not one of its own file records, so plugin provenance
+	for _, extension := range extensions {
+		// The manifest is not one of its own file records, so extension provenance
 		// needs explicit framing inside the verified aggregate identity.
-		writeCompiledDigestField(aggregate, "plugin.name", plugin.Name)
-		writeCompiledDigestField(aggregate, "plugin.version", plugin.Version)
-		writeCompiledDigestField(aggregate, "plugin.digest", plugin.Digest)
-		writeCompiledDigestField(aggregate, "plugin.requires", strconv.Itoa(len(plugin.Requires)))
-		for _, dependency := range plugin.Requires {
-			writeCompiledDigestField(aggregate, "plugin.require", dependency)
+		writeCompiledDigestField(aggregate, "extension.name", extension.Name)
+		writeCompiledDigestField(aggregate, "extension.version", extension.Version)
+		writeCompiledDigestField(aggregate, "extension.digest", extension.Digest)
+		writeCompiledDigestField(aggregate, "extension.requires", strconv.Itoa(len(extension.Requires)))
+		for _, dependency := range extension.Requires {
+			writeCompiledDigestField(aggregate, "extension.require", dependency)
 		}
-		writeCompiledDigestField(aggregate, "plugin.capabilities", strconv.Itoa(len(plugin.Capabilities)))
-		for _, capability := range plugin.Capabilities {
-			writeCompiledDigestField(aggregate, "plugin.capability", capability)
+		writeCompiledDigestField(aggregate, "extension.capabilities", strconv.Itoa(len(extension.Capabilities)))
+		for _, capability := range extension.Capabilities {
+			writeCompiledDigestField(aggregate, "extension.capability", capability)
 		}
-		writeCompiledDigestField(aggregate, "plugin.dependencies", strconv.Itoa(len(plugin.Dependencies)))
-		for _, requirement := range plugin.Dependencies {
-			writeCompiledDigestField(aggregate, "plugin.dependency", requirement)
+		writeCompiledDigestField(aggregate, "extension.dependencies", strconv.Itoa(len(extension.Dependencies)))
+		for _, requirement := range extension.Dependencies {
+			writeCompiledDigestField(aggregate, "extension.dependency", requirement)
 		}
 	}
 	for _, task := range tasks {

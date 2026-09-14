@@ -12,7 +12,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from harnest.assets import Stored
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.application import CompiledApplication
 from harnest.assets import AssetScope, AssetStoreError, MemoryAssetStore
 from harnest.client_tool import (

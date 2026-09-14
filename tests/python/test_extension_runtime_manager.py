@@ -15,16 +15,16 @@ from harnest.context import (
     derive_agent_context,
     revoke_context,
 )
-from harnest.plugin_runtime_context import plugin_mutation
-from harnest.plugin_runtime_manager import PluginRuntimeError, PluginRuntimeManager
-from harnest.plugins import (
-    ActivatedPlugin,
-    Plugin,
-    PluginContext,
-    PluginContextUnavailableError,
-    activate_runtime_plugins,
+from harnest.extension_runtime_context import extension_mutation
+from harnest.extension_runtime_manager import ExtensionRuntimeError, ExtensionRuntimeManager
+from harnest.extensions import (
+    ActivatedExtension,
+    Extension,
+    ExtensionContext,
+    ExtensionContextUnavailableError,
+    activate_extensions,
 )
-from harnest.runtime_plugins import RuntimePluginDescriptor, discover_runtime_plugins
+from harnest.extension_descriptors import ExtensionDescriptor, discover_extensions
 
 
 class _Store:
@@ -36,7 +36,7 @@ class _Store:
         self.start_calls += 1
 
 
-class _Context(PluginContext):
+class _Context(ExtensionContext):
     def agent_identity(self) -> tuple[str, str | None, int]:
         """Resolve identity dynamically so managed child scopes remain visible."""
 
@@ -44,7 +44,7 @@ class _Context(PluginContext):
         return context.agent_name, context.parent_agent_name, context.depth
 
 
-class _Plugin(Plugin[_Context]):
+class _Extension(Extension[_Context]):
     def __init__(
         self,
         name: str,
@@ -72,39 +72,39 @@ class _Plugin(Plugin[_Context]):
         if self.fail_stop:
             raise RuntimeError("private-stop-payload")
 
-    def create_context(self, base: PluginContext) -> _Context:
+    def create_context(self, base: ExtensionContext) -> _Context:
         if self.fail_context:
             raise RuntimeError("private-context-payload")
-        return _Context(base.plugin_name)
+        return _Context(base.extension_name)
 
 
 def _activated(
     name: str,
-    plugin: Plugin,
+    extension: Extension,
     *,
     requires: tuple[str, ...] = (),
     capabilities: tuple[str, ...] = (),
-) -> ActivatedPlugin:
-    descriptor = RuntimePluginDescriptor(
+) -> ActivatedExtension:
+    descriptor = ExtensionDescriptor(
         name=name,
         version="1.0.0",
-        directory=Path(f"/plugins/{name}"),
-        entrypoint="plugin:plugin",
+        directory=Path(f"/extensions/{name}"),
+        entrypoint="extension:extension",
         requires=requires,
         capabilities=capabilities,
         digest=f"sha256:{name}",
     )
-    plugin._bind_identity(name)
-    return ActivatedPlugin(descriptor, ModuleType(f"harnest.plugins.{name}"), plugin)
+    extension._bind_identity(name)
+    return ActivatedExtension(descriptor, ModuleType(f"harnest.extensions.{name}"), extension)
 
 
 def _manager(
-    activated: tuple[ActivatedPlugin, ...],
+    activated: tuple[ActivatedExtension, ...],
     *,
     stores: dict[str, object] | None = None,
     release_namespaces_on_close: bool = False,
-) -> PluginRuntimeManager:
-    return PluginRuntimeManager(
+) -> ExtensionRuntimeManager:
+    return ExtensionRuntimeManager(
         activated,
         framework="langgraph",
         root_agent_name="support",
@@ -122,17 +122,17 @@ def _agent(bindings, *, invocation_id: str = "invoke-1"):
         session_id="session-1",
         metadata={},
         resources={},
-        plugin_bindings=bindings,
+        extension_bindings=bindings,
     )
 
 
-class PluginRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
+class ExtensionRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_releases_transferred_namespace_exactly_once(self):
         events: list[str] = []
-        activated = (_activated("temporal", _Plugin("temporal", events)),)
+        activated = (_activated("temporal", _Extension("temporal", events)),)
         manager = _manager(activated, release_namespaces_on_close=True)
 
-        with patch("harnest.plugins.release_runtime_plugins") as release:
+        with patch("harnest.extensions.release_extensions") as release:
             await manager.close()
             await manager.close()
 
@@ -142,17 +142,17 @@ class PluginRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_namespace_cleanup_does_not_replace_stop_failure(self):
         events: list[str] = []
         activated = (
-            _activated("temporal", _Plugin("temporal", events, fail_stop=True)),
+            _activated("temporal", _Extension("temporal", events, fail_stop=True)),
         )
         manager = _manager(activated, release_namespaces_on_close=True)
         await manager.start()
 
         with (
             patch(
-                "harnest.plugins.release_runtime_plugins",
+                "harnest.extensions.release_extensions",
                 side_effect=RuntimeError("private-namespace-payload"),
             ) as release,
-            self.assertRaises(PluginRuntimeError) as captured,
+            self.assertRaises(ExtensionRuntimeError) as captured,
         ):
             await manager.close()
 
@@ -160,67 +160,67 @@ class PluginRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stop failed", str(captured.exception))
         self.assertNotIn("private-namespace-payload", str(captured.exception))
         notes = getattr(captured.exception, "__notes__", ())
-        self.assertTrue(any("plugin namespace cleanup" in note for note in notes))
+        self.assertTrue(any("extension namespace cleanup" in note for note in notes))
 
     async def test_failed_start_releases_transferred_namespace_on_close(self):
         events: list[str] = []
         activated = (
-            _activated("temporal", _Plugin("temporal", events, fail_start=True)),
+            _activated("temporal", _Extension("temporal", events, fail_start=True)),
         )
         manager = _manager(activated, release_namespaces_on_close=True)
-        with self.assertRaises(PluginRuntimeError):
+        with self.assertRaises(ExtensionRuntimeError):
             await manager.start()
 
-        with patch("harnest.plugins.release_runtime_plugins") as release:
+        with patch("harnest.extensions.release_extensions") as release:
             await manager.close()
             await manager.close()
 
         release.assert_called_once_with((activated[0].descriptor,))
 
-    async def test_discovered_namespace_and_manager_share_one_plugin_singleton(self):
+    async def test_discovered_namespace_and_manager_share_one_extension_singleton(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "plugins"
+            root = Path(temporary) / "extensions"
             directory = root / "temporal"
             directory.mkdir(parents=True)
-            (directory / "plugin.yaml").write_text(
+            (directory / "extension.yaml").write_text(
                 """apiVersion: harnest.dev/v1alpha1
-kind: RuntimePlugin
+kind: Extension
 metadata:
   name: temporal
   version: 1.0.0
 runtime:
-  entrypoint: plugin:plugin
+  entrypoint: extension:extension
 """,
                 encoding="utf-8",
             )
-            (directory / "plugin.py").write_text(
-                """from harnest.plugins import Plugin, PluginContext
+            (directory / "extension.py").write_text(
+                """from harnest.extensions import Extension, ExtensionContext
 
-class TemporalContext(PluginContext):
+class TemporalContext(ExtensionContext):
     def ready(self):
         self._require_active()
         return "ready"
 
-class TemporalPlugin(Plugin[TemporalContext]):
+class TemporalExtension(Extension[TemporalContext]):
     def create_context(self, base):
-        return TemporalContext(base.plugin_name)
+        return TemporalContext(base.extension_name)
 
-plugin = TemporalPlugin()
+extension = TemporalExtension()
 """,
                 encoding="utf-8",
             )
-            descriptors = discover_runtime_plugins(root)
-            activated = activate_runtime_plugins(descriptors)
+            descriptors = discover_extensions(root)
+            activated = activate_extensions(descriptors)
             manager = _manager(activated, release_namespaces_on_close=True)
             active = None
-            import harnest.plugins as namespace
+            import harnest.extensions as namespace
 
             try:
                 await manager.start()
                 active = _agent(manager.invocation_bindings())
                 with activate_context(active):
-                    view = context.plugins("temporal")
-                    self.assertIs(namespace.temporal.plugin.context, view)
+                    view = context.extensions("temporal")
+                    self.assertIs(namespace.temporal.extension.context, view)
                     self.assertEqual(view.ready(), "ready")
             finally:
                 if active is not None:
@@ -230,7 +230,7 @@ plugin = TemporalPlugin()
 
     async def test_manager_rejects_falsey_non_mapping_storage(self):
         with self.assertRaisesRegex(TypeError, "custom storage must be a mapping"):
-            PluginRuntimeManager(
+            ExtensionRuntimeManager(
                 (),
                 framework="adk",
                 root_agent_name="support",
@@ -240,13 +240,13 @@ plugin = TemporalPlugin()
     async def test_manager_rejects_missing_and_cyclic_dependencies_before_start(self):
         events: list[str] = []
         missing = _activated(
-            "worker", _Plugin("worker", events), requires=("core",)
+            "worker", _Extension("worker", events), requires=("core",)
         )
-        with self.assertRaisesRegex(ValueError, "missing plugin 'core'"):
+        with self.assertRaisesRegex(ValueError, "missing extension 'core'"):
             _manager((missing,))
 
-        left = _activated("left", _Plugin("left", events), requires=("right",))
-        right = _activated("right", _Plugin("right", events), requires=("left",))
+        left = _activated("left", _Extension("left", events), requires=("right",))
+        right = _activated("right", _Extension("right", events), requires=("left",))
         with self.assertRaisesRegex(ValueError, "dependency cycle"):
             _manager((left, right))
         self.assertEqual(events, [])
@@ -254,8 +254,8 @@ plugin = TemporalPlugin()
     async def test_start_is_concurrent_safe_and_close_reverses_dependencies(self):
         events: list[str] = []
         store = _Store()
-        core = _Plugin("core", events)
-        worker = _Plugin("worker", events)
+        core = _Extension("core", events)
+        worker = _Extension("worker", events)
         manager = _manager(
             (
                 _activated("worker", worker, requires=("core",)),
@@ -272,7 +272,7 @@ plugin = TemporalPlugin()
         self.assertTrue(manager.started)
         self.assertIs(core.start_context.storage("state-db", _Store), store)
         self.assertEqual(store.start_calls, 0)
-        self.assertEqual(core.start_context.plugin_name, "core")
+        self.assertEqual(core.start_context.extension_name, "core")
         self.assertEqual(core.start_context.framework, "langgraph")
         self.assertEqual(core.start_context.root_agent_name, "support")
         self.assertNotIn("state-db", repr(core.start_context))
@@ -297,25 +297,25 @@ plugin = TemporalPlugin()
         """Keep compilation refs independent from exclusive runtime ownership."""
 
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "plugins"
+            root = Path(temporary) / "extensions"
             directory = root / "temporal"
             directory.mkdir(parents=True)
-            (directory / "plugin.yaml").write_text(
+            (directory / "extension.yaml").write_text(
                 """apiVersion: harnest.dev/v1alpha1
-kind: RuntimePlugin
+kind: Extension
 metadata:
   name: temporal
   version: 1.0.0
 runtime:
-  entrypoint: plugin:plugin
+  entrypoint: extension:extension
 """,
                 encoding="utf-8",
             )
-            (directory / "plugin.py").write_text(
+            (directory / "extension.py").write_text(
                 """import asyncio
-from harnest.plugins import Plugin
+from harnest.extensions import Extension
 
-class TemporalPlugin(Plugin):
+class TemporalExtension(Extension):
     def __init__(self):
         self.start_calls = 0
         self.stop_calls = 0
@@ -331,46 +331,46 @@ class TemporalPlugin(Plugin):
     async def stop(self):
         self.stop_calls += 1
 
-plugin = TemporalPlugin()
+extension = TemporalExtension()
 """,
                 encoding="utf-8",
             )
-            descriptors = discover_runtime_plugins(root)
-            first = activate_runtime_plugins(descriptors)
-            second = activate_runtime_plugins(descriptors)
+            descriptors = discover_extensions(root)
+            first = activate_extensions(descriptors)
+            second = activate_extensions(descriptors)
             first_manager = _manager(
                 first, release_namespaces_on_close=True
             )
             second_manager = _manager(
                 second, release_namespaces_on_close=True
             )
-            plugin = first[0].plugin
+            extension = first[0].extension
             first_start = asyncio.create_task(first_manager.start())
-            import harnest.plugins as namespace
+            import harnest.extensions as namespace
 
             try:
-                await asyncio.wait_for(plugin.start_entered.wait(), timeout=1)
+                await asyncio.wait_for(extension.start_entered.wait(), timeout=1)
                 with self.assertRaisesRegex(
-                    PluginRuntimeError, "already active in another runtime"
+                    ExtensionRuntimeError, "already active in another runtime"
                 ):
                     await second_manager.start()
-                self.assertEqual(plugin.start_calls, 1)
+                self.assertEqual(extension.start_calls, 1)
 
-                plugin.release_start.set()
+                extension.release_start.set()
                 await first_start
                 await second_manager.close()
 
                 # The rejected runtime releases only its compiler acquisition;
                 # the active owner keeps both its singleton and namespace live.
-                self.assertEqual(plugin.stop_calls, 0)
+                self.assertEqual(extension.stop_calls, 0)
                 self.assertTrue(first_manager.started)
                 self.assertTrue(hasattr(namespace, "temporal"))
 
                 await first_manager.close()
-                self.assertEqual(plugin.stop_calls, 1)
+                self.assertEqual(extension.stop_calls, 1)
                 self.assertFalse(hasattr(namespace, "temporal"))
             finally:
-                plugin.release_start.set()
+                extension.release_start.set()
                 await asyncio.gather(first_start, return_exceptions=True)
                 await second_manager.close()
                 await first_manager.close()
@@ -378,8 +378,8 @@ plugin = TemporalPlugin()
     async def test_start_storage_requires_declared_context_capability(self):
         events: list[str] = []
         store = _Store()
-        permitted = _Plugin("permitted", events)
-        restricted = _Plugin("restricted", events)
+        permitted = _Extension("permitted", events)
+        restricted = _Extension("restricted", events)
         manager = _manager(
             (
                 _activated(
@@ -401,8 +401,8 @@ plugin = TemporalPlugin()
 
     async def test_partial_start_failure_unwinds_and_detaches_authored_error(self):
         events: list[str] = []
-        core = _Plugin("core", events)
-        worker = _Plugin("worker", events, fail_start=True)
+        core = _Extension("core", events)
+        worker = _Extension("worker", events, fail_start=True)
         manager = _manager(
             (
                 _activated("core", core),
@@ -410,7 +410,7 @@ plugin = TemporalPlugin()
             )
         )
 
-        with self.assertRaises(PluginRuntimeError) as captured:
+        with self.assertRaises(ExtensionRuntimeError) as captured:
             await manager.start()
 
         self.assertEqual(
@@ -421,10 +421,10 @@ plugin = TemporalPlugin()
         await manager.close()
         self.assertEqual(events.count("stop:core"), 1)
 
-    async def test_cleanup_attempts_every_plugin_and_sanitizes_failure(self):
+    async def test_cleanup_attempts_every_extension_and_sanitizes_failure(self):
         events: list[str] = []
-        core = _Plugin("core", events, fail_stop=True)
-        worker = _Plugin("worker", events, fail_stop=True)
+        core = _Extension("core", events, fail_stop=True)
+        worker = _Extension("worker", events, fail_stop=True)
         manager = _manager(
             (
                 _activated("core", core),
@@ -433,7 +433,7 @@ plugin = TemporalPlugin()
         )
         await manager.start()
 
-        with self.assertRaises(PluginRuntimeError) as captured:
+        with self.assertRaises(ExtensionRuntimeError) as captured:
             await manager.close()
 
         self.assertEqual(events[-2:], ["stop:worker", "stop:core"])
@@ -442,70 +442,70 @@ plugin = TemporalPlugin()
 
     async def test_invocation_views_bind_singleton_and_follow_child_identity(self):
         events: list[str] = []
-        plugin = _Plugin("temporal", events)
-        manager = _manager((_activated("temporal", plugin),))
+        extension = _Extension("temporal", events)
+        manager = _manager((_activated("temporal", extension),))
         await manager.start()
         active = _agent(manager.invocation_bindings())
 
         with activate_context(active):
-            view = context.plugins("temporal", _Context)
-            self.assertIs(plugin.context, view)
+            view = context.extensions("temporal", _Context)
+            self.assertIs(extension.context, view)
             self.assertEqual(view.agent_identity(), ("support", None, 0))
             child = derive_agent_context(active, agent_name="researcher")
             with activate_context(child):
-                self.assertIs(context.plugins("temporal"), view)
+                self.assertIs(context.extensions("temporal"), view)
                 self.assertEqual(
-                    plugin.context.agent_identity(), ("researcher", "support", 1)
+                    extension.context.agent_identity(), ("researcher", "support", 1)
                 )
             with self.assertRaisesRegex(ContextResourceError, "not available"):
-                context.plugins("missing")
+                context.extensions("missing")
             with self.assertRaisesRegex(ContextResourceError, "must expose"):
-                context.plugins("temporal", dict)
+                context.extensions("temporal", dict)
 
-        with self.assertRaises(PluginContextUnavailableError):
-            _ = plugin.context
+        with self.assertRaises(ExtensionContextUnavailableError):
+            _ = extension.context
         revoke_context(active)
-        with self.assertRaises(PluginContextUnavailableError):
+        with self.assertRaises(ExtensionContextUnavailableError):
             view.agent_identity()
         await manager.close()
 
     async def test_copied_task_and_previous_invocation_views_are_revoked(self):
         events: list[str] = []
-        plugin = _Plugin("temporal", events)
-        manager = _manager((_activated("temporal", plugin),))
+        extension = _Extension("temporal", events)
+        manager = _manager((_activated("temporal", extension),))
         await manager.start()
         first = _agent(manager.invocation_bindings())
         ready = asyncio.Event()
         release = asyncio.Event()
 
         async def retained_child():
-            view = plugin.context
+            view = extension.context
             ready.set()
             await release.wait()
             return view.agent_identity()
 
         with activate_context(first):
-            old = context.plugins("temporal")
+            old = context.extensions("temporal")
             child = asyncio.create_task(retained_child())
             await ready.wait()
         revoke_context(first)
         release.set()
-        with self.assertRaises(PluginContextUnavailableError):
+        with self.assertRaises(ExtensionContextUnavailableError):
             await child
 
         second = _agent(manager.invocation_bindings(), invocation_id="invoke-2")
         with activate_context(second):
-            current = context.plugins("temporal")
+            current = context.extensions("temporal")
             self.assertIsNot(current, old)
-            with self.assertRaises(PluginContextUnavailableError):
+            with self.assertRaises(ExtensionContextUnavailableError):
                 old._require_active()
         revoke_context(second)
         await manager.close()
 
     async def test_context_factory_failure_revokes_earlier_views_and_is_sanitized(self):
         events: list[str] = []
-        core = _Plugin("core", events)
-        worker = _Plugin("worker", events, fail_context=True)
+        core = _Extension("core", events)
+        worker = _Extension("worker", events, fail_context=True)
         manager = _manager(
             (
                 _activated("core", core),
@@ -514,7 +514,7 @@ plugin = TemporalPlugin()
         )
         await manager.start()
 
-        with self.assertRaises(PluginRuntimeError) as captured:
+        with self.assertRaises(ExtensionRuntimeError) as captured:
             manager.invocation_bindings()
 
         self.assertNotIn("private-context-payload", str(captured.exception))
@@ -522,15 +522,15 @@ plugin = TemporalPlugin()
         await manager.close()
 
 
-class PluginMutationAuditTests(unittest.IsolatedAsyncioTestCase):
+class ExtensionMutationAuditTests(unittest.IsolatedAsyncioTestCase):
     async def test_audit_records_commit_and_failure_without_payloads(self):
-        with self.assertLogs("harnest.agent.plugin.audit", level="INFO") as logs:
-            async with plugin_mutation(
+        with self.assertLogs("harnest.agent.extension.audit", level="INFO") as logs:
+            async with extension_mutation(
                 "temporal", "workflow.start", trigger="agent"
             ):
                 pass
             with self.assertRaisesRegex(RuntimeError, "customer-secret"):
-                async with plugin_mutation(
+                async with extension_mutation(
                     "temporal", "workflow.cancel", trigger="user"
                 ):
                     raise RuntimeError("customer-secret")

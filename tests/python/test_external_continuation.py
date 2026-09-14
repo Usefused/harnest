@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 import unittest
 
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.agent import AgentRuntimePrincipal
 from harnest.checkpoint import (
     DurableRunResult,

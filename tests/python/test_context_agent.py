@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from harnest.application import CompiledApplication
-from harnest.approval import request_human_approval
+from harnest.agent.approval import request_human_approval
 from harnest.client_tool import client_tool
 from harnest import context
 from harnest.context_agent import (

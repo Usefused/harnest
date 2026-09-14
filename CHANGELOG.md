@@ -21,6 +21,27 @@
   action revisions, sanitize authentication-provider failures before logging,
   and keep response and session polling identifiers out of exported HTTP spans.
 
+### Changed
+
+* Rename same-process executable Runtime Plugins to Harnest Extensions across
+  source layout, Python APIs, CLI discovery, runtime ownership, and compiled
+  manifests. `plugins/` now unambiguously contains declarative Agent Plugins;
+  executable packages use `extensions/<name>/extension.yaml`, `extension.py`,
+  and `harnest.extensions`. Project schema 6 lets `harnest upgrade` preview and
+  apply the directory, manifest, singleton, distribution-name, dependency, and
+  authored-import migration while leaving `plugin.json` packages untouched.
+  Remove the manifestless `plugins/<name>/{mcp,skills}` compatibility loader so
+  every package under `plugins/` must now follow the Agent Plugins standard.
+  Harnest Extensions now project tools, MCP, skills, subagents, and lifecycle
+  content only from validated package-relative paths declared by
+  `extension.yaml` `contributes`; installation still copies the package intact,
+  and upgrade makes formerly inferred Runtime Plugin folders explicit.
+
+* Move the human-approval API from `harnest.approval` to
+  `harnest.agent.approval`, alongside the agent tools it protects. Remove the
+  old root module and teach `harnest upgrade` to rewrite authored imports and
+  qualified access to the new namespace.
+
 ## [0.18.3](https://github.com/Usefused/harnest/compare/v0.18.2...v0.18.3) (2026-09-11)
 
 ### Fixes

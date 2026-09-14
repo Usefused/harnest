@@ -58,7 +58,7 @@ func (a *application) installPyPIExtension(
 	if err := validateLocalPackageRoot(extensionsRoot, "extensions"); err != nil {
 		return installedExtension{}, err
 	}
-	metadata, err := a.fetchPyPIPluginMetadata(ctx, projectName, false)
+	metadata, err := a.fetchPyPIExtensionMetadata(ctx, projectName, false)
 	if err != nil {
 		return installedExtension{}, fmt.Errorf("resolve PyPI Harnest Extension %q: %w", projectName, err)
 	}
@@ -89,9 +89,6 @@ func canonicalExtensionProject(source string) (string, error) {
 		return "", fmt.Errorf("PyPI Harnest Extension must be a project name or short slug")
 	}
 	name := normalizeProjectName(source)
-	if strings.HasPrefix(name, pypiPluginPrefix) {
-		return "", fmt.Errorf("legacy RuntimePlugin projects cannot be installed as Harnest Extensions")
-	}
 	if !strings.HasPrefix(name, pypiExtensionPrefix) {
 		name = pypiExtensionPrefix + name
 	}
@@ -106,24 +103,24 @@ func (a *application) downloadPyPIExtension(
 	ctx context.Context, projectName string, metadata pypiProjectMetadata,
 ) (pypiExtensionPackage, error) {
 	if normalizeProjectName(metadata.Info.Name) != projectName ||
-		!safePluginMetadataValue(metadata.Info.Version, 50) {
+		!safeExtensionMetadataValue(metadata.Info.Version, 50) {
 		return pypiExtensionPackage{}, fmt.Errorf("PyPI metadata identity does not match project")
 	}
-	artifact, err := selectPluginWheel(metadata.URLs)
+	artifact, err := selectExtensionWheel(metadata.URLs)
 	if err != nil {
 		return pypiExtensionPackage{}, err
 	}
-	contents, err := a.downloadPluginWheel(ctx, artifact)
+	contents, err := a.downloadExtensionWheel(ctx, artifact)
 	if err != nil {
 		return pypiExtensionPackage{}, err
 	}
-	wheel, err := readPluginWheelPackage(contents, projectName, metadata.Info.Version)
+	wheel, err := readExtensionWheelPackage(contents, projectName, metadata.Info.Version)
 	if err != nil {
 		return pypiExtensionPackage{}, fmt.Errorf("PyPI wheel is not an installable Harnest Extension: %w", err)
 	}
 	stem, _ := extensionWheelFormat(wheel.EntryPoint.Value)
 	if stem != "extension" {
-		return pypiExtensionPackage{}, fmt.Errorf("legacy RuntimePlugin wheels cannot be installed as Harnest Extensions")
+		return pypiExtensionPackage{}, fmt.Errorf("wheel does not use the Harnest Extension entry point")
 	}
 	manifest, err := decodeLocalExtensionManifest(wheel.Manifest)
 	if err != nil {
@@ -132,7 +129,9 @@ func (a *application) downloadPyPIExtension(
 	if err := validateLocalExtensionManifest(manifest); err != nil {
 		return pypiExtensionPackage{}, fmt.Errorf("invalid extension.yaml: %w", err)
 	}
-	downloaded, err := readPyPIExtensionPackage(contents, projectName, metadata.Info.Version, wheel)
+	downloaded, err := readPyPIExtensionPackage(
+		contents, projectName, metadata.Info.Version, wheel, manifest,
+	)
 	if err != nil {
 		return pypiExtensionPackage{}, err
 	}
@@ -164,7 +163,7 @@ func stagePyPIExtensionPackage(downloaded pypiExtensionPackage) (string, error) 
 			return cleanup(fmt.Errorf("stage PyPI Harnest Extension %s: %w", name, err))
 		}
 	}
-	if err := validateLocalExtensionLayout(root); err != nil {
+	if err := validateLocalExtensionLayout(root, downloaded.Manifest); err != nil {
 		return cleanup(err)
 	}
 	if err := validateLocalExtensionProject(root, downloaded.Manifest); err != nil {
@@ -194,17 +193,18 @@ func pypiExtensionProjectSource(downloaded pypiExtensionPackage) ([]byte, error)
 
 // readPyPIExtensionPackage extracts only the verified module root and bounded core metadata.
 func readPyPIExtensionPackage(
-	contents []byte, projectName, release string, wheel pluginWheelPackage,
+	contents []byte, projectName, release string, wheel extensionWheelPackage,
+	manifest localExtensionManifest,
 ) (pypiExtensionPackage, error) {
 	reader, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
 	if err != nil {
 		return pypiExtensionPackage{}, fmt.Errorf("read PyPI Harnest Extension wheel: %w", err)
 	}
-	moduleRoot, err := pluginModuleRoot(wheel.EntryPoint.Value)
+	moduleRoot, err := extensionModuleRoot(wheel.EntryPoint.Value)
 	if err != nil {
 		return pypiExtensionPackage{}, err
 	}
-	resources, err := readExtensionWheelResources(reader.File, moduleRoot)
+	resources, err := readExtensionWheelResources(reader.File, moduleRoot, manifest)
 	if err != nil {
 		return pypiExtensionPackage{}, err
 	}
@@ -222,7 +222,7 @@ func readPyPIExtensionPackage(
 
 // readExtensionWheelResources rejects unsafe layouts before any path reaches the filesystem.
 func readExtensionWheelResources(
-	files []*zip.File, moduleRoot string,
+	files []*zip.File, moduleRoot string, manifest localExtensionManifest,
 ) (map[string][]byte, error) {
 	resources := map[string][]byte{}
 	casefoldPaths := map[string]string{}
@@ -236,7 +236,7 @@ func readExtensionWheelResources(
 		if relative == "__init__.py" {
 			continue
 		}
-		if err := validateExtensionWheelResource(relative, file); err != nil {
+		if err := validateExtensionWheelResource(relative, file, manifest); err != nil {
 			return nil, err
 		}
 		if err := validateExtensionWheelResourceIdentity(
@@ -277,12 +277,14 @@ func validateExtensionWheelResourceIdentity(
 }
 
 // validateExtensionWheelResource applies the application-local layout before extraction.
-func validateExtensionWheelResource(relative string, file *zip.File) error {
+func validateExtensionWheelResource(
+	relative string, file *zip.File, manifest localExtensionManifest,
+) error {
 	if !safeExtensionWheelResourcePath(relative) {
 		return fmt.Errorf("PyPI Harnest Extension wheel contains an unsafe resource path")
 	}
 	root, _, _ := strings.Cut(relative, "/")
-	expectsFile, allowed := extensionRootEntries[root]
+	expectsFile, allowed := extensionAllowedRootEntries(manifest)[root]
 	if !allowed || expectsFile && relative != root {
 		return fmt.Errorf("unexpected Harnest Extension resource in wheel: %s", relative)
 	}
@@ -297,7 +299,7 @@ func validateExtensionWheelResource(relative string, file *zip.File) error {
 
 // safeExtensionWheelResourcePath confines portable archive paths to the module root.
 func safeExtensionWheelResourcePath(relative string) bool {
-	return safePluginMetadataValue(relative, 1_000) &&
+	return safeExtensionMetadataValue(relative, 1_000) &&
 		!strings.Contains(relative, "\\") && !path.IsAbs(relative) &&
 		path.Clean(relative) == relative && !strings.HasPrefix(relative, "../")
 }
@@ -328,7 +330,7 @@ func readExtensionWheelProject(
 	if err != nil {
 		return "", nil, err
 	}
-	contents, err := readPluginWheelMetadata(metadataFile)
+	contents, err := readExtensionWheelMetadata(metadataFile)
 	if err != nil {
 		return "", nil, err
 	}
@@ -341,7 +343,7 @@ func readExtensionWheelProject(
 		return "", nil, fmt.Errorf("PyPI Harnest Extension METADATA identity does not match its release")
 	}
 	requiresPython := message.Header.Get("Requires-Python")
-	if requiresPython != "" && !safePluginMetadataValue(requiresPython, 500) {
+	if requiresPython != "" && !safeExtensionMetadataValue(requiresPython, 500) {
 		return "", nil, fmt.Errorf("invalid PyPI Harnest Extension Requires-Python metadata")
 	}
 	dependencies := append(
@@ -359,7 +361,7 @@ func validateExtensionWheelDependencies(dependencies []string) error {
 		return fmt.Errorf("PyPI Harnest Extension declares too many dependencies")
 	}
 	for _, dependency := range dependencies {
-		if !safePluginMetadataValue(dependency, 2_000) {
+		if !safeExtensionMetadataValue(dependency, 2_000) {
 			return fmt.Errorf("invalid PyPI Harnest Extension dependency metadata")
 		}
 	}

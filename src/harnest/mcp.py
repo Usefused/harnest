@@ -9,7 +9,7 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence, cast
 
-from .approval import (
+from .agent.approval import (
     ApprovalPolicy,
     authorize_mcp,
     record_approved_execution,

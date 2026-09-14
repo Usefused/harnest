@@ -13,7 +13,7 @@ from unittest.mock import patch
 from harnest.bundle import compile_application
 from harnest.context import activate_context, create_agent_context
 from harnest.context_sandboxes import SandboxRegistry
-from harnest.plugins import release_runtime_plugins
+from harnest.extensions import release_extensions
 from harnest.sandbox import Sandbox, SandboxResult
 
 
@@ -88,8 +88,8 @@ class ChromeSandboxExampleTests(unittest.TestCase):
                 )
                 self.assertEqual(runtime.definition.backend, "docker")
             finally:
-                release_runtime_plugins(
-                    tuple(plugin.descriptor for plugin in application.plugins)
+                release_extensions(
+                    tuple(extension.descriptor for extension in application.extensions)
                 )
 
     def test_tool_serializes_url_and_returns_browser_fields(self):

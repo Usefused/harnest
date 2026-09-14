@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.continuation import ContinuationConflictError
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.plugins import (
-    Plugin,
-    PluginContext,
-    activate_runtime_plugins,
-    release_runtime_plugins,
+from harnest.extensions import (
+    Extension,
+    ExtensionContext,
+    activate_extensions,
+    release_extensions,
 )
-from harnest.runtime_plugins import discover_application_extensions
+from harnest.extension_descriptors import discover_application_extensions
 
 
 _SOURCE = (
@@ -60,7 +60,7 @@ class _InvocationContinuations:
     async def suspend(
         self, external_id, *, capability, schema_id, validate
     ) -> _Suspended:
-        """Capture provider ownership and validation passed by the plugin."""
+        """Capture provider ownership and validation passed by the extension."""
 
         self.external_id = external_id
         self.capability = capability
@@ -138,7 +138,7 @@ class _Transport:
         return self.module.HatchetRun("run-1", workflow_name, correlation_id)
 
     async def status(self, job):
-        """Return deterministic states for the plugin-owned monitor."""
+        """Return deterministic states for the extension-owned monitor."""
 
         del job
         status = self.statuses.pop(0)
@@ -153,7 +153,7 @@ class _Transport:
         return self.result_value
 
     async def cancel(self, job) -> None:
-        """Record a provider request without coupling it to plugin shutdown."""
+        """Record a provider request without coupling it to extension shutdown."""
 
         del job
         self.cancelled += 1
@@ -166,18 +166,18 @@ class _Transport:
             raise self.close_error
 
 
-class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
-    def test_plugin_contributes_no_agent_tools(self):
+class HatchetHarnestExtensionExampleTests(unittest.IsolatedAsyncioTestCase):
+    def test_extension_contributes_no_agent_tools(self):
         """Keep domain tool ownership in the consuming agent."""
 
         self.assertFalse((_SOURCE / "tools").exists())
 
     async def test_public_api_submits_and_resumes_through_provider_ports(self):
-        """Exercise the reusable plugin contract without a fake Hatchet server."""
+        """Exercise the reusable extension contract without a fake Hatchet server."""
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             create_transport = _Transport(module)
             monitor_transport = _Transport(
                 module,
@@ -199,12 +199,12 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     patch.object(module.asyncio, "sleep", AsyncMock()),
                     patch(
-                        "harnest.plugin_runtime_context._AUDIT",
+                        "harnest.extension_runtime_context._AUDIT",
                         SimpleNamespace(info=audit),
                     ),
                 ):
                     result = await module.hatchet.run_and_wait(
-                        "consumer-report", {"topic": "plugin test"}
+                        "consumer-report", {"topic": "extension test"}
                     )
             finally:
                 revoke_context(active)
@@ -215,7 +215,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 [
                     (
                         "consumer-report",
-                        {"topic": "plugin test"},
+                        {"topic": "extension test"},
                         "invoke-1",
                         None,
                     )
@@ -235,7 +235,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 audit_operations, ["run.create", "continuation.complete"]
             )
-            self.assertNotIn("plugin test", repr(audit.call_args_list))
+            self.assertNotIn("extension test", repr(audit.call_args_list))
 
     async def test_run_and_wait_preflight_fails_before_transport_submission(self):
         """Do not orphan a Hatchet run for a known incompatible invocation."""
@@ -243,7 +243,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
         invocation = _InvocationContinuations()
         invocation.preflight_error = RuntimeError("durable continuation unavailable")
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             opened = AsyncMock()
             active = _agent_context()
             try:
@@ -268,7 +268,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = SimpleNamespace()
         provider = _ProviderContinuations(_InvocationContinuations())
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             opened = AsyncMock()
             active = _agent_context()
             try:
@@ -288,12 +288,12 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
             opened.assert_not_awaited()
 
-    async def test_cancel_is_explicit_and_plugin_stop_does_not_cancel_jobs(self):
-        """Prove external runtime ownership is independent from plugin lifetime."""
+    async def test_cancel_is_explicit_and_extension_stop_does_not_cancel_jobs(self):
+        """Prove external runtime ownership is independent from extension lifetime."""
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             transport = _Transport(module)
             active = _agent_context()
             job = module.HatchetRun("run-2", "consumer-report", "invoke-1")
@@ -311,7 +311,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 revoke_context(active)
 
             self.assertEqual(transport.cancelled, 1)
-            await plugin.stop()
+            await extension.stop()
             self.assertEqual(transport.cancelled, 1)
 
     async def test_new_replica_recovers_pending_runs_through_bounded_pages(self):
@@ -319,7 +319,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider):
+        async with self._active_extension(provider):
             pass
 
         provider.pending = [
@@ -328,8 +328,8 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             _pending("continuation-c", "run-c", "invocation-c"),
         ]
         provider.page_cap = 2
-        fixture = self._active_plugin(provider)
-        async with fixture as (module, plugin):
+        fixture = self._active_extension(provider)
+        async with fixture as (module, extension):
             transports = [
                 _Transport(module, (module.HatchetRunStatus.COMPLETED,))
                 for _ in provider.pending
@@ -343,11 +343,11 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                     side_effect=lambda: next(opened),
                 ),
                 patch(
-                    "harnest.plugin_runtime_context._AUDIT",
+                    "harnest.extension_runtime_context._AUDIT",
                     SimpleNamespace(info=audit),
                 ),
             ):
-                await asyncio.gather(*tuple(plugin._monitors.values()))
+                await asyncio.gather(*tuple(extension._monitors.values()))
 
         self.assertEqual(
             provider.list_calls[-3:],
@@ -369,8 +369,8 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
         provider.pending = [_pending("continuation-a", "run-a", "invocation-a")]
-        fixture = self._active_plugin(provider)
-        async with fixture as (module, plugin):
+        fixture = self._active_extension(provider)
+        async with fixture as (module, extension):
             transport = _Transport(
                 module, (module.HatchetRunStatus.COMPLETED,)
             )
@@ -385,7 +385,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch.object(module.asyncio, "sleep", AsyncMock()),
             ):
-                await asyncio.gather(*tuple(plugin._monitors.values()))
+                await asyncio.gather(*tuple(extension._monitors.values()))
 
         self.assertEqual(provider.failed, [])
         self.assertEqual(provider.completed[0][0], "run-a")
@@ -397,7 +397,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             transport = _Transport(
                 module,
                 (
@@ -407,7 +407,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             )
             job = module.HatchetRun("run-a", "report", "invocation-a")
             with patch.object(module.asyncio, "sleep", AsyncMock()) as sleep:
-                await plugin._monitor(job, transport, provider)
+                await extension._monitor(job, transport, provider)
 
         self.assertEqual(provider.failed, [])
         self.assertEqual(provider.completed[0][0], "run-a")
@@ -418,7 +418,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             for result in ({"unsafe": object()}, {"data": "x" * 1_048_576}):
                 transport = _Transport(
                     module,
@@ -428,7 +428,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 job = module.HatchetRun(
                     f"run-{len(provider.failed)}", "report", "invocation-a"
                 )
-                await plugin._monitor(job, transport, provider)
+                await extension._monitor(job, transport, provider)
 
         self.assertEqual(provider.completed, [])
         self.assertEqual(
@@ -444,7 +444,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             transport = _Transport(
                 module, (module.HatchetRunStatus.COMPLETED,)
             )
@@ -454,7 +454,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             job = module.HatchetRun("run-a", "report", "invocation-a")
-            await plugin._monitor(job, transport, provider)
+            await extension._monitor(job, transport, provider)
 
         self.assertEqual(provider.failed, [])
         self.assertEqual(transport.closed, 1)
@@ -464,7 +464,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             transport = _Transport(
                 module, (module.HatchetRunStatus.COMPLETED,)
             )
@@ -479,7 +479,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 "open_hatchet_recovery_transport",
                 return_value=transport,
             ):
-                await plugin._recover_monitor(job, provider)
+                await extension._recover_monitor(job, provider)
 
         self.assertEqual(provider.failed, [])
         self.assertEqual(transport.closed, 1)
@@ -489,7 +489,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, plugin):
+        async with self._active_extension(provider) as (module, extension):
             transport = _Transport(
                 module,
                 (module.HatchetRunStatus.RUNNING,),
@@ -501,17 +501,17 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 "open_hatchet_transport",
                 return_value=transport,
             ):
-                status = await plugin._status(job)
+                status = await extension._status(job)
 
         self.assertIs(status, module.HatchetRunStatus.RUNNING)
         self.assertEqual(transport.closed, 1)
 
     async def test_sdk_failures_are_detached_from_secret_messages(self):
-        """Keep provider exception content out of the plugin error boundary."""
+        """Keep provider exception content out of the extension error boundary."""
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             client_module = __import__(
                 f"{module.__name__}.lib.client", fromlist=["HatchetSDKTransport"]
             )
@@ -536,7 +536,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             client_module = __import__(
                 f"{module.__name__}.lib.client", fromlist=["HatchetSDKTransport"]
             )
@@ -575,7 +575,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
                 "hatchet_sdk.types": ModuleType("hatchet_sdk.types"),
                 "hatchet_sdk.types.trigger": trigger,
             }
-            # The example dependency belongs to its compiled plugin environment;
+            # The example dependency belongs to its compiled extension environment;
             # this unit exercises the adapter without polluting Harnest's root env.
             with patch.dict("sys.modules", modules):
                 run_id = await transport._submit_idempotent(
@@ -603,7 +603,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             client_module = __import__(
                 f"{module.__name__}.lib.client", fromlist=["HatchetSDKTransport"]
             )
@@ -640,7 +640,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             client_module = __import__(
                 f"{module.__name__}.lib.client", fromlist=["_create_sdk_client"]
             )
@@ -669,7 +669,7 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
 
         invocation = _InvocationContinuations()
         provider = _ProviderContinuations(invocation)
-        async with self._active_plugin(provider) as (module, _plugin):
+        async with self._active_extension(provider) as (module, _extension):
             client_module = __import__(
                 f"{module.__name__}.lib.client", fromlist=["HatchetSDKTransport"]
             )
@@ -692,18 +692,18 @@ class HatchetRuntimePluginExampleTests(unittest.IsolatedAsyncioTestCase):
             # in assertion output when this boundary regresses.
             self.assertEqual(len(constructor.call_args.args), 1)
 
-    def _active_plugin(self, provider):
+    def _active_extension(self, provider):
         """Copy and activate the real example through Harnest namespace loading."""
 
-        return _ActivePluginFixture(provider)
+        return _ActiveExtensionFixture(provider)
 
 
-class _ActivePluginFixture:
+class _ActiveExtensionFixture:
     def __init__(self, provider) -> None:
         self.provider = provider
         self.temporary = None
         self.descriptors = ()
-        self.plugin = None
+        self.extension = None
         self.token = None
 
     async def __aenter__(self):
@@ -713,35 +713,35 @@ class _ActivePluginFixture:
         root = Path(self.temporary.name) / "extensions"
         shutil.copytree(_SOURCE, root / "hatchet")
         self.descriptors = discover_application_extensions(root.parent)
-        activated = activate_runtime_plugins(self.descriptors)
+        activated = activate_extensions(self.descriptors)
         module = activated[0].module
-        self.plugin = module.extension
-        await self.plugin.start(
+        self.extension = module.extension
+        await self.extension.start(
             SimpleNamespace(
                 continuations=self.provider,
                 root_agent_name="consumer",
             )
         )
-        view = self.plugin.create_context(PluginContext("hatchet"))
-        PluginContext._bind_continuations(view, self.provider.invocation)
-        self.token = Plugin._bind_context(self.plugin, view)
-        return module, self.plugin
+        view = self.extension.create_context(ExtensionContext("hatchet"))
+        ExtensionContext._bind_continuations(view, self.provider.invocation)
+        self.token = Extension._bind_context(self.extension, view)
+        return module, self.extension
 
     async def __aexit__(self, exc_type, exc, traceback):
-        """Release context, plugin resources, and controlled namespace in order."""
+        """Release context, extension resources, and controlled namespace in order."""
 
         del exc_type, exc, traceback
-        if self.plugin is not None and self.token is not None:
-            Plugin._reset_context(self.plugin, self.token)
-            await self.plugin.stop()
+        if self.extension is not None and self.token is not None:
+            Extension._reset_context(self.extension, self.token)
+            await self.extension.stop()
         if self.descriptors:
-            release_runtime_plugins(self.descriptors)
+            release_extensions(self.descriptors)
         if self.temporary is not None:
             self.temporary.cleanup()
 
 
 def _agent_context():
-    """Create the correlation identity required by the plugin's run operation."""
+    """Create the correlation identity required by the extension's run operation."""
 
     return create_agent_context(
         framework="langgraph",

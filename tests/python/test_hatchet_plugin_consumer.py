@@ -356,7 +356,7 @@ class HatchetConsumerCompilerTests(unittest.TestCase):
                 (artifact / "harnest-manifest.json").read_text("utf-8")
             )
             self.assertEqual(
-                [item["name"] for item in manifest["plugins"]], ["hatchet"]
+                [item["name"] for item in manifest["extensions"]], ["hatchet"]
             )
             files = {item["path"] for item in manifest["files"]}
             self.assertIn("source/tools/create_report_job.py", files)

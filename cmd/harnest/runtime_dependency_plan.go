@@ -26,14 +26,14 @@ type runtimeDependencyPlan struct {
 	HasMCP       bool
 }
 
-// inspectRuntimeDependencyPlan joins agent, plugin, and optional task requirements.
+// inspectRuntimeDependencyPlan joins agent, extension, and optional task requirements.
 func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, error) {
 	rootProject := filepath.Join(bundle.Directory, bundle.Config.Spec.Runtime.DependencyFile)
 	_, err := projectRuntimeRequirements(rootProject, "agent")
 	if err != nil {
 		return runtimeDependencyPlan{}, err
 	}
-	_, projectFiles, err := pluginRuntimeRequirements(bundle.Directory)
+	_, projectFiles, err := extensionRuntimeRequirements(bundle.Directory)
 	if err != nil {
 		return runtimeDependencyPlan{}, err
 	}
@@ -95,23 +95,18 @@ func projectRuntimeRequirements(path, owner string) ([]string, error) {
 	return dependencies, nil
 }
 
-// pluginRuntimeRequirements collects canonical extensions and legacy runtime packages.
-func pluginRuntimeRequirements(root string) ([]string, []string, error) {
-	var requirements, projects []string
-	for _, folder := range []string{"plugins", "extensions"} {
-		values, files, err := packageRuntimeRequirements(filepath.Join(root, folder), folder == "extensions")
-		if err != nil {
-			return nil, nil, err
-		}
-		requirements = append(requirements, values...)
-		projects = append(projects, files...)
+// extensionRuntimeRequirements collects only canonical executable extensions.
+func extensionRuntimeRequirements(root string) ([]string, []string, error) {
+	requirements, projects, err := packageRuntimeRequirements(filepath.Join(root, "extensions"))
+	if err != nil {
+		return nil, nil, err
 	}
 	sort.Strings(projects)
 	return requirements, projects, nil
 }
 
-// packageRuntimeRequirements inspects manifest-bearing packages, never legacy hook files.
-func packageRuntimeRequirements(directory string, canonical bool) ([]string, []string, error) {
+// packageRuntimeRequirements inspects canonical manifest-bearing packages.
+func packageRuntimeRequirements(directory string) ([]string, []string, error) {
 	entries, err := optionalRegularDirectoryEntries(directory)
 	if err != nil {
 		return nil, nil, err
@@ -121,10 +116,10 @@ func packageRuntimeRequirements(directory string, canonical bool) ([]string, []s
 		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
 			continue
 		}
-		if canonical && !entry.IsDir() {
+		if !entry.IsDir() {
 			continue // Legacy lifecycle files are validated by the Python layout resolver.
 		}
-		values, project, found, projectErr := pluginRuntimeProject(directory, entry, canonical)
+		values, project, found, projectErr := extensionRuntimeProject(directory, entry)
 		if projectErr != nil {
 			return nil, nil, projectErr
 		}
@@ -138,28 +133,25 @@ func packageRuntimeRequirements(directory string, canonical bool) ([]string, []s
 	return requirements, projects, nil
 }
 
-// pluginRuntimeProject resolves one manifest-owned optional dependency file.
-func pluginRuntimeProject(
-	directory string, entry os.DirEntry, canonical bool,
+// extensionRuntimeProject resolves one manifest-owned optional dependency file.
+func extensionRuntimeProject(
+	directory string, entry os.DirEntry,
 ) ([]string, string, bool, error) {
-	pluginDirectory := filepath.Join(directory, entry.Name())
+	extensionDirectory := filepath.Join(directory, entry.Name())
 	if !entry.IsDir() {
-		return nil, "", false, fmt.Errorf("runtime plugin path must be a directory: %s\n\nWhat Harnest expects: one subfolder per plugin, not loose files in plugins/.\nHow to fix: put an active plugin in its own folder. If %q is only a note, backup, or unused example, rename it to %q or move it outside plugins/. Names starting with _ are left out of automatic discovery", pluginDirectory, entry.Name(), "_"+entry.Name())
+		return nil, "", false, fmt.Errorf("extension path must be a directory: %s", extensionDirectory)
 	}
-	manifest := filepath.Join(pluginDirectory, "plugin.yaml")
-	if canonical {
-		manifest = filepath.Join(pluginDirectory, "extension.yaml")
-	}
-	found, err := regularDependencyPathExists(manifest, "runtime plugin manifest")
+	manifest := filepath.Join(extensionDirectory, "extension.yaml")
+	found, err := regularDependencyPathExists(manifest, "extension manifest")
 	if err != nil || !found {
 		return nil, "", false, err
 	}
-	project := filepath.Join(pluginDirectory, "pyproject.toml")
-	found, err = regularDependencyPathExists(project, "runtime plugin pyproject.toml")
+	project := filepath.Join(extensionDirectory, "pyproject.toml")
+	found, err = regularDependencyPathExists(project, "extension pyproject.toml")
 	if err != nil || !found {
 		return nil, "", false, err
 	}
-	values, err := projectRuntimeRequirements(project, "runtime plugin "+entry.Name())
+	values, err := projectRuntimeRequirements(project, "extension "+entry.Name())
 	return values, project, true, err
 }
 

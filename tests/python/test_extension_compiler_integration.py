@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import harnest.plugins as plugin_namespace
+import harnest.extensions as extension_namespace
 from harnest.bundle import (
     BundleConventionError,
     BundleDuplicateError,
@@ -15,15 +15,15 @@ from harnest.bundle import (
     compile_application,
     compile_artifact,
 )
-from harnest.plugins import release_runtime_plugins
-from harnest.runtime_plugins import discover_runtime_plugins
+from harnest.extensions import release_extensions
+from harnest.extension_descriptors import discover_extensions
 
 from _session_store_fixture import write_session_store
 from _skill_fixture import run_skill_tool
 
 
-class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
-    def test_plugin_provenance_digest_matches_engine_contract(self):
+class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
+    def test_extension_provenance_digest_matches_engine_contract(self):
         """Pin cross-language framing so Python artifacts remain Go-verifiable."""
 
         digest = _artifact_digest(
@@ -43,8 +43,8 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
 
         self.assertEqual(
             digest,
-            "sha256:876d5e9f129cfc2e952acbfae50253a"
-            "382a3393f8235fc69e0a95035bfd98ea6",
+            "sha256:23a603182458ecc7bb2f52e6c9dbeb048"
+            "d0ab1fffe21bb6041160d9808415bfd",
         )
 
     def _write(self, path: Path, contents: str) -> None:
@@ -92,47 +92,52 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
         self._write(root / "agent.py", source)
         self._write(root / "instructions.md", "Use available capabilities.\n")
 
-    def _runtime_plugin(
+    def _runtime_extension(
         self,
         root: Path,
         name: str,
         *,
         capabilities: tuple[str, ...] = (),
         requires: tuple[str, ...] = (),
+        contributions: tuple[str, ...] = (),
     ) -> Path:
-        """Author one strict descriptor and its public plugin singleton."""
+        """Author one strict descriptor and its public extension singleton."""
 
-        plugin = root / "plugins" / name
+        extension = root / "extensions" / name
         requires_yaml = ""
         if requires:
             rendered = "\n".join(f"    - {item}" for item in requires)
-            requires_yaml = f"requires:\n  plugins:\n{rendered}\n"
+            requires_yaml = f"requires:\n  extensions:\n{rendered}\n"
         capabilities_yaml = ""
         if capabilities:
             rendered = "\n".join(f"  - {item}" for item in capabilities)
             capabilities_yaml = f"capabilities:\n{rendered}\n"
+        contributions_yaml = ""
+        if contributions:
+            rendered = "".join(f"  {kind}: [{kind}/]\n" for kind in contributions)
+            contributions_yaml = f"contributes:\n{rendered}"
         self._write(
-            plugin / "plugin.yaml",
+            extension / "extension.yaml",
             "apiVersion: harnest.dev/v1alpha1\n"
-            "kind: RuntimePlugin\n"
+            "kind: Extension\n"
             f"metadata:\n  name: {name}\n  version: 1.2.3\n"
-            "runtime:\n  entrypoint: plugin:plugin\n"
-            f"{requires_yaml}{capabilities_yaml}",
+            "runtime:\n  entrypoint: extension:extension\n"
+            f"{requires_yaml}{contributions_yaml}{capabilities_yaml}",
         )
         self._write(
-            plugin / "plugin.py",
-            "from harnest.plugins import Plugin\n"
-            "class AuthoredPlugin(Plugin):\n"
+            extension / "extension.py",
+            "from harnest.extensions import Extension\n"
+            "class AuthoredExtension(Extension):\n"
             "    pass\n"
-            "plugin = AuthoredPlugin()\n",
+            "extension = AuthoredExtension()\n",
         )
-        return plugin
+        return extension
 
-    def _full_plugin_content(self, plugin: Path) -> None:
-        """Add local tool, MCP, skill, and lifecycle contributions to a plugin."""
+    def _full_extension_content(self, extension: Path) -> None:
+        """Add local tool, MCP, skill, and lifecycle contributions to a extension."""
 
         self._write(
-            plugin / "tools" / "normalize.py",
+            extension / "tools" / "normalize.py",
             "from harnest.agent import tool\n"
             "@tool\n"
             "def normalize(value: str) -> str:\n"
@@ -140,7 +145,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             "    return value.strip().lower()\n",
         )
         self._write(
-            plugin / "mcp" / "catalog.py",
+            extension / "mcp" / "catalog.py",
             "from harnest.mcp import MCPClient\n"
             "def client():\n"
             "    return MCPClient.streamable_http(\n"
@@ -148,7 +153,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             "    )\n",
         )
         self._write(
-            plugin / "skills" / "catalog-guide" / "SKILL.md",
+            extension / "skills" / "catalog-guide" / "SKILL.md",
             "---\n"
             "name: catalog-guide\n"
             "description: Explain how to use the local catalog capability.\n"
@@ -156,7 +161,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             "# Catalog guide\n\nUse the catalog only when requested.\n",
         )
         self._write(
-            plugin / "extensions" / "audit.py",
+            extension / "lifecycle" / "audit.py",
             "from harnest import lifecycle\n"
             "@lifecycle.agent.before(order=4)\n"
             "def audit(context, value):\n"
@@ -167,11 +172,11 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
     def _release(compiled) -> None:
         """Release direct-compile acquisitions whose ownership did not reach a runtime."""
 
-        release_runtime_plugins(
-            tuple(item.descriptor for item in compiled.plugins)
+        release_extensions(
+            tuple(item.descriptor for item in compiled.extensions)
         )
 
-    def test_managed_compile_composes_runtime_plugin_for_both_frameworks(self):
+    def test_managed_compile_composes_runtime_extension_for_both_frameworks(self):
         capabilities = (
             "content.tools",
             "content.mcp",
@@ -182,10 +187,13 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             with self.subTest(framework=framework), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 self._root_agent(root)
-                plugin = self._runtime_plugin(
-                    root, "temporal", capabilities=capabilities
+                extension = self._runtime_extension(
+                    root,
+                    "temporal",
+                    capabilities=capabilities,
+                    contributions=("lifecycle", "mcp", "skills", "tools"),
                 )
-                self._full_plugin_content(plugin)
+                self._full_extension_content(extension)
                 compiled = None
                 try:
                     with patch(
@@ -206,19 +214,19 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                     self.assertEqual(len(compiled.target.mcp), 1)
                     self.assertEqual(
                         compiled.target.mcp[0].capability_id,
-                        "plugin__temporal__mcp__catalog",
+                        "extension__temporal__mcp__catalog",
                     )
                     self.assertEqual(
-                        [item.descriptor.name for item in compiled.plugins],
+                        [item.descriptor.name for item in compiled.extensions],
                         ["temporal"],
                     )
-                    plugin_listener = next(
+                    extension_listener = next(
                         item
-                        for item in compiled.extensions
+                        for item in compiled.lifecycle_extensions
                         if item.relative_path
-                        == "plugins/temporal/extensions/audit.py"
+                        == "extensions/temporal/lifecycle/audit.py"
                     )
-                    self.assertEqual(plugin_listener.phase, "before_invoke")
+                    self.assertEqual(extension_listener.phase, "before_invoke")
                     tools = {
                         tool.__name__: tool
                         for tool in compiled.target.tools
@@ -239,39 +247,42 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                 finally:
                     if compiled is not None:
                         self._release(compiled)
-                self.assertNotIn("harnest.plugins.temporal", sys.modules)
-                self.assertFalse(hasattr(plugin_namespace, "temporal"))
+                self.assertNotIn("harnest.extensions.temporal", sys.modules)
+                self.assertFalse(hasattr(extension_namespace, "temporal"))
 
     def test_manifest_capabilities_gate_content_and_extensions(self):
         cases = (
             ("tools", "content.tools", "tools"),
-            ("extensions", "lifecycle.agent", "extensions/audit.py"),
-            ("skill_source", "lifecycle.skills", "extensions/skills.py"),
+            ("lifecycle", "lifecycle.agent", "lifecycle/audit.py"),
+            ("skill_source", "lifecycle.skills", "lifecycle/skills.py"),
         )
         for contribution, capability, source in cases:
             with self.subTest(contribution=contribution), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 self._root_agent(root)
-                plugin = self._runtime_plugin(root, "temporal")
+                kind = "lifecycle" if contribution != "tools" else "tools"
+                extension = self._runtime_extension(
+                    root, "temporal", contributions=(kind,)
+                )
                 if contribution == "tools":
                     self._write(
-                        plugin / "tools" / "normalize.py",
+                        extension / "tools" / "normalize.py",
                         "from harnest.agent import tool\n"
                         "@tool\n"
                         "def normalize(value):\n"
                         "    \"\"\"Return the supplied value unchanged.\"\"\"\n"
                         "    return value\n",
                     )
-                elif contribution == "extensions":
+                elif contribution == "lifecycle":
                     self._write(
-                        plugin / "extensions" / "audit.py",
+                        extension / "lifecycle" / "audit.py",
                         "from harnest import lifecycle\n"
                         "@lifecycle.agent.before\n"
                         "def audit(context, value): return context.next()\n",
                     )
                 else:
                     self._write(
-                        plugin / "extensions" / "skills.py",
+                        extension / "lifecycle" / "skills.py",
                         "from harnest import lifecycle\n"
                         "from harnest.skills import SkillSource\n"
                         "class Source(SkillSource):\n"
@@ -294,10 +305,10 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                             entrypoint="agent:root_agent",
                             framework="langgraph",
                         )
-                self.assertNotIn("harnest.plugins.temporal", sys.modules)
-                self.assertFalse(hasattr(plugin_namespace, "temporal"), source)
+                self.assertNotIn("harnest.extensions.temporal", sys.modules)
+                self.assertFalse(hasattr(extension_namespace, "temporal"), source)
 
-    def test_root_and_runtime_plugin_tool_name_collision_is_rejected(self):
+    def test_root_and_runtime_extension_tool_name_collision_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root)
@@ -309,10 +320,13 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                 "    return value\n"
             )
             self._write(root / "tools" / "normalize.py", source)
-            plugin = self._runtime_plugin(
-                root, "temporal", capabilities=("content.tools",)
+            extension = self._runtime_extension(
+                root,
+                "temporal",
+                capabilities=("content.tools",),
+                contributions=("tools",),
             )
-            self._write(plugin / "tools" / "normalize.py", source)
+            self._write(extension / "tools" / "normalize.py", source)
 
             with patch(
                 "harnest.bundle.get_backend", return_value=self._managed_backend()
@@ -325,44 +339,120 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         entrypoint="agent:root_agent",
                         framework="langgraph",
                     )
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
-    def test_plugin_project_identity_must_match_manifest(self):
-        """Keep dependency metadata bound to the discovered plugin identity."""
+    def test_custom_contribution_path_projects_without_mutating_agent_layout(self):
+        """Compose declared content in place while retaining package provenance."""
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root)
-            plugin = self._runtime_plugin(root, "temporal")
+            extension = self._runtime_extension(
+                root,
+                "temporal",
+                capabilities=("content.tools",),
+            )
+            manifest = extension / "extension.yaml"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8")
+                .replace(
+                    "capabilities:",
+                    "contributes:\n  tools: [resources/tools/]\ncapabilities:",
+                ),
+                encoding="utf-8",
+            )
             self._write(
-                plugin / "pyproject.toml",
-                "[project]\nname = 'isolated-plugin'\nversion = '1.0.0'\n",
+                extension / "resources" / "tools" / "lookup.py",
+                "from harnest.agent import tool\n"
+                "@tool\n"
+                "def lookup(value):\n"
+                "    \"\"\"Return the supplied lookup value.\"\"\"\n"
+                "    return value\n",
+            )
+            compiled = None
+            try:
+                with patch(
+                    "harnest.bundle.get_backend", return_value=self._managed_backend()
+                ):
+                    compiled = compile_application(
+                        root,
+                        entrypoint="agent:root_agent",
+                        framework="langgraph",
+                    )
+                self.assertIn("lookup", {tool.__name__ for tool in compiled.target.tools})
+                self.assertFalse((root / "tools" / "lookup.py").exists())
+            finally:
+                if compiled is not None:
+                    self._release(compiled)
+
+    def test_extension_content_is_never_inferred_from_folder_names(self):
+        """Reject a conventional content root that the manifest did not project."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._root_agent(root)
+            extension = self._runtime_extension(
+                root, "temporal", capabilities=("content.tools",)
+            )
+            self._write(
+                extension / "tools" / "lookup.py",
+                "from harnest.agent import tool\n"
+                "@tool\n"
+                "def lookup(value):\n"
+                "    \"\"\"Return the supplied lookup value.\"\"\"\n"
+                "    return value\n",
+            )
+            with (
+                patch(
+                    "harnest.bundle.get_backend", return_value=self._managed_backend()
+                ),
+                self.assertRaisesRegex(
+                    BundleConventionError, "must declare 'tools' under contributes.tools"
+                ),
+            ):
+                compile_application(
+                    root,
+                    entrypoint="agent:root_agent",
+                    framework="langgraph",
+                )
+
+    def test_extension_project_identity_must_match_manifest(self):
+        """Keep dependency metadata bound to the discovered extension identity."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._root_agent(root)
+            extension = self._runtime_extension(root, "temporal")
+            self._write(
+                extension / "pyproject.toml",
+                "[project]\nname = 'isolated-extension'\nversion = '1.0.0'\n",
             )
 
             with patch(
                 "harnest.bundle.get_backend", return_value=self._managed_backend()
             ):
                 with self.assertRaisesRegex(
-                    BundleConventionError, "pyproject name 'isolated-plugin' must match"
+                    BundleConventionError,
+                    "pyproject name 'isolated-extension' must be 'harnest-extension-temporal'",
                 ):
                     compile_application(
                         root,
                         entrypoint="agent:root_agent",
                         framework="langgraph",
                     )
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
-    def test_plugin_project_dependencies_join_the_compiled_descriptor(self):
+    def test_extension_project_dependencies_join_the_compiled_descriptor(self):
         """Retain PEP 508 inputs for the shared pre-import environment solve."""
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root)
-            plugin = self._runtime_plugin(root, "temporal")
+            extension = self._runtime_extension(root, "temporal")
             self._write(
-                plugin / "pyproject.toml",
+                extension / "pyproject.toml",
                 "[project]\n"
-                "name = 'temporal'\n"
+                "name = 'harnest-extension-temporal'\n"
                 "version = '1.2.3'\n"
                 "dependencies = ['httpx>=0.28,<1']\n",
             )
@@ -377,28 +467,28 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         framework="langgraph",
                     )
                 self.assertEqual(
-                    compiled.plugins[0].descriptor.dependencies,
+                    compiled.extensions[0].descriptor.dependencies,
                     ("httpx<1,>=0.28",),
                 )
             finally:
                 if compiled is not None:
                     self._release(compiled)
 
-    def test_plugin_imports_root_library_from_the_shared_runtime(self):
-        """Activate application helpers before importing same-process plugin code."""
+    def test_extension_imports_root_library_from_the_shared_runtime(self):
+        """Activate application helpers before importing same-process extension code."""
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root)
-            plugin = self._runtime_plugin(root, "temporal")
+            extension = self._runtime_extension(root, "temporal")
             self._write(root / "lib" / "shared.py", "SDK_NAME = 'shared-sdk'\n")
             self._write(
-                plugin / "plugin.py",
+                extension / "extension.py",
                 "from harnest.lib.shared import SDK_NAME\n"
-                "from harnest.plugins import Plugin\n"
-                "class Temporal(Plugin):\n"
+                "from harnest.extensions import Extension\n"
+                "class Temporal(Extension):\n"
                 "    sdk_name = SDK_NAME\n"
-                "plugin = Temporal()\n",
+                "extension = Temporal()\n",
             )
             compiled = None
             try:
@@ -411,22 +501,25 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         entrypoint="agent:root_agent",
                         framework="langgraph",
                     )
-                self.assertEqual(compiled.plugins[0].plugin.sdk_name, "shared-sdk")
+                self.assertEqual(compiled.extensions[0].extension.sdk_name, "shared-sdk")
             finally:
                 if compiled is not None:
                     self._release(compiled)
 
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
-    def test_advanced_mode_rejects_plugin_content_but_allows_boundaries(self):
+    def test_advanced_mode_rejects_extension_content_but_allows_boundaries(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root, advanced=True)
-            plugin = self._runtime_plugin(
-                root, "temporal", capabilities=("content.tools",)
+            extension = self._runtime_extension(
+                root,
+                "temporal",
+                capabilities=("content.tools",),
+                contributions=("tools",),
             )
             self._write(
-                plugin / "tools" / "normalize.py",
+                extension / "tools" / "normalize.py",
                 "from harnest.agent import tool\n"
                 "@tool\n"
                 "def normalize(value):\n"
@@ -438,7 +531,7 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     BundleConventionError,
-                    "cannot auto-compose runtime plugin 'temporal' content: tools",
+                    "cannot auto-compose extension 'temporal' content: tools",
                 ):
                     compile_application(
                         root,
@@ -446,18 +539,19 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         framework="adk",
                         mode="advanced",
                     )
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._root_agent(root, advanced=True)
-            plugin = self._runtime_plugin(
+            extension = self._runtime_extension(
                 root,
                 "temporal",
                 capabilities=("lifecycle.agent", "context.resources"),
+                contributions=("lifecycle",),
             )
             self._write(
-                plugin / "extensions" / "bindings.py",
+                extension / "lifecycle" / "bindings.py",
                 "from harnest import context\n"
                 "from harnest import lifecycle\n"
                 "@lifecycle.agent.before\n"
@@ -478,53 +572,53 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
                         mode="advanced",
                     )
                 self.assertEqual(
-                    [item.phase for item in compiled.extensions],
+                    [item.phase for item in compiled.lifecycle_extensions],
                     ["before_invoke", "context"],
                 )
                 context_listener = next(
-                    item for item in compiled.extensions if item.phase == "context"
+                    item for item in compiled.lifecycle_extensions if item.phase == "context"
                 )
                 self.assertEqual(context_listener.context_name, "temporal_client")
                 self.assertEqual(context_listener.callback(), {"ready": True})
             finally:
                 if compiled is not None:
                     self._release(compiled)
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
-    def test_artifact_records_plugin_provenance_files_and_releases_namespace(self):
+    def test_artifact_records_extension_provenance_files_and_releases_namespace(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent"
             output = root / ".harnest" / "compiled"
             self._root_agent(root)
-            core = self._runtime_plugin(root, "core")
+            core = self._runtime_extension(root, "core")
             self._write(core / "lib" / "client.py", "API_LEVEL = 1\n")
-            self._runtime_plugin(root, "zeta", requires=("core",))
+            self._runtime_extension(root, "zeta", requires=("core",))
 
             with patch(
                 "harnest.bundle.get_backend", return_value=self._managed_backend()
             ):
                 first = compile_artifact(root, output, framework="langgraph")
 
-            descriptors = discover_runtime_plugins(root / "plugins")
+            descriptors = discover_extensions(root / "extensions")
             self.assertEqual(
-                [item["name"] for item in first["plugins"]], ["core", "zeta"]
+                [item["name"] for item in first["extensions"]], ["core", "zeta"]
             )
             self.assertEqual(
-                [item["digest"] for item in first["plugins"]],
+                [item["digest"] for item in first["extensions"]],
                 [item.digest for item in descriptors],
             )
             file_records = {item["path"]: item for item in first["files"]}
-            plugin_path = "source/plugins/core/lib/client.py"
-            self.assertIn(plugin_path, file_records)
-            copied = output / plugin_path
+            extension_path = "source/extensions/core/lib/client.py"
+            self.assertIn(extension_path, file_records)
+            copied = output / extension_path
             self.assertEqual(
-                file_records[plugin_path]["sha256"],
+                file_records[extension_path]["sha256"],
                 hashlib.sha256(copied.read_bytes()).hexdigest(),
             )
-            self.assertNotIn("harnest.plugins.core", sys.modules)
-            self.assertNotIn("harnest.plugins.zeta", sys.modules)
-            self.assertFalse(hasattr(plugin_namespace, "core"))
-            self.assertFalse(hasattr(plugin_namespace, "zeta"))
+            self.assertNotIn("harnest.extensions.core", sys.modules)
+            self.assertNotIn("harnest.extensions.zeta", sys.modules)
+            self.assertFalse(hasattr(extension_namespace, "core"))
+            self.assertFalse(hasattr(extension_namespace, "zeta"))
 
             self._write(core / "lib" / "client.py", "API_LEVEL = 2\n")
             with patch(
@@ -534,10 +628,10 @@ class RuntimePluginCompilerIntegrationTests(unittest.TestCase):
 
             self.assertNotEqual(first["digest"], second["digest"])
             self.assertNotEqual(
-                first["plugins"][0]["digest"], second["plugins"][0]["digest"]
+                first["extensions"][0]["digest"], second["extensions"][0]["digest"]
             )
-            self.assertNotIn("harnest.plugins.core", sys.modules)
-            self.assertFalse(hasattr(plugin_namespace, "core"))
+            self.assertNotIn("harnest.extensions.core", sys.modules)
+            self.assertFalse(hasattr(extension_namespace, "core"))
 
 
 if __name__ == "__main__":

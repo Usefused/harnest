@@ -83,7 +83,7 @@ def _validate_context_exports(
         raise ValueError("context provider listeners require a context name")
 
 
-def _runtime_extensions(
+def _lifecycle_runtime(
     values: Sequence[LifecycleListener],
 ) -> tuple[LifecycleListener, ...]:
     """Freeze only compiler-created lifecycle listener values."""
@@ -110,7 +110,7 @@ def _extensions_by_phase(
 def _validate_runtime_owners(
     credential_provider: CredentialProvider | None,
     manage_credential_provider: bool,
-    plugin_bindings: Callable[[], Mapping[str, Any]] | None,
+    extension_bindings: Callable[[], Mapping[str, Any]] | None,
 ) -> None:
     """Validate private owner seams without entering authored resources."""
 
@@ -120,8 +120,8 @@ def _validate_runtime_owners(
         raise TypeError("credential_provider must implement CredentialProvider")
     if not isinstance(manage_credential_provider, bool):
         raise TypeError("manage_credential_provider must be boolean")
-    if plugin_bindings is not None and not callable(plugin_bindings):
-        raise TypeError("plugin_bindings must be callable")
+    if extension_bindings is not None and not callable(extension_bindings):
+        raise TypeError("extension_bindings must be callable")
 
 
 async def _resolve(value: Any) -> Any:
@@ -267,7 +267,7 @@ def _replacement_result(
     return replacement
 
 
-class ExtensionRuntimeDriver(RuntimeDriver):
+class LifecycleRuntimeDriver(RuntimeDriver):
     """Decorate one backend driver with framework-neutral lifecycle hooks."""
 
     def __init__(
@@ -283,15 +283,15 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         session_store: SessionStore | None = None,
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
-        plugin_bindings: Callable[[], Mapping[str, Any]] | None = None,
+        extension_bindings: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         """Validate application resources without acquiring runtime ownership."""
 
-        normalized = _runtime_extensions(extensions)
+        normalized = _lifecycle_runtime(extensions)
         values = tuple(context_values)
         _validate_context_exports(normalized, values)
         _validate_runtime_owners(
-            credential_provider, manage_credential_provider, plugin_bindings
+            credential_provider, manage_credential_provider, extension_bindings
         )
         self._driver = driver
         self._extensions = normalized
@@ -311,7 +311,7 @@ class ExtensionRuntimeDriver(RuntimeDriver):
         self._session_store = session_store
         self._credential_provider = credential_provider
         self._manage_credential_provider = manage_credential_provider
-        self._plugin_bindings = plugin_bindings
+        self._extension_bindings = extension_bindings
         self._credential_provider_started = False
         self._application_resources: dict[str, Any] = {}
         self._resource_lock = asyncio.Lock()
@@ -703,8 +703,8 @@ class ExtensionRuntimeDriver(RuntimeDriver):
             custom_stores=self._custom_stores,
             skill_registry=self._skill_registry,
             sandbox_registry=self._sandbox_registry,
-            plugin_bindings=(
-                None if self._plugin_bindings is None else self._plugin_bindings()
+            extension_bindings=(
+                None if self._extension_bindings is None else self._extension_bindings()
             ),
         )
 
@@ -1072,7 +1072,7 @@ def _replace_principal(
 
 __all__ = [
     "DROP_EVENT",
-    "ExtensionRuntimeDriver",
+    "LifecycleRuntimeDriver",
     "ExtensionTransformError",
     "LifecycleAuthenticator",
     "RuntimeResourceError",

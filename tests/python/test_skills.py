@@ -338,7 +338,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
             "    return SkillDocument(item, f'Operate {skill_id} for {context.user_id}.')\n",
         )
         self._write(
-            root / "extensions" / "skills.py",
+            root / "lifecycle" / "skills.py",
             "from harnest.lib.wex import WexSource\n"
             "from harnest import lifecycle\n"
             "@lifecycle.skills.source('wex')\n"
@@ -375,7 +375,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             agent = Path(temp)
             write_session_store(agent)
-            root = agent / "extensions"
+            root = agent / "lifecycle"
             self._write(
                 root / "skills.py",
                 "from harnest import lifecycle\n"

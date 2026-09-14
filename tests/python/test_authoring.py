@@ -1242,7 +1242,7 @@ class AuthoringTests(unittest.TestCase):
                 json.dumps({"name": "Root", "description": "Test agent"}),
             )
             self._write(
-                root / "extensions" / "http.py",
+                root / "lifecycle" / "http.py",
                 "from fastapi import APIRouter, Request\n"
                 "from harnest import lifecycle\n\n"
                 "@lifecycle.http_routes\n"
@@ -1283,7 +1283,7 @@ class AuthoringTests(unittest.TestCase):
                 json.dumps({"name": "Root", "description": "Test agent"}),
             )
             self._write(
-                root / "extensions" / "gateway.py",
+                root / "lifecycle" / "gateway.py",
                 "from harnest import lifecycle\n"
                 "from harnest.runtime_auth import AuthPrincipal, AuthenticationError\n"
                 "@lifecycle.authenticate\n"
@@ -1430,7 +1430,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
             self._write(root / "instructions.md", "Answer clearly.\n")
             self._write(
-                root / "extensions" / "output.py",
+                root / "lifecycle" / "output.py",
                 "from harnest import lifecycle\n"
                 "from harnest.output import OutputPolicy\n\n"
                 "@lifecycle.output_policy\n"

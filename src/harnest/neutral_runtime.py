@@ -36,7 +36,7 @@ from .runtime_auth import (
     install_authentication,
     principal_for,
 )
-from .approval import (
+from .agent.approval import (
     ApprovalDenied,
     ApprovalEnforcementError,
     ApprovalExpired,

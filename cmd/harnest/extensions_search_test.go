@@ -16,30 +16,30 @@ import (
 	"time"
 )
 
-type pluginRoundTripFunc func(*http.Request) (*http.Response, error)
+type extensionRoundTripFunc func(*http.Request) (*http.Response, error)
 
-func (function pluginRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+func (function extensionRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
 
-func TestPluginsSearchFiltersPyPIAndReusesFreshCatalog(t *testing.T) {
+func TestExtensionsSearchFiltersPyPIAndReusesFreshCatalog(t *testing.T) {
 	var catalogRequests int
 	var metadataRequests int
 	var wheelRequests int
-	transport := pluginCatalogFixture(
+	transport := extensionCatalogFixture(
 		t, &catalogRequests, &metadataRequests, &wheelRequests,
 	)
 
 	cacheRoot := t.TempDir()
-	sys := pluginSearchTestSystem(transport, cacheRoot)
+	sys := extensionSearchTestSystem(transport, cacheRoot)
 	stdout, _, err := executeForTest(t, sys, "extensions", "search", "postgres")
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "plugin search", stdout, []string{
-		"PACKAGE", "Harnest_Plugin_Postgres", "harnest-plugin-postgres-tools",
+	assertContainsAll(t, "extension search", stdout, []string{
+		"PACKAGE", "Harnest_Extension_Postgres", "harnest-extension-postgres-tools",
 		"1.2.3", "community",
-		"https://pypi.org/project/Harnest_Plugin_Postgres/",
+		"https://pypi.org/project/Harnest_Extension_Postgres/",
 	})
 	if strings.Contains(stdout, "ordinary-package") || strings.Contains(stdout, "slack") {
 		t.Fatalf("search leaked unmatched packages:\n%s", stdout)
@@ -54,41 +54,41 @@ func TestPluginsSearchFiltersPyPIAndReusesFreshCatalog(t *testing.T) {
 			catalogRequests, metadataRequests, wheelRequests,
 		)
 	}
-	cache := filepath.Join(cacheRoot, "harnest", "plugins", "pypi.json")
+	cache := filepath.Join(cacheRoot, "harnest", "extensions", "pypi.json")
 	contents := string(mustReadTestFile(t, cache))
-	if strings.Contains(contents, "ordinary-package") || !strings.Contains(contents, "harnest-plugin-slack") {
-		t.Fatalf("cache did not retain only the plugin namespace:\n%s", contents)
+	if strings.Contains(contents, "ordinary-package") || !strings.Contains(contents, "harnest-extension-slack") {
+		t.Fatalf("cache did not retain only the extension namespace:\n%s", contents)
 	}
 }
 
-// pluginCatalogFixture serves a mixed PyPI index plus exact project metadata.
-func pluginCatalogFixture(
+// extensionCatalogFixture serves a mixed PyPI index plus exact project metadata.
+func extensionCatalogFixture(
 	t *testing.T, catalogRequests, metadataRequests, wheelRequests *int,
 ) http.RoundTripper {
 	t.Helper()
 	wheels := map[string][]byte{
-		"Harnest_Plugin_Postgres": pluginWheelFixture(
-			t, "Harnest_Plugin_Postgres", "postgres", "harnest_plugin_postgres", "1.2.3",
+		"Harnest_Extension_Postgres": searchExtensionWheelFixture(
+			t, "Harnest_Extension_Postgres", "postgres", "harnest_extension_postgres", "1.2.3",
 		),
-		"harnest-plugin-postgres-tools": pluginWheelFixture(
-			t, "harnest-plugin-postgres-tools", "postgres_tools", "harnest_plugin_postgres_tools", "1.2.3",
+		"harnest-extension-postgres-tools": searchExtensionWheelFixture(
+			t, "harnest-extension-postgres-tools", "postgres_tools", "harnest_extension_postgres_tools", "1.2.3",
 		),
 		// A namespace claim without the required entry point must not be shown.
-		"harnest-plugin-postgres-bogus": pluginWheelFixture(
-			t, "harnest-plugin-postgres-bogus", "wrong", "harnest_plugin_postgres_bogus", "1.2.3",
+		"harnest-extension-postgres-bogus": searchExtensionWheelFixture(
+			t, "harnest-extension-postgres-bogus", "wrong", "harnest_extension_postgres_bogus", "1.2.3",
 		),
 	}
-	return pluginRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	return extensionRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if strings.HasPrefix(request.URL.Path, "/files/") {
 			*wheelRequests++
 			name := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/files/"), ".whl")
-			return pluginHTTPBytesResponse(http.StatusOK, wheels[name], nil), nil
+			return extensionHTTPBytesResponse(http.StatusOK, wheels[name], nil), nil
 		}
 		if strings.HasPrefix(request.URL.Path, "/pypi/") {
 			*metadataRequests++
 			name := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/pypi/"), "/json")
-			body := pluginMetadataFixture(t, name, wheels[name], "1.2.3")
-			return pluginHTTPResponse(http.StatusOK, body, nil), nil
+			body := extensionMetadataFixture(t, name, wheels[name], "1.2.3")
+			return extensionHTTPResponse(http.StatusOK, body, nil), nil
 		}
 		*catalogRequests++
 		if request.Header.Get("Accept") != pypiSimpleJSONMediaType {
@@ -96,24 +96,24 @@ func pluginCatalogFixture(
 		}
 		body := `{"meta":{"api-version":"1.4"},"projects":[` +
 			`{"name":"ordinary-package"},` +
-			`{"name":"Harnest_Plugin_Postgres"},` +
-			`{"name":"harnest-plugin-postgres-bogus"},` +
-			`{"name":"harnest-plugin-postgres-tools"},` +
-			`{"name":"harnest-plugin-slack"}]}`
-		return pluginHTTPResponse(
+			`{"name":"Harnest_Extension_Postgres"},` +
+			`{"name":"harnest-extension-postgres-bogus"},` +
+			`{"name":"harnest-extension-postgres-tools"},` +
+			`{"name":"harnest-extension-slack"}]}`
+		return extensionHTTPResponse(
 			http.StatusOK, body, map[string]string{"ETag": `"catalog-one"`},
 		), nil
 	})
 }
 
-func TestPluginsSearchRefreshesWithETagAndSupportsJSON(t *testing.T) {
+func TestExtensionsSearchRefreshesWithETagAndSupportsJSON(t *testing.T) {
 	var catalogRequests int
-	wheel := pluginWheelFixture(
-		t, "harnest-plugin-slack", "slack", "harnest_plugin_slack", "2.0.0",
+	wheel := searchExtensionWheelFixture(
+		t, "harnest-extension-slack", "slack", "harnest_extension_slack", "2.0.0",
 	)
-	transport := pluginRefreshFixture(t, &catalogRequests, wheel)
+	transport := extensionRefreshFixture(t, &catalogRequests, wheel)
 
-	sys := pluginSearchTestSystem(transport, t.TempDir())
+	sys := extensionSearchTestSystem(transport, t.TempDir())
 	if _, _, err := executeForTest(t, sys, "extensions", "search", "slack"); err != nil {
 		t.Fatal(err)
 	}
@@ -123,65 +123,65 @@ func TestPluginsSearchRefreshesWithETagAndSupportsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var results []pluginSearchResult
+	var results []extensionSearchResult
 	if err := json.Unmarshal([]byte(stdout), &results); err != nil {
 		t.Fatalf("decode JSON output %q: %v", stdout, err)
 	}
-	if len(results) != 1 || results[0].Name != "harnest-plugin-slack" ||
+	if len(results) != 1 || results[0].Name != "harnest-extension-slack" ||
 		results[0].Version != "2.0.0" || results[0].Trust != "community" {
 		t.Fatalf("unexpected JSON results: %#v", results)
 	}
 }
 
-// pluginRefreshFixture serves conditional catalog and compatible wheel responses.
-func pluginRefreshFixture(
+// extensionRefreshFixture serves conditional catalog and compatible wheel responses.
+func extensionRefreshFixture(
 	t *testing.T, catalogRequests *int, wheel []byte,
 ) http.RoundTripper {
 	t.Helper()
-	return pluginRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	return extensionRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path == "/simple/" {
 			*catalogRequests++
 			if *catalogRequests == 2 {
 				if request.Header.Get("If-None-Match") != `"catalog-one"` {
 					t.Errorf("If-None-Match = %q", request.Header.Get("If-None-Match"))
 				}
-				return pluginHTTPResponse(http.StatusNotModified, "", nil), nil
+				return extensionHTTPResponse(http.StatusNotModified, "", nil), nil
 			}
-			return pluginHTTPResponse(
+			return extensionHTTPResponse(
 				http.StatusOK,
-				`{"projects":[{"name":"harnest-plugin-slack"}]}`,
+				`{"projects":[{"name":"harnest-extension-slack"}]}`,
 				map[string]string{"ETag": `"catalog-one"`},
 			), nil
 		}
-		if request.URL.Path == "/files/harnest-plugin-slack.whl" {
-			return pluginHTTPBytesResponse(http.StatusOK, wheel, nil), nil
+		if request.URL.Path == "/files/harnest-extension-slack.whl" {
+			return extensionHTTPBytesResponse(http.StatusOK, wheel, nil), nil
 		}
-		return pluginHTTPResponse(http.StatusOK,
-			pluginMetadataFixture(t, "harnest-plugin-slack", wheel, "2.0.0"), nil), nil
+		return extensionHTTPResponse(http.StatusOK,
+			extensionMetadataFixture(t, "harnest-extension-slack", wheel, "2.0.0"), nil), nil
 	})
 }
 
-func TestPluginsSearchUsesStaleCacheWhenPyPIIsUnavailable(t *testing.T) {
-	transport := pluginRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return pluginHTTPResponse(http.StatusServiceUnavailable, "", nil), nil
+func TestExtensionsSearchUsesStaleCacheWhenPyPIIsUnavailable(t *testing.T) {
+	transport := extensionRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return extensionHTTPResponse(http.StatusServiceUnavailable, "", nil), nil
 	})
 	cacheRoot := t.TempDir()
-	cache := pluginCatalogCache{
-		Version:   pluginCatalogCacheVersion,
+	cache := extensionCatalogCache{
+		Version:   extensionCatalogCacheVersion,
 		FetchedAt: time.Now().Add(-time.Hour),
 		ETag:      `"stale"`,
-		Projects:  []string{"harnest-plugin-offline"},
+		Projects:  []string{"harnest-extension-offline"},
 	}
-	path := filepath.Join(cacheRoot, "harnest", "plugins", "pypi.json")
+	path := filepath.Join(cacheRoot, "harnest", "extensions", "pypi.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePluginCatalogCache(path, cache); err != nil {
+	if err := writeExtensionCatalogCache(path, cache); err != nil {
 		t.Fatal(err)
 	}
 
 	stdout, stderr, err := executeForTest(
-		t, pluginSearchTestSystem(transport, cacheRoot),
+		t, extensionSearchTestSystem(transport, cacheRoot),
 		"extensions", "search", "offline",
 	)
 	if err != nil {
@@ -192,39 +192,39 @@ func TestPluginsSearchUsesStaleCacheWhenPyPIIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestPluginWheelInspectionBindsEveryIdentity(t *testing.T) {
-	wheel := pluginWheelFixture(
-		t, "harnest-plugin-postgres", "postgres", "harnest_plugin_postgres", "1.2.3",
+func TestExtensionWheelInspectionBindsEveryIdentity(t *testing.T) {
+	wheel := searchExtensionWheelFixture(
+		t, "harnest-extension-postgres", "postgres", "harnest_extension_postgres", "1.2.3",
 	)
-	if err := inspectPluginWheel(wheel, "harnest-plugin-postgres", "1.2.3"); err != nil {
+	if err := inspectExtensionWheel(wheel, "harnest-extension-postgres", "1.2.3"); err != nil {
 		t.Fatal(err)
 	}
 	for label, identity := range map[string][2]string{
-		"project": {"harnest-plugin-other", "1.2.3"},
-		"release": {"harnest-plugin-postgres", "2.0.0"},
+		"project": {"harnest-extension-other", "1.2.3"},
+		"release": {"harnest-extension-postgres", "2.0.0"},
 	} {
-		if err := inspectPluginWheel(wheel, identity[0], identity[1]); err == nil {
+		if err := inspectExtensionWheel(wheel, identity[0], identity[1]); err == nil {
 			t.Fatalf("%s identity mismatch was accepted", label)
 		}
 	}
 }
 
-func TestPluginSearchValidationAndRanking(t *testing.T) {
+func TestExtensionSearchValidationAndRanking(t *testing.T) {
 	projects := []string{
-		"harnest-plugin-postgres-tools",
-		"harnest-plugin-my-postgres",
-		"harnest-plugin-postgres",
+		"harnest-extension-postgres-tools",
+		"harnest-extension-my-postgres",
+		"harnest-extension-postgres",
 	}
-	got := matchingPluginProjects(projects, "harnest plugin postgres", 2)
-	want := []string{"harnest-plugin-postgres", "harnest-plugin-postgres-tools"}
+	got := matchingExtensionProjects(projects, "harnest extension postgres", 2)
+	want := []string{"harnest-extension-postgres", "harnest-extension-postgres-tools"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("ranking = %v, want %v", got, want)
 	}
-	if validPyPIProjectName("harnest-plugin-bad\nname") {
+	if validPyPIProjectName("harnest-extension-bad\nname") {
 		t.Fatal("unsafe project name was accepted")
 	}
-	if trust := classifyPluginProject(
-		"Harnest_Plugin_Official", []string{"harnest-plugin-official"},
+	if trust := classifyExtensionProject(
+		"Harnest_Extension_Official", []string{"harnest-extension-official"},
 	); trust != "official" {
 		t.Fatalf("explicit Fused policy returned %q", trust)
 	}
@@ -234,8 +234,8 @@ func TestPluginSearchValidationAndRanking(t *testing.T) {
 	}
 }
 
-// pluginSearchTestSystem redirects public network and cache ownership into a fixture.
-func pluginSearchTestSystem(transport http.RoundTripper, cacheRoot string) system {
+// extensionSearchTestSystem redirects public network and cache ownership into a fixture.
+func extensionSearchTestSystem(transport http.RoundTripper, cacheRoot string) system {
 	sys := defaultSystem()
 	sys.httpClient = &http.Client{Transport: transport}
 	sys.pypiBaseURL = "https://pypi.test"
@@ -243,15 +243,15 @@ func pluginSearchTestSystem(transport http.RoundTripper, cacheRoot string) syste
 	return sys
 }
 
-// pluginHTTPResponse builds the minimal response contract consumed by the client.
-func pluginHTTPResponse(
+// extensionHTTPResponse builds the minimal response contract consumed by the client.
+func extensionHTTPResponse(
 	status int, body string, headers map[string]string,
 ) *http.Response {
-	return pluginHTTPBytesResponse(status, []byte(body), headers)
+	return extensionHTTPBytesResponse(status, []byte(body), headers)
 }
 
-// pluginHTTPBytesResponse preserves wheel bytes in HTTP transport fixtures.
-func pluginHTTPBytesResponse(
+// extensionHTTPBytesResponse preserves wheel bytes in HTTP transport fixtures.
+func extensionHTTPBytesResponse(
 	status int, body []byte, headers map[string]string,
 ) *http.Response {
 	values := make(http.Header)
@@ -266,8 +266,8 @@ func pluginHTTPBytesResponse(
 	}
 }
 
-// pluginWheelFixture authors the minimal static distribution contract.
-func pluginWheelFixture(
+// searchExtensionWheelFixture authors the minimal static distribution contract.
+func searchExtensionWheelFixture(
 	t *testing.T, project, entryName, module, release string,
 ) []byte {
 	t.Helper()
@@ -276,13 +276,13 @@ func pluginWheelFixture(
 	distInfo := strings.ReplaceAll(project, "-", "_") + "-" + release + ".dist-info"
 	files := map[string]string{
 		distInfo + "/entry_points.txt": fmt.Sprintf(
-			"[%s]\n%s = %s.plugin:plugin\n", pluginEntryPointGroup, entryName, module,
+			"[%s]\n%s = %s.extension:extension\n", extensionEntryPointGroup, entryName, module,
 		),
-		strings.ReplaceAll(module, ".", "/") + "/plugin.yaml": fmt.Sprintf(
-			"apiVersion: harnest.dev/v1alpha1\nkind: RuntimePlugin\nmetadata:\n  name: %s\n  version: %s\nruntime:\n  entrypoint: plugin:plugin\n",
+		strings.ReplaceAll(module, ".", "/") + "/extension.yaml": fmt.Sprintf(
+			"apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: %s\n  version: %s\nruntime:\n  entrypoint: extension:extension\n",
 			entryName, release,
 		),
-		strings.ReplaceAll(module, ".", "/") + "/plugin.py": "plugin = object()\n",
+		strings.ReplaceAll(module, ".", "/") + "/extension.py": "extension = object()\n",
 	}
 	for name, contents := range files {
 		file, err := writer.Create(name)
@@ -299,7 +299,7 @@ func pluginWheelFixture(
 	return buffer.Bytes()
 }
 
-func pluginReleaseFile(project string, wheel []byte) pypiReleaseFile {
+func extensionReleaseFile(project string, wheel []byte) pypiReleaseFile {
 	digest := sha256.Sum256(wheel)
 	filename := project + "-1.0.0-py3-none-any.whl"
 	artifact := pypiReleaseFile{
@@ -311,15 +311,15 @@ func pluginReleaseFile(project string, wheel []byte) pypiReleaseFile {
 	return artifact
 }
 
-func TestSelectPluginWheelRequiresUniversalCompatibilityTags(t *testing.T) {
+func TestSelectExtensionWheelRequiresUniversalCompatibilityTags(t *testing.T) {
 	files := []pypiReleaseFile{
-		pluginReleaseFile("demo-1.0.0-cp313-cp313-win_amd64", []byte("windows")),
-		pluginReleaseFile("demo-1.0.0-py3-none-any", []byte("universal")),
+		extensionReleaseFile("demo-1.0.0-cp313-cp313-win_amd64", []byte("windows")),
+		extensionReleaseFile("demo-1.0.0-py3-none-any", []byte("universal")),
 	}
 	files[0].Filename = "demo-1.0.0-cp313-cp313-win_amd64.whl"
 	files[1].Filename = "demo-1.0.0-py3-none-any.whl"
 
-	selected, err := selectPluginWheel(files)
+	selected, err := selectExtensionWheel(files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,20 +327,20 @@ func TestSelectPluginWheelRequiresUniversalCompatibilityTags(t *testing.T) {
 		t.Fatalf("selected wheel = %q, want universal wheel", selected.Filename)
 	}
 
-	if _, err := selectPluginWheel(files[:1]); err == nil ||
+	if _, err := selectExtensionWheel(files[:1]); err == nil ||
 		!strings.Contains(err.Error(), "py3-none-any") {
 		t.Fatalf("platform-only wheel error = %v", err)
 	}
 }
 
-func pluginMetadataFixture(
+func extensionMetadataFixture(
 	t *testing.T, project string, wheel []byte, release string,
 ) string {
 	t.Helper()
-	metadata := pypiProjectMetadata{URLs: []pypiReleaseFile{pluginReleaseFile(project, wheel)}}
+	metadata := pypiProjectMetadata{URLs: []pypiReleaseFile{extensionReleaseFile(project, wheel)}}
 	metadata.Info.Name = project
 	metadata.Info.Version = release
-	metadata.Info.Summary = "Plugin for " + project
+	metadata.Info.Summary = "Extension for " + project
 	contents, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)

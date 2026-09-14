@@ -6,9 +6,9 @@ from typing import Any, Sequence
 
 from .application import RuntimeCapabilities
 from .runtime_contract import RuntimeDriver
-from .runtime_extensions import ExtensionRuntimeDriver
-from .plugin_runtime_driver import PluginRuntimeDriver
-from .plugin_runtime_manager import PluginRuntimeManager
+from .lifecycle_runtime import LifecycleRuntimeDriver
+from .extension_runtime_driver import ExtensionHostRuntimeDriver
+from .extension_runtime_manager import ExtensionRuntimeManager
 from .runtime_session import StorageRuntimeDriver
 from .session import SessionStore
 
@@ -19,22 +19,22 @@ def build_runtime_pipeline(
     extensions: Sequence[Any],
     *,
     manage_credential_provider: bool = True,
-    plugin_manager: PluginRuntimeManager | None = None,
+    extension_manager: ExtensionRuntimeManager | None = None,
 ) -> RuntimeDriver:
     """Wrap one backend in the single supported capability ownership order."""
 
     if not isinstance(capabilities, RuntimeCapabilities):
         raise TypeError("capabilities must be RuntimeCapabilities")
     session_store = _session_context_store(driver, capabilities)
-    if plugin_manager is not None and not isinstance(
-        plugin_manager, PluginRuntimeManager
+    if extension_manager is not None and not isinstance(
+        extension_manager, ExtensionRuntimeManager
     ):
-        raise TypeError("plugin_manager must be PluginRuntimeManager")
+        raise TypeError("extension_manager must be ExtensionRuntimeManager")
     # Every Harnest invocation owns identity and revocation context, even when
     # an agent declares no optional capabilities. Making this wrapper
     # conditional caused plain managed agents and MCP-only agents to observe
     # different context behavior based on unrelated configuration.
-    current: RuntimeDriver = ExtensionRuntimeDriver(
+    current: RuntimeDriver = LifecycleRuntimeDriver(
         driver,
         extensions,
         context_values=capabilities.context_values,
@@ -45,16 +45,16 @@ def build_runtime_pipeline(
         session_store=session_store,
         credential_provider=capabilities.credential_provider,
         manage_credential_provider=manage_credential_provider,
-        plugin_bindings=(
+        extension_bindings=(
             None
-            if plugin_manager is None
-            else plugin_manager.invocation_bindings
+            if extension_manager is None
+            else extension_manager.invocation_bindings
         ),
     )
-    if plugin_manager is not None:
-        current = PluginRuntimeDriver(current, plugin_manager)
-    # Storage is outermost so plugin start contexts see live custom stores and
-    # shutdown cannot close those stores before plugins release their handles.
+    if extension_manager is not None:
+        current = ExtensionHostRuntimeDriver(current, extension_manager)
+    # Storage is outermost so extension start contexts see live custom stores and
+    # shutdown cannot close them before extensions release their handles.
     return _with_storage(current, capabilities)
 
 

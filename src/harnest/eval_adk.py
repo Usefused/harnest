@@ -11,20 +11,20 @@ from typing import Any
 
 from .application import CompiledApplication
 from .runtime_contract import InvocationRequest, SessionConflictError
-from .runtime_extensions import ExtensionRuntimeDriver
+from .lifecycle_runtime import LifecycleRuntimeDriver
 from .session import InMemorySessionStore
 
 
-_EVAL_RUNTIME: ContextVar[ExtensionRuntimeDriver | None] = ContextVar(
+_EVAL_RUNTIME: ContextVar[LifecycleRuntimeDriver | None] = ContextVar(
     "harnest_adk_eval_runtime", default=None
 )
 
 
-def _extension_runtime(driver: Any) -> ExtensionRuntimeDriver:
+def _extension_runtime(driver: Any) -> LifecycleRuntimeDriver:
     """Locate the capability owner through Harnest's internal wrapper chain."""
     seen: set[int] = set()
     while driver is not None and id(driver) not in seen:
-        if isinstance(driver, ExtensionRuntimeDriver):
+        if isinstance(driver, LifecycleRuntimeDriver):
             return driver
         seen.add(id(driver))
         driver = getattr(driver, "_driver", None)

@@ -98,7 +98,7 @@ class FrameworkArtifactTests(unittest.TestCase):
         """Add a portable business endpoint backed by the compiled root agent."""
 
         self._write(
-            root / "extensions" / "http.py",
+            root / "lifecycle" / "http.py",
             """
             from fastapi import APIRouter, Request
             from harnest import lifecycle
@@ -158,7 +158,7 @@ class FrameworkArtifactTests(unittest.TestCase):
         self._write(
             root / "tools" / "protected_send.py",
             """
-            from harnest.approval import require_human_approval
+            from harnest.agent.approval import require_human_approval
             from harnest.agent import tool
 
 
@@ -244,7 +244,7 @@ class FrameworkArtifactTests(unittest.TestCase):
     def _lifecycle_extension(self, root: Path) -> None:
         self._write(root / "instructions.md", "Answer with the model response.\n")
         self._write(
-            root / "extensions" / "gateway.py",
+            root / "lifecycle" / "gateway.py",
             """
             from dataclasses import replace
 
@@ -586,7 +586,7 @@ class FrameworkArtifactTests(unittest.TestCase):
             root.mkdir()
             self._managed_source(root)
             self._write(
-                root / "extensions" / "retrieval.py",
+                root / "lifecycle" / "retrieval.py",
                 f"""
                 from contextlib import contextmanager
                 from pathlib import Path
@@ -734,7 +734,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from google.adk.events import Event
                 from google.genai import types
                 from harnest.agent import Agent
-                from harnest.approval import request_human_approval
+                from harnest.agent.approval import request_human_approval
                 from harnest.agent import tool
 
 
@@ -805,7 +805,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 from google.adk.models import BaseLlm, LlmResponse
                 from google.genai import types
                 from harnest.agent import Agent
-                from harnest.approval import require_human_approval
+                from harnest.agent.approval import require_human_approval
                 from harnest.agent import tool
 
 
@@ -1012,7 +1012,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 "checkpoints = MemoryStore()\n",
                 encoding="utf-8",
             )
-            (root / "extensions" / "checkpoints.py").write_text(
+            (root / "lifecycle" / "checkpoints.py").write_text(
                 "from harnest import lifecycle\n"
                 "from harnest.lib.checkpoints import checkpoints\n"
                 "@lifecycle.storage.checkpoints\n"
@@ -1042,7 +1042,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 """
                 from langgraph.graph import END, START, StateGraph
                 from harnest.agent import Agent
-                from harnest.approval import request_human_approval
+                from harnest.agent.approval import request_human_approval
 
 
                 async def reply(state):
@@ -1093,7 +1093,7 @@ class FrameworkArtifactTests(unittest.TestCase):
                 "checkpoints = MemoryStore()\n",
                 encoding="utf-8",
             )
-            (root / "extensions" / "checkpoints.py").write_text(
+            (root / "lifecycle" / "checkpoints.py").write_text(
                 "from harnest import lifecycle\n"
                 "from harnest.lib.checkpoints import checkpoints\n"
                 "@lifecycle.storage.checkpoints\n"

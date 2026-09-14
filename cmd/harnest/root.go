@@ -74,7 +74,8 @@ Harnest lock, and the embedded Harnest wheel. Framework MCP and evaluation
 dependencies are installed only when the source or command needs them.
 Harnest Extensions declare extension.yaml kind Extension, export extension
 from extension.py, and share that interpreter; their module is
-harnest.extensions.<name>. Legacy RuntimePlugin packages remain readable.
+harnest.extensions.<name>. Use harnest upgrade to migrate retired RuntimePlugin
+packages; plugins/ is reserved for declarative Agent Plugins.
 CLI Python is selected from --python, HARNEST_PYTHON, the private Harnest
 runtime, or python3 on PATH.
 

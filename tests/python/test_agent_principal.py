@@ -33,7 +33,7 @@ from harnest.backends.langgraph import (
     _project_principal_tools,
 )
 from harnest.application import CompiledApplication
-from harnest.approval import require_human_approval
+from harnest.agent.approval import require_human_approval
 from harnest.client_tool import client_tool
 from harnest.context_agent import _resolve_invocation_agent_principal
 from harnest import context
@@ -52,7 +52,7 @@ from harnest.neutral_runtime import (
     InvocationRequest,
     InvocationResult,
 )
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_adk import ADKRuntimeDriver
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
 from harnest.agent import tool
@@ -260,7 +260,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_binds_principal_privately_for_invoke(self):
         driver = _RecordingDriver()
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
         principal = AgentRuntimePrincipal.create(permissions={"support.read"})
 
         await wrapped.invoke(_request(principal))
@@ -278,7 +278,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             framework="langgraph",
             mode="advanced",
         )
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
         principal = AgentRuntimePrincipal.create(permissions={"support.read"})
 
         await wrapped.invoke(_request(principal))
@@ -302,7 +302,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             kind="graph",
             target=build_graph(graph),
         )
-        wrapped = ExtensionRuntimeDriver(LangGraphRuntimeDriver(application), [])
+        wrapped = LifecycleRuntimeDriver(LangGraphRuntimeDriver(application), [])
         start_resources = AsyncMock()
         wrapped._start_resources = start_resources
 
@@ -337,7 +337,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_scope_does_not_leak_to_the_caller_between_events(self):
         driver = _RecordingDriver()
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
         principal = AgentRuntimePrincipal.create(permissions={"support.read"})
         observed = []
 
@@ -360,7 +360,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
                 return await super().invoke(request)
 
         driver = ChildDriver()
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
         principal = AgentRuntimePrincipal.create(permissions={"support.read"})
 
         await wrapped.invoke(_request(principal))
@@ -479,7 +479,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             target=agent,
             native_app=App(name="projection", root_agent=agent),
         )
-        driver = ExtensionRuntimeDriver(ADKRuntimeDriver(application), [])
+        driver = LifecycleRuntimeDriver(ADKRuntimeDriver(application), [])
         try:
             await driver.create_session(
                 session_id="session-1", user_id="user-1", state={}
@@ -512,7 +512,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             mode="managed",
             target=build_agent(definition, checkpointer=MemorySaver()),
         )
-        driver = ExtensionRuntimeDriver(LangGraphRuntimeDriver(application), [])
+        driver = LifecycleRuntimeDriver(LangGraphRuntimeDriver(application), [])
         try:
             await driver.create_session(
                 session_id="session-1", user_id="user-1", state={}

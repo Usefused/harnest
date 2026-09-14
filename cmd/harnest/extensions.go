@@ -20,24 +20,23 @@ import (
 )
 
 const (
-	pypiPluginPrefix          = "harnest-plugin-"
-	pypiExtensionPrefix       = "harnest-extension-"
-	pypiSimpleJSONMediaType   = "application/vnd.pypi.simple.v1+json"
-	pluginCatalogCacheVersion = 2
-	pluginCatalogTTL          = 10 * time.Minute
-	maxPluginCatalogBytes     = 64 * 1024 * 1024
-	maxPluginMetadataBytes    = 2 * 1024 * 1024
-	maxPluginCacheBytes       = 4 * 1024 * 1024
+	pypiExtensionPrefix          = "harnest-extension-"
+	pypiSimpleJSONMediaType      = "application/vnd.pypi.simple.v1+json"
+	extensionCatalogCacheVersion = 2
+	extensionCatalogTTL          = 10 * time.Minute
+	maxExtensionCatalogBytes     = 64 * 1024 * 1024
+	maxExtensionMetadataBytes    = 2 * 1024 * 1024
+	maxExtensionCacheBytes       = 4 * 1024 * 1024
 )
 
-type pluginCatalogCache struct {
+type extensionCatalogCache struct {
 	Version   int       `json:"version"`
 	FetchedAt time.Time `json:"fetchedAt"`
 	ETag      string    `json:"etag,omitempty"`
 	Projects  []string  `json:"projects"`
 }
 
-type pluginSearchResult struct {
+type extensionSearchResult struct {
 	Name        string `json:"name"`
 	Version     string `json:"version,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -64,32 +63,33 @@ application-local package, without importing package code during the CLI operati
 
 Publish harnest-extension-* packages with one harnest.extensions entry point,
 such as "postgres = harnest_extension_postgres.extension:extension", and include
-extension.yaml plus extension.py. The legacy distribution contract below is
-still supported. Search does not
-install packages or convert their layouts. Use harnest upgrade to migrate.
+extension.yaml plus extension.py. The manifest's contributes mapping explicitly
+projects package-relative lifecycle, MCP, skill, subagent, and tool directories.
+Search does not install packages or convert
+their layouts. Use harnest upgrade to migrate retired RuntimePlugin projects.
 
-The harnest-plugin-* name is only a candidate namespace. Search results must
-also contain one harnest.plugins entry point and its plugin.yaml/plugin.py
+The harnest-extension-* name is only a candidate namespace. Search results must
+also contain one harnest.extensions entry point and its extension.yaml/extension.py
 bundle in a digest-verified wheel; package code is never imported by search.
-For harnest-plugin-postgres, publish an entry point such as
-"postgres = harnest_plugin_postgres.plugin:plugin" in the harnest.plugins
-group and package harnest_plugin_postgres/plugin.yaml plus
-harnest_plugin_postgres/plugin.py.
+For harnest-extension-postgres, publish an entry point such as
+"postgres = harnest_extension_postgres.extension:extension" in the harnest.extensions
+group and package harnest_extension_postgres/extension.yaml plus
+harnest_extension_postgres/extension.py.
 
 Trust is reported separately: community packages satisfy the bundle contract,
 while official packages are names explicitly owned and approved by Fused.
-Neither label is a security review of the plugin's code.`,
+Neither label is a security review of the extension's code.`,
 	}
 	command.AddCommand(
 		a.newExtensionInitCommand(),
 		a.newExtensionInstallCommand(),
-		a.newPluginSearchCommand(),
+		a.newExtensionSearchCommand(),
 	)
 	return command
 }
 
-// newPluginSearchCommand searches only the public Harnest package namespace.
-func (a *application) newPluginSearchCommand() *cobra.Command {
+// newExtensionSearchCommand searches only the public Harnest package namespace.
+func (a *application) newExtensionSearchCommand() *cobra.Command {
 	var limit int
 	var refresh bool
 	var jsonOutput bool
@@ -105,7 +105,7 @@ func (a *application) newPluginSearchCommand() *cobra.Command {
 			if len(arguments) == 1 {
 				query = arguments[0]
 			}
-			results, stale, err := a.searchPyPIPlugins(
+			results, stale, err := a.searchPyPIExtensions(
 				command.Context(), query, limit, refresh,
 			)
 			if err != nil {
@@ -117,7 +117,7 @@ func (a *application) newPluginSearchCommand() *cobra.Command {
 					"harnest: PyPI unavailable; using cached extension catalog",
 				)
 			}
-			return renderPluginSearch(command.OutOrStdout(), results, jsonOutput)
+			return renderExtensionSearch(command.OutOrStdout(), results, jsonOutput)
 		},
 	}
 	command.Flags().IntVar(&limit, "limit", 20, "maximum results (1-50)")
@@ -126,11 +126,11 @@ func (a *application) newPluginSearchCommand() *cobra.Command {
 	return command
 }
 
-// searchPyPIPlugins returns only candidates whose immutable wheel satisfies Harnest.
-func (a *application) searchPyPIPlugins(
+// searchPyPIExtensions returns only candidates whose immutable wheel satisfies Harnest.
+func (a *application) searchPyPIExtensions(
 	ctx context.Context, query string, limit int, refresh bool,
-) ([]pluginSearchResult, bool, error) {
-	catalog, stale, err := a.loadPyPIPluginCatalog(ctx, refresh)
+) ([]extensionSearchResult, bool, error) {
+	catalog, stale, err := a.loadPyPIExtensionCatalog(ctx, refresh)
 	if err != nil {
 		return nil, false, err
 	}
@@ -140,21 +140,21 @@ func (a *application) searchPyPIPlugins(
 	if candidateLimit > 50 {
 		candidateLimit = 50
 	}
-	names := matchingPluginProjects(catalog, query, candidateLimit)
-	results := make([]pluginSearchResult, 0, len(names))
+	names := matchingExtensionProjects(catalog, query, candidateLimit)
+	results := make([]extensionSearchResult, 0, len(names))
 	for _, name := range names {
-		metadata, metadataErr := a.fetchPyPIPluginMetadata(ctx, name, stale)
+		metadata, metadataErr := a.fetchPyPIExtensionMetadata(ctx, name, stale)
 		if metadataErr != nil || stale {
 			continue
 		}
-		inspection, inspectionErr := a.inspectPyPIPlugin(ctx, name, metadata)
+		inspection, inspectionErr := a.inspectPyPIExtension(ctx, name, metadata)
 		if inspectionErr != nil || !inspection.Compatible {
 			continue
 		}
-		result := pluginSearchResult{
-			Name: name, Version: cleanPluginVersion(metadata.Info.Version),
-			Description: cleanPluginDescription(metadata.Info.Summary),
-			Trust:       pluginProjectTrust(name),
+		result := extensionSearchResult{
+			Name: name, Version: cleanExtensionVersion(metadata.Info.Version),
+			Description: cleanExtensionDescription(metadata.Info.Summary),
+			Trust:       extensionProjectTrust(name),
 			URL:         "https://pypi.org/project/" + url.PathEscape(name) + "/",
 		}
 		results = append(results, result)
@@ -165,46 +165,46 @@ func (a *application) searchPyPIPlugins(
 	return results, stale, nil
 }
 
-// loadPyPIPluginCatalog reuses fresh state and falls back to stale state offline.
-func (a *application) loadPyPIPluginCatalog(
+// loadPyPIExtensionCatalog reuses fresh state and falls back to stale state offline.
+func (a *application) loadPyPIExtensionCatalog(
 	ctx context.Context, refresh bool,
 ) ([]string, bool, error) {
-	path, err := a.pluginCatalogCachePath()
+	path, err := a.extensionCatalogCachePath()
 	if err != nil {
 		return nil, false, err
 	}
-	cached, found := readPluginCatalogCache(path)
-	if found && !refresh && time.Since(cached.FetchedAt) < pluginCatalogTTL {
+	cached, found := readExtensionCatalogCache(path)
+	if found && !refresh && time.Since(cached.FetchedAt) < extensionCatalogTTL {
 		return cached.Projects, false, nil
 	}
-	updated, err := a.fetchPyPIPluginCatalog(ctx, cached, found)
+	updated, err := a.fetchPyPIExtensionCatalog(ctx, cached, found)
 	if err != nil && found {
 		return cached.Projects, true, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if err := writePluginCatalogCache(path, updated); err != nil {
+	if err := writeExtensionCatalogCache(path, updated); err != nil {
 		return nil, false, err
 	}
 	return updated.Projects, false, nil
 }
 
-// fetchPyPIPluginCatalog streams PyPI's full index while retaining only plugins.
-func (a *application) fetchPyPIPluginCatalog(
-	ctx context.Context, cached pluginCatalogCache, hasCache bool,
-) (pluginCatalogCache, error) {
+// fetchPyPIExtensionCatalog streams PyPI's full index while retaining only extensions.
+func (a *application) fetchPyPIExtensionCatalog(
+	ctx context.Context, cached extensionCatalogCache, hasCache bool,
+) (extensionCatalogCache, error) {
 	request, err := a.newPyPIRequest(ctx, http.MethodGet, "/simple/")
 	if err != nil {
-		return pluginCatalogCache{}, err
+		return extensionCatalogCache{}, err
 	}
 	request.Header.Set("Accept", pypiSimpleJSONMediaType)
 	if hasCache && cached.ETag != "" {
 		request.Header.Set("If-None-Match", cached.ETag)
 	}
-	response, err := a.pluginHTTPClient().Do(request)
+	response, err := a.extensionHTTPClient().Do(request)
 	if err != nil {
-		return pluginCatalogCache{}, fmt.Errorf("query PyPI extension catalog: %w", err)
+		return extensionCatalogCache{}, fmt.Errorf("query PyPI extension catalog: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotModified && hasCache {
@@ -212,29 +212,29 @@ func (a *application) fetchPyPIPluginCatalog(
 		return cached, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return pluginCatalogCache{}, fmt.Errorf(
+		return extensionCatalogCache{}, fmt.Errorf(
 			"query PyPI extension catalog: HTTP %d", response.StatusCode,
 		)
 	}
-	if response.ContentLength > maxPluginCatalogBytes {
-		return pluginCatalogCache{}, fmt.Errorf(
-			"PyPI extension catalog exceeds %d bytes", maxPluginCatalogBytes,
+	if response.ContentLength > maxExtensionCatalogBytes {
+		return extensionCatalogCache{}, fmt.Errorf(
+			"PyPI extension catalog exceeds %d bytes", maxExtensionCatalogBytes,
 		)
 	}
-	projects, err := decodePyPIPluginProjects(
-		io.LimitReader(response.Body, maxPluginCatalogBytes+1),
+	projects, err := decodePyPIExtensionProjects(
+		io.LimitReader(response.Body, maxExtensionCatalogBytes+1),
 	)
 	if err != nil {
-		return pluginCatalogCache{}, fmt.Errorf("decode PyPI extension catalog: %w", err)
+		return extensionCatalogCache{}, fmt.Errorf("decode PyPI extension catalog: %w", err)
 	}
-	return pluginCatalogCache{
-		Version: pluginCatalogCacheVersion, FetchedAt: time.Now().UTC(),
+	return extensionCatalogCache{
+		Version: extensionCatalogCacheVersion, FetchedAt: time.Now().UTC(),
 		ETag: response.Header.Get("ETag"), Projects: projects,
 	}, nil
 }
 
-// decodePyPIPluginProjects avoids retaining PyPI's complete project index.
-func decodePyPIPluginProjects(reader io.Reader) ([]string, error) {
+// decodePyPIExtensionProjects avoids retaining PyPI's complete project index.
+func decodePyPIExtensionProjects(reader io.Reader) ([]string, error) {
 	decoder := json.NewDecoder(reader)
 	token, err := decoder.Token()
 	if err != nil || token != json.Delim('{') {
@@ -268,7 +268,7 @@ func decodePyPIPluginProjects(reader io.Reader) ([]string, error) {
 	sort.Slice(projects, func(i, j int) bool {
 		return normalizeProjectName(projects[i]) < normalizeProjectName(projects[j])
 	})
-	return deduplicatePluginProjects(projects), nil
+	return deduplicateExtensionProjects(projects), nil
 }
 
 // decodePyPIProjectArray filters the supported Simple API project array in-stream.
@@ -293,8 +293,8 @@ func decodePyPIProjectArray(decoder *json.Decoder) ([]string, error) {
 	return projects, err
 }
 
-// deduplicatePluginProjects removes equivalent PEP 503 names deterministically.
-func deduplicatePluginProjects(projects []string) []string {
+// deduplicateExtensionProjects removes equivalent PEP 503 names deterministically.
+func deduplicateExtensionProjects(projects []string) []string {
 	result := make([]string, 0, len(projects))
 	previous := ""
 	for _, project := range projects {
@@ -308,9 +308,9 @@ func deduplicatePluginProjects(projects []string) []string {
 	return result
 }
 
-// matchingPluginProjects applies stable exact, prefix, then substring ranking.
-func matchingPluginProjects(projects []string, query string, limit int) []string {
-	normalizedQuery := normalizePluginQuery(query)
+// matchingExtensionProjects applies stable exact, prefix, then substring ranking.
+func matchingExtensionProjects(projects []string, query string, limit int) []string {
+	normalizedQuery := normalizeExtensionQuery(query)
 	type rankedProject struct {
 		name string
 		rank int
@@ -318,7 +318,7 @@ func matchingPluginProjects(projects []string, query string, limit int) []string
 	ranked := []rankedProject{}
 	for _, project := range projects {
 		slug := extensionProjectSlug(project)
-		rank, matches := pluginProjectRank(slug, normalizedQuery)
+		rank, matches := extensionProjectRank(slug, normalizedQuery)
 		if matches {
 			ranked = append(ranked, rankedProject{name: project, rank: rank})
 		}
@@ -339,7 +339,7 @@ func matchingPluginProjects(projects []string, query string, limit int) []string
 	return result
 }
 
-func pluginProjectRank(slug, query string) (int, bool) {
+func extensionProjectRank(slug, query string) (int, bool) {
 	if query == "" || slug == query {
 		return 0, true
 	}
@@ -370,7 +370,7 @@ func normalizeProjectName(value string) string {
 	return builder.String()
 }
 
-func normalizePluginQuery(value string) string {
+func normalizeExtensionQuery(value string) string {
 	joined := strings.Join(strings.Fields(value), "-")
 	return extensionProjectSlug(joined)
 }
@@ -395,8 +395,8 @@ func asciiAlphaNumeric(character byte) bool {
 		character >= '0' && character <= '9'
 }
 
-// fetchPyPIPluginMetadata enriches a matched package without controlling discovery.
-func (a *application) fetchPyPIPluginMetadata(
+// fetchPyPIExtensionMetadata enriches a matched package without controlling discovery.
+func (a *application) fetchPyPIExtensionMetadata(
 	ctx context.Context, name string, offline bool,
 ) (pypiProjectMetadata, error) {
 	if offline {
@@ -408,7 +408,7 @@ func (a *application) fetchPyPIPluginMetadata(
 	if err != nil {
 		return pypiProjectMetadata{}, err
 	}
-	response, err := a.pluginHTTPClient().Do(request)
+	response, err := a.extensionHTTPClient().Do(request)
 	if err != nil {
 		return pypiProjectMetadata{}, err
 	}
@@ -419,11 +419,11 @@ func (a *application) fetchPyPIPluginMetadata(
 		)
 	}
 	var metadata pypiProjectMetadata
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxPluginMetadataBytes+1))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxExtensionMetadataBytes+1))
 	if err := decoder.Decode(&metadata); err != nil {
 		return pypiProjectMetadata{}, err
 	}
-	if response.ContentLength > maxPluginMetadataBytes {
+	if response.ContentLength > maxExtensionMetadataBytes {
 		return pypiProjectMetadata{}, fmt.Errorf("PyPI metadata exceeds its limit")
 	}
 	var extra any
@@ -449,14 +449,14 @@ func (a *application) newPyPIRequest(
 	return request, nil
 }
 
-func (a *application) pluginHTTPClient() *http.Client {
+func (a *application) extensionHTTPClient() *http.Client {
 	if a.system.httpClient != nil {
 		return a.system.httpClient
 	}
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-func (a *application) pluginCatalogCachePath() (string, error) {
+func (a *application) extensionCatalogCachePath() (string, error) {
 	cacheDirectory := a.system.userCacheDir
 	if cacheDirectory == nil {
 		cacheDirectory = os.UserCacheDir
@@ -465,28 +465,28 @@ func (a *application) pluginCatalogCachePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user cache directory: %w", err)
 	}
-	return filepath.Join(root, "harnest", "plugins", "pypi.json"), nil
+	return filepath.Join(root, "harnest", "extensions", "pypi.json"), nil
 }
 
-// readPluginCatalogCache treats untrusted or obsolete cache state as a miss.
-func readPluginCatalogCache(path string) (pluginCatalogCache, bool) {
+// readExtensionCatalogCache treats untrusted or obsolete cache state as a miss.
+func readExtensionCatalogCache(path string) (extensionCatalogCache, bool) {
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxPluginCacheBytes {
-		return pluginCatalogCache{}, false
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxExtensionCacheBytes {
+		return extensionCatalogCache{}, false
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return pluginCatalogCache{}, false
+		return extensionCatalogCache{}, false
 	}
-	var cached pluginCatalogCache
-	if json.Unmarshal(contents, &cached) != nil || !validPluginCatalogCache(cached) {
-		return pluginCatalogCache{}, false
+	var cached extensionCatalogCache
+	if json.Unmarshal(contents, &cached) != nil || !validExtensionCatalogCache(cached) {
+		return extensionCatalogCache{}, false
 	}
 	return cached, true
 }
 
-func validPluginCatalogCache(cached pluginCatalogCache) bool {
-	if cached.Version != pluginCatalogCacheVersion || cached.FetchedAt.IsZero() || cached.FetchedAt.After(time.Now().Add(5*time.Minute)) {
+func validExtensionCatalogCache(cached extensionCatalogCache) bool {
+	if cached.Version != extensionCatalogCacheVersion || cached.FetchedAt.IsZero() || cached.FetchedAt.After(time.Now().Add(5*time.Minute)) {
 		return false
 	}
 	previous := ""
@@ -500,19 +500,19 @@ func validPluginCatalogCache(cached pluginCatalogCache) bool {
 	return true
 }
 
-// writePluginCatalogCache atomically publishes only the filtered public index.
-func writePluginCatalogCache(path string, cached pluginCatalogCache) error {
+// writeExtensionCatalogCache atomically publishes only the filtered public index.
+func writeExtensionCatalogCache(path string, cached extensionCatalogCache) error {
 	contents, err := json.Marshal(cached)
 	if err != nil {
 		return err
 	}
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return fmt.Errorf("create plugin cache directory: %w", err)
+		return fmt.Errorf("create extension cache directory: %w", err)
 	}
 	temporary, err := os.CreateTemp(directory, ".pypi-*.json")
 	if err != nil {
-		return fmt.Errorf("create plugin cache: %w", err)
+		return fmt.Errorf("create extension cache: %w", err)
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
@@ -528,13 +528,13 @@ func writePluginCatalogCache(path string, cached pluginCatalogCache) error {
 		return err
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("publish plugin cache: %w", err)
+		return fmt.Errorf("publish extension cache: %w", err)
 	}
 	return nil
 }
 
-// cleanPluginDescription renders remote text without terminal spoofing controls.
-func cleanPluginDescription(value string) string {
+// cleanExtensionDescription renders remote text without terminal spoofing controls.
+func cleanExtensionDescription(value string) string {
 	// Format controls can visually reorder terminal output even though they are
 	// not traditional ASCII control bytes.
 	printable := strings.Map(func(character rune) rune {
@@ -550,7 +550,7 @@ func cleanPluginDescription(value string) string {
 	return string([]rune(cleaned)[:97]) + "..."
 }
 
-func cleanPluginVersion(value string) string {
+func cleanExtensionVersion(value string) string {
 	cleaned := strings.Join(strings.Fields(value), "")
 	if utf8.RuneCountInString(cleaned) <= 50 {
 		return cleaned
@@ -558,9 +558,9 @@ func cleanPluginVersion(value string) string {
 	return string([]rune(cleaned)[:50])
 }
 
-// renderPluginSearch keeps human output compact and offers stable JSON for agents.
-func renderPluginSearch(
-	output io.Writer, results []pluginSearchResult, jsonOutput bool,
+// renderExtensionSearch keeps human output compact and offers stable JSON for agents.
+func renderExtensionSearch(
+	output io.Writer, results []extensionSearchResult, jsonOutput bool,
 ) error {
 	if jsonOutput {
 		encoder := json.NewEncoder(output)

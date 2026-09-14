@@ -49,11 +49,11 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `subagents/<name>.py` | Exports one managed `Agent` with an explicit instruction or one native `Agent.advanced(...)`, named `<name>`. |
 | `subagents/<name>/agent.py` | Recursively composed managed subagent named `<name>` with its own folder-scoped `instructions.md`, tools, MCP clients, sandbox, and skills. Advanced subagents use the flat-file form because native source owns composition. ADK also permits child subagents; LangGraph does not. Harnest Extensions, Agent Plugins, and lifecycle hooks remain root-only. |
 | `mcp/<name>.py` | Exports one literally zero-parameter `client()` factory returning `MCPClient`; `<name>` is its local identity. |
-| `extensions/<name>/extension.yaml` | Marks an `Extension`; its `metadata.name` matches the identifier-safe folder name and its entrypoint is `extension:extension`. |
+| `extensions/<name>/extension.yaml` | Marks an `Extension`; its `metadata.name` matches the identifier-safe folder name, its entrypoint is `extension:extension`, and `contributes` lists every projected content directory. |
 | `extensions/<name>/extension.py` | Exports one public local `Extension` subclass and the singleton `extension` instance. The module is exposed as `harnest.extensions.<name>`. |
 | `extensions/<name>/pyproject.toml` | Optional PEP 621 project whose name/version match `extension.yaml` and whose static dependencies join the root environment solve. It never creates a private extension environment. |
 | `extensions/<name>/lib/**/*.py` | Private extension helpers. `extension.py` may import `.lib.client`; contributed tools and lifecycle hooks import `harnest.extensions.<name>.lib.client`. Application-wide helpers remain in root `lib/` and import through `harnest.lib.*`. |
-| `extensions/<name>/lifecycle/**/*.py` | Harnest Extension lifecycle, context, storage, route, or native contributions declared by the manifest. They join root and dependency-ordered extension contributions in one globally validated lifecycle. |
+| `extensions/<name>/lifecycle/**/*.py` | Harnest Extension lifecycle, context, storage, route, or native contributions declared under `contributes.lifecycle`. They join root and dependency-ordered extension contributions in one globally validated lifecycle. |
 | `plugins/<name>/plugin.json` | Required Agent Plugins 1.0 manifest with canonical `$schema` and a valid `name`; the manifest supplies identity. |
 | `plugins/<name>/mcp.json` | Optional standard MCP configuration with canonical `$schema`, `mcpServers`, and explicit transport types. No Python factories. |
 | `extensions/<name>/mcp/<client>.py` | Harnest Extension MCP client, requiring the `content.mcp` capability. |
@@ -84,8 +84,17 @@ persistent `PLUGIN_DATA`; `HARNEST_PLUGIN_DATA_DIR` selects its parent directory
 
 Root hooks and factories belong in `lifecycle/`; extension-owned hooks belong
 in `extensions/<name>/lifecycle/`. Preview `harnest upgrade` to migrate legacy
-root `extensions/` and RuntimePlugin packages safely, with backups and collision
-checks. Do not mix old lifecycle files and new packages under `extensions/`.
+root `extensions/` and retired RuntimePlugin packages safely, with backups and
+collision checks. The upgrade moves executable `plugins/<name>/plugin.yaml`
+packages to `extensions/<name>/extension.yaml`, renames `plugin.py` and its
+singleton, prefixes the distribution name, and rewrites `harnest.plugins`
+imports. It leaves Agent Plugin `plugin.json` packages in `plugins/`. Do not mix
+old lifecycle files and new packages under `extensions/`.
+
+Harnest never infers Extension content from folder names. `contributes` maps the
+fixed `lifecycle`, `mcp`, `skills`, `subagents`, and `tools` surfaces to existing,
+non-overlapping package-relative directories. Installation keeps the package
+intact under `extensions/<name>/`; compilation projects only those paths.
 
 ## Harnest Extension descriptor and export
 
@@ -101,6 +110,8 @@ runtime:
   entrypoint: extension:extension
 requires:
   extensions: [core]
+contributes:
+  lifecycle: [lifecycle/]
 capabilities:
   - lifecycle.tool
   - lifecycle.skills
@@ -113,7 +124,7 @@ capabilities:
 before dependants for startup and reverses that order for shutdown; missing
 dependencies and cycles fail compilation. `capabilities` declares the bounded
 Harnest lifecycle, context, content, storage, HTTP, native, policy, or telemetry
-surfaces the plugin contributes. Declare only surfaces the plugin actually
+surfaces the extension contributes. Declare only surfaces the extension actually
 uses; declaration does not grant access outside Harnest-owned boundaries.
 `context.continuations` is for Harnest Extensions that adapt an external durable
 runtime. It requires a Harnest-owned portable checkpoint store and does not

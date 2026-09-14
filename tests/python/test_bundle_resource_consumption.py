@@ -412,14 +412,14 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 "tools",
                 "subagents",
                 "mcp",
-                "extensions",
-                "plugins",
+                "lifecycle",
                 "sandbox",
                 "skills",
                 "evals",
             ):
                 self._write(root / name / "_README.md", "Optional.\n")
                 (root / name / "empty").mkdir()
+            self._write(root / "plugins" / "_README.md", "Optional.\n")
             write_session_store(root)
             # Reaching advanced lowering proves placeholders were skipped.
             target = object()
@@ -433,6 +433,31 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                     root, entrypoint="agent:root_agent", framework="adk", mode="advanced"
                 )
             self.assertIs(result.target, target)
+
+    def test_manifestless_agent_plugin_is_rejected_before_python_import(self):
+        """Require plugin.json without executing a former Python MCP factory."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._write(
+                root / "agent.py",
+                "from harnest.agent import Agent\n"
+                "root_agent = Agent(name='root', model='test/model')\n",
+            )
+            self._write(root / "instructions.md", "Use standard packages.\n")
+            self._write(
+                root / "plugins" / "legacy" / "mcp" / "unsafe.py",
+                "raise AssertionError('must never import manifestless plugin code')\n",
+            )
+            write_session_store(root)
+            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with self.assertRaisesRegex(
+                    BundleConventionError,
+                    "must contain plugin.json.*no longer loads manifestless plugins",
+                ):
+                    compile_application(
+                        root, entrypoint="agent:root_agent", framework="adk"
+                    )
 
     def test_nested_advanced_subagent_is_rejected_instead_of_ignoring_resources(self):
         with tempfile.TemporaryDirectory() as temp:

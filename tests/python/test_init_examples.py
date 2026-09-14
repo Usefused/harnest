@@ -14,7 +14,7 @@ from unittest.mock import patch
 import yaml
 
 from harnest.bundle import compile_application, discover_evals
-from harnest.plugins import release_runtime_plugins
+from harnest.extensions import release_extensions
 
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +53,7 @@ class InitExampleTests(unittest.TestCase):
             return compile_application(root, entrypoint="agent:root_agent", framework=framework)
 
     def test_samples_are_valid_source_but_never_imported_by_default(self):
-        """Ignored examples cannot activate tools, tasks, plugins, or evals."""
+        """Ignored examples cannot activate tools, tasks, extensions, or evals."""
         for framework in ("adk", "langgraph"):
             with self.subTest(framework=framework):
                 root = self._scaffold(framework)
@@ -62,7 +62,7 @@ class InitExampleTests(unittest.TestCase):
                 self.assertEqual(application.kind, "agent")
                 self.assertEqual(application.tasks, ())
                 self.assertEqual(application.crons, ())
-                self.assertEqual(application.plugins, ())
+                self.assertEqual(application.extensions, ())
                 self.assertEqual(discover_evals(root / "agent.py").eval_sets, ())
 
     def _validate_and_poison_samples(self, root):
@@ -70,7 +70,7 @@ class InitExampleTests(unittest.TestCase):
         for path in root.rglob("*.py"):
             source = path.read_text(encoding="utf-8")
             ast.parse(source, filename=str(path))
-            # Native-format plugin directories are ignored as a whole, too.
+            # Native-format extension directories are ignored as a whole, too.
             if any(part.startswith("_") for part in path.relative_to(root).parts):
                 path.write_text(source + '\nraise AssertionError("ignored sample imported")\n', encoding="utf-8")
         sample = json.loads((root / "evals" / "_example.evalset.json").read_text())
@@ -88,12 +88,12 @@ class InitExampleTests(unittest.TestCase):
                     self._assert_activated_samples(root, application)
                 finally:
                     # Release before the next subtest compiles another project
-                    # with the same process-owned plugin namespace.
-                    release_runtime_plugins(tuple(plugin.descriptor for plugin in application.plugins))
+                    # with the same process-owned extension namespace.
+                    release_extensions(tuple(extension.descriptor for extension in application.extensions))
 
     def _assert_activated_samples(self, root, application):
-        """Check actual task linkage and runtime-plugin/eval discovery."""
-        self.assertEqual(len(application.plugins), 2)
+        """Check actual task linkage and runtime-extension/eval discovery."""
+        self.assertEqual(len(application.extensions), 2)
         self.assertEqual(len(application.tasks), 1)
         self.assertEqual(len(application.crons), 1)
         self.assertIs(application.crons[0].task, application.tasks[0])
@@ -148,7 +148,7 @@ class ExampleContractTests(unittest.TestCase):
                 lock_path = config_path.with_name("harnest.lock")
                 self.assertTrue(lock_path.is_file())
                 lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
-                self.assertEqual(lock["projectSchema"], 5)
+                self.assertEqual(lock["projectSchema"], 6)
                 self.assertEqual(
                     lock["framework"]["name"], config["spec"]["framework"]["name"]
                 )

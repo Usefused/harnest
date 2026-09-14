@@ -211,22 +211,22 @@ type CompiledArtifact struct {
 }
 
 type CompiledManifest struct {
-	APIVersion          string             `json:"apiVersion"`
-	Kind                string             `json:"kind"`
-	Name                string             `json:"name"`
-	Entrypoint          string             `json:"entrypoint"`
-	SourceEntrypoint    string             `json:"sourceEntrypoint"`
-	SourceDirectory     string             `json:"sourceDirectory"`
-	HarnestVersion      string             `json:"harnestVersion"`
-	Framework           CompiledFramework  `json:"framework"`
-	Interfaces          CompiledInterfaces `json:"interfaces"`
-	Checkpoint          CompiledCheckpoint `json:"checkpoint"`
-	Plugins             []CompiledPlugin   `json:"plugins"`
-	Tasks               []CompiledTask     `json:"tasks"`
-	Crons               []CompiledCron     `json:"crons"`
-	RuntimeDependencies []string           `json:"runtimeDependencies"`
-	Digest              string             `json:"digest"`
-	Files               []CompiledFile     `json:"files"`
+	APIVersion          string              `json:"apiVersion"`
+	Kind                string              `json:"kind"`
+	Name                string              `json:"name"`
+	Entrypoint          string              `json:"entrypoint"`
+	SourceEntrypoint    string              `json:"sourceEntrypoint"`
+	SourceDirectory     string              `json:"sourceDirectory"`
+	HarnestVersion      string              `json:"harnestVersion"`
+	Framework           CompiledFramework   `json:"framework"`
+	Interfaces          CompiledInterfaces  `json:"interfaces"`
+	Checkpoint          CompiledCheckpoint  `json:"checkpoint"`
+	Extensions          []CompiledExtension `json:"extensions"`
+	Tasks               []CompiledTask      `json:"tasks"`
+	Crons               []CompiledCron      `json:"crons"`
+	RuntimeDependencies []string            `json:"runtimeDependencies"`
+	Digest              string              `json:"digest"`
+	Files               []CompiledFile      `json:"files"`
 }
 
 // CompiledInterfaces freezes authoring opt-ins into the standalone artifact.
@@ -252,9 +252,9 @@ type CompiledCron struct {
 	Task     string `json:"task"`
 }
 
-// CompiledPlugin records one plugin in resolved dependency order. Plugin code
+// CompiledExtension records one extension in resolved dependency order. Extension code
 // remains inside the agent source and therefore shares its runtime and digest.
-type CompiledPlugin struct {
+type CompiledExtension struct {
 	Name         string   `json:"name"`
 	Version      string   `json:"version"`
 	Digest       string   `json:"digest"`

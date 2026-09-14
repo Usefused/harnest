@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from harnest.approval import (
+from harnest.agent.approval import (
     ApprovalChallenge,
     ApprovalEnforcementError,
     ApprovalExecution,
@@ -200,7 +200,7 @@ class ApprovalAuthoringTests(unittest.IsolatedAsyncioTestCase):
 
     def test_store_cleanup_is_bounded_and_drops_terminal_items(self):
         policy = ApprovalPolicy(message="Approve?")
-        from harnest.approval import ApprovalChallenge
+        from harnest.agent.approval import ApprovalChallenge
 
         challenge = ApprovalChallenge("tool:test", "hash", "Approve?", policy)
         store = InMemoryApprovalStore(max_pending=1, tombstone_seconds=0)
@@ -261,7 +261,7 @@ class ApprovalAuthoringTests(unittest.IsolatedAsyncioTestCase):
         )
         store = InMemoryApprovalStore()
         audit = Mock()
-        with patch("harnest.approval._AUDIT", SimpleNamespace(info=audit)):
+        with patch("harnest.agent.approval._AUDIT", SimpleNamespace(info=audit)):
             store.request(
                 challenge,
                 user_id="secret-user",
@@ -286,7 +286,7 @@ class ApprovalAuthoringTests(unittest.IsolatedAsyncioTestCase):
             directory = Path(temp)
             (directory / "github.py").write_text(
                 "import os\n"
-                "from harnest.approval import require_human_approval\n"
+                "from harnest.agent.approval import require_human_approval\n"
                 "from harnest.mcp import MCPClient\n"
                 "@require_human_approval(\n"
                 "    tools=['merge_pull_request'], message='Approve GitHub write?')\n"
@@ -453,7 +453,7 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
 
         client = factory()
         from dataclasses import replace
-        from harnest.approval import approval_policy
+        from harnest.agent.approval import approval_policy
 
         client = replace(client, identity="github", approval=approval_policy(factory))
 

@@ -13,9 +13,9 @@ from harnest.application import RuntimeCapabilities
 from harnest import context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.lifecycle import LifecycleListener
-from harnest.plugin_runtime_driver import PluginRuntimeDriver
-from harnest.plugin_runtime_manager import PluginRuntimeManager
-from harnest.plugins import ActivatedPlugin, Plugin, PluginContext
+from harnest.extension_runtime_driver import ExtensionHostRuntimeDriver
+from harnest.extension_runtime_manager import ExtensionRuntimeManager
+from harnest.extensions import ActivatedExtension, Extension, ExtensionContext
 from harnest.runtime import _attach_driver_lifecycle
 from harnest.runtime_contract import (
     AgentInfo,
@@ -25,9 +25,9 @@ from harnest.runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_pipeline import build_runtime_pipeline, start_runtime_pipeline
-from harnest.runtime_plugins import RuntimePluginDescriptor
+from harnest.extension_descriptors import ExtensionDescriptor
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
 from harnest.neutral_runtime import create_neutral_app
@@ -67,11 +67,11 @@ class _Credentials(CredentialProvider):
         self.events.append("credentials:close")
 
 
-class _View(PluginContext):
-    """One invocation-specific plugin view used to prove fresh binding."""
+class _View(ExtensionContext):
+    """One invocation-specific extension view used to prove fresh binding."""
 
 
-class _RuntimePlugin(Plugin[_View]):
+class _HarnestExtension(Extension[_View]):
     """Record application ownership and expose a typed invocation view."""
 
     def __init__(self, events: list[str]) -> None:
@@ -80,14 +80,14 @@ class _RuntimePlugin(Plugin[_View]):
 
     async def start(self, start_context: Any) -> None:
         self.store = start_context.storage("users", _Store)
-        self.events.append(f"plugin:start:{self.store.ready}")
+        self.events.append(f"extension:start:{self.store.ready}")
 
     async def stop(self) -> None:
         ready = self.store is not None and self.store.ready
-        self.events.append(f"plugin:stop:{ready}")
+        self.events.append(f"extension:stop:{ready}")
 
-    def create_context(self, base: PluginContext) -> _View:
-        return _View(base.plugin_name)
+    def create_context(self, base: ExtensionContext) -> _View:
+        return _View(base.extension_name)
 
 
 class _Backend:
@@ -167,22 +167,22 @@ class _Backend:
         self.events.append("backend:close")
 
 
-def _activated(plugin: _RuntimePlugin) -> ActivatedPlugin:
+def _activated(extension: _HarnestExtension) -> ActivatedExtension:
     """Create one manager-owned descriptor without filesystem activation."""
 
-    name = "pipeline_plugin"
-    descriptor = RuntimePluginDescriptor(
+    name = "pipeline_extension"
+    descriptor = ExtensionDescriptor(
         name=name,
         version="1.0.0",
-        directory=Path(f"/plugins/{name}"),
-        entrypoint="plugin:plugin",
+        directory=Path(f"/extensions/{name}"),
+        entrypoint="extension:extension",
         requires=(),
         capabilities=("context.storage", "lifecycle.agent"),
         digest="sha256:pipeline",
     )
-    plugin._bind_identity(name)
-    return ActivatedPlugin(
-        descriptor, ModuleType(f"harnest.plugins.{name}"), plugin
+    extension._bind_identity(name)
+    return ActivatedExtension(
+        descriptor, ModuleType(f"harnest.extensions.{name}"), extension
     )
 
 
@@ -199,7 +199,7 @@ def _request(invocation_id: str) -> InvocationRequest:
     )
 
 
-class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
+class HarnestExtensionPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_lazy_start_bindings_and_reverse_shutdown_order(self) -> None:
         """Prove one pipeline owns every stage without duplicate acquisition."""
 
@@ -207,9 +207,9 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
         views: list[_View] = []
         store = _Store(events)
         credentials = _Credentials(events)
-        plugin = _RuntimePlugin(events)
-        activated = _activated(plugin)
-        manager = PluginRuntimeManager(
+        extension = _HarnestExtension(events)
+        activated = _activated(extension)
+        manager = ExtensionRuntimeManager(
             (activated,),
             framework="langgraph",
             root_agent_name="root",
@@ -225,8 +225,8 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
                 events.append("resource:close")
 
         def before(_lifecycle: Any, request: InvocationRequest) -> None:
-            view = context.plugins("pipeline_plugin", _View)
-            self.assertIs(plugin.context, view)
+            view = context.extensions("pipeline_extension", _View)
+            self.assertIs(extension.context, view)
             views.append(view)
             events.append(f"before:{request.invocation_id}")
 
@@ -243,11 +243,11 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
             _Backend(events, store),
             capabilities,
             listeners,
-            plugin_manager=manager,
+            extension_manager=manager,
         )
         self.assertIsInstance(pipeline, StorageRuntimeDriver)
-        self.assertIsInstance(pipeline._driver, PluginRuntimeDriver)
-        self.assertIsInstance(pipeline._driver._driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(pipeline._driver, ExtensionHostRuntimeDriver)
+        self.assertIsInstance(pipeline._driver._driver, LifecycleRuntimeDriver)
 
         try:
             await pipeline.create_session(
@@ -259,7 +259,7 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
             await pipeline.close()
             await pipeline.close()
         finally:
-            plugin._clear_identity("pipeline_plugin")
+            extension._clear_identity("pipeline_extension")
 
         self.assertEqual(len({id(view) for view in views}), 2)
         self.assertTrue(all(not view.active for view in views))
@@ -267,7 +267,7 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
             events,
             [
                 "storage:start",
-                "plugin:start:True",
+                "extension:start:True",
                 "credentials:start",
                 "resource:start",
                 "before:one",
@@ -277,7 +277,7 @@ class RuntimePluginPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "backend:close",
                 "resource:close",
                 "credentials:close",
-                "plugin:stop:True",
+                "extension:stop:True",
                 "storage:close",
             ],
         )

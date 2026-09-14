@@ -18,7 +18,7 @@ func TestExtensionInstallFromPyPIPinsVerifiedReleaseWithoutImporting(t *testing.
 		t, "harnest-extension-docker", "docker", "harnest_extension_docker", "0.2.0",
 	)
 	requests := 0
-	sys := pluginSearchTestSystem(extensionInstallTransport(t, wheel, &requests), t.TempDir())
+	sys := extensionSearchTestSystem(extensionInstallTransport(t, wheel, &requests), t.TempDir())
 	project := extensionTestProject(t)
 	stdout, _, err := executeForTest(
 		t, sys, "extensions", "install", "docker", "--project", project,
@@ -40,7 +40,7 @@ func TestExtensionInstallFromPyPIPinsVerifiedReleaseWithoutImporting(t *testing.
 	if requests != 2 {
 		t.Fatalf("PyPI install requests = %d, want metadata plus wheel", requests)
 	}
-	values, _, err := pluginRuntimeRequirements(project)
+	values, _, err := extensionRuntimeRequirements(project)
 	if err != nil || fmt.Sprint(values) != "[docker>=7.1,<8 harnest>=0.14,<0.15]" {
 		t.Fatalf("installed runtime dependencies = %v, %v", values, err)
 	}
@@ -51,10 +51,10 @@ func TestExtensionInstallFromPyPIRejectsArtifactMismatchBeforeMutation(t *testin
 		t, "harnest-extension-docker", "docker", "harnest_extension_docker", "0.2.0",
 	)
 	transport := extensionInstallTransport(t, wheel, nil)
-	sys := pluginSearchTestSystem(pluginRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	sys := extensionSearchTestSystem(extensionRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		response, err := transport.RoundTrip(request)
 		if strings.HasPrefix(request.URL.Path, "/files/") {
-			return pluginHTTPBytesResponse(http.StatusOK, append(wheel, 'x'), nil), nil
+			return extensionHTTPBytesResponse(http.StatusOK, append(wheel, 'x'), nil), nil
 		}
 		return response, err
 	}), t.TempDir())
@@ -74,7 +74,7 @@ func TestExtensionInstallFromPyPIRejectsCasefoldResourceCollision(t *testing.T) 
 		"extension = object()\n",
 		map[string]string{"lib/A.py": "first\n", "lib/a.py": "second\n"},
 	)
-	sys := pluginSearchTestSystem(extensionInstallTransport(t, wheel, nil), t.TempDir())
+	sys := extensionSearchTestSystem(extensionInstallTransport(t, wheel, nil), t.TempDir())
 	project := extensionTestProject(t)
 	_, _, err := executeForTest(
 		t, sys, "extensions", "install", "docker", "--project", project,
@@ -114,7 +114,9 @@ func TestExtensionWheelAllowsOnlyRegularRootReadme(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := validateExtensionWheelResource(test.resource, reader.File[0]); err == nil {
+			if err := validateExtensionWheelResource(
+				test.resource, reader.File[0], localExtensionManifest{},
+			); err == nil {
 				t.Fatalf("%s wheel README was accepted", test.name)
 			}
 		})
@@ -156,7 +158,7 @@ docker = extension
 	wheel := extensionWheelFixtureWithSource(
 		t, "harnest-extension-docker", "docker", "harnest_extension_docker", "0.2.0", source,
 	)
-	sys := pluginSearchTestSystem(extensionInstallTransport(t, wheel, nil), t.TempDir())
+	sys := extensionSearchTestSystem(extensionInstallTransport(t, wheel, nil), t.TempDir())
 	project := extensionTestProject(t)
 	if _, _, err := executeForTest(
 		t, sys, "extensions", "install", "docker", "--project", project,
@@ -169,17 +171,17 @@ docker = extension
 	}
 	program := `import sys
 from pathlib import Path
-from harnest.plugins import activate_runtime_plugins, release_runtime_plugins
-from harnest.runtime_plugins import discover_application_extensions
+from harnest.extensions import activate_extensions, release_extensions
+from harnest.extension_descriptors import discover_application_extensions
 root = Path(sys.argv[1])
 descriptors = discover_application_extensions(root)
-activated = activate_runtime_plugins(descriptors)
+activated = activate_extensions(descriptors)
 try:
-    plugin = activated[0].plugin
-    assert type(plugin).__module__ == "harnest.extensions.docker"
-    assert activated[0].module.docker is plugin
+    extension = activated[0].extension
+    assert type(extension).__module__ == "harnest.extensions.docker"
+    assert activated[0].module.docker is extension
 finally:
-    release_runtime_plugins(descriptors)
+    release_extensions(descriptors)
 `
 	python := filepath.Join(repository, ".venv", "bin", "python")
 	if _, err := os.Stat(python); err != nil {
@@ -210,7 +212,7 @@ func TestExtensionInstallCanonicalPyPIProjects(t *testing.T) {
 }
 
 func TestExtensionInstallRejectsAmbiguousSources(t *testing.T) {
-	for _, source := range []string{"./docker", "missing/docker", "harnest-plugin-docker", "bad name"} {
+	for _, source := range []string{"./docker", "missing/docker", "bad name"} {
 		if source == "./docker" || source == "missing/docker" {
 			if !localExtensionInstallSource(source) {
 				t.Errorf("missing path %q was not retained as a local source", source)
@@ -225,7 +227,7 @@ func TestExtensionInstallRejectsAmbiguousSources(t *testing.T) {
 
 func TestExtensionInstallRecognizesOfficialProjects(t *testing.T) {
 	for _, project := range []string{"harnest-extension-docker", "Harnest_Extension_Hatchet"} {
-		if trust := pluginProjectTrust(project); trust != "official" {
+		if trust := extensionProjectTrust(project); trust != "official" {
 			t.Errorf("trust for %s = %s", project, trust)
 		}
 	}
@@ -237,19 +239,19 @@ func extensionInstallTransport(
 ) http.RoundTripper {
 	t.Helper()
 	project, release := "harnest-extension-docker", "0.2.0"
-	return pluginRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	return extensionRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if requests != nil {
 			*requests++
 		}
 		switch request.URL.Path {
 		case "/pypi/harnest-extension-docker/json":
-			return pluginHTTPResponse(
-				http.StatusOK, pluginMetadataFixture(t, project, wheel, release), nil,
+			return extensionHTTPResponse(
+				http.StatusOK, extensionMetadataFixture(t, project, wheel, release), nil,
 			), nil
 		case "/files/harnest-extension-docker.whl":
-			return pluginHTTPBytesResponse(http.StatusOK, wheel, nil), nil
+			return extensionHTTPBytesResponse(http.StatusOK, wheel, nil), nil
 		default:
-			return pluginHTTPResponse(http.StatusNotFound, "", nil), nil
+			return extensionHTTPResponse(http.StatusNotFound, "", nil), nil
 		}
 	})
 }
@@ -350,7 +352,7 @@ func TestExtensionMetadataFixtureRemainsJSON(t *testing.T) {
 	// Keep the shared transport helper's serialized shape independently readable.
 	var metadata pypiProjectMetadata
 	wheel := extensionWheelFixture(t, "harnest-extension-docker", "docker", "harnest_extension_docker", "0.2.0")
-	if err := json.Unmarshal([]byte(pluginMetadataFixture(t, "harnest-extension-docker", wheel, "0.2.0")), &metadata); err != nil {
+	if err := json.Unmarshal([]byte(extensionMetadataFixture(t, "harnest-extension-docker", wheel, "0.2.0")), &metadata); err != nil {
 		t.Fatal(err)
 	}
 }

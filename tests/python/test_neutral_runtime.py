@@ -35,7 +35,7 @@ from harnest.runtime_auth import (
     AuthPrincipal,
     AuthenticationError,
 )
-from harnest.approval import (
+from harnest.agent.approval import (
     InMemoryApprovalStore,
     request_human_approval,
     require_human_approval,

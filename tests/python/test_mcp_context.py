@@ -4,7 +4,7 @@ from types import MappingProxyType
 import unittest
 from unittest.mock import patch
 
-from harnest.approval import ApprovalEnforcementError, ApprovalPolicy
+from harnest.agent.approval import ApprovalEnforcementError, ApprovalPolicy
 from harnest.context import activate_context, create_agent_context
 from harnest.lifecycle import LifecycleListener
 from harnest.mcp import MCPClient, _adk_mcp_toolset_metadata
@@ -39,7 +39,7 @@ def _listener(phase, callback, *, order=0, line=1):
         phase=phase,
         callback=callback,
         order=order,
-        relative_path="extensions/mcp.py",
+        relative_path="lifecycle/mcp.py",
         line=line,
         function_name=getattr(callback, "__name__", "callback"),
     )

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import aclosing, nullcontext
 from typing import Any
 
-from .approval import (
+from .agent.approval import (
     ApprovalExecution,
     ApprovalRun,
     InMemoryApprovalStore,

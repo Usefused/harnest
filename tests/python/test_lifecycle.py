@@ -19,7 +19,7 @@ from harnest.lifecycle_coverage import (
 from harnest.lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
 from harnest.runtime import _runtime_driver
 from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.session import InMemorySessionStore
 
 
@@ -68,7 +68,7 @@ class ExtensionCompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._agent(root)
-            path = root / "extensions"
+            path = root / "lifecycle"
             path.mkdir()
             self._session_store(path)
             (path / "history.py").write_text(
@@ -86,7 +86,7 @@ class ExtensionCompilerTests(unittest.TestCase):
                 )
 
         self.assertEqual(
-            [item.phase for item in application.extensions],
+            [item.phase for item in application.lifecycle_extensions],
             ["before_invoke", "after_invoke"],
         )
         self.assertIsInstance(application.session_store, InMemorySessionStore)
@@ -102,7 +102,7 @@ class ExtensionCompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._agent(root)
-            path = root / "extensions"
+            path = root / "lifecycle"
             path.mkdir()
             self._session_store(path)
             (path / "guardrail.py").write_text(
@@ -137,7 +137,7 @@ class ExtensionCompilerTests(unittest.TestCase):
                 "edges=(Edge(START, 'respond'),))\n",
                 encoding="utf-8",
             )
-            path = root / "extensions"
+            path = root / "lifecycle"
             path.mkdir()
             self._session_store(path)
             (path / "audit.py").write_text(
@@ -192,12 +192,12 @@ class ExtensionCompilerTests(unittest.TestCase):
             framework="adk",
             mode="managed",
             target=object(),
-            extensions=(listener,),
+            lifecycle_extensions=(listener,),
         )
         raw_driver = Mock()
         with patch("harnest.runtime_adk.ADKRuntimeDriver", return_value=raw_driver):
             driver = _runtime_driver(application)
-        self.assertIsInstance(driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(driver, LifecycleRuntimeDriver)
         self.assertIsInstance(driver._driver, DynamicAgentPluginRuntimeDriver)
         self.assertIs(driver._driver._driver, raw_driver)
 
@@ -209,7 +209,7 @@ class ExtensionCompilerTests(unittest.TestCase):
                 "root_agent = Agent.advanced(object())\n",
                 encoding="utf-8",
             )
-            path = root / "extensions"
+            path = root / "lifecycle"
             path.mkdir()
             self._session_store(path)
             (path / "history.py").write_text(
@@ -236,7 +236,7 @@ class ExtensionCompilerTests(unittest.TestCase):
                     framework="langgraph",
                     mode="advanced",
                 )
-        self.assertEqual([item.phase for item in application.extensions], ["on_error"])
+        self.assertEqual([item.phase for item in application.lifecycle_extensions], ["on_error"])
 
     def test_advanced_langgraph_rejects_late_native_middleware(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -244,7 +244,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             (root / "agent.py").write_text(
                 "from harnest.agent import Agent\nroot_agent = Agent.advanced(object())\n"
             )
-            path = root / "extensions"
+            path = root / "lifecycle"
             path.mkdir()
             self._session_store(path)
             (path / "native.py").write_text(

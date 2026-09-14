@@ -9,7 +9,7 @@ def _write_project(
     root: Path, *, mismatch: bool = False, native: bool = False
 ) -> None:
     (root / "lib").mkdir()
-    (root / "extensions").mkdir()
+    (root / "lifecycle").mkdir()
     checkpoint_source = (
         "from harnest.checkpoint import LangGraphStore\n"
         "from langgraph.checkpoint.memory import InMemorySaver\n"
@@ -21,7 +21,7 @@ def _write_project(
     (root / "lib" / "storage.py").write_text(
         checkpoint_source, encoding="utf-8"
     )
-    (root / "extensions" / "storage.py").write_text(
+    (root / "lifecycle" / "storage.py").write_text(
         "from harnest import lifecycle\n"
         "from harnest.session import InMemorySessionStore\n"
         "from harnest.lib.storage import store\n"

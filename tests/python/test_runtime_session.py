@@ -19,7 +19,7 @@ from harnest.runtime import (
     _runtime_driver,
 )
 from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
@@ -379,7 +379,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             selected = _runtime_driver(application)
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(selected._driver, LifecycleRuntimeDriver)
         self.assertIsInstance(
             selected._driver._driver, DynamicAgentPluginRuntimeDriver
         )
@@ -411,7 +411,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             selected = _runtime_driver(application)
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(selected._driver, LifecycleRuntimeDriver)
         adapt.assert_called_once_with(store)
         self.assertIs(constructor.call_args.kwargs["session_service"], service)
 
@@ -435,7 +435,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             selected = _runtime_driver(application)
 
         self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIsInstance(selected._driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(selected._driver, LifecycleRuntimeDriver)
         self.assertEqual(selected._resources, (store,))
         self.assertIs(constructor.call_args.kwargs["session_service"], service)
 

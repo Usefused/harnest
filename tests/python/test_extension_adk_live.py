@@ -10,12 +10,12 @@ import unittest
 from unittest.mock import patch
 
 from harnest.bundle import compile_artifact
-import harnest.plugins as plugin_namespace
-from harnest.plugins import PluginContextUnavailableError
+import harnest.extensions as extension_namespace
+from harnest.extensions import ExtensionContextUnavailableError
 from harnest.runtime import create_fastapi_app
 
 
-class RuntimePluginADKLiveTests(unittest.TestCase):
+class HarnestExtensionADKLiveTests(unittest.TestCase):
     def _write(self, root: Path, relative: str, contents: str) -> None:
         """Write one isolated authored source file for the compiled fixture."""
 
@@ -39,12 +39,12 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
                     del llm_request, stream
                     yield LlmResponse(content=types.Content(
                         role="model",
-                        parts=[types.Part(text="runtime plugin smoke ok")],
+                        parts=[types.Part(text="runtime extension smoke ok")],
                     ))
 
             root_agent = Agent(
-                name="runtime_plugin_smoke",
-                description="Deterministic runtime plugin smoke agent.",
+                name="runtime_extension_smoke",
+                description="Deterministic runtime extension smoke agent.",
                 model=DeterministicLlm(model="deterministic-local"),
                 instruction="Return the deterministic local response.",
             )
@@ -54,15 +54,15 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             root,
             "agent-card.yaml",
             '''
-            name: Runtime Plugin Smoke
-            description: Deterministic runtime-plugin lifecycle smoke.
+            name: Harnest Extension Smoke
+            description: Deterministic Harnest Extension lifecycle smoke.
             version: 0.1.0
             ''',
         )
         self._write(root, "instructions.md", "Return the deterministic response.\n")
         self._write(
             root,
-            "extensions/storage.py",
+            "lifecycle/storage.py",
             '''
             from harnest.checkpoint import MemoryStore
             from harnest import lifecycle
@@ -78,43 +78,45 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             ''',
         )
 
-    def _plugin(self, root: Path) -> None:
-        """Author one plugin with application and invocation lifecycle proof."""
+    def _extension(self, root: Path) -> None:
+        """Author one extension with application and invocation lifecycle proof."""
 
         self._write(
             root,
-            "plugins/liveplugin/plugin.yaml",
+            "extensions/liveextension/extension.yaml",
             '''
             apiVersion: harnest.dev/v1alpha1
-            kind: RuntimePlugin
+            kind: Extension
             metadata:
-              name: liveplugin
+              name: liveextension
               version: 1.0.0
             runtime:
-              entrypoint: plugin:plugin
+              entrypoint: extension:extension
+            contributes:
+              lifecycle: [lifecycle/]
             capabilities:
               - lifecycle.agent
             ''',
         )
         self._write(
             root,
-            "plugins/liveplugin/plugin.py",
+            "extensions/liveextension/extension.py",
             '''
             import json
             import os
             from pathlib import Path
             import sys
             from harnest import context
-            from harnest.plugins import Plugin, PluginContext
+            from harnest.extensions import Extension, ExtensionContext
 
             def _record(event, **fields):
-                target = os.environ.get("HARNEST_PLUGIN_LIVE_EVENTS")
+                target = os.environ.get("HARNEST_EXTENSION_LIVE_EVENTS")
                 if target is None:
                     return
                 with Path(target).open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps({"event": event, **fields}) + "\\n")
 
-            class LiveContext(PluginContext):
+            class LiveContext(ExtensionContext):
                 def snapshot(self):
                     self._require_active()
                     return {
@@ -123,45 +125,45 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
                         "isRoot": context.is_root,
                     }
 
-            class LivePlugin(Plugin[LiveContext]):
+            class LiveExtension(Extension[LiveContext]):
                 async def start(self, start_context):
                     _record(
                         "start",
-                        plugin=start_context.plugin_name,
-                        namespaceLoaded="harnest.plugins.liveplugin" in sys.modules,
+                        extension=start_context.extension_name,
+                        namespaceLoaded="harnest.extensions.liveextension" in sys.modules,
                     )
 
                 async def stop(self):
                     _record(
                         "stop",
-                        namespaceLoaded="harnest.plugins.liveplugin" in sys.modules,
+                        namespaceLoaded="harnest.extensions.liveextension" in sys.modules,
                     )
 
                 def create_context(self, base):
-                    return LiveContext(base.plugin_name)
+                    return LiveContext(base.extension_name)
 
                 def record(self, event, **fields):
                     _record(event, **fields)
 
-            plugin = LivePlugin()
+            extension = LiveExtension()
             ''',
         )
         self._write(
             root,
-            "plugins/liveplugin/extensions/invocation.py",
+            "extensions/liveextension/lifecycle/invocation.py",
             '''
             from harnest import context
             from harnest import lifecycle
-            from harnest.plugin_runtime_context import plugin_mutation
-            from harnest.plugins.liveplugin import LiveContext, plugin
+            from harnest.extension_runtime_context import extension_mutation
+            from harnest.extensions.liveextension import LiveContext, extension
 
             async def _record(phase):
-                direct = plugin.context
-                facade = context.plugins("liveplugin", LiveContext)
-                async with plugin_mutation(
-                    "liveplugin", "record_lifecycle", trigger="agent"
+                direct = extension.context
+                facade = context.extensions("liveextension", LiveContext)
+                async with extension_mutation(
+                    "liveextension", "record_lifecycle", trigger="agent"
                 ):
-                    plugin.record(
+                    extension.record(
                         phase,
                         sameContext=direct is facade,
                         direct=direct.snapshot(),
@@ -188,8 +190,8 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
 
         return [json.loads(line) for line in path.read_text().splitlines()]
 
-    def test_compiled_adk_http_runtime_owns_plugin_context_and_namespace(self):
-        """Cross compiler, FastAPI, ADK, plugin context, and shutdown boundaries."""
+    def test_compiled_adk_http_runtime_owns_extension_context_and_namespace(self):
+        """Cross compiler, FastAPI, ADK, extension context, and shutdown boundaries."""
 
         from fastapi.testclient import TestClient
 
@@ -198,40 +200,40 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
             source, artifact = root / "agent", root / "artifact"
             events = root / "events.jsonl"
             self._agent(source)
-            self._plugin(source)
+            self._extension(source)
             compile_artifact(source, artifact, framework="adk")
-            self.assertFalse(hasattr(plugin_namespace, "liveplugin"))
+            self.assertFalse(hasattr(extension_namespace, "liveextension"))
 
             with patch.dict(
                 os.environ,
-                {"HARNEST_PLUGIN_LIVE_EVENTS": str(events)},
+                {"HARNEST_EXTENSION_LIVE_EVENTS": str(events)},
             ):
                 app = create_fastapi_app(
                     artifact,
                     bind_host="testserver",
                     playground_enabled=False,
                 )
-                self.assertTrue(hasattr(plugin_namespace, "liveplugin"))
-                plugin = plugin_namespace.liveplugin.plugin
+                self.assertTrue(hasattr(extension_namespace, "liveextension"))
+                extension = extension_namespace.liveextension.extension
                 with TestClient(app) as client:
                     self.assertEqual(client.get("/healthz").status_code, 200)
                     created = client.post(
-                        "/sessions", json={"id": "plugin-smoke", "state": {}}
+                        "/sessions", json={"id": "extension-smoke", "state": {}}
                     )
                     response = client.post(
                         "/responses",
                         json={
-                            "input": "prove plugin context",
-                            "sessionId": "plugin-smoke",
+                            "input": "prove extension context",
+                            "sessionId": "extension-smoke",
                         },
                     )
                     self.assertEqual(created.status_code, 201)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(
-                        response.json()["outputText"], "runtime plugin smoke ok"
+                        response.json()["outputText"], "runtime extension smoke ok"
                     )
-                    with self.assertRaises(PluginContextUnavailableError):
-                        _ = plugin.context
+                    with self.assertRaises(ExtensionContextUnavailableError):
+                        _ = extension.context
 
                 records = self._events(events)
                 self.assertEqual(
@@ -244,8 +246,8 @@ class RuntimePluginADKLiveTests(unittest.TestCase):
                     self.assertTrue(record["sameContext"])
                     self.assertEqual(record["direct"], record["facade"])
 
-            self.assertFalse(hasattr(plugin_namespace, "liveplugin"))
-            self.assertNotIn("harnest.plugins.liveplugin", sys.modules)
+            self.assertFalse(hasattr(extension_namespace, "liveextension"))
+            self.assertNotIn("harnest.extensions.liveextension", sys.modules)
 
 
 if __name__ == "__main__":

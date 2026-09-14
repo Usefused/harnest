@@ -124,7 +124,7 @@ def load_compiled_app(artifact: str | Path) -> Any:
     application = load_compiled_application(artifact)
     _apply_observability_defaults(application.framework)
     if application.framework != "adk" or application.native_app is None:
-        _release_application_plugins(application)
+        _release_application_extensions(application)
         release_authored_library(Path(artifact).resolve() / "source")
         raise AgentRuntimeError("compiled application does not contain an ADK App")
     return application.native_app
@@ -179,7 +179,7 @@ def _runtime_driver(
     """Select a backend once and retain schedule ownership at the host boundary."""
 
     continuations = _external_continuation_runtime(application)
-    plugin_manager = _plugin_runtime_manager(
+    extension_manager = _extension_runtime_manager(
         application, continuation_runtime=continuations
     )
     if application.framework == "adk":
@@ -188,7 +188,7 @@ def _runtime_driver(
             card=card,
             extra_endpoints=extra_endpoints,
             session_service=adk_session_service,
-            plugin_manager=plugin_manager,
+            extension_manager=extension_manager,
         )
     elif application.framework == "langgraph":
         driver = _langgraph_runtime_driver(
@@ -208,7 +208,7 @@ def _runtime_driver(
         application,
         driver,
         manage_credential_provider=manage_credential_provider,
-        plugin_manager=plugin_manager,
+        extension_manager=extension_manager,
     )
     if continuations is not None:
         from .external_continuation_driver import ExternalContinuationRuntimeDriver
@@ -221,14 +221,14 @@ def _runtime_driver(
             pipeline,
             _task_runtime_manager(
                 application,
-                plugin_manager=plugin_manager,
+                extension_manager=extension_manager,
                 continuation_runtime=continuations,
                 enable_cron=enable_cron,
             ),
         )
     if continuations is not None:
         # Bind the final wrapper so callback-driven resumes receive the same
-        # context, plugin, storage, and task capabilities as user invocations.
+        # context, extension, storage, and task capabilities as user invocations.
         continuations.bind_driver(pipeline)
     return pipeline
 
@@ -247,17 +247,17 @@ def _task_runtime_manager(application: Any, **options: Any) -> Any:
     return TaskRuntimeManager(application, **options)
 
 
-def _plugin_runtime_manager(
+def _extension_runtime_manager(
     application: Any, *, continuation_runtime: Any | None = None
 ) -> Any | None:
-    """Adopt the compiler's plugin activation for one runtime pipeline."""
+    """Adopt the compiler's extension activation for one runtime pipeline."""
 
-    if not application.plugins:
+    if not application.extensions:
         return None
-    from .plugin_runtime_manager import PluginRuntimeManager
+    from .extension_runtime_manager import ExtensionRuntimeManager
 
-    return PluginRuntimeManager(
-        application.plugins,
+    return ExtensionRuntimeManager(
+        application.extensions,
         framework=application.framework,
         root_agent_name=application.name,
         custom_stores=application.runtime_capabilities.custom_stores,
@@ -271,9 +271,9 @@ def _plugin_runtime_manager(
 def _external_continuation_runtime(application: Any) -> Any | None:
     """Attach durable response recovery whenever Harnest owns checkpoints."""
 
-    plugin_declared = any(
+    extension_declared = any(
         "context.continuations" in item.descriptor.capabilities
-        for item in application.plugins
+        for item in application.extensions
     )
     from .checkpoint import HarnestStore
 
@@ -282,11 +282,11 @@ def _external_continuation_runtime(application: Any) -> Any | None:
         from .external_continuation import ExternalContinuationRuntime
 
         return ExternalContinuationRuntime(store, application_id=application.name)
-    if plugin_declared:
+    if extension_declared:
         # Native framework persistence cannot atomically own Harnest's portable
         # waiting state, so advanced mode fails closed for this capability.
         raise AgentRuntimeError(
-            "runtime plugins declaring context.continuations require a "
+            "extensions declaring context.continuations require a "
             "HarnestStore checkpoint provider"
         )
     return None
@@ -316,7 +316,7 @@ def _adk_runtime_driver(
     card: Mapping[str, Any] | None,
     extra_endpoints: Mapping[str, str] | None,
     session_service: Any | None,
-    plugin_manager: Any | None = None,
+    extension_manager: Any | None = None,
 ) -> Any:
     """Give one ADK service sole ownership of native session persistence."""
 
@@ -340,7 +340,7 @@ def _adk_runtime_driver(
         card=card,
         extra_endpoints=extra_endpoints,
         session_service=session_service,
-        plugin_manager=plugin_manager,
+        extension_manager=extension_manager,
     )
 
 
@@ -374,7 +374,7 @@ def _wrap_runtime_driver(
     driver: Any,
     *,
     manage_credential_provider: bool = True,
-    plugin_manager: Any | None = None,
+    extension_manager: Any | None = None,
 ) -> Any:
     """Delegate all capability wrapper ordering to the runtime pipeline."""
 
@@ -383,9 +383,9 @@ def _wrap_runtime_driver(
     return build_runtime_pipeline(
         driver,
         application.runtime_capabilities,
-        application.extensions,
+        application.lifecycle_extensions,
         manage_credential_provider=manage_credential_provider,
-        plugin_manager=plugin_manager,
+        extension_manager=extension_manager,
     )
 
 
@@ -521,7 +521,7 @@ async def _run_agent_message(
     finally:
         if driver is None:
             # No runtime manager exists to adopt the compiler acquisition.
-            _release_application_plugins(application)
+            _release_application_extensions(application)
         else:
             await driver.close()
         if telemetry is not None:
@@ -579,7 +579,7 @@ def _create_adk_fastapi_app(
     async def lifespan(_app: Any):
         """Keep ADK host state inside the final runtime pipeline lifetime."""
 
-        from .runtime_extensions import (
+        from .lifecycle_runtime import (
             _close_credential_provider,
             _start_credential_provider,
         )
@@ -791,7 +791,7 @@ def create_fastapi_app(
             authenticator=authenticator,
         )
     except Exception:
-        _release_application_plugins(application)
+        _release_application_extensions(application)
         release_authored_library(Path(artifact).resolve() / "source")
         raise
 
@@ -819,7 +819,7 @@ def _build_fastapi_app(
     card = load_agent_card(artifact)
     _apply_observability_defaults(application.framework)
     authenticator = _resolve_lifecycle_authenticator(
-        application.extensions, authenticator
+        application.lifecycle_extensions, authenticator
     )
 
     from .neutral_runtime import create_neutral_app
@@ -879,7 +879,7 @@ def _build_fastapi_app(
             max_request_bytes=max_request_bytes,
             asset_store=application.asset_store,
             http_routes=application.http_routes,
-            lifecycle_extensions=application.extensions,
+            lifecycle_extensions=application.lifecycle_extensions,
             playground_enabled=playground_enabled,
             live_enabled=live_enabled,
             agent_principal_required=agent_principal_required,
@@ -1011,7 +1011,7 @@ def _build_native_adk_app(
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.
     app.router.routes.extend(neutral.routes)
     _attach_driver_lifecycle(app, driver, startup_driver=pipeline_driver)
-    install_http_lifecycle(app, application.extensions)
+    install_http_lifecycle(app, application.lifecycle_extensions)
     install_authentication(app, authenticator)
     install_request_size_limit(app, max_request_bytes)
     install_live_policy(app, live_enabled)
@@ -1067,7 +1067,7 @@ def _adk_owns_otel() -> bool:
 def _resolve_lifecycle_authenticator(
     listeners: Any, authenticator: Authenticator | None
 ) -> Authenticator | None:
-    from .runtime_extensions import lifecycle_authenticator
+    from .lifecycle_runtime import lifecycle_authenticator
 
     discovered = lifecycle_authenticator(listeners)
     if discovered is not None and authenticator is not None:
@@ -1116,13 +1116,13 @@ def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
     app.router.lifespan_context = lifespan
 
 
-def _release_application_plugins(application: Any) -> None:
+def _release_application_extensions(application: Any) -> None:
     """Release an unadopted compiler acquisition without exposing namespaces."""
 
-    from .plugins import release_runtime_plugins
+    from .extensions import release_extensions
 
-    plugins = tuple(getattr(application, "plugins", ()))
-    release_runtime_plugins(tuple(item.descriptor for item in plugins))
+    extensions = tuple(getattr(application, "extensions", ()))
+    release_extensions(tuple(item.descriptor for item in extensions))
 
 
 def _runtime_parser() -> argparse.ArgumentParser:
@@ -1316,7 +1316,7 @@ async def _run_local_application(application: Any, args: Any, message: str) -> N
         )
     finally:
         if driver is None:
-            _release_application_plugins(application)
+            _release_application_extensions(application)
         else:
             await driver.close()
         telemetry.force_flush()

@@ -14,7 +14,7 @@ import uuid
 
 from ._json import json_value
 from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_principal
-from .approval import InMemoryApprovalStore
+from .agent.approval import InMemoryApprovalStore
 from .client_tool import InMemoryClientToolStore
 from .logging import get_logger
 from .output import (

@@ -11,7 +11,7 @@ from google.adk.sessions import Session
 from google.genai import types
 from pydantic import BaseModel
 
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.assets import AssetMediaMetadata
 from harnest.client_tool import (
     ClientToolExecution,

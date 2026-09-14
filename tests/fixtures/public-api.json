@@ -3,7 +3,6 @@
     "a2a",
     "agent",
     "application",
-    "approval",
     "assets",
     "auth",
     "bundle",
@@ -25,7 +24,6 @@
     "model",
     "orchestrator",
     "output",
-    "plugins",
     "runtime",
     "sandbox",
     "server",
@@ -59,6 +57,7 @@
     "ToolCallRequest",
     "ToolLifecycleContext",
     "ToolLifecycleError",
+    "approval",
     "client_tool",
     "client_tool_execution",
     "current_transient_media",
@@ -68,7 +67,7 @@
   "harnest.application": [
     "CompiledApplication"
   ],
-  "harnest.approval": [
+  "harnest.agent.approval": [
     "ApprovalDenied",
     "ApprovalEnforcementError",
     "ApprovalError",
@@ -253,13 +252,17 @@
     "supported_metric_names"
   ],
   "harnest.extensions": [
+    "ActivatedExtension",
     "Extension",
     "ExtensionContext",
     "ExtensionContextUnavailableError",
     "ExtensionImportError",
     "ExtensionNamespaceError",
     "ExtensionStartContext",
-    "extension_mutation"
+    "activate_extensions",
+    "extension_mutation",
+    "extension_namespaces",
+    "release_extensions"
   ],
   "harnest.graph": [
     "Edge",
@@ -349,19 +352,6 @@
     "AgentMetadataMode",
     "OutputPolicy",
     "TokenUsage"
-  ],
-  "harnest.plugins": [
-    "ActivatedPlugin",
-    "Plugin",
-    "PluginContext",
-    "PluginContextUnavailableError",
-    "PluginImportError",
-    "PluginNamespaceError",
-    "PluginStartContext",
-    "activate_runtime_plugins",
-    "plugin_mutation",
-    "release_runtime_plugins",
-    "runtime_plugin_namespaces"
   ],
   "harnest.runtime": [
     "AgentExecutionTimeout",

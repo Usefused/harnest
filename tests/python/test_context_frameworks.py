@@ -67,7 +67,7 @@ class ContextFrameworkIntegrationTests(unittest.TestCase):
 
     def _write_resources(self, root: Path, journal: Path) -> None:
         self._write(
-            root / "extensions" / "resources.py",
+            root / "lifecycle" / "resources.py",
             f"""
             from contextlib import contextmanager
             from pathlib import Path

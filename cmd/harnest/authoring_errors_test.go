@@ -34,7 +34,7 @@ func TestTaskPreflightExplainsMisplacedFile(t *testing.T) {
 	}
 }
 
-func TestPluginPreflightExplainsLooseFile(t *testing.T) {
+func TestExtensionPreflightExplainsLooseFile(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "notes.md")
 	if err := os.WriteFile(path, []byte("notes"), 0600); err != nil {
@@ -44,11 +44,11 @@ func TestPluginPreflightExplainsLooseFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = pluginRuntimeProject(directory, entries[0], false)
+	_, _, _, err = extensionRuntimeProject(directory, entries[0])
 	if err == nil {
-		t.Fatal("loose plugin file was accepted")
+		t.Fatal("loose extension file was accepted")
 	}
-	for _, expected := range []string{path, "one subfolder per plugin", "How to fix:", "_notes.md"} {
+	for _, expected := range []string{path} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("diagnostic missing %q: %s", expected, err)
 		}

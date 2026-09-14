@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from harnest.approval import ApprovalPolicy
+from harnest.agent.approval import ApprovalPolicy
 from harnest.bundle import (
     BundleDuplicateError,
     BundleExportError,
@@ -69,21 +69,21 @@ class MCPCompilerHardeningTests(unittest.TestCase):
                 "def client(): return MCPClient.sse('https://mcp.test/sse')\n"
             )
             direct = root / "mcp"
-            plugin = root / "plugins" / "support" / "mcp"
+            extension = root / "extensions" / "support" / "mcp"
             direct.mkdir(parents=True)
-            plugin.mkdir(parents=True)
+            extension.mkdir(parents=True)
             (direct / "github.py").write_text(source, encoding="utf-8")
-            (plugin / "github.py").write_text(source, encoding="utf-8")
+            (extension / "github.py").write_text(source, encoding="utf-8")
             direct_client = _discover_mcp(direct)[0]
-            plugin_client = _discover_mcp(
-                plugin, capability_scope="plugin__support__mcp"
+            extension_client = _discover_mcp(
+                extension, capability_scope="extension__support__mcp"
             )[0]
         self.assertEqual(direct_client.identity, "github")
         self.assertEqual(direct_client.capability_id, "mcp__github")
         self.assertEqual(
-            plugin_client.capability_id, "plugin__support__mcp__github"
+            extension_client.capability_id, "extension__support__mcp__github"
         )
-        connections, _names = _mcp_connections((direct_client, plugin_client))
+        connections, _names = _mcp_connections((direct_client, extension_client))
         self.assertEqual(len(connections), 2)
 
     def test_duplicate_configuration_ignores_compiler_policy_metadata(self):

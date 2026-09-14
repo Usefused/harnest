@@ -12,7 +12,7 @@ from threading import Lock
 import time
 from typing import Any, Iterator
 
-from .approval import ApprovalRun
+from .agent.approval import ApprovalRun
 from .continuation import (
     ContinuationConflictError,
     ContinuationFailure,
@@ -123,7 +123,7 @@ class ContinuationHandle:
 
 
 class InvocationContinuationPort:
-    """Provider-bound suspension authority exposed through PluginContext."""
+    """Provider-bound suspension authority exposed through ExtensionContext."""
 
     __slots__ = ("_provider", "_runtime")
 

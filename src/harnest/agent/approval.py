@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Iterator, Literal, TypeVar
 
-from .logging import get_logger
+from ..logging import get_logger
 
 F = TypeVar("F", bound=Callable[..., Any])
 Decision = Literal["approve", "deny"]
@@ -533,7 +533,7 @@ def wrap_approved_tool(function: F) -> F:
         return function
     @functools.wraps(function)
     async def async_call(*args: Any, **kwargs: Any) -> Any:
-        from .agent_principal import require_capability
+        from ..agent_principal import require_capability
 
         # Permission projection must precede an approval prompt regardless of
         # which decorator the author placed outermost.
@@ -548,7 +548,7 @@ def wrap_approved_tool(function: F) -> F:
             if inspect.isawaitable(result):
                 result = await result
         except BaseException:
-            from .durable import is_native_suspension
+            from ..durable import is_native_suspension
 
             error = __import__("sys").exception()
             if error is None or not is_native_suspension(error):

@@ -75,7 +75,7 @@ def tool(
             setattr(wrapped, "__harnest_output_schema__", schema)
         # Approval may be written above or below @tool. Delaying the wrapper
         # choice until both markers are present keeps both natural orders safe.
-        from .approval import wrap_approved_tool
+        from .agent.approval import wrap_approved_tool
         from .tool_lifecycle import wrap_lifecycle_tool
 
         # Lifecycle stays outside approval and validation so policy can stop a

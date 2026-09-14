@@ -16,7 +16,7 @@ from .agent_principal import (
     AgentRuntimePrincipal,
     validate_agent_principal_runtime,
 )
-from .approval import InMemoryApprovalStore
+from .agent.approval import InMemoryApprovalStore
 from .assets import AssetScope, AssetStore
 from .client_tool import InMemoryClientToolStore
 from .checkpoint import RunRecord

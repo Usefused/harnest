@@ -66,7 +66,7 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "agent"
             write_session_store(root)
-            (root / "extensions" / "http.py").write_text(
+            (root / "lifecycle" / "http.py").write_text(
                 "from fastapi import APIRouter\n"
                 "from harnest import lifecycle\n"
                 "@lifecycle.http_routes\n"
@@ -79,7 +79,7 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
             )
 
             discovered = discover_extensions(
-                root / "extensions", framework="langgraph"
+                root / "lifecycle", framework="langgraph"
             )
 
         self.assertEqual(len(discovered.http_routes), 1)
@@ -89,7 +89,7 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "agent"
             write_session_store(root)
-            routes = root / "extensions" / "http.py"
+            routes = root / "lifecycle" / "http.py"
             routes.write_text(
                 "from harnest import lifecycle\n"
                 "@lifecycle.http_routes\n"
@@ -99,7 +99,7 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ExtensionDiscoveryError, "exactly one AgentInvoker"
             ):
-                discover_extensions(root / "extensions", framework="adk")
+                discover_extensions(root / "lifecycle", framework="adk")
 
             routes.write_text(
                 "from fastapi import APIRouter\n"
@@ -115,7 +115,7 @@ class HTTPRouteDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ExtensionDiscoveryError, "reserved Harnest path"
             ):
-                discover_extensions(root / "extensions", framework="adk")
+                discover_extensions(root / "lifecycle", framework="adk")
 
     def test_rejects_duplicate_dynamic_route_contracts(self):
         def first(_agent):

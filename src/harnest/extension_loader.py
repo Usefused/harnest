@@ -50,7 +50,8 @@ _PLUGIN_EXTENSION_ORIGIN = re.compile(
     r"^plugins/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/extensions$"
 )
 _CANONICAL_EXTENSION_ORIGIN = re.compile(
-    r"^extensions/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/lifecycle$"
+    r"^extensions/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?"
+    r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)*$"
 )
 
 
@@ -75,7 +76,8 @@ class ExtensionSource:
         if not isinstance(self.origin, str) or not _valid_extension_origin(self.origin):
             raise ValueError(
                 "extension source origin must be 'root/lifecycle' or "
-                "'extensions/<name>/lifecycle' (legacy origins are also supported)"
+                "a declared 'extensions/<name>/<path>' contribution "
+                "(legacy origins are also supported)"
             )
         object.__setattr__(self, "directory", directory)
 

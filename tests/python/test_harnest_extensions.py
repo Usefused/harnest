@@ -11,9 +11,9 @@ from unittest.mock import patch
 from harnest.application_layout import ApplicationLayoutError, lifecycle_directory
 from harnest.bundle import BundleConventionError, compile_application, compile_artifact
 from harnest.extensions import Extension, ExtensionContext, ExtensionImportError
-from harnest.plugins import release_runtime_plugins, activate_runtime_plugins
-from harnest.runtime_plugins import (
-    RUNTIME_PLUGIN_CAPABILITIES,
+from harnest.extensions import release_extensions, activate_extensions
+from harnest.extension_descriptors import (
+    EXTENSION_CAPABILITIES,
     discover_application_extensions,
 )
 from harnest.upgrade import plan_upgrade, apply_upgrade, UpgradeError
@@ -25,12 +25,24 @@ def write(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-def package(root: Path, name: str = "clock", *, legacy: bool = False, capabilities=()) -> Path:
+def package(
+    root: Path,
+    name: str = "clock",
+    *,
+    legacy: bool = False,
+    capabilities=(),
+    contributions=(),
+) -> Path:
     directory = root / ("plugins" if legacy else "extensions") / name
     stem = "plugin" if legacy else "extension"
     kind = "RuntimePlugin" if legacy else "Extension"
     base = "Plugin" if legacy else "Extension"
     namespace = "plugins" if legacy else "extensions"
+    contributes_yaml = ""
+    if contributions:
+        contributes_yaml = "contributes:\n" + "".join(
+            f"  {item}: [{item}/]\n" for item in contributions
+        )
     write(directory / f"{stem}.yaml", f"""apiVersion: harnest.dev/v1alpha1
 kind: {kind}
 metadata:
@@ -38,6 +50,7 @@ metadata:
   version: 1.0.0
 runtime:
   entrypoint: {stem}:{stem}
+{contributes_yaml}\
 capabilities: {list(capabilities)!r}
 """)
     write(directory / f"{stem}.py", f"from harnest.{namespace} import {base}\n"
@@ -47,8 +60,8 @@ capabilities: {list(capabilities)!r}
 
 def agent(root: Path, *, legacy: bool = False) -> None:
     write_session_store(root)
-    if not legacy:
-        (root / "extensions").rename(root / "lifecycle")
+    if legacy:
+        (root / "lifecycle").rename(root / "extensions")
     write(root / "agent.py", "from harnest.agent import Agent\nroot_agent = Agent(name='demo', model='test/model')\n")
     write(root / "instructions.md", "Be helpful.\n")
     write(root / "agent-card.yaml", "name: demo\ndescription: Test agent.\n")
@@ -114,7 +127,7 @@ class HarnestExtensionTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text())
         declared = schema["properties"]["capabilities"]["items"]["enum"]
 
-        self.assertEqual(set(declared), set(RUNTIME_PLUGIN_CAPABILITIES))
+        self.assertEqual(set(declared), set(EXTENSION_CAPABILITIES))
 
     def test_incomplete_package_does_not_become_lifecycle_code(self):
         write(self.root / "extensions" / "broken" / "extension.py", "raise AssertionError('must not import')\n")
@@ -135,22 +148,22 @@ class HarnestExtensionTests(unittest.TestCase):
         tmp_path = self.root
         package(tmp_path)
         descriptors = discover_application_extensions(tmp_path)
-        activated = activate_runtime_plugins(descriptors)
+        activated = activate_extensions(descriptors)
         try:
-            assert isinstance(activated[0].plugin, Extension)
-            assert sys.modules["harnest.extensions.clock"] is sys.modules["harnest.plugins.clock"]
-            assert activated[0].module.extension is activated[0].plugin
+            assert isinstance(activated[0].extension, Extension)
+            assert sys.modules["harnest.extensions.clock"] is sys.modules["harnest.extensions.clock"]
+            assert activated[0].module.extension is activated[0].extension
             assert ExtensionContext("clock").extension_name == "clock"
         finally:
-            release_runtime_plugins(descriptors)
+            release_extensions(descriptors)
         assert "harnest.extensions.clock" not in sys.modules
-        assert "harnest.plugins.clock" not in sys.modules
+        assert "harnest.extensions.clock" not in sys.modules
 
 
     def test_compile_canonical_hooks_checks_manifest_authority(self):
         tmp_path = self.root
         agent(tmp_path)
-        directory = package(tmp_path)
+        directory = package(tmp_path, contributions=("lifecycle",))
         write(directory / "lifecycle" / "audit.py", "from harnest import lifecycle\n"
               "@lifecycle.tool.before\ndef audit(context, call):\n    return call\n")
         backend = SimpleNamespace(lower_managed=lambda value, **kwargs: value,
@@ -158,12 +171,19 @@ class HarnestExtensionTests(unittest.TestCase):
         with patch("harnest.bundle.get_backend", return_value=backend):
             with self.assertRaisesRegex(BundleConventionError, "lifecycle.tool"):
                 compile_application(tmp_path, entrypoint="agent:root_agent")
-            package(tmp_path, capabilities=("lifecycle.tool",))
+            package(
+                tmp_path,
+                capabilities=("lifecycle.tool",),
+                contributions=("lifecycle",),
+            )
             application = compile_application(tmp_path, entrypoint="agent:root_agent")
         try:
-            assert any(item.relative_path == "extensions/clock/lifecycle/audit.py" for item in application.extensions)
+            assert any(
+                item.relative_path == "extensions/clock/lifecycle/audit.py"
+                for item in application.lifecycle_extensions
+            )
         finally:
-            release_runtime_plugins(discover_application_extensions(tmp_path))
+            release_extensions(discover_application_extensions(tmp_path))
 
     def test_compile_preserves_regular_extension_readme(self):
         """Keep package-facing documentation inside the compiled source tree."""
@@ -231,20 +251,60 @@ class HarnestExtensionTests(unittest.TestCase):
     def test_upgrade_moves_lifecycle_before_reusing_extensions(self):
         tmp_path = self.root
         agent(tmp_path, legacy=True)
-        package(tmp_path, legacy=True)
+        directory = package(
+            tmp_path, legacy=True, capabilities=("content.tools",)
+        )
+        write(directory / "tools" / "clock.py", "clock = object()\n")
+        write(
+            directory / "pyproject.toml",
+            "[project]\nname = 'clock'\nversion = '1.0.0'\ndependencies = []\n",
+        )
         original = (tmp_path / "extensions" / "sessions.py").read_bytes()
         plan = plan_upgrade(tmp_path)
         assert not plan.blockers
+        operations = {
+            (item.kind, item.path, item.destination) for item in plan.actions
+        }
+        self.assertIn(
+            ("move", "plugins/clock/plugin.yaml", "plugins/clock/extension.yaml"),
+            operations,
+        )
+        self.assertIn(
+            ("move", "plugins/clock/plugin.py", "plugins/clock/extension.py"),
+            operations,
+        )
+        self.assertIn(
+            (
+                "relocate_extension",
+                "plugins/clock",
+                "extensions/clock",
+            ),
+            operations,
+        )
         backup = apply_upgrade(plan)
         assert (tmp_path / "lifecycle" / "sessions.py").read_bytes() == original
         assert (backup / "extensions" / "sessions.py").read_bytes() == original
         assert (tmp_path / "extensions" / "clock" / "extension.py").is_file()
+        self.assertIn(
+            "from harnest.extensions import Extension",
+            (tmp_path / "extensions" / "clock" / "extension.py").read_text(),
+        )
+        self.assertIn(
+            'name = "harnest-extension-clock"',
+            (tmp_path / "extensions" / "clock" / "pyproject.toml").read_text(),
+        )
+        migrated_manifest = (
+            tmp_path / "extensions" / "clock" / "extension.yaml"
+        ).read_text()
+        self.assertIn("contributes:", migrated_manifest)
+        self.assertIn("- tools/", migrated_manifest)
         descriptors = discover_application_extensions(tmp_path)
-        activated = activate_runtime_plugins(descriptors)
+        activated = activate_extensions(descriptors)
         try:
-            assert activated[0].module.extension is activated[0].module.plugin
+            assert activated[0].module.extension is activated[0].extension
+            assert not hasattr(activated[0].module, "plugin")
         finally:
-            release_runtime_plugins(descriptors)
+            release_extensions(descriptors)
         assert not plan_upgrade(tmp_path).actions
 
 
@@ -258,20 +318,28 @@ class HarnestExtensionTests(unittest.TestCase):
         assert not (tmp_path / ".harnest" / "upgrade-backups").exists()
 
 
-    def test_duplicate_legacy_and_canonical_package_names_fail(self):
+    def test_upgrade_blocks_duplicate_legacy_and_canonical_package_names(self):
         tmp_path = self.root
+        agent(tmp_path)
         package(tmp_path, legacy=True)
         package(tmp_path)
-        with self.assertRaisesRegex(ValueError, "collision"):
-            discover_application_extensions(tmp_path)
+        self.assertTrue(plan_upgrade(tmp_path).blockers)
 
-    def test_dependencies_span_legacy_and_canonical_packages(self):
+    def test_upgrade_leaves_declarative_agent_plugins_in_place(self):
+        agent(self.root)
         package(self.root, "legacy", legacy=True)
-        directory = package(self.root, "canonical")
-        manifest = directory / "extension.yaml"
-        write(manifest, manifest.read_text() + "requires:\n  extensions: [legacy]\n")
-        descriptors = discover_application_extensions(self.root)
-        self.assertEqual([item.name for item in descriptors], ["legacy", "canonical"])
+        write(
+            self.root / "plugins" / "portable" / "plugin.json",
+            '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",'
+            '"name":"portable"}\n',
+        )
+
+        plan = plan_upgrade(self.root)
+        self.assertFalse(plan.blockers)
+        apply_upgrade(plan)
+
+        self.assertTrue((self.root / "plugins" / "portable" / "plugin.json").is_file())
+        self.assertTrue((self.root / "extensions" / "legacy" / "extension.py").is_file())
 
     def test_canonical_manifest_symlink_is_rejected_without_import(self):
         directory = package(self.root)
@@ -314,16 +382,20 @@ class HarnestExtensionTests(unittest.TestCase):
         write(directory / "extension.py", "raise RuntimeError('private-provider-detail')\n")
         descriptors = discover_application_extensions(tmp_path)
         with self.assertRaises(ExtensionImportError) as failure:
-            activate_runtime_plugins(descriptors)
+            activate_extensions(descriptors)
         assert "private-provider-detail" not in str(failure.exception)
         assert "harnest.extensions.clock" not in sys.modules
-        assert "harnest.plugins.clock" not in sys.modules
+        assert "harnest.extensions.clock" not in sys.modules
 
 
     def test_upgrade_recognizes_extension_owned_storage(self):
         tmp_path = self.root
         agent(tmp_path)
-        directory = package(tmp_path, capabilities=("storage.sessions", "storage.checkpoints"))
+        directory = package(
+            tmp_path,
+            capabilities=("storage.sessions", "storage.checkpoints"),
+            contributions=("lifecycle",),
+        )
         (tmp_path / "lifecycle").rename(directory / "lifecycle")
         assert not any(item.path.endswith("storage.py") for item in plan_upgrade(tmp_path).actions)
 

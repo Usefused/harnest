@@ -363,7 +363,7 @@ func TestRuntimeLockNormalizesMachineLocalWheelAndProjectPaths(t *testing.T) {
 	}
 }
 
-func TestEnvironmentSyncResolvesPluginAndTaskDependenciesTogether(t *testing.T) {
+func TestEnvironmentSyncResolvesExtensionAndTaskDependenciesTogether(t *testing.T) {
 	root := t.TempDir()
 	agent := filepath.Join(root, "joint-agent")
 	if err := createScaffold(agent, "joint-agent"); err != nil {
@@ -373,13 +373,13 @@ func TestEnvironmentSyncResolvesPluginAndTaskDependenciesTogether(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugin := filepath.Join(agent, "plugins", "clock")
-	if err := os.MkdirAll(plugin, 0o755); err != nil {
+	extension := filepath.Join(agent, "extensions", "clock")
+	if err := os.MkdirAll(extension, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mustWriteEnvironmentFixture(t, filepath.Join(plugin, "plugin.yaml"), "kind: RuntimePlugin\n")
-	mustWriteEnvironmentFixture(t, filepath.Join(plugin, "pyproject.toml"), `[project]
-name = "clock"
+	mustWriteEnvironmentFixture(t, filepath.Join(extension, "extension.yaml"), "kind: Extension\n")
+	mustWriteEnvironmentFixture(t, filepath.Join(extension, "pyproject.toml"), `[project]
+name = "harnest-extension-clock"
 version = "1.0.0"
 dependencies = ["httpx>=0.28,<1"]
 `)
@@ -397,7 +397,7 @@ dependencies = ["httpx>=0.28,<1"]
 	contents := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "joint dependency calls", contents, []string{
 		"pip compile --python",
-		filepath.Join(resolvedAgent, "plugins", "clock", "pyproject.toml"),
+		filepath.Join(resolvedAgent, "extensions", "clock", "pyproject.toml"),
 		procrastinateRequirement,
 		"pip sync --python",
 		"--require-hashes",

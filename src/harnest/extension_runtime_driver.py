@@ -1,4 +1,4 @@
-"""Runtime-driver ownership for same-process runtime plugins."""
+"""Runtime-driver ownership for same-process Harnest Extensions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
 from ._exception_notes import add_exception_note
-from .plugin_runtime_manager import PluginRuntimeManager
+from .extension_runtime_manager import ExtensionRuntimeManager
 from .runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -18,16 +18,16 @@ from .runtime_contract import (
 )
 
 
-class PluginRuntimeDriver(RuntimeDriver):
-    """Start plugins before delegated work and stop them after it drains."""
+class ExtensionHostRuntimeDriver(RuntimeDriver):
+    """Start extensions before delegated work and stop them after it drains."""
 
     def __init__(
-        self, driver: RuntimeDriver, manager: PluginRuntimeManager
+        self, driver: RuntimeDriver, manager: ExtensionRuntimeManager
     ) -> None:
         """Retain one manager without acquiring authored resources eagerly."""
 
-        if not isinstance(manager, PluginRuntimeManager):
-            raise TypeError("manager must be PluginRuntimeManager")
+        if not isinstance(manager, ExtensionRuntimeManager):
+            raise TypeError("manager must be ExtensionRuntimeManager")
         self._driver = driver
         self._manager = manager
         self._lock = asyncio.Lock()
@@ -38,7 +38,7 @@ class PluginRuntimeDriver(RuntimeDriver):
         return self._driver.info
 
     async def start(self) -> None:
-        """Start plugins and then the inner extension/application boundary once."""
+        """Start extensions and then the inner application boundary once."""
 
         if self._state == "started":
             return
@@ -46,7 +46,7 @@ class PluginRuntimeDriver(RuntimeDriver):
             if self._state == "started":
                 return
             if self._state != "new":
-                raise RuntimeError("plugin runtime driver cannot be restarted")
+                raise RuntimeError("extension runtime driver cannot be restarted")
             try:
                 await self._manager.start()
                 await _start_driver(self._driver)
@@ -75,7 +75,7 @@ class PluginRuntimeDriver(RuntimeDriver):
         state: Mapping[str, Any],
         plugins: Sequence[Mapping[str, Any]],
     ) -> SessionRecord:
-        """Start application plugins before accepting session capabilities."""
+        """Start application extensions before accepting session Agent Plugins."""
 
         await self.start()
         from .dynamic_agent_plugins import forward_session_plugins
@@ -103,7 +103,7 @@ class PluginRuntimeDriver(RuntimeDriver):
         after: str | None = None,
         limit: int | None = None,
     ) -> Sequence[SessionRecord]:
-        """Start plugins before forwarding one bounded session page."""
+        """Start extensions before forwarding one bounded session page."""
 
         await self.start()
         if after is None and limit is None:
@@ -115,7 +115,7 @@ class PluginRuntimeDriver(RuntimeDriver):
     async def get_session_messages(
         self, *, session_id: str, user_id: str
     ) -> Sequence[SessionMessage] | None:
-        """Start plugins before reading a framework-owned transcript."""
+        """Start extensions before reading a framework-owned transcript."""
 
         await self.start()
         return await self._driver.get_session_messages(
@@ -154,7 +154,7 @@ class PluginRuntimeDriver(RuntimeDriver):
             yield event
 
     async def close(self) -> None:
-        """Drain the backend/extensions before releasing plugins exactly once."""
+        """Drain the backend before releasing extensions exactly once."""
 
         async with self._lock:
             if self._state == "closed":
@@ -198,9 +198,9 @@ def _merge_failure(
         return cleanup
     add_exception_note(
         primary,
-        f"plugin runtime cleanup also failed with {type(cleanup).__name__}"
+        f"extension runtime cleanup also failed with {type(cleanup).__name__}"
     )
     return primary
 
 
-__all__ = ["PluginRuntimeDriver"]
+__all__ = ["ExtensionHostRuntimeDriver"]

@@ -82,7 +82,7 @@ class AgentContext:
     _skill_registry: Any = field(repr=False)
     _sandbox_registry: Any = field(repr=False)
     _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
-    _plugin_bindings: Mapping[str, Any] = field(repr=False)
+    _extension_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
@@ -231,16 +231,10 @@ class _ContextAccess:
     def extensions(self) -> Any:
         """Resolve typed Harnest Extension context within a managed invocation."""
 
-        return self.plugins
-
-    @property
-    def plugins(self) -> Any:
-        """Return non-enumerable same-process plugin capabilities."""
-
         self.current()
-        from .plugin_runtime_context import plugins
+        from .extension_runtime_context import extensions
 
-        return plugins
+        return extensions
 
     @property
     def skills(self) -> Any:
@@ -322,17 +316,17 @@ def create_agent_context(
     custom_stores: Mapping[str, Any] | None = None,
     skill_registry: Any | None = None,
     sandbox_registry: Any | None = None,
-    plugin_bindings: Mapping[str, Any] | None = None,
+    extension_bindings: Mapping[str, Any] | None = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
 
     for name in resources:
         _validate_name(name)
     registry = dict(resources)
-    from .plugin_runtime_context import validate_plugin_bindings
+    from .extension_runtime_context import validate_extension_bindings
 
-    plugins = validate_plugin_bindings(
-        {} if plugin_bindings is None else plugin_bindings
+    extensions = validate_extension_bindings(
+        {} if extension_bindings is None else extension_bindings
     )
     from .skills import SkillRegistry
 
@@ -359,7 +353,7 @@ def create_agent_context(
         _skill_registry=skills,
         _sandbox_registry=sandboxes,
         _skill_pins={},
-        _plugin_bindings=plugins,
+        _extension_bindings=extensions,
         _lifetime=_ContextLifetime(),
     )
 
@@ -385,7 +379,7 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _skill_registry=active._skill_registry,
         _sandbox_registry=active._sandbox_registry,
         _skill_pins=active._skill_pins,
-        _plugin_bindings=active._plugin_bindings,
+        _extension_bindings=active._extension_bindings,
         _lifetime=active._lifetime,
     )
 
@@ -427,10 +421,10 @@ def revoke_context(active: AgentContext) -> None:
     """Invalidate copied task contexts when their owning invocation finishes."""
 
     active._lifetime.active = False
-    if active._plugin_bindings:
-        from .plugin_runtime_context import revoke_plugin_bindings
+    if active._extension_bindings:
+        from .extension_runtime_context import revoke_extension_bindings
 
-        revoke_plugin_bindings(active._plugin_bindings)
+        revoke_extension_bindings(active._extension_bindings)
 
 
 @contextmanager
@@ -440,14 +434,14 @@ def activate_context(active: AgentContext) -> Iterator[None]:
     active._require_active()
     token = _ACTIVE_CONTEXT.set(active)
     try:
-        if not active._plugin_bindings:
-            # An empty plugin registry cannot change singleton plugin context;
+        if not active._extension_bindings:
+            # Empty extension bindings cannot change singleton context;
             # avoiding another generator context manager keeps the core path lean.
             yield
             return
-        from .plugin_runtime_context import activate_plugin_bindings
+        from .extension_runtime_context import activate_extension_bindings
 
-        with activate_plugin_bindings(active._plugin_bindings):
+        with activate_extension_bindings(active._extension_bindings):
             yield
     finally:
         _ACTIVE_CONTEXT.reset(token)
@@ -508,7 +502,6 @@ _ACCESS_MEMBERS = frozenset(
         "mcp",
         "metadata",
         "parent_agent_name",
-        "plugins",
         "sandboxes",
         "session",
         "session_id",

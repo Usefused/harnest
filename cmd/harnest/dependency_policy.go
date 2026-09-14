@@ -41,7 +41,7 @@ func validateAgentDependencyPolicy(bundle engine.Bundle) error {
 		return err
 	}
 	for _, project := range plan.ProjectFiles[1:] {
-		requirements, projectErr := projectRuntimeRequirements(project, "runtime plugin")
+		requirements, projectErr := projectRuntimeRequirements(project, "Harnest Extension")
 		if projectErr != nil {
 			return projectErr
 		}

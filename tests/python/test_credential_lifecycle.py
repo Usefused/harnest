@@ -17,7 +17,7 @@ from harnest.credentials import (
 from harnest.credentials_adk import AdkCredentialPlugin
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.neutral_runtime import AgentInfo, InvocationResult
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime import _create_adk_fastapi_app
 
 
@@ -118,7 +118,7 @@ class CredentialLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_owns_provider_once_and_keeps_it_private(self):
         provider = _Provider()
         backend = _Driver()
-        driver = ExtensionRuntimeDriver(
+        driver = LifecycleRuntimeDriver(
             backend, (), credential_provider=provider
         )
 
@@ -143,7 +143,7 @@ class CredentialLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 raise ValueError(secret)
 
         provider = FailingProvider()
-        driver = ExtensionRuntimeDriver(
+        driver = LifecycleRuntimeDriver(
             _Driver(), (), credential_provider=provider
         )
 
@@ -312,7 +312,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "instructions.md").write_text("Answer.\n", encoding="utf-8")
-            extensions = root / "extensions"
+            extensions = root / "lifecycle"
             _storage_extensions(extensions)
             (extensions / "credentials.py").write_text(
                 "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"
@@ -346,7 +346,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "instructions.md").write_text("Answer.\n", encoding="utf-8")
-            extensions = root / "extensions"
+            extensions = root / "lifecycle"
             _storage_extensions(extensions)
             (extensions / "credentials.py").write_text(
                 "from harnest import lifecycle\nfrom harnest.credentials import Credential, CredentialProvider\n"

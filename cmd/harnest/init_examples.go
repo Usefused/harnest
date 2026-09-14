@@ -118,7 +118,8 @@ capabilities: []
 `,
 		"extensions/_example/extension.py": `"""Copy the containing folder to extensions/starter_runtime to enable this extension.
 
-Declare any contributed lifecycle/context authority in extension.yaml before use.
+List contributed directories under extension.yaml contributes and declare their
+matching lifecycle, context, or content capabilities before use.
 """
 
 from harnest.extensions import Extension

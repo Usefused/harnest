@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel
 
 from harnest.agent import Agent, AgentDefinition
-from harnest.approval import ApprovalPolicy
+from harnest.agent.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
@@ -37,7 +37,7 @@ from harnest.runtime_langgraph import (
     _message_thinking,
     _message_tool_events,
 )
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.session import InMemorySessionStore
 from harnest.transient_media import (
     TransientMediaAccess,
@@ -1703,9 +1703,9 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 mcp=(configured,),
             )
         )
-        application = replace(_application(plan), extensions=listeners)
+        application = replace(_application(plan), lifecycle_extensions=listeners)
         backend = LangGraphRuntimeDriver(application)
-        driver = ExtensionRuntimeDriver(backend, listeners)
+        driver = LifecycleRuntimeDriver(backend, listeners)
         await driver.create_session(
             session_id="session-1", user_id="user-1", state={}
         )
@@ -1788,9 +1788,9 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 mcp=(configured,),
             )
         )
-        application = replace(_application(plan), extensions=(listener,))
+        application = replace(_application(plan), lifecycle_extensions=(listener,))
         backend = LangGraphRuntimeDriver(application)
-        driver = ExtensionRuntimeDriver(backend, (listener,))
+        driver = LifecycleRuntimeDriver(backend, (listener,))
         await driver.create_session(
             session_id="session-1", user_id="user-1", state={}
         )

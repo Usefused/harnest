@@ -21,7 +21,7 @@ from harnest._adk_warnings import suppress_adk_warnings
 from harnest.agent import Agent, AgentRuntimePrincipal
 from harnest.agent_principal import active_agent_principal
 from harnest.application import CompiledApplication
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.checkpoint import MemoryStore, PendingAction, RunScope
 from harnest.content import Image
@@ -58,7 +58,7 @@ from harnest.runtime_adk import (
     _register_mcp_context_plugins,
     _register_tool_lifecycle_plugin,
 )
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.structured import FrameworkMetadata, provider_output_schema
 from harnest.transient_media import (
     TransientMediaAccess,
@@ -1060,7 +1060,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             session_service=service,
         )
         first_pipeline = ExternalContinuationRuntimeDriver(
-            ExtensionRuntimeDriver(first_backend, ()), first_runtime
+            LifecycleRuntimeDriver(first_backend, ()), first_runtime
         )
         first_runtime.bind_driver(first_pipeline)
         principal = AgentRuntimePrincipal.create(permissions={"hatchet.run"})
@@ -1110,7 +1110,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 session_service=service,
             )
             second_pipeline = ExternalContinuationRuntimeDriver(
-                ExtensionRuntimeDriver(second_backend, ()), second_runtime
+                LifecycleRuntimeDriver(second_backend, ()), second_runtime
             )
             second_runtime.bind_driver(second_pipeline)
             second_runtime.application_port("hatchet").register_schema(

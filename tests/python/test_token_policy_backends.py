@@ -18,7 +18,7 @@ from harnest.agent import Agent
 from harnest.application import CompiledApplication
 from harnest.backends.langgraph import lower_agent
 from harnest.runtime_adk import ADKRuntimeDriver
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_langgraph import LangGraphRuntimeDriver
 from harnest.runtime_contract import InvocationRequest
 from harnest.token_adk import wrap_adk_model
@@ -234,4 +234,4 @@ def _driver(framework, policy, *, loop=False):
         definition = Agent(name="root", model=model, instruction="answer", token_policy=policy, tools=[lookup] if loop else [])
         app = CompiledApplication(name="root", framework="langgraph", mode="managed", target=lower_agent(definition, checkpointer=InMemorySaver()))
         native = LangGraphRuntimeDriver(app)
-    return ExtensionRuntimeDriver(native, []), model
+    return LifecycleRuntimeDriver(native, []), model

@@ -12,9 +12,9 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
-from .agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
-from ._agent_tool import tool
-from .client_tool import (
+from ..agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
+from .._agent_tool import tool
+from ..client_tool import (
     ClientToolError,
     ClientToolExecution,
     InMemoryClientToolStore,
@@ -23,20 +23,20 @@ from .client_tool import (
     client_tool_execution,
     current_transient_media,
 )
-from .mcp import MCPClient
-from .mcp_lifecycle import propagate_mcp_lifecycles
-from .model import ModelInput, resolve_model
-from .tokens import TokenPolicy
-from .model_lifecycle import propagate_litellm_lifecycles
-from .durable import adk_durable_tool, is_durable_tool
-from .sandbox import Sandbox
-from .structured import (
+from ..mcp import MCPClient
+from ..mcp_lifecycle import propagate_mcp_lifecycles
+from ..model import ModelInput, resolve_model
+from ..tokens import TokenPolicy
+from ..model_lifecycle import propagate_litellm_lifecycles
+from ..durable import adk_durable_tool, is_durable_tool
+from ..sandbox import Sandbox
+from ..structured import (
     PydanticModel,
     framework_metadata_field,
     provider_output_schema,
     validate_output_schema,
 )
-from .tool_lifecycle import (
+from ..tool_lifecycle import (
     ToolCallRequest,
     ToolLifecycleContext,
     ToolLifecycleError,
@@ -157,7 +157,7 @@ class AgentDefinition:
 
     def _validate_sandboxes(self) -> None:
         """Keep named grants immutable and separate from the legacy executor path."""
-        from .sandbox_assignments import validate_sandbox_name
+        from ..sandbox_assignments import validate_sandbox_name
 
         if isinstance(self.sandboxes, (str, bytes)) or not isinstance(self.sandboxes, Sequence):
             raise TypeError("agent sandboxes must be a sequence of names, such as ['research']")
@@ -195,7 +195,7 @@ class AgentDefinition:
             ) from exc
 
         kwargs = self._build_kwargs()
-        from .agent_scope_adk import managed_adk_agent_type
+        from ..agent_scope_adk import managed_adk_agent_type
 
         native_type = managed_adk_agent_type(LlmAgent)
         built = native_type(**kwargs)
@@ -214,8 +214,8 @@ class AgentDefinition:
             *(_adk_runtime_tool(tool) for tool in self.tools),
             *(client.to_adk_toolset() for client in self.mcp),
         ]
-        from .sandbox_assignments import assigned_sandboxes
-        from .token_adk import wrap_adk_model
+        from ..sandbox_assignments import assigned_sandboxes
+        from ..token_adk import wrap_adk_model
 
         # Named declarations are capabilities for authored tools, never an
         # implicit model-facing execute-code tool or native code executor.
@@ -339,7 +339,7 @@ def _build_adk_subagent(value: Any) -> Any:
 
     if isinstance(value, AgentDefinition):
         return value.build()
-    from .agent_scope_adk import scope_native_adk_agent
+    from ..agent_scope_adk import scope_native_adk_agent
 
     if not isinstance(value, _AdvancedAgentDefinition):
         return scope_native_adk_agent(value)
@@ -379,6 +379,9 @@ def _build_adk_subagent(value: Any) -> Any:
 # A short alias reads naturally in agent.py: Agent(...).build().
 Agent = AgentDefinition
 
+# Approval is an agent-owned capability namespace rather than a root domain.
+from . import approval as approval
+
 
 __all__ = [
     "Agent",
@@ -396,5 +399,6 @@ __all__ = [
     "client_tool_execution",
     "current_transient_media",
     "instruction_file",
+    "approval",
     "tool",
 ]

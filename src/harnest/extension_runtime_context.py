@@ -1,4 +1,4 @@
-"""Restricted application and invocation capabilities for runtime plugins."""
+"""Restricted application and invocation capabilities for runtime extensions."""
 
 from __future__ import annotations
 
@@ -16,39 +16,33 @@ from .logging import get_logger
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 _OPERATION = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _TRIGGERS = frozenset({"agent", "user"})
-_AUDIT = get_logger("plugin.audit")
+_AUDIT = get_logger("extension.audit")
 
 
 @dataclass(frozen=True, slots=True)
-class PluginStartContext:
-    """Application facts available while one same-process plugin starts.
+class ExtensionStartContext:
+    """Application facts available while one same-process extension starts.
 
     The context deliberately excludes invocation credentials and framework
-    storage authorities. Plugins may reuse only explicitly named application
+    storage authorities. Extensions may reuse only explicitly named application
     storage whose lifecycle Harnest has already started.
     """
 
-    plugin_name: str
+    extension_name: str
     framework: str
     root_agent_name: str
     _custom_stores: Mapping[str, Any] = field(repr=False)
     _continuations: Any | None = field(default=None, repr=False)
 
-    @property
-    def extension_name(self) -> str:
-        """Expose canonical extension identity while preserving legacy callers."""
-
-        return self.plugin_name
-
     def __post_init__(self) -> None:
         """Validate public identity and hide the copied storage registry."""
 
-        _require_text(self.plugin_name, "plugin name")
+        _require_text(self.extension_name, "extension name")
         if self.framework not in {"adk", "langgraph"}:
-            raise ValueError("plugin framework must be adk or langgraph")
+            raise ValueError("extension framework must be adk or langgraph")
         _require_text(self.root_agent_name, "root agent name")
         if not isinstance(self._custom_stores, Mapping):
-            raise TypeError("plugin custom storage must be a mapping")
+            raise TypeError("extension custom storage must be a mapping")
         object.__setattr__(
             self, "_custom_stores", MappingProxyType(dict(self._custom_stores))
         )
@@ -61,7 +55,7 @@ class PluginStartContext:
         _validate_storage_name(name)
         if name not in self._custom_stores:
             raise ContextResourceError(
-                f"custom storage {name!r} is not available to this plugin"
+                f"custom storage {name!r} is not available to this extension"
             )
         value = self._custom_stores[name]
         if expected_type is not None and not isinstance(value, expected_type):
@@ -77,180 +71,180 @@ class PluginStartContext:
 
         if self._continuations is None:
             raise ContextResourceError(
-                "plugin continuation authority was not declared"
+                "extension continuation authority was not declared"
             )
         return self._continuations
 
 
 @dataclass(frozen=True, slots=True, repr=False)
-class PluginInvocationBinding:
+class ExtensionInvocationBinding:
     """Pair an authored singleton with its invocation-specific context."""
 
-    plugin: Any = field(repr=False)
-    plugin_context: Any = field(repr=False)
+    extension: Any = field(repr=False)
+    extension_context: Any = field(repr=False)
 
 
-_EMPTY_PLUGIN_BINDINGS: Mapping[str, PluginInvocationBinding] = MappingProxyType({})
+_EMPTY_EXTENSION_BINDINGS: Mapping[str, ExtensionInvocationBinding] = MappingProxyType({})
 
 
-class PluginContextAccess:
-    """Resolve one plugin context without making installed names enumerable."""
+class ExtensionContextAccess:
+    """Resolve one extension context without making installed names enumerable."""
 
     def __call__(
         self, name: str, expected_type: type[Any] | None = None
     ) -> Any:
         """Return one invocation view and optionally validate its public type."""
 
-        _require_text(name, "plugin name")
+        _require_text(name, "extension name")
         active = context.current()
-        binding = active._plugin_bindings.get(name)
+        binding = active._extension_bindings.get(name)
         if binding is None:
             raise ContextResourceError(
-                f"plugin {name!r} is not available in this invocation"
+                f"extension {name!r} is not available in this invocation"
             )
-        value = binding.plugin_context
-        _require_plugin_context(value)
+        value = binding.extension_context
+        _require_extension_context(value)
         if expected_type is not None and not isinstance(value, expected_type):
             raise ContextResourceError(
-                f"plugin {name!r} must expose {expected_type.__name__}; "
+                f"extension {name!r} must expose {expected_type.__name__}; "
                 f"got {type(value).__name__}"
             )
         return value
 
 
-plugins = PluginContextAccess()
+extensions = ExtensionContextAccess()
 
 
 @contextmanager
-def activate_plugin_bindings(
-    bindings: Mapping[str, PluginInvocationBinding],
+def activate_extension_bindings(
+    bindings: Mapping[str, ExtensionInvocationBinding],
 ) -> Iterator[None]:
     """Bind singleton `.context` properties for only the current task."""
 
-    tokens = bind_plugin_bindings(bindings)
+    tokens = bind_extension_bindings(bindings)
     try:
         yield
     finally:
-        reset_plugin_bindings(tokens)
+        reset_extension_bindings(tokens)
 
 
-def bind_plugin_bindings(
-    bindings: Mapping[str, PluginInvocationBinding],
+def bind_extension_bindings(
+    bindings: Mapping[str, ExtensionInvocationBinding],
 ) -> tuple[tuple[Any, Any], ...]:
     """Return task-owned tokens for framework adapters with split callbacks."""
 
     if not bindings:
         return ()
-    from .plugins import Plugin
+    from .extensions import Extension
 
     tokens: list[tuple[Any, Any]] = []
     try:
         for binding in bindings.values():
             # Binding is a Harnest ownership primitive, not an authored
             # extension point; bypass subclass overrides at this boundary.
-            token = Plugin._bind_context(binding.plugin, binding.plugin_context)
-            tokens.append((binding.plugin, token))
+            token = Extension._bind_context(binding.extension, binding.extension_context)
+            tokens.append((binding.extension, token))
     except BaseException:
-        for plugin, token in reversed(tokens):
-            Plugin._reset_context(plugin, token)
+        for extension, token in reversed(tokens):
+            Extension._reset_context(extension, token)
         raise
     return tuple(tokens)
 
 
-def reset_plugin_bindings(tokens: Sequence[tuple[Any, Any]]) -> None:
+def reset_extension_bindings(tokens: Sequence[tuple[Any, Any]]) -> None:
     """Reset tokens in the same task which opened the split activation."""
 
     if not tokens:
         return
-    from .plugins import Plugin
+    from .extensions import Extension
 
-    for plugin, token in reversed(tokens):
-        Plugin._reset_context(plugin, token)
+    for extension, token in reversed(tokens):
+        Extension._reset_context(extension, token)
 
 
-def revoke_plugin_bindings(
-    bindings: Mapping[str, PluginInvocationBinding],
+def revoke_extension_bindings(
+    bindings: Mapping[str, ExtensionInvocationBinding],
 ) -> None:
     """Invalidate retained views, including bindings copied into child tasks."""
 
     if not bindings:
         return
-    from .plugins import PluginContext
+    from .extensions import ExtensionContext
 
     for binding in bindings.values():
-        PluginContext._revoke(binding.plugin_context)
+        ExtensionContext._revoke(binding.extension_context)
 
 
-def validate_plugin_bindings(
+def validate_extension_bindings(
     bindings: Mapping[str, Any],
-) -> Mapping[str, PluginInvocationBinding]:
+) -> Mapping[str, ExtensionInvocationBinding]:
     """Freeze only manager-created bindings at the AgentContext boundary."""
 
     if not isinstance(bindings, Mapping):
-        raise TypeError("plugin bindings must be a mapping")
+        raise TypeError("extension bindings must be a mapping")
     if not bindings:
-        return _EMPTY_PLUGIN_BINDINGS
+        return _EMPTY_EXTENSION_BINDINGS
     normalized = dict(bindings)
     for name, binding in normalized.items():
-        _require_text(name, "plugin name")
-        if not isinstance(binding, PluginInvocationBinding):
+        _require_text(name, "extension name")
+        if not isinstance(binding, ExtensionInvocationBinding):
             raise TypeError(
-                "plugin bindings must contain PluginInvocationBinding values"
+                "extension bindings must contain ExtensionInvocationBinding values"
             )
-        _require_plugin_context(binding.plugin_context)
-        if binding.plugin_context.plugin_name != name:
-            raise ValueError("plugin binding name must match its context identity")
+        _require_extension_context(binding.extension_context)
+        if binding.extension_context.extension_name != name:
+            raise ValueError("extension binding name must match its context identity")
     return MappingProxyType(normalized)
 
 
 @asynccontextmanager
-async def plugin_mutation(
-    plugin_name: str,
+async def extension_mutation(
+    extension_name: str,
     operation: str,
     *,
     trigger: Literal["agent", "user"],
 ) -> AsyncIterator[None]:
     """Audit one exact durable operation after commit or on correlated failure."""
 
-    _require_text(plugin_name, "plugin name")
+    _require_text(extension_name, "extension name")
     _validate_operation(operation)
     if trigger not in _TRIGGERS:
-        raise ValueError("plugin mutation trigger must be user or agent")
+        raise ValueError("extension mutation trigger must be user or agent")
     try:
         yield
     except BaseException:
-        _audit_mutation(plugin_name, operation, trigger, "failed")
+        _audit_mutation(extension_name, operation, trigger, "failed")
         raise
-    _audit_mutation(plugin_name, operation, trigger, "committed")
+    _audit_mutation(extension_name, operation, trigger, "committed")
 
 
-def _require_plugin_context(value: Any) -> None:
+def _require_extension_context(value: Any) -> None:
     """Validate through the public base without importing it during bootstrap."""
 
-    from .plugins import PluginContext
+    from .extensions import ExtensionContext
 
-    if not isinstance(value, PluginContext):
-        raise TypeError("plugin invocation context must inherit PluginContext")
+    if not isinstance(value, ExtensionContext):
+        raise TypeError("extension invocation context must inherit ExtensionContext")
     # Revocation is host-owned; authored overrides cannot weaken the check.
-    PluginContext._require_active(value)
+    ExtensionContext._require_active(value)
 
 
 def _audit_mutation(
-    plugin_name: str, operation: str, trigger: str, outcome: str
+    extension_name: str, operation: str, trigger: str, outcome: str
 ) -> None:
     """Emit stable dimensions only; OTEL supplies invocation correlation."""
 
     _AUDIT.info(
-        "plugin.mutation",
+        "extension.mutation",
         operation=operation,
         trigger=trigger,
         outcome=outcome,
-        plugin=plugin_name,
+        extension=extension_name,
     )
 
 
 def _validate_storage_name(name: Any) -> None:
-    """Keep plugin storage lookup aligned with lifecycle storage names."""
+    """Keep extension storage lookup aligned with lifecycle storage names."""
 
     if not isinstance(name, str) or not _STORAGE_NAME.fullmatch(name):
         raise ValueError("custom storage name must be a valid storage identifier")
@@ -260,7 +254,7 @@ def _validate_operation(operation: Any) -> None:
     """Bound audit dimensions so authored payloads cannot become operation names."""
 
     if not isinstance(operation, str) or not _OPERATION.fullmatch(operation):
-        raise ValueError("plugin mutation operation must be a stable identifier")
+        raise ValueError("extension mutation operation must be a stable identifier")
 
 
 def _require_text(value: Any, label: str) -> None:
@@ -271,9 +265,9 @@ def _require_text(value: Any, label: str) -> None:
 
 
 __all__ = [
-    "PluginContextAccess",
-    "PluginInvocationBinding",
-    "PluginStartContext",
-    "plugin_mutation",
-    "plugins",
+    "ExtensionContextAccess",
+    "ExtensionInvocationBinding",
+    "ExtensionStartContext",
+    "extension_mutation",
+    "extensions",
 ]

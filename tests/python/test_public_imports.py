@@ -225,11 +225,30 @@ class PublicImportTests(unittest.TestCase):
         for name in harnest.__all__:
             with self.subTest(name=name):
                 self.assertTrue(inspect.ismodule(getattr(harnest, name)))
-        for removed in ("Agent", "MCPClient", "Stored", "tool"):
+        for removed in ("Agent", "MCPClient", "Stored", "approval", "tool"):
             with self.subTest(removed=removed):
                 self.assertIsNone(getattr(harnest, removed, None))
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module("harnest.tool")
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("harnest.approval")
+
+    def test_approval_is_the_agent_owned_submodule(self):
+        """Expose approvals below agents without duplicating the module identity."""
+
+        from harnest import agent
+
+        approval = importlib.import_module("harnest.agent.approval")
+        self.assertIs(agent.approval, approval)
+
+    def test_extensions_have_no_plugin_namespace_alias(self):
+        """Reserve plugin terminology for declarative Agent Plugin packages."""
+
+        import harnest
+
+        self.assertFalse(hasattr(harnest, "plugins"))
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("harnest.plugins")
 
     def test_public_callables_have_hover_docs_and_complete_signatures(self):
         """Keep IDE documentation and types complete across the reviewed API."""

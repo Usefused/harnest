@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -45,7 +46,7 @@ var extensionCapabilities = map[string]struct{}{
 	"lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
 	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {},
 	"storage.checkpoints": {}, "storage.custom": {}, "storage.sessions": {},
-	"telemetry.exporter": {},
+	"storage.tasks": {}, "storage.cron": {}, "telemetry.exporter": {},
 }
 
 var extensionRootEntries = map[string]bool{
@@ -61,6 +62,20 @@ var extensionRootEntries = map[string]bool{
 	"tools":          false,
 }
 
+var extensionContributionKinds = []string{"lifecycle", "mcp", "skills", "subagents", "tools"}
+
+var extensionContributionPath = regexp.MustCompile(
+	`^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*/?$`,
+)
+
+type localExtensionContributions struct {
+	Lifecycle *[]string `yaml:"lifecycle,omitempty"`
+	MCP       *[]string `yaml:"mcp,omitempty"`
+	Skills    *[]string `yaml:"skills,omitempty"`
+	Subagents *[]string `yaml:"subagents,omitempty"`
+	Tools     *[]string `yaml:"tools,omitempty"`
+}
+
 type localExtensionManifest struct {
 	APIVersion string `yaml:"apiVersion"`
 	Kind       string `yaml:"kind"`
@@ -74,7 +89,8 @@ type localExtensionManifest struct {
 	Requires *struct {
 		Extensions []string `yaml:"extensions"`
 	} `yaml:"requires,omitempty"`
-	Capabilities *[]string `yaml:"capabilities,omitempty"`
+	Contributes  *localExtensionContributions `yaml:"contributes,omitempty"`
+	Capabilities *[]string                    `yaml:"capabilities,omitempty"`
 }
 
 type installedExtension struct {
@@ -297,7 +313,7 @@ func installLocalExtension(source, project string, force bool) (installedExtensi
 	if err != nil {
 		return installedExtension{}, err
 	}
-	if err := validateLocalExtensionLayout(sourceRoot); err != nil {
+	if err := validateLocalExtensionLayout(sourceRoot, manifest); err != nil {
 		return installedExtension{}, err
 	}
 	if err := validateLocalExtensionProject(sourceRoot, manifest); err != nil {
@@ -324,7 +340,8 @@ func installLocalExtension(source, project string, force bool) (installedExtensi
 }
 
 // validateLocalExtensionLayout mirrors the compiler's closed top-level boundary.
-func validateLocalExtensionLayout(root string) error {
+func validateLocalExtensionLayout(root string, manifest localExtensionManifest) error {
+	allowed := extensionAllowedRootEntries(manifest)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return fmt.Errorf("read Harnest Extension source: %w", err)
@@ -338,8 +355,8 @@ func validateLocalExtensionLayout(root string) error {
 		if ignoredExtensionRootEntry(entry.Name()) {
 			continue
 		}
-		expectsFile, allowed := extensionRootEntries[entry.Name()]
-		if !allowed {
+		expectsFile, found := allowed[entry.Name()]
+		if !found {
 			return fmt.Errorf("unexpected Harnest Extension resource: %s", path)
 		}
 		if expectsFile != info.Mode().IsRegular() {
@@ -350,7 +367,114 @@ func validateLocalExtensionLayout(root string) error {
 			return fmt.Errorf("Harnest Extension resource must be a %s: %s", expected, path)
 		}
 	}
+	return validateLocalContributionDirectories(root, manifest)
+}
+
+// extensionContributionEntries returns fixed kinds in deterministic manifest order.
+func extensionContributionEntries(manifest localExtensionManifest) map[string][]string {
+	if manifest.Contributes == nil {
+		return nil
+	}
+	entries := map[string][]string{}
+	values := map[string]*[]string{
+		"lifecycle": manifest.Contributes.Lifecycle,
+		"mcp":       manifest.Contributes.MCP,
+		"skills":    manifest.Contributes.Skills,
+		"subagents": manifest.Contributes.Subagents,
+		"tools":     manifest.Contributes.Tools,
+	}
+	for kind, paths := range values {
+		if paths != nil {
+			entries[kind] = *paths
+		}
+	}
+	return entries
+}
+
+// extensionAllowedRootEntries admits only core files and explicitly declared roots.
+func extensionAllowedRootEntries(manifest localExtensionManifest) map[string]bool {
+	allowed := make(map[string]bool, len(extensionRootEntries)+len(extensionContributionKinds))
+	for name, expectsFile := range extensionRootEntries {
+		allowed[name] = expectsFile
+	}
+	for _, values := range extensionContributionEntries(manifest) {
+		for _, value := range values {
+			root, _, _ := strings.Cut(strings.TrimSuffix(value, "/"), "/")
+			allowed[root] = false
+		}
+	}
+	return allowed
+}
+
+// validateLocalContributionDirectories binds declarations to contained directories.
+func validateLocalContributionDirectories(root string, manifest localExtensionManifest) error {
+	entries := extensionContributionEntries(manifest)
+	if err := validateDeclaredContributionDirectories(root, entries); err != nil {
+		return err
+	}
+	return validateConventionalContributionDirectories(root, entries)
+}
+
+// validateDeclaredContributionDirectories requires every projected source directory.
+func validateDeclaredContributionDirectories(root string, entries map[string][]string) error {
+	for _, kind := range extensionContributionKinds {
+		values := entries[kind]
+		for _, value := range values {
+			target := filepath.Join(root, filepath.FromSlash(strings.TrimSuffix(value, "/")))
+			info, err := os.Lstat(target)
+			if err != nil || !info.IsDir() {
+				return fmt.Errorf("contributes.%s path must be an existing regular directory: %q", kind, value)
+			}
+		}
+	}
 	return nil
+}
+
+// validateConventionalContributionDirectories rejects formerly inferred content.
+func validateConventionalContributionDirectories(root string, entries map[string][]string) error {
+	for _, kind := range extensionContributionKinds {
+		conventional := filepath.Join(root, kind)
+		info, err := os.Lstat(conventional)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		populated, err := hasPublicExtensionEntries(conventional)
+		if err != nil {
+			return err
+		}
+		if populated && !declaresExtensionPath(entries[kind], kind) {
+			return fmt.Errorf("Harnest Extension content directory %s must be declared under contributes.%s", conventional, kind)
+		}
+	}
+	return nil
+}
+
+// hasPublicExtensionEntries ignores placeholders and local state like the compiler.
+func hasPublicExtensionEntries(directory string) (bool, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return false, fmt.Errorf("read Harnest Extension content directory %s: %w", directory, err)
+	}
+	for _, entry := range entries {
+		if !ignoredExtensionRootEntry(entry.Name()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// declaresExtensionPath reports whether one declaration projects a conventional root.
+func declaresExtensionPath(values []string, root string) bool {
+	for _, value := range values {
+		canonical := strings.TrimSuffix(value, "/")
+		if canonical == root || strings.HasPrefix(canonical, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // inspectLocalExtensionRootEntry validates kind before exclusions can hide links or devices.
@@ -484,11 +608,142 @@ func validateLocalExtensionManifest(manifest localExtensionManifest) error {
 			return err
 		}
 	}
+	if err := validateExtensionContributions(manifest); err != nil {
+		return err
+	}
 	if manifest.Capabilities != nil {
 		_, err := validateExtensionCapabilities(*manifest.Capabilities)
 		return err
 	}
 	return nil
+}
+
+// validateExtensionContributions rejects ambiguous or escaping content projections.
+func validateExtensionContributions(manifest localExtensionManifest) error {
+	entries := extensionContributionEntries(manifest)
+	if manifest.Contributes != nil && !hasExtensionContributions(entries) {
+		return fmt.Errorf("contributes must declare at least one contribution path")
+	}
+	declared := map[string]string{}
+	capabilities := extensionCapabilitySet(manifest.Capabilities)
+	for _, kind := range extensionContributionKinds {
+		if err := validateExtensionContributionKind(
+			kind, entries, capabilities, declared,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extensionCapabilitySet normalizes optional authority for contribution checks.
+func extensionCapabilitySet(values *[]string) map[string]struct{} {
+	result := map[string]struct{}{}
+	if values == nil {
+		return result
+	}
+	for _, value := range *values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+// validateExtensionContributionKind validates one projection list against shared state.
+func validateExtensionContributionKind(
+	kind string, entries map[string][]string, capabilities map[string]struct{}, declared map[string]string,
+) error {
+	values, present := entries[kind]
+	if present && len(values) == 0 {
+		return fmt.Errorf("contributes.%s must contain at least one path", kind)
+	}
+	if err := requireExtensionContentCapability(kind, present, capabilities); err != nil {
+		return err
+	}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		canonical, err := validateExtensionContributionPath(kind, value)
+		if err != nil {
+			return err
+		}
+		if _, duplicate := seen[canonical]; duplicate {
+			return fmt.Errorf("duplicate Harnest Extension contributes.%s path %q", kind, canonical)
+		}
+		seen[canonical] = struct{}{}
+		if err := registerExtensionContributionPath(kind, canonical, declared); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// requireExtensionContentCapability keeps projection and authority independent.
+func requireExtensionContentCapability(kind string, present bool, capabilities map[string]struct{}) error {
+	required := extensionContentCapability(kind)
+	if required == "" || !present {
+		return nil
+	}
+	if _, declared := capabilities[required]; declared {
+		return nil
+	}
+	return fmt.Errorf("contributes.%s requires Harnest Extension capability %q", kind, required)
+}
+
+// registerExtensionContributionPath rejects overlap across every contribution kind.
+func registerExtensionContributionPath(kind, canonical string, declared map[string]string) error {
+	previousPaths := make([]string, 0, len(declared))
+	for previous := range declared {
+		previousPaths = append(previousPaths, previous)
+	}
+	sort.Strings(previousPaths)
+	for _, previous := range previousPaths {
+		if overlappingExtensionPaths(canonical, previous) {
+			return fmt.Errorf("Harnest Extension contribution paths overlap: contributes.%s=%q and contributes.%s=%q", declared[previous], previous, kind, canonical)
+		}
+	}
+	declared[canonical] = kind
+	return nil
+}
+
+// extensionContentCapability keeps file contribution authority separate from paths.
+func extensionContentCapability(kind string) string {
+	switch kind {
+	case "mcp":
+		return "content.mcp"
+	case "skills":
+		return "content.skills"
+	case "subagents":
+		return "content.subagents"
+	case "tools":
+		return "content.tools"
+	default:
+		return ""
+	}
+}
+
+// hasExtensionContributions distinguishes an absent declaration from an empty mapping.
+func hasExtensionContributions(entries map[string][]string) bool {
+	for _, values := range entries {
+		if len(values) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// validateExtensionContributionPath canonicalizes one portable relative directory.
+func validateExtensionContributionPath(kind, value string) (string, error) {
+	canonical := strings.TrimSuffix(value, "/")
+	root, _, _ := strings.Cut(canonical, "/")
+	_, reserved := extensionRootEntries[root]
+	if !extensionContributionPath.MatchString(value) || path.Clean(canonical) != canonical || reserved && (extensionRootEntries[root] || root == "lib") {
+		return "", fmt.Errorf("contributes.%s path must be a safe package-relative directory: %q", kind, value)
+	}
+	return canonical, nil
+}
+
+// overlappingExtensionPaths prevents one tree from being interpreted as two contracts.
+func overlappingExtensionPaths(left, right string) bool {
+	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 // validateLocalExtensionIdentity checks the canonical descriptor discriminators.
@@ -531,7 +786,7 @@ func validateExtensionDependencies(names []string) error {
 			return fmt.Errorf("requires.extensions contains invalid name %q", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
-			return fmt.Errorf("duplicate runtime plugin dependencies: %s", name)
+			return fmt.Errorf("duplicate Harnest Extension dependencies: %s", name)
 		}
 		seen[name] = struct{}{}
 	}

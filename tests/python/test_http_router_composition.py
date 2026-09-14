@@ -164,7 +164,7 @@ class HTTPRouterCompositionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "agent"
             write_session_store(root)
-            (root / "extensions" / "http.py").write_text(
+            (root / "lifecycle" / "http.py").write_text(
                 "from fastapi import APIRouter\n"
                 "from harnest import lifecycle\n"
                 "@lifecycle.http_routes\n"
@@ -178,5 +178,5 @@ class HTTPRouterCompositionTests(unittest.TestCase):
             )
             for framework in ("adk", "langgraph"):
                 with self.subTest(framework=framework):
-                    found = discover_extensions(root / "extensions", framework=framework)
+                    found = discover_extensions(root / "lifecycle", framework=framework)
                     self.assertEqual(len(found.http_routes), 1)

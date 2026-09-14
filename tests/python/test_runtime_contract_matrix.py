@@ -21,7 +21,7 @@ from harnest.neutral_runtime import (
     InvocationResult,
 )
 from harnest.runtime import _runtime_driver, create_fastapi_app
-from harnest.runtime_extensions import ExtensionRuntimeDriver
+from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_session import StorageRuntimeDriver
 from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.session import InMemorySessionStore
@@ -44,7 +44,7 @@ def _write_contract_agent(root: Path) -> None:
     _write(
         root / "agent.py",
         """
-        from harnest.approval import request_human_approval
+        from harnest.agent.approval import request_human_approval
         from harnest.graph import START, Edge, Event, Graph
 
 
@@ -91,7 +91,7 @@ def _write_contract_extensions(root: Path) -> None:
     """Add authentication and a custom route backed by the shared invoker."""
 
     _write(
-        root / "extensions" / "gateway.py",
+        root / "lifecycle" / "gateway.py",
         """
         from fastapi import APIRouter, Request
         from harnest import lifecycle
@@ -411,7 +411,7 @@ class RuntimeCompositionContractTests(unittest.TestCase):
             framework="langgraph",
             mode="managed",
             target=object(),
-            extensions=(listener, before_listener),
+            lifecycle_extensions=(listener, before_listener),
             session_store=store,
             custom_stores={"users": store},
             credential_provider=provider,
@@ -422,7 +422,7 @@ class RuntimeCompositionContractTests(unittest.TestCase):
             runtime = _runtime_driver(application)
 
         self.assertIsInstance(runtime, StorageRuntimeDriver)
-        self.assertIsInstance(runtime._driver, ExtensionRuntimeDriver)
+        self.assertIsInstance(runtime._driver, LifecycleRuntimeDriver)
         self.assertIsInstance(
             runtime._driver._driver, DynamicAgentPluginRuntimeDriver
         )

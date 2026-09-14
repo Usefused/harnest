@@ -57,10 +57,10 @@ func TestExtensionWheelUsesCanonicalIdentity(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectPluginWheel(buffer.Bytes(), "harnest-extension-clock", "1.0.0"); err != nil {
+	if err := inspectExtensionWheel(buffer.Bytes(), "harnest-extension-clock", "1.0.0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectPluginWheel(buffer.Bytes(), "harnest-extension-clock", "2.0.0"); err == nil {
+	if err := inspectExtensionWheel(buffer.Bytes(), "harnest-extension-clock", "2.0.0"); err == nil {
 		t.Fatal("release identity mismatch accepted")
 	}
 }
@@ -68,9 +68,9 @@ func TestExtensionWheelUsesCanonicalIdentity(t *testing.T) {
 // TestExtensionSearchCommandPreservesLegacyCatalog proves the command is functional.
 func TestExtensionSearchCommandPreservesLegacyCatalog(t *testing.T) {
 	var catalogs, metadata, wheels int
-	sys := pluginSearchTestSystem(pluginCatalogFixture(t, &catalogs, &metadata, &wheels), t.TempDir())
+	sys := extensionSearchTestSystem(extensionCatalogFixture(t, &catalogs, &metadata, &wheels), t.TempDir())
 	output, _, err := executeForTest(t, sys, "extensions", "search", "postgres")
-	if err != nil || !strings.Contains(output, "Harnest_Plugin_Postgres") {
+	if err != nil || !strings.Contains(output, "Harnest_Extension_Postgres") {
 		t.Fatalf("search: %v %s", err, output)
 	}
 }
@@ -84,7 +84,7 @@ func TestExtensionDependenciesJoinRootEnvironment(t *testing.T) {
 	}
 	mustWriteEnvironmentFixture(t, filepath.Join(root, "extensions", "clock", "extension.yaml"), "kind: Extension\n")
 	mustWriteEnvironmentFixture(t, project, "[project]\nname = 'clock'\nversion = '1.0.0'\ndependencies = ['httpx>=0.28']\n")
-	values, files, err := pluginRuntimeRequirements(root)
+	values, files, err := extensionRuntimeRequirements(root)
 	if err != nil || len(files) != 1 || files[0] != project || len(values) != 1 || values[0] != "httpx>=0.28" {
 		t.Fatalf("extension dependency solve: %v %v %v", values, files, err)
 	}
@@ -94,7 +94,7 @@ func TestOfficialExtensionsJoinRuntimeDependencyPlan(t *testing.T) {
 	// Exercise the same filesystem-only collection used by env sync so the
 	// official catalog cannot drift from installable extension metadata.
 	extensions := filepath.Join("..", "..", "official-extensions")
-	requirements, projects, err := packageRuntimeRequirements(extensions, true)
+	requirements, projects, err := packageRuntimeRequirements(extensions)
 	if err != nil {
 		t.Fatalf("inspect bundled extensions: %v", err)
 	}
@@ -207,6 +207,78 @@ func TestExtensionInstallCopiesCanonicalPackageByManifestIdentity(t *testing.T) 
 	}
 }
 
+func TestExtensionInstallValidatesAndCopiesDeclaredContributionRoots(t *testing.T) {
+	project := extensionTestProject(t)
+	source := filepath.Join(t.TempDir(), "source")
+	manifest := strings.ReplaceAll(
+		validExtensionManifest("clock"),
+		"capabilities: []",
+		"contributes:\n  tools: [resources/tools/]\ncapabilities: [content.tools]",
+	)
+	writeExtensionFixture(t, source, manifest)
+	tool := filepath.Join(source, "resources", "tools", "lookup.py")
+	if err := os.MkdirAll(filepath.Dir(tool), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tool, []byte("lookup = object()\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "extensions", "install", source, "--project", project,
+	); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(project, "extensions", "clock", "resources", "tools", "lookup.py")
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatalf("declared contribution was not copied intact: %v", err)
+	}
+}
+
+func TestExtensionInstallRejectsUnauthorizedOrUndeclaredContributions(t *testing.T) {
+	invalidProject := extensionTestProject(t)
+	invalidSource := filepath.Join(t.TempDir(), "invalid")
+	writeExtensionFixture(
+		t,
+		invalidSource,
+		strings.ReplaceAll(
+			validExtensionManifest("clock"),
+			"capabilities: []",
+			"contributes:\n  tools: [tools/]\ncapabilities: []",
+		),
+	)
+	if err := os.Mkdir(filepath.Join(invalidSource, "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "extensions", "install", invalidSource, "--project", invalidProject,
+	); err == nil || !strings.Contains(err.Error(), "content.tools") {
+		t.Fatalf("missing contribution capability error = %v", err)
+	}
+
+	undeclaredProject := extensionTestProject(t)
+	undeclaredSource := filepath.Join(t.TempDir(), "undeclared")
+	writeExtensionFixture(
+		t,
+		undeclaredSource,
+		strings.ReplaceAll(
+			validExtensionManifest("clock"), "capabilities: []", "capabilities: [content.tools]",
+		),
+	)
+	if err := os.Mkdir(filepath.Join(undeclaredSource, "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(undeclaredSource, "tools", "lookup.py"), []byte("lookup = object()\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "extensions", "install", undeclaredSource, "--project", undeclaredProject,
+	); err == nil || !strings.Contains(err.Error(), "contributes.tools") {
+		t.Fatalf("undeclared contribution error = %v", err)
+	}
+}
+
 func TestExtensionInstallValidatesLayoutAndOptionalProject(t *testing.T) {
 	for name, mutate := range map[string]func(string){
 		"unexpected root": func(source string) {
@@ -299,7 +371,7 @@ func TestExtensionInstallRejectsInvalidCanonicalPackageBeforeMutation(t *testing
 		"kind":            {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "kind: Extension", "kind: RuntimePlugin"), entry: true},
 		"name":            {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "name: clock", "name: bad-name"), entry: true},
 		"version":         {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "0.1.0", "latest"), entry: true},
-		"entrypoint":      {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "extension:extension", "plugin:plugin"), entry: true},
+		"entrypoint":      {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "extension:extension", "main:extension"), entry: true},
 		"capability":      {manifest: strings.ReplaceAll(validExtensionManifest("clock"), "capabilities: []", "capabilities: [host.root]"), entry: true},
 		"unknown":         {manifest: validExtensionManifest("clock") + "unknown: true\n", entry: true},
 		"documents":       {manifest: validExtensionManifest("clock") + "---\n{}\n", entry: true},

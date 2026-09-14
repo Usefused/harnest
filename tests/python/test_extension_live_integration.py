@@ -7,9 +7,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import harnest.plugins as plugin_namespace
+import harnest.extensions as extension_namespace
 from harnest.bundle import compile_artifact
-from harnest.plugins import PluginContextUnavailableError
+from harnest.extensions import ExtensionContextUnavailableError
 from harnest.runtime import create_fastapi_app
 
 from _session_store_fixture import write_session_store
@@ -26,7 +26,7 @@ MCP_ADAPTER_AVAILABLE = (
     LANGGRAPH_AVAILABLE and MCP_AVAILABLE and MCP_ADAPTER_AVAILABLE,
     "LangGraph and its MCP runtime dependencies are required",
 )
-class RuntimePluginLiveIntegrationTests(unittest.TestCase):
+class HarnestExtensionLiveIntegrationTests(unittest.TestCase):
     def _write(self, path: Path, value: str) -> None:
         """Write one dedented authored resource into the temporary application."""
 
@@ -34,7 +34,7 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
         path.write_text(textwrap.dedent(value).lstrip(), encoding="utf-8")
 
     def _write_root(self, root: Path) -> None:
-        """Create a deterministic model that invokes the plugin-provided tool."""
+        """Create a deterministic model that invokes the extension-provided tool."""
 
         self._write(
             root / "agent.py",
@@ -49,13 +49,13 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             class ProbeModel(BaseChatModel):
                 @property
                 def _llm_type(self):
-                    return "runtime-plugin-probe"
+                    return "runtime-extension-probe"
 
                 def bind_tools(self, tools, **kwargs):
                     del kwargs
                     names = {tool.name for tool in tools}
-                    if "plugin_probe" not in names:
-                        raise RuntimeError("plugin tool was not materialized")
+                    if "extension_probe" not in names:
+                        raise RuntimeError("extension tool was not materialized")
                     return self
 
                 def _generate(
@@ -70,9 +70,9 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
                         response = AIMessage(
                             content="",
                             tool_calls=[{
-                                "name": "plugin_probe",
+                                "name": "extension_probe",
                                 "args": {"value": "hello"},
-                                "id": "plugin-probe-call",
+                                "id": "extension-probe-call",
                                 "type": "tool_call",
                             }],
                         )
@@ -81,37 +81,41 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
                     )
 
 
-            root_agent = Agent(name="plugin_root", model=ProbeModel())
+            root_agent = Agent(name="extension_root", model=ProbeModel())
             """,
         )
         self._write(
             root / "instructions.md",
-            "Invoke plugin_probe and return its result.\n",
+            "Invoke extension_probe and return its result.\n",
         )
         self._write(
             root / "agent-card.yaml",
             """
-            name: Runtime plugin probe
-            description: Executes a local plugin and MCP transport.
+            name: Runtime extension probe
+            description: Executes a local extension and MCP transport.
             version: 0.1.0
             """,
         )
         write_session_store(root)
 
-    def _write_plugin(self, root: Path, journal: Path) -> None:
-        """Author a runtime plugin spanning startup, context, tool, and MCP hooks."""
+    def _write_extension(self, root: Path, journal: Path) -> None:
+        """Author a runtime extension spanning startup, context, tool, and MCP hooks."""
 
-        plugin = root / "plugins" / "temporal"
+        extension = root / "extensions" / "temporal"
         self._write(
-            plugin / "plugin.yaml",
+            extension / "extension.yaml",
             """
             apiVersion: harnest.dev/v1alpha1
-            kind: RuntimePlugin
+            kind: Extension
             metadata:
               name: temporal
               version: 1.0.0
             runtime:
-              entrypoint: plugin:plugin
+              entrypoint: extension:extension
+            contributes:
+              lifecycle: [lifecycle/]
+              mcp: [mcp/]
+              tools: [tools/]
             capabilities:
               - content.tools
               - content.mcp
@@ -120,21 +124,21 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
               - lifecycle.mcp
             """,
         )
-        self._write_plugin_singleton(plugin, journal)
-        self._write_plugin_tool(plugin, journal)
-        self._write_plugin_mcp(plugin)
-        self._write_plugin_hooks(plugin, journal)
-        self._write_mcp_server(plugin, journal)
+        self._write_extension_singleton(extension, journal)
+        self._write_extension_tool(extension, journal)
+        self._write_extension_mcp(extension)
+        self._write_extension_hooks(extension, journal)
+        self._write_mcp_server(extension, journal)
 
-    def _write_plugin_singleton(self, plugin: Path, journal: Path) -> None:
-        """Create the plugin singleton and a typed per-invocation context."""
+    def _write_extension_singleton(self, extension: Path, journal: Path) -> None:
+        """Create the extension singleton and a typed per-invocation context."""
 
         self._write(
-            plugin / "plugin.py",
+            extension / "extension.py",
             f"""
             from pathlib import Path
 
-            from harnest.plugins import Plugin, PluginContext
+            from harnest.extensions import Extension, ExtensionContext
 
 
             _JOURNAL = Path({str(journal)!r})
@@ -145,48 +149,48 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
                     stream.write(value + "\\n")
 
 
-            class TemporalContext(PluginContext):
+            class TemporalContext(ExtensionContext):
                 __slots__ = ("serial",)
 
-                def __init__(self, plugin_name, serial):
-                    super().__init__(plugin_name)
+                def __init__(self, extension_name, serial):
+                    super().__init__(extension_name)
                     self.serial = serial
 
 
-            class TemporalPlugin(Plugin[TemporalContext]):
+            class TemporalExtension(Extension[TemporalContext]):
                 def __init__(self):
                     self.serial = 0
                     self.started = False
 
                 async def start(self, context):
                     self.started = True
-                    _record(f"plugin:start:{{context.framework}}")
+                    _record(f"extension:start:{{context.framework}}")
 
                 async def stop(self):
-                    _record("plugin:stop")
+                    _record("extension:stop")
                     self.started = False
 
                 def create_context(self, base):
                     if not self.started:
-                        raise RuntimeError("plugin is not started")
+                        raise RuntimeError("extension is not started")
                     self.serial += 1
-                    return TemporalContext(base.plugin_name, self.serial)
+                    return TemporalContext(base.extension_name, self.serial)
 
 
-            plugin = TemporalPlugin()
+            extension = TemporalExtension()
             """,
         )
 
-    def _write_plugin_tool(self, plugin: Path, journal: Path) -> None:
-        """Route a plugin tool through both typed plugin and governed MCP contexts."""
+    def _write_extension_tool(self, extension: Path, journal: Path) -> None:
+        """Route a extension tool through both typed extension and governed MCP contexts."""
 
         self._write(
-            plugin / "tools" / "plugin_probe.py",
+            extension / "tools" / "extension_probe.py",
             f"""
             from pathlib import Path
 
             from harnest import context
-            from harnest.plugins.temporal import TemporalContext, plugin
+            from harnest.extensions.temporal import TemporalContext, extension
             from harnest.agent import tool
 
 
@@ -194,26 +198,26 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
 
 
             @tool
-            async def plugin_probe(value: str) -> str:
-                \"\"\"Call the plugin-owned local catalog through managed MCP.\"\"\"
+            async def extension_probe(value: str) -> str:
+                \"\"\"Call the extension-owned local catalog through managed MCP.\"\"\"
 
-                view = context.plugins("temporal", TemporalContext)
-                if plugin.context is not view:
-                    raise RuntimeError("plugin context binding diverged")
+                view = context.extensions("temporal", TemporalContext)
+                if extension.context is not view:
+                    raise RuntimeError("extension context binding diverged")
                 remote = await context.mcp("catalog").call_tool(
                     "echo", {{"value": value}}
                 )
                 with _JOURNAL.open("a", encoding="utf-8") as stream:
                     stream.write(f"tool:{{view.serial}}\\n")
-                return f"plugin:{{view.serial}}:{{remote}}"
+                return f"extension:{{view.serial}}:{{remote}}"
             """,
         )
 
-    def _write_plugin_mcp(self, plugin: Path) -> None:
+    def _write_extension_mcp(self, extension: Path) -> None:
         """Configure an artifact-relative stdio server without external networking."""
 
         self._write(
-            plugin / "mcp" / "catalog.py",
+            extension / "mcp" / "catalog.py",
             """
             from pathlib import Path
             import sys
@@ -233,17 +237,17 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             """,
         )
 
-    def _write_plugin_hooks(self, plugin: Path, journal: Path) -> None:
-        """Record plugin-origin lifecycle execution around the governed MCP call."""
+    def _write_extension_hooks(self, extension: Path, journal: Path) -> None:
+        """Record extension-origin lifecycle execution around the governed MCP call."""
 
         self._write(
-            plugin / "extensions" / "hooks.py",
+            extension / "lifecycle" / "hooks.py",
             f"""
             from pathlib import Path
 
             from harnest import context
             from harnest import lifecycle
-            from harnest.plugins.temporal import TemporalContext
+            from harnest.extensions.temporal import TemporalContext
 
 
             _JOURNAL = Path({str(journal)!r})
@@ -256,7 +260,7 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
 
             @lifecycle.agent.before
             def before_agent(_scope, _request):
-                view = context.plugins("temporal", TemporalContext)
+                view = context.extensions("temporal", TemporalContext)
                 _record(f"agent:before:{{view.serial}}")
 
 
@@ -273,11 +277,11 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             """,
         )
 
-    def _write_mcp_server(self, plugin: Path, journal: Path) -> None:
+    def _write_mcp_server(self, extension: Path, journal: Path) -> None:
         """Create the real local MCP process used by the compiled artifact."""
 
         self._write(
-            plugin / "lib" / "server.py",
+            extension / "lib" / "server.py",
             f"""
             from pathlib import Path
 
@@ -300,7 +304,7 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             """,
         )
 
-    def test_compiled_langgraph_runtime_plugin_executes_over_http_and_stdio(self):
+    def test_compiled_langgraph_runtime_extension_executes_over_http_and_stdio(self):
         """Execute the full compiled runtime and prove every live ownership stage."""
 
         with tempfile.TemporaryDirectory() as directory:
@@ -309,25 +313,25 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
             artifact = workspace / "artifact"
             journal = workspace / "runtime-journal.txt"
             self._write_root(root)
-            self._write_plugin(root, journal)
+            self._write_extension(root, journal)
 
             compile_artifact(root, artifact, framework="langgraph")
             self.assertFalse(journal.exists())
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
 
             app = create_fastapi_app(artifact, playground_enabled=False)
-            self.assertTrue(hasattr(plugin_namespace, "temporal"))
-            plugin = plugin_namespace.temporal.plugin
-            self.assertFalse(plugin.started)
+            self.assertTrue(hasattr(extension_namespace, "temporal"))
+            extension = extension_namespace.temporal.extension
+            self.assertFalse(extension.started)
 
             with TestClient(app) as client:
-                self.assertTrue(plugin.started)
+                self.assertTrue(extension.started)
                 self.assertEqual(
                     journal.read_text(encoding="utf-8").splitlines(),
-                    ["plugin:start:langgraph"],
+                    ["extension:start:langgraph"],
                 )
-                with self.assertRaises(PluginContextUnavailableError):
-                    _ = plugin.context
+                with self.assertRaises(ExtensionContextUnavailableError):
+                    _ = extension.context
 
                 session = client.post("/sessions", json={})
                 self.assertEqual(session.status_code, 201, session.text)
@@ -342,11 +346,11 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
                         },
                     )
                 self.assertEqual(response.status_code, 200, response.text)
-                self.assertIn("completed:plugin:1:", response.json()["outputText"])
+                self.assertIn("completed:extension:1:", response.json()["outputText"])
                 self.assertEqual(captured.records[0].outcome, "committed")
                 self.assertEqual(
                     captured.records[0].client,
-                    "plugin__temporal__mcp__catalog",
+                    "extension__temporal__mcp__catalog",
                 )
                 self.assertNotIn(
                     "hello", repr(captured.records[0].__dict__)
@@ -365,13 +369,13 @@ class RuntimePluginLiveIntegrationTests(unittest.TestCase):
                 )
                 self.assertIn("tool:1", live_lines)
 
-            self.assertFalse(plugin.started)
+            self.assertFalse(extension.started)
             self.assertEqual(
                 journal.read_text(encoding="utf-8").splitlines()[-1],
-                "plugin:stop",
+                "extension:stop",
             )
-            self.assertNotIn("harnest.plugins.temporal", sys.modules)
-            self.assertFalse(hasattr(plugin_namespace, "temporal"))
+            self.assertNotIn("harnest.extensions.temporal", sys.modules)
+            self.assertFalse(hasattr(extension_namespace, "temporal"))
 
 
 if __name__ == "__main__":

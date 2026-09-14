@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from ._exception_notes import add_exception_note
 from ._json import json_value
-from .approval import ApprovalPolicy
+from .agent.approval import ApprovalPolicy
 from .application import CompiledApplication
 from .assets import AssetScope, AssetStore, AssetURLStorage
 from .asset_inspection import inspect_asset
@@ -578,7 +578,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             yield
             return
         with _activate_mcp_context(
-            self._mcp_context_clients, self._application.extensions
+            self._mcp_context_clients, self._application.lifecycle_extensions
         ):
             yield
 

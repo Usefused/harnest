@@ -17,14 +17,14 @@ from .context import (
     revoke_context,
 )
 from . import context
-from .plugin_runtime_context import (
-    PluginInvocationBinding,
-    bind_plugin_bindings,
-    reset_plugin_bindings,
+from .extension_runtime_context import (
+    ExtensionInvocationBinding,
+    bind_extension_bindings,
+    reset_extension_bindings,
 )
 
 if TYPE_CHECKING:
-    from .plugin_runtime_manager import PluginRuntimeManager
+    from .extension_runtime_manager import ExtensionRuntimeManager
 
 
 @dataclass(slots=True)
@@ -42,7 +42,7 @@ class _RunScope:
 
     token: Token[AgentContext | None] | None
     owned: AgentContext | None
-    plugin_tokens: tuple[tuple[Any, Any], ...]
+    extension_tokens: tuple[tuple[Any, Any], ...]
     owner_task: asyncio.Task[Any]
 
 
@@ -52,7 +52,7 @@ class _ADKAgentContextCoordinator:
     def __init__(
         self,
         root_name: str | None,
-        plugin_manager: "PluginRuntimeManager | None",
+        extension_manager: "ExtensionRuntimeManager | None",
     ) -> None:
         # ADK parallel branches run in copied async Contexts. A ContextVar stack
         # keeps their callback pairing isolated without mutable global keys.
@@ -63,7 +63,7 @@ class _ADKAgentContextCoordinator:
             "harnest_adk_agent_run_scopes", default=()
         )
         self._root_name = root_name
-        self._plugin_manager = plugin_manager
+        self._extension_manager = extension_manager
 
     def enter_run(self, invocation_context: Any) -> None:
         """Reuse host authority or establish a minimal direct-driver fallback."""
@@ -73,8 +73,8 @@ class _ADKAgentContextCoordinator:
         except RuntimeError:
             bindings = (
                 {}
-                if self._plugin_manager is None
-                else self._plugin_manager.invocation_bindings()
+                if self._extension_manager is None
+                else self._extension_manager.invocation_bindings()
             )
             scope = _open_root_scope(
                 _root_context(invocation_context, self._root_name, bindings)
@@ -187,11 +187,11 @@ class _ADKAgentContextExitPlugin(BasePlugin):
 
 def adk_agent_context_plugins(
     root_name: str | None = None,
-    plugin_manager: "PluginRuntimeManager | None" = None,
+    extension_manager: "ExtensionRuntimeManager | None" = None,
 ) -> tuple[BasePlugin, BasePlugin]:
     """Create ordered entry and exit adapters sharing one scope coordinator."""
 
-    coordinator = _ADKAgentContextCoordinator(root_name, plugin_manager)
+    coordinator = _ADKAgentContextCoordinator(root_name, extension_manager)
     return (
         _ADKAgentContextEnterPlugin(coordinator),
         _ADKAgentContextExitPlugin(coordinator),
@@ -209,7 +209,7 @@ def _required_text(value: Any, label: str) -> str:
 def _root_context(
     invocation_context: Any,
     fallback_name: str | None,
-    plugin_bindings: Mapping[str, PluginInvocationBinding],
+    extension_bindings: Mapping[str, ExtensionInvocationBinding],
 ) -> AgentContext:
     """Translate only stable native identity for direct driver execution."""
 
@@ -228,7 +228,7 @@ def _root_context(
         session_id=_required_text(getattr(session, "id", None), "session id"),
         metadata={},
         resources={},
-        plugin_bindings=plugin_bindings,
+        extension_bindings=extension_bindings,
     )
 
 
@@ -237,7 +237,7 @@ def _open_root_scope(active: AgentContext) -> _RunScope:
 
     token = _ACTIVE_CONTEXT.set(active)
     try:
-        plugin_tokens = bind_plugin_bindings(active._plugin_bindings)
+        extension_tokens = bind_extension_bindings(active._extension_bindings)
     except BaseException:
         # The native adapter owns this newly-created lifetime, so an incomplete
         # plugin bind must not leave a retained usable view behind.
@@ -246,7 +246,7 @@ def _open_root_scope(active: AgentContext) -> _RunScope:
         finally:
             _ACTIVE_CONTEXT.reset(token)
         raise
-    return _RunScope(token, active, plugin_tokens, _current_task())
+    return _RunScope(token, active, extension_tokens, _current_task())
 
 
 def _close_root_scope(scope: _RunScope) -> None:
@@ -257,7 +257,7 @@ def _close_root_scope(scope: _RunScope) -> None:
             revoke_context(scope.owned)
     finally:
         try:
-            reset_plugin_bindings(scope.plugin_tokens)
+            reset_extension_bindings(scope.extension_tokens)
         finally:
             if scope.token is not None:
                 _ACTIVE_CONTEXT.reset(scope.token)

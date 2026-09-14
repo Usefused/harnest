@@ -88,7 +88,7 @@ async def _evaluate(application, eval_set, *, driver=None):
 def _listener(phase, callback, name):
     """Build compiler-shaped listeners without filesystem fixture overhead."""
     return LifecycleListener(phase=phase, callback=callback, order=0,
-                             relative_path="extensions/probe.py", line=1,
+                             relative_path="lifecycle/probe.py", line=1,
                              function_name=name, context_name=name)
 
 
@@ -131,7 +131,7 @@ class ADKEvalContextTests(unittest.TestCase):
 
         application = _application(
             audit_session, context_values=(ContextValue("static", "configured", "test:static"),),
-            extensions=(_listener("resource", client, "client"),
+            lifecycle_extensions=(_listener("resource", client, "client"),
                         _listener("context", invocation_resource, "request")),
         )
         status, payload = self._cli(application, _eval_set("audit_session", cases=2))
@@ -165,7 +165,7 @@ class ADKEvalContextTests(unittest.TestCase):
             return context.session_id
 
         application = _application(audit_session, session_store=sessions,
-                                   extensions=(_listener("resource", client, "client"),))
+                                   lifecycle_extensions=(_listener("resource", client, "client"),))
 
         async def run():
             driver = _runtime_driver(application)

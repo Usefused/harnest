@@ -12,7 +12,7 @@ import re
 from types import MappingProxyType
 from typing import Any
 
-from .approval import ApprovalError, ApprovalPolicy, ApprovalRequired
+from .agent.approval import ApprovalError, ApprovalPolicy, ApprovalRequired
 from .lifecycle import LifecycleListener
 from .lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
 from .logging import get_logger

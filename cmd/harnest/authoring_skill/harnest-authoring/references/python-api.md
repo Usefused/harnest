@@ -379,7 +379,7 @@ it does not intercept ordinary local tools.
 Declare protected local tools beside their implementation:
 
 ```python
-from harnest.approval import require_human_approval
+from harnest.agent.approval import require_human_approval
 from harnest.agent import tool
 
 
@@ -394,7 +394,7 @@ When evaluation determines whether only part of an operation is risky, use an
 async protected block instead of decorating the whole tool:
 
 ```python
-from harnest.approval import request_human_approval
+from harnest.agent.approval import request_human_approval
 from harnest.agent import tool
 
 
@@ -461,7 +461,10 @@ Harnest Extension. Its strict `extension:extension` entrypoint exports one publi
 that module as `harnest.extensions.<name>`. `requires.extensions` declares local
 Harnest Extension dependencies, while `capabilities` declares the lifecycle,
 context, content, storage, HTTP, native, policy, and telemetry surfaces it
-contributes. See [layout.md](layout.md) for the complete manifest and export.
+contributes. The separate `contributes` mapping selects the package-relative
+directories compiled as lifecycle, tools, MCP, skills, or subagents; folder
+names alone are never inferred. See [layout.md](layout.md) for the complete
+manifest and export.
 
 Harnest Extensions share the agent's interpreter, event loop, `pyproject.toml`, and
 dialect solve. A plugin may add a PEP 621 `pyproject.toml` whose name/version
@@ -470,7 +473,8 @@ project before compiler imports. It still receives no private environment or
 independent lock. Plugins may extend `ExtensionContext`; `extension.context` is available only
 during its managed invocation. Async `start(context)` runs after declared
 dependencies and `stop()` runs in reverse order. In managed mode, Harnest
-auto-composes declared content and flattens each plugin's `lifecycle/` with
+auto-composes declared content and flattens each Extension's declared lifecycle
+paths with
 root lifecycle into one globally validated universal lifecycle.
 
 `start(context)` can resolve a named custom store with `context.storage(name)`

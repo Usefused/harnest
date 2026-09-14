@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 from starlette.websockets import WebSocketDisconnect
 
-from .approval import (
+from .agent.approval import (
     ApprovalDenied,
     ApprovalEnforcementError,
     ApprovalRun,

@@ -195,7 +195,7 @@ class TaskRuntimeManager:
         self,
         application: Any,
         *,
-        plugin_manager: Any | None = None,
+        extension_manager: Any | None = None,
         backend: Any | None = None,
         continuation_runtime: ExternalContinuationRuntime | None = None,
         automation_user_id: str = _AUTOMATION_USER_ID,
@@ -214,7 +214,7 @@ class TaskRuntimeManager:
         if not isinstance(enable_cron, bool):
             raise TypeError("enable_cron must be a bool")
         self._enable_cron = enable_cron
-        self._plugin_manager = plugin_manager
+        self._extension_manager = extension_manager
         self._backend = backend
         self._continuation_runtime: ExternalContinuationRuntime | None = None
         self._invocation_continuations: Any | None = None
@@ -940,8 +940,8 @@ class TaskRuntimeManager:
         resources = {item.name: item.value for item in capabilities.context_values}
         bindings = (
             None
-            if self._plugin_manager is None
-            else self._plugin_manager.invocation_bindings()
+            if self._extension_manager is None
+            else self._extension_manager.invocation_bindings()
         )
         return create_agent_context(
             framework=snapshot["framework"],
@@ -955,7 +955,7 @@ class TaskRuntimeManager:
             custom_stores=capabilities.custom_stores,
             skill_registry=capabilities.skill_registry,
             sandbox_registry=capabilities.sandbox_registry,
-            plugin_bindings=bindings,
+            extension_bindings=bindings,
         )
 
     def _session_store(self) -> SessionStore | None:

@@ -16,8 +16,8 @@ from harnest.bundle import (
 )
 from harnest.cli import main
 from harnest.extension_loader import _extension_files
-from harnest.plugin import _discover_agent_plugin, _discover_skill_directories
-from harnest.runtime_plugins import _plugin_directories
+from harnest.plugin import _discover_agent_plugin
+from harnest.extension_descriptors import _extension_directories
 from harnest.skills import _validate_filesystem_directory
 from _session_store_fixture import write_session_store
 
@@ -61,9 +61,9 @@ class AuthoringErrorTests(unittest.TestCase):
             ("subagents", lambda path: _subagent_entry(path)),
             ("skills", lambda path: _skill_directories(path.parent)),
             ("plugins", lambda path: _discover_agent_plugin(path)),
-            ("runtime_plugins", lambda path: _plugin_directories(path.parent)),
+            ("extensions", lambda path: _extension_directories(path.parent)),
             ("evals", lambda path: _eval_file_kind(path)),
-            ("extensions", lambda path: _extension_files(path.parent)),
+            ("lifecycle", lambda path: _extension_files(path.parent)),
         )
         for folder, operation in operations:
             with self.subTest(folder=folder):
@@ -120,13 +120,9 @@ class AuthoringErrorTests(unittest.TestCase):
     def test_missing_skill_manifest_explains_case_and_location(self):
         path = self.root / "skills" / "research"
         path.mkdir(parents=True)
-        for operation, target in (
-            (_validate_filesystem_directory, path),
-            (_discover_skill_directories, path.parent),
-        ):
-            message = self.diagnostic(operation, target)
-            self.assertIn(str(path / "SKILL.md"), message)
-            self.assertIn("skill.md", message)
+        message = self.diagnostic(_validate_filesystem_directory, path)
+        self.assertIn(str(path / "SKILL.md"), message)
+        self.assertIn("skill.md", message)
 
     def test_eval_config_without_cases_explains_next_step(self):
         path = self.write("evals/test_config.json", "{}")

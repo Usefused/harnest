@@ -11,17 +11,17 @@ from harnest.context import (
     revoke_context,
 )
 from harnest.context_adk import adk_agent_context_plugins
-from harnest.plugin_runtime_manager import PluginRuntimeManager
-from harnest.plugins import (
-    ActivatedPlugin,
-    Plugin,
-    PluginContext,
-    PluginContextUnavailableError,
+from harnest.extension_runtime_manager import ExtensionRuntimeManager
+from harnest.extensions import (
+    ActivatedExtension,
+    Extension,
+    ExtensionContext,
+    ExtensionContextUnavailableError,
 )
-from harnest.runtime_plugins import RuntimePluginDescriptor
+from harnest.extension_descriptors import ExtensionDescriptor
 
 
-def _root_context(*, plugin_bindings=None):
+def _root_context(*, extension_bindings=None):
     return create_agent_context(
         framework="adk",
         agent_name="root",
@@ -30,7 +30,7 @@ def _root_context(*, plugin_bindings=None):
         session_id="session-1",
         metadata={},
         resources={"shared": object()},
-        plugin_bindings=plugin_bindings,
+        extension_bindings=extension_bindings,
     )
 
 
@@ -49,7 +49,7 @@ def _native_invocation():
     )
 
 
-class _RuntimeContext(PluginContext):
+class _RuntimeContext(ExtensionContext):
     def identity(self):
         """Resolve identity through the invocation rather than retaining it."""
 
@@ -57,47 +57,47 @@ class _RuntimeContext(PluginContext):
         return context.agent_name, context.parent_agent_name, context.depth
 
 
-class _RuntimePlugin(Plugin[_RuntimeContext]):
+class _HarnestExtension(Extension[_RuntimeContext]):
     def create_context(self, base):
         """Expose a typed view while preserving the descriptor identity."""
 
-        return _RuntimeContext(base.plugin_name)
+        return _RuntimeContext(base.extension_name)
 
 
-def _plugin_manager():
-    plugin = _RuntimePlugin()
-    plugin._bind_identity("temporal")
-    descriptor = RuntimePluginDescriptor(
+def _extension_manager():
+    extension = _HarnestExtension()
+    extension._bind_identity("temporal")
+    descriptor = ExtensionDescriptor(
         name="temporal",
         version="1.0.0",
-        directory=Path("/plugins/temporal"),
-        entrypoint="plugin:plugin",
+        directory=Path("/extensions/temporal"),
+        entrypoint="extension:extension",
         requires=(),
         capabilities=(),
         digest="sha256:temporal",
     )
-    activated = ActivatedPlugin(
+    activated = ActivatedExtension(
         descriptor,
-        ModuleType("harnest.plugins.temporal"),
-        plugin,
+        ModuleType("harnest.extensions.temporal"),
+        extension,
     )
-    manager = PluginRuntimeManager(
+    manager = ExtensionRuntimeManager(
         (activated,), framework="adk", root_agent_name="root"
     )
-    return manager, plugin
+    return manager, extension
 
 
-class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
-    async def test_direct_run_binds_and_revokes_plugin_context(self):
-        manager, plugin = _plugin_manager()
+class ADKAgentContextExtensionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_run_binds_and_revokes_extension_context(self):
+        manager, extension = _extension_manager()
         await manager.start()
-        enter, exit_plugin = adk_agent_context_plugins("root", manager)
+        enter, exit_extension = adk_agent_context_plugins("root", manager)
         native = _native_invocation()
         release = asyncio.Event()
 
         await enter.before_run_callback(invocation_context=native)
-        view = context.plugins("temporal", _RuntimeContext)
-        self.assertIs(plugin.context, view)
+        view = context.extensions("temporal", _RuntimeContext)
+        self.assertIs(extension.context, view)
         self.assertEqual(view.identity(), ("root", None, 0))
         callback = _callback_context()
         await enter.before_agent_callback(
@@ -105,15 +105,15 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
             callback_context=callback,
         )
         self.assertEqual(view.identity(), ("researcher", "root", 1))
-        await exit_plugin.after_agent_callback(
+        await exit_extension.after_agent_callback(
             agent=SimpleNamespace(name="researcher"),
             callback_context=callback,
         )
 
         async def copied_task_result():
-            """Prove copied plugin authority shares invocation revocation."""
+            """Prove copied extension authority shares invocation revocation."""
 
-            retained = plugin.context
+            retained = extension.context
             await release.wait()
             try:
                 retained.identity()
@@ -123,52 +123,52 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
 
         copied = asyncio.create_task(copied_task_result())
         await asyncio.sleep(0)
-        await exit_plugin.after_run_callback(invocation_context=native)
+        await exit_extension.after_run_callback(invocation_context=native)
         release.set()
 
-        with self.assertRaises(PluginContextUnavailableError):
-            _ = plugin.context
+        with self.assertRaises(ExtensionContextUnavailableError):
+            _ = extension.context
         self.assertFalse(view.active)
-        self.assertIs(await copied, PluginContextUnavailableError)
+        self.assertIs(await copied, ExtensionContextUnavailableError)
         await manager.close()
 
     async def test_direct_error_and_cross_task_exit_preserve_owner_cleanup(self):
-        manager, plugin = _plugin_manager()
+        manager, extension = _extension_manager()
         await manager.start()
-        enter, exit_plugin = adk_agent_context_plugins("root", manager)
+        enter, exit_extension = adk_agent_context_plugins("root", manager)
         native = _native_invocation()
         await enter.before_run_callback(invocation_context=native)
-        view = plugin.context
+        view = extension.context
 
         async def wrong_task_exit():
-            await exit_plugin.after_run_callback(invocation_context=native)
+            await exit_extension.after_run_callback(invocation_context=native)
 
         with self.assertRaisesRegex(RuntimeError, "different task"):
             await asyncio.create_task(wrong_task_exit())
         self.assertTrue(view.active)
-        self.assertIs(plugin.context, view)
+        self.assertIs(extension.context, view)
 
-        await exit_plugin.on_run_error_callback(
+        await exit_extension.on_run_error_callback(
             invocation_context=native,
             error=RuntimeError("private-native-error"),
         )
         self.assertFalse(view.active)
-        with self.assertRaises(PluginContextUnavailableError):
-            _ = plugin.context
+        with self.assertRaises(ExtensionContextUnavailableError):
+            _ = extension.context
         await manager.close()
 
-    async def test_direct_adapter_reuses_host_owned_plugin_context(self):
-        manager, plugin = _plugin_manager()
+    async def test_direct_adapter_reuses_host_owned_extension_context(self):
+        manager, extension = _extension_manager()
         await manager.start()
-        active = _root_context(plugin_bindings=manager.invocation_bindings())
-        enter, exit_plugin = adk_agent_context_plugins("root", manager)
+        active = _root_context(extension_bindings=manager.invocation_bindings())
+        enter, exit_extension = adk_agent_context_plugins("root", manager)
         native = _native_invocation()
 
         with activate_context(active):
-            original = plugin.context
+            original = extension.context
             await enter.before_run_callback(invocation_context=native)
-            await exit_plugin.after_run_callback(invocation_context=native)
-            self.assertIs(plugin.context, original)
+            await exit_extension.after_run_callback(invocation_context=native)
+            self.assertIs(extension.context, original)
             self.assertTrue(original.active)
 
         revoke_context(active)
@@ -176,7 +176,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
         await manager.close()
 
     async def test_child_identity_brackets_all_agent_callbacks(self):
-        enter, exit_plugin = adk_agent_context_plugins()
+        enter, exit_extension = adk_agent_context_plugins()
         active = _root_context()
         callback = _callback_context()
 
@@ -189,7 +189,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context.parent_agent_name, "root")
             self.assertEqual(context.depth, 1)
             self.assertIs(context.resource("shared"), active._resources["shared"])
-            await exit_plugin.after_agent_callback(
+            await exit_extension.after_agent_callback(
                 agent=SimpleNamespace(name="researcher"),
                 callback_context=callback,
             )
@@ -198,7 +198,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
         revoke_context(active)
 
     async def test_error_restores_parent_without_replacing_failure(self):
-        enter, exit_plugin = adk_agent_context_plugins()
+        enter, exit_extension = adk_agent_context_plugins()
         active = _root_context()
         callback = _callback_context()
 
@@ -207,7 +207,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
                 agent=SimpleNamespace(name="researcher"),
                 callback_context=callback,
             )
-            await exit_plugin.on_agent_error_callback(
+            await exit_extension.on_agent_error_callback(
                 agent=SimpleNamespace(name="researcher"),
                 callback_context=callback,
                 error=RuntimeError("private"),
@@ -217,7 +217,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
         revoke_context(active)
 
     async def test_parallel_and_reentrant_scopes_restore_their_own_parents(self):
-        enter, exit_plugin = adk_agent_context_plugins()
+        enter, exit_extension = adk_agent_context_plugins()
         active = _root_context()
         ready = asyncio.Event()
         release = asyncio.Event()
@@ -231,7 +231,7 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
             observed = context.agent_name
             ready.set()
             await release.wait()
-            await exit_plugin.after_agent_callback(
+            await exit_extension.after_agent_callback(
                 agent=SimpleNamespace(name=agent_name),
                 callback_context=callback,
             )
@@ -259,12 +259,12 @@ class ADKAgentContextPluginTests(unittest.IsolatedAsyncioTestCase):
                 callback_context=inner,
             )
             self.assertEqual(context.agent_name, "writer")
-            await exit_plugin.after_agent_callback(
+            await exit_extension.after_agent_callback(
                 agent=SimpleNamespace(name="writer"),
                 callback_context=inner,
             )
             self.assertEqual(context.agent_name, "researcher")
-            await exit_plugin.after_agent_callback(
+            await exit_extension.after_agent_callback(
                 agent=SimpleNamespace(name="researcher"),
                 callback_context=outer,
             )

@@ -20,9 +20,9 @@ from harnest.neutral_runtime import (
     RuntimeEvent,
     SessionRecord,
 )
-from harnest.runtime_extensions import (
+from harnest.lifecycle_runtime import (
     DROP_EVENT,
-    ExtensionRuntimeDriver,
+    LifecycleRuntimeDriver,
     ExtensionTransformError,
     RuntimeResourceError,
     StreamingResultTransformationError,
@@ -159,7 +159,7 @@ def listener(phase, callback, *, name="hook", order=0, context_name=None):
     )
 
 
-class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+class LifecycleRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
     async def test_plain_invocation_canonicalizes_without_empty_plugin_work(self):
         """Keep empty capability optimization behind the same result contract."""
 
@@ -176,14 +176,14 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             return original
 
         driver.invoke = invoke  # type: ignore[method-assign]
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
         with (
             patch(
-                "harnest.plugin_runtime_context.activate_plugin_bindings",
+                "harnest.extension_runtime_context.activate_extension_bindings",
                 side_effect=AssertionError("empty plugins must not bind"),
             ),
             patch(
-                "harnest.plugin_runtime_context.revoke_plugin_bindings",
+                "harnest.extension_runtime_context.revoke_extension_bindings",
                 side_effect=AssertionError("empty plugins must not revoke"),
             ),
         ):
@@ -206,7 +206,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         registry = SkillRegistry(
             {"support": SkillScope({"wex": RuntimeSkillSource()})}
         )
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             FakeDriver(),
             [listener("before_invoke", before)],
             skill_registry=registry,
@@ -258,7 +258,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             return result
 
         driver = SessionDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener("before_invoke", before, name="before"),
@@ -289,7 +289,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         async def on_error(_lifecycle_context, _error):
             await context.session.set("failed", True)
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [listener("on_error", on_error, name="failed")],
             session_store=store,
@@ -323,7 +323,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             seen.append(("after", context.invocation_id))
             return replace(result, text=result.text + "!")
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener("before_invoke", before, name="guardrails_before"),
@@ -360,7 +360,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             seen.append((lifecycle_context.agent_name, context.agent_name))
             return lifecycle_context.next(invocation)
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [listener("before_invoke", before, name="identity")],
         )
@@ -381,7 +381,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         def after(_context, result):
             observed.append(result)
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener("on_event", on_event, name="history_event"),
@@ -399,7 +399,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_rejects_after_result_replacement(self):
         driver = FakeDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [listener("after_invoke", lambda _ctx, result: result, name="invalid")],
         )
@@ -421,7 +421,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         def second(_context, error):
             notified.append(("second", str(error)))
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener("on_error", first, name="first"),
@@ -438,7 +438,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_hook_replacements_are_rejected_and_notified(self):
         notified = []
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             FakeDriver(),
             [
                 listener(
@@ -462,7 +462,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_and_close_operations_are_forwarded(self):
         driver = FakeDriver()
-        wrapped = ExtensionRuntimeDriver(driver, [])
+        wrapped = LifecycleRuntimeDriver(driver, [])
 
         session = await wrapped.create_session(
             session_id="session-1", user_id="user-1", state={"ready": True}
@@ -495,7 +495,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 events.append(f"async-stop:{driver.closed}")
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener("resource", sync_resource, name="sync", order=1),
@@ -537,7 +537,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 events.append("async-stop")
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             FakeDriver(),
             [
                 listener("resource", sync_resource, name="sync"),
@@ -576,7 +576,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             seen.append(context.resource("memory"))
             return value
 
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             ContextDriver(),
             [
                 listener(
@@ -610,7 +610,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 return await super().invoke(invocation)
 
         driver = ContextDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [
                 listener(
@@ -640,7 +640,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 return await super().invoke(invocation)
 
         driver = ContextDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [],
             context_values=(ContextValue("sessions", sessions, "storage.py:1"),),
@@ -661,7 +661,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     yield event
 
         driver = ContextDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [],
             context_values=(ContextValue("memory", memory, "memory.py:1"),),
@@ -690,7 +690,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 return await super().invoke(invocation)
 
         driver = ContextDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [],
             context_values=(ContextValue("memory", object(), "memory.py:1"),),
@@ -711,13 +711,13 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             context_name="cache",
         )
         with self.assertRaisesRegex(ValueError, "duplicate names"):
-            ExtensionRuntimeDriver(
+            LifecycleRuntimeDriver(
                 FakeDriver(),
                 [provider],
                 context_values=(ContextValue("cache", object(), "storage.py:1"),),
             )
         with self.assertRaisesRegex(ValueError, "require a context name"):
-            ExtensionRuntimeDriver(
+            LifecycleRuntimeDriver(
                 FakeDriver(),
                 [listener("context", lambda: object(), name="unnamed")],
             )
@@ -735,7 +735,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         driver = ContextDriver()
         driver.test = self
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [listener("resource", private_resource, name="private")],
         )
@@ -745,7 +745,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_runtime_resource_fails_before_driver_execution(self):
         driver = FakeDriver()
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             driver,
             [listener("resource", lambda: object(), name="invalid")],
         )
@@ -758,7 +758,7 @@ class ExtensionRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_close_without_use_does_not_create_runtime_resources(self):
         created = []
-        wrapped = ExtensionRuntimeDriver(
+        wrapped = LifecycleRuntimeDriver(
             FakeDriver(),
             [
                 listener(

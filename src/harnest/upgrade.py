@@ -21,10 +21,10 @@ from .application_layout import ApplicationLayoutError, lifecycle_directory
 from .lifecycle import _decorator_path_for_phase
 
 
-PROJECT_SCHEMA = 5
+PROJECT_SCHEMA = 6
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 5
+projectSchema: 6
 """
 _STORAGE_LIBRARY = """from harnest.store import MemoryStore
 
@@ -66,13 +66,14 @@ _FLAT_ROOT_IMPORT_GROUPS = {
             "AgentDefinition",
             "AgentRuntimePermissionError",
             "AgentRuntimePrincipal",
+            "approval",
             "client_tool",
             "instruction_file",
             "tool",
         }
     ),
     "application": frozenset({"CompiledApplication"}),
-    "approval": frozenset(
+    "agent.approval": frozenset(
         {"request_human_approval", "require_human_approval"}
     ),
     "assets": frozenset({"AssetStorage", "AssetURLStorage", "Stored"}),
@@ -263,6 +264,19 @@ _OUTPUT_POLICY_METADATA_VALUES = {
     "suppress": "SUPPRESS",
     "normalized": "NORMALIZED",
     "raw": "RAW",
+}
+_RETIRED_EXTENSION_EXPORTS = {
+    "ActivatedPlugin": "ActivatedExtension",
+    "Plugin": "Extension",
+    "PluginContext": "ExtensionContext",
+    "PluginContextUnavailableError": "ExtensionContextUnavailableError",
+    "PluginImportError": "ExtensionImportError",
+    "PluginNamespaceError": "ExtensionNamespaceError",
+    "PluginStartContext": "ExtensionStartContext",
+    "activate_runtime_plugins": "activate_extensions",
+    "plugin_mutation": "extension_mutation",
+    "release_runtime_plugins": "release_extensions",
+    "runtime_plugin_namespaces": "extension_namespaces",
 }
 
 
@@ -819,13 +833,18 @@ def _storage_factories(
 ) -> dict[str, list[str]] | None:
     """Inspect lifecycle ownership without executing authored extension code."""
 
-    from .runtime_plugins import discover_application_extensions, RuntimePluginConventionError
+    from .extension_descriptors import discover_application_extensions, ExtensionConventionError
 
     try:
-        directories = (lifecycle_directory(root), *(
-            item.lifecycle_directory for item in discover_application_extensions(root)
-        ))
-    except (ApplicationLayoutError, RuntimePluginConventionError) as error:
+        directories = (
+            lifecycle_directory(root),
+            *(
+                path
+                for item in discover_application_extensions(root)
+                for path in item.contribution_paths("lifecycle")
+            ),
+        )
+    except (ApplicationLayoutError, ExtensionConventionError) as error:
         blockers.append(str(error))
         return None
     found = {"session_store": [], "checkpointer": []}
@@ -1045,6 +1064,8 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
     lifecycle_prefixes = _namespace_prefixes(module, "lifecycle")
     context_prefixes = _namespace_prefixes(module, "context")
     edits = _retired_tool_import_edits(source, module)
+    edits.extend(_retired_approval_import_edits(source, module))
+    edits.extend(_retired_extension_import_edits(source, module))
     edits.extend(_flat_root_import_edits(path, source, module))
     edits.extend(_namespace_import_edits(source, module, "lifecycle"))
     edits.extend(_namespace_import_edits(source, module, "context"))
@@ -1052,6 +1073,7 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
         _lifecycle_namespace_edits(source, module, lifecycle_prefixes)
     )
     edits.extend(_context_provider_edits(source, module, context_prefixes))
+    edits.extend(_context_extension_edits(source, module, context_prefixes))
     return _apply_text_edits(source, edits) if edits else None
 
 
@@ -1140,6 +1162,199 @@ def _retired_tool_attribute_edits(
     return edits
 
 
+def _retired_approval_import_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Move the retired root approval module below the agent namespace."""
+
+    edits: list[tuple[int, int, str]] = []
+    rewrite_qualified_access = False
+    for item in module.body:
+        if isinstance(item, ast.ImportFrom) and item.module == "harnest.approval":
+            names = ", ".join(_render_import_alias(name) for name in item.names)
+            edits.append(
+                _node_edit(source, item, f"from harnest.agent.approval import {names}")
+            )
+            continue
+        if not isinstance(item, ast.Import):
+            continue
+        replacement, unaliased = _retired_approval_import_statement(item)
+        if replacement is not None:
+            edits.append(_node_edit(source, item, replacement))
+            rewrite_qualified_access = rewrite_qualified_access or unaliased
+    if rewrite_qualified_access:
+        edits.extend(_retired_approval_attribute_edits(source, module))
+    return edits
+
+
+def _retired_approval_import_statement(
+    item: ast.Import,
+) -> tuple[str | None, bool]:
+    """Rewrite approval module imports while retaining their local bindings."""
+
+    changed = False
+    unaliased = False
+    rendered: list[str] = []
+    for name in item.names:
+        imported = (
+            "harnest.agent.approval"
+            if name.name == "harnest.approval"
+            else name.name
+        )
+        changed = changed or imported != name.name
+        unaliased = unaliased or (imported != name.name and name.asname is None)
+        rendered.append(imported + (f" as {name.asname}" if name.asname else ""))
+    return (f"import {', '.join(rendered)}", unaliased) if changed else (None, False)
+
+
+def _retired_approval_attribute_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Rewrite qualified approval access after an unaliased module import."""
+
+    nested = {
+        id(node.value)
+        for node in ast.walk(module)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+    }
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute) or id(node) in nested:
+            continue
+        dotted = _dotted_name(node)
+        if dotted is None or not (
+            dotted == "harnest.approval"
+            or dotted.startswith("harnest.approval.")
+        ):
+            continue
+        replacement = "harnest.agent.approval" + dotted[len("harnest.approval") :]
+        edits.append(_node_edit(source, node, replacement))
+    return edits
+
+
+def _retired_extension_import_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Move executable runtime integrations into the extension namespace."""
+
+    edits: list[tuple[int, int, str]] = []
+    rewrite_qualified_access = False
+    for item in module.body:
+        if isinstance(item, ast.ImportFrom):
+            edit = _retired_extension_from_import_edit(source, item)
+            if edit is not None:
+                edits.append(edit)
+            continue
+        if not isinstance(item, ast.Import):
+            continue
+        replacement, unaliased = _retired_extension_import_statement(item)
+        if replacement is not None:
+            edits.append(_node_edit(source, item, replacement))
+            rewrite_qualified_access = rewrite_qualified_access or unaliased
+    if rewrite_qualified_access:
+        edits.extend(_retired_extension_attribute_edits(source, module))
+    return edits
+
+
+def _retired_extension_from_import_edit(
+    source: str, item: ast.ImportFrom
+) -> tuple[int, int, str] | None:
+    """Rewrite base, loaded-package, and context imports without rebinding locals."""
+
+    module = item.module or ""
+    if module == "harnest.context":
+        mapped = _mapped_import_aliases(item.names, {"plugins": "extensions"})
+        if mapped is None:
+            return None
+        return _node_edit(
+            source,
+            item,
+            "from harnest.context import "
+            + ", ".join(_render_import_alias(name) for name in mapped),
+        )
+    if module != "harnest.plugins" and not module.startswith("harnest.plugins."):
+        return None
+    target = "harnest.extensions" + module[len("harnest.plugins") :]
+    names = _mapped_import_aliases(
+        item.names,
+        _RETIRED_EXTENSION_EXPORTS
+        if module == "harnest.plugins"
+        else {"plugin": "extension"},
+    ) or list(item.names)
+    rendered = ", ".join(_render_import_alias(name) for name in names)
+    return _node_edit(source, item, f"from {target} import {rendered}")
+
+
+def _mapped_import_aliases(
+    names: list[ast.alias], mapping: Mapping[str, str]
+) -> list[ast.alias] | None:
+    """Map imported names while preserving every existing local binding."""
+
+    changed = False
+    result: list[ast.alias] = []
+    for name in names:
+        imported = mapping.get(name.name, name.name)
+        changed = changed or imported != name.name
+        local = name.asname or (name.name if imported != name.name else None)
+        result.append(ast.alias(name=imported, asname=local))
+    return result if changed else None
+
+
+def _retired_extension_import_statement(
+    item: ast.Import,
+) -> tuple[str | None, bool]:
+    """Rewrite imported extension modules while retaining explicit aliases."""
+
+    changed = False
+    unaliased = False
+    rendered: list[str] = []
+    for name in item.names:
+        imported = name.name
+        if imported == "harnest.plugins" or imported.startswith("harnest.plugins."):
+            imported = "harnest.extensions" + imported[len("harnest.plugins") :]
+            changed = True
+            unaliased = unaliased or name.asname is None
+        rendered.append(imported + (f" as {name.asname}" if name.asname else ""))
+    return (f"import {', '.join(rendered)}", unaliased) if changed else (None, False)
+
+
+def _retired_extension_attribute_edits(
+    source: str, module: ast.Module
+) -> list[tuple[int, int, str]]:
+    """Rewrite qualified module access after an unaliased legacy import."""
+
+    nested = {
+        id(node.value)
+        for node in ast.walk(module)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+    }
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute) or id(node) in nested:
+            continue
+        replacement = _retired_extension_attribute_replacement(_dotted_name(node))
+        if replacement is None:
+            continue
+        edits.append(_node_edit(source, node, replacement))
+    return edits
+
+
+def _retired_extension_attribute_replacement(dotted: str | None) -> str | None:
+    """Map one qualified legacy access without changing unrelated plugin APIs."""
+
+    if dotted is None or not (
+        dotted == "harnest.plugins" or dotted.startswith("harnest.plugins.")
+    ):
+        return None
+    suffix = dotted[len("harnest.plugins") :]
+    public_name = suffix.removeprefix(".")
+    if "." not in public_name and public_name in _RETIRED_EXTENSION_EXPORTS:
+        suffix = "." + _RETIRED_EXTENSION_EXPORTS[public_name]
+    elif suffix.count(".") >= 2 and suffix.endswith(".plugin"):
+        suffix = suffix[: -len("plugin")] + "extension"
+    return "harnest.extensions" + suffix
+
+
 def _flat_root_import_edits(
     path: Path, source: str, module: ast.Module
 ) -> list[tuple[int, int, str]]:
@@ -1164,13 +1379,20 @@ def _flat_root_import_replacement(item: ast.ImportFrom) -> str | None:
 
     grouped: dict[str, list[ast.alias]] = {}
     root_names: list[ast.alias] = []
+    renamed_module = False
     for name in item.names:
+        if name.name == "plugins":
+            root_names.append(
+                ast.alias(name="extensions", asname=name.asname or "plugins")
+            )
+            renamed_module = True
+            continue
         domain = _FLAT_ROOT_IMPORTS.get(name.name)
         if domain is None:
             root_names.append(name)
             continue
         grouped.setdefault(domain, []).append(name)
-    if not grouped:
+    if not grouped and not renamed_module:
         return None
     lines = _render_grouped_domain_imports(root_names, grouped)
     return "\n".join(lines)
@@ -1366,6 +1588,21 @@ def _context_provider_edits(
             name = _dotted_name(decorator.func) if isinstance(decorator, ast.Call) else None
             if name in prefixes:
                 edits.append(_node_edit(source, decorator.func, f"{name}.provider"))
+    return edits
+
+
+def _context_extension_edits(
+    source: str, module: ast.Module, prefixes: frozenset[str]
+) -> list[tuple[int, int, str]]:
+    """Move invocation access from the removed plugin alias to extensions."""
+
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute):
+            continue
+        prefix, member = _matched_namespace_member(_dotted_name(node), prefixes)
+        if prefix is not None and member == "plugins":
+            edits.append(_node_edit(source, node, f"{prefix}.extensions"))
     return edits
 
 

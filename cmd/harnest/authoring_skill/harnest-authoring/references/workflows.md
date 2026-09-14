@@ -271,7 +271,7 @@ Before finishing a modification:
    tools/skills do not leak in. Harnest Extensions, agent-plugins, and root
    lifecycle hooks are root-only. An Agent Plugin uses `plugin.json` with optional
    `mcp.json` and skills; a Harnest Extension has `extension.yaml`, `extension.py`, and
-   declared capabilities.
+   explicit `contributes` paths and declared capabilities.
 3. Confirm all `harnest.*` names are explicitly imported and sibling discovered
    resources are not manually registered. Confirm reusable helpers live only in
    root `lib/`, need no `__init__.py`, and are imported below `harnest.lib`.

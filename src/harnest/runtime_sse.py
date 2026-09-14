@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Mapping
 
 from starlette.exceptions import HTTPException
 
-from .approval import (
+from .agent.approval import (
     ApprovalEnforcementError,
     ApprovalRun,
     InMemoryApprovalStore,

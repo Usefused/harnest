@@ -1,4 +1,4 @@
-"""Static PEP 621 metadata for same-interpreter runtime plugins."""
+"""Static PEP 621 metadata for same-interpreter Harnest Extensions."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ from packaging.version import InvalidVersion, Version
 _MAX_PROJECT_BYTES = 1024 * 1024
 
 
-class RuntimePluginProjectError(ValueError):
+class ExtensionProjectError(ValueError):
     """A plugin project cannot safely join the agent dependency environment."""
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimePluginProject:
+class ExtensionProject:
     """Validated plugin identity and deterministic runtime requirements."""
 
     name: str
@@ -42,24 +42,24 @@ class ResolvedDependency:
     owners: tuple[str, ...]
 
 
-def load_runtime_plugin_project(
+def load_extension_project(
     directory: Path,
     *,
     expected_name: str,
     expected_version: str,
     canonical_extension: bool = False,
-) -> RuntimePluginProject:
+) -> ExtensionProject:
     """Load an optional plugin pyproject without importing plugin code.
 
     Canonical Harnest Extensions use a prefixed distribution name so their
     package identity cannot collide with a provider SDK such as ``docker``.
-    Legacy runtime plugins retain their original exact-name contract.
+    Legacy Harnest Extensions retain their original exact-name contract.
     """
 
     path = directory / "pyproject.toml"
     if not path.exists() and not path.is_symlink():
-        return RuntimePluginProject(expected_name, expected_version, ())
-    project = _load_project(path, owner=f"runtime plugin {expected_name!r}")
+        return ExtensionProject(expected_name, expected_version, ())
+    project = _load_project(path, owner=f"Harnest Extension {expected_name!r}")
     _require_matching_identity(
         project,
         expected_name,
@@ -67,16 +67,16 @@ def load_runtime_plugin_project(
         path,
         canonical_extension=canonical_extension,
     )
-    return RuntimePluginProject(
+    return ExtensionProject(
         name=str(project["name"]),
         version=str(project["version"]),
         dependencies=_project_dependencies(project, path),
     )
 
 
-def resolve_runtime_plugin_dependencies(
+def resolve_extension_dependencies(
     agent_pyproject: Path | None,
-    projects: Sequence[tuple[str, RuntimePluginProject]],
+    projects: Sequence[tuple[str, ExtensionProject]],
 ) -> tuple[ResolvedDependency, ...]:
     """Merge root and plugin requirements with stable ownership diagnostics."""
 
@@ -89,7 +89,7 @@ def resolve_runtime_plugin_dependencies(
         )
     for plugin_name, project in projects:
         declarations.extend(
-            (name, requirement, f"runtime plugin {plugin_name!r} pyproject.toml")
+            (name, requirement, f"Harnest Extension {plugin_name!r} pyproject.toml")
             for name, requirement in _requirement_items(project.dependencies)
         )
     return _merge_declarations(declarations)
@@ -101,23 +101,23 @@ def _load_project(path: Path, *, owner: str) -> dict[str, object]:
     try:
         info = path.lstat()
         if path.is_symlink() or not path.is_file():
-            raise RuntimePluginProjectError(
+            raise ExtensionProjectError(
                 f"{owner} pyproject.toml must be a regular file: {path}"
             )
         if info.st_size > _MAX_PROJECT_BYTES:
-            raise RuntimePluginProjectError(
+            raise ExtensionProjectError(
                 f"{owner} pyproject.toml exceeds {_MAX_PROJECT_BYTES} bytes: {path}"
             )
         document = tomllib.loads(path.read_text("utf-8"))
-    except RuntimePluginProjectError:
+    except ExtensionProjectError:
         raise
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        raise RuntimePluginProjectError(
+        raise ExtensionProjectError(
             f"cannot read {owner} pyproject.toml: {type(exc).__name__}"
         ) from exc
     project = document.get("project")
     if not isinstance(project, dict):
-        raise RuntimePluginProjectError(
+        raise ExtensionProjectError(
             f"{owner} pyproject.toml must define a PEP 621 [project] table"
         )
     return project
@@ -135,22 +135,22 @@ def _require_matching_identity(
 
     name = project.get("name")
     if not isinstance(name, str) or not name.strip():
-        raise RuntimePluginProjectError(f"[project].name must be a string: {path}")
+        raise ExtensionProjectError(f"[project].name must be a string: {path}")
     manifest = _require_matching_project_name(
         name, expected_name, canonical_extension=canonical_extension
     )
     version = project.get("version")
     if not isinstance(version, str) or not version.strip():
-        raise RuntimePluginProjectError(f"[project].version must be a string: {path}")
+        raise ExtensionProjectError(f"[project].version must be a string: {path}")
     try:
         matches = Version(version) == Version(expected_version)
     except InvalidVersion as exc:
-        raise RuntimePluginProjectError(
-            f"runtime plugin {expected_name!r} pyproject version must be PEP 440"
+        raise ExtensionProjectError(
+            f"Harnest Extension {expected_name!r} pyproject version must be PEP 440"
         ) from exc
     if not matches:
-        raise RuntimePluginProjectError(
-            f"runtime plugin {expected_name!r} pyproject version {version!r} must "
+        raise ExtensionProjectError(
+            f"Harnest Extension {expected_name!r} pyproject version {version!r} must "
             f"match {manifest} metadata.version {expected_version!r}"
         )
 
@@ -162,15 +162,15 @@ def _require_matching_project_name(
 
     if not canonical_extension:
         if canonicalize_name(name) != canonicalize_name(expected_name):
-            raise RuntimePluginProjectError(
-                f"runtime plugin {expected_name!r} pyproject name {name!r} must "
+            raise ExtensionProjectError(
+                f"Harnest Extension {expected_name!r} pyproject name {name!r} must "
                 "match plugin.yaml metadata.name"
             )
         return "plugin.yaml"
     expected_distribution = f"harnest-extension-{expected_name}"
     if canonicalize_name(name) != canonicalize_name(expected_distribution):
-        raise RuntimePluginProjectError(
-            f"runtime plugin {expected_name!r} pyproject name {name!r} must be "
+        raise ExtensionProjectError(
+            f"Harnest Extension {expected_name!r} pyproject name {name!r} must be "
             f"{expected_distribution!r} for extension.yaml metadata.name"
         )
     return "extension.yaml"
@@ -185,21 +185,21 @@ def _project_dependencies(
     if not isinstance(dynamic, list) or not all(
         isinstance(item, str) for item in dynamic
     ):
-        raise RuntimePluginProjectError(f"[project].dynamic must be a list: {path}")
+        raise ExtensionProjectError(f"[project].dynamic must be a list: {path}")
     if "dependencies" in dynamic:
-        raise RuntimePluginProjectError(
-            f"runtime plugin dependencies must be static PEP 621 metadata: {path}"
+        raise ExtensionProjectError(
+            f"Harnest Extension dependencies must be static PEP 621 metadata: {path}"
         )
     requires_python = project.get("requires-python")
     if requires_python is not None:
         if not isinstance(requires_python, str):
-            raise RuntimePluginProjectError(
+            raise ExtensionProjectError(
                 f"[project].requires-python must be a string: {path}"
             )
         try:
             SpecifierSet(requires_python)
         except InvalidSpecifier as exc:
-            raise RuntimePluginProjectError(
+            raise ExtensionProjectError(
                 f"invalid [project].requires-python in {path}"
             ) from exc
     return tuple(requirement for _name, requirement in _dependency_items(project, path))
@@ -214,7 +214,7 @@ def _dependency_items(
     if not isinstance(dependencies, list) or not all(
         isinstance(item, str) for item in dependencies
     ):
-        raise RuntimePluginProjectError(f"[project].dependencies must be a list: {path}")
+        raise ExtensionProjectError(f"[project].dependencies must be a list: {path}")
     return _requirement_items(tuple(dependencies))
 
 
@@ -228,7 +228,7 @@ def _requirement_items(
         try:
             requirement = Requirement(value)
         except InvalidRequirement as exc:
-            raise RuntimePluginProjectError(
+            raise ExtensionProjectError(
                 "runtime dependency must be a valid PEP 508 requirement"
             ) from exc
         items.append((canonicalize_name(requirement.name), str(requirement)))
@@ -262,8 +262,8 @@ def _merge_declarations(
 
 __all__ = [
     "ResolvedDependency",
-    "RuntimePluginProject",
-    "RuntimePluginProjectError",
-    "load_runtime_plugin_project",
-    "resolve_runtime_plugin_dependencies",
+    "ExtensionProject",
+    "ExtensionProjectError",
+    "load_extension_project",
+    "resolve_extension_dependencies",
 ]

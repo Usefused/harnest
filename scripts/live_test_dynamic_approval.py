@@ -156,7 +156,7 @@ def main() -> int:
 
 
 _AGENT = '''"""Deterministic graph for the dynamic approval live probe."""
-from harnest.approval import request_human_approval
+from harnest.agent.approval import request_human_approval
 from harnest.graph import Edge, Event, Graph, START
 
 evaluations = 0

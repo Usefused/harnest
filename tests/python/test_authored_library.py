@@ -164,7 +164,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             root = Path(directory) / "agent"
             self._write_agent(root)
             self._write(
-                root / "extensions" / "telemetry.py",
+                root / "lifecycle" / "telemetry.py",
                 "from harnest import lifecycle\n"
                 "@lifecycle.telemetry_exporter\n"
                 "def destination():\n"
@@ -416,7 +416,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "store = MemoryStore()\n",
             )
             self._write(
-                root / "extensions/storage.py",
+                root / "lifecycle/storage.py",
                 "from harnest.lib.storage import store\n"
                 "from harnest import lifecycle\n"
                 "@lifecycle.storage.sessions\n"

@@ -7,7 +7,7 @@ import unittest
 
 from pydantic import BaseModel
 
-from harnest.approval import ApprovalRun
+from harnest.agent.approval import ApprovalRun
 from harnest.client_tool import (
     ClientToolError,
     ClientToolExecution,

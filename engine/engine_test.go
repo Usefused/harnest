@@ -445,7 +445,7 @@ func TestCompiledArtifactRejectsCLIInterfaceMismatch(t *testing.T) {
 	manifest.Digest = compiledManifestDigest(
 		manifest.Files,
 		manifest.Interfaces,
-		manifest.Plugins,
+		manifest.Extensions,
 		manifest.Tasks,
 		manifest.Crons,
 		manifest.RuntimeDependencies,
@@ -568,7 +568,7 @@ func TestCompiledArtifactRejectsMismatchedCheckpointOwnership(t *testing.T) {
 	}
 }
 
-func TestCompiledArtifactValidatesResolvedPluginGraph(t *testing.T) {
+func TestCompiledArtifactValidatesResolvedExtensionGraph(t *testing.T) {
 	source, directory := compiledServerArtifactFixture(t)
 	path := filepath.Join(directory, compiledManifestFilename)
 	contents, err := os.ReadFile(path)
@@ -579,88 +579,95 @@ func TestCompiledArtifactValidatesResolvedPluginGraph(t *testing.T) {
 	if err := json.Unmarshal(contents, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	manifest.Plugins = []CompiledPlugin{
+	manifest.Extensions = []CompiledExtension{
 		{Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64), Capabilities: []string{"context.resources"}},
 		{Name: "workflow", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("b", 64), Requires: []string{"clock"}, Capabilities: []string{"lifecycle.tool"}},
 	}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err != nil {
-		t.Fatalf("valid plugin graph was rejected: %v", err)
+		t.Fatalf("valid extension graph was rejected: %v", err)
 	}
 
-	manifest.Plugins[0].Requires = []string{"workflow"}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
+	manifest.Extensions[0].Requires = []string{"workflow"}
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
-	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unresolved plugin") {
-		t.Fatalf("got error %v, want unresolved plugin rejection", err)
+	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unresolved extension") {
+		t.Fatalf("got error %v, want unresolved extension rejection", err)
 	}
 
-	manifest.Plugins[0].Requires = nil
-	manifest.Plugins[0].Version = "01.0.0"
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
+	manifest.Extensions[0].Requires = nil
+	manifest.Extensions[0].Version = "01.0.0"
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "semantic version") {
 		t.Fatalf("got error %v, want semantic version rejection", err)
 	}
 }
 
-func TestCompiledArtifactRejectsMutatedPluginProvenance(t *testing.T) {
+func TestCompiledArtifactRejectsMutatedExtensionProvenance(t *testing.T) {
 	source, directory := compiledServerArtifactFixture(t)
 	path := filepath.Join(directory, compiledManifestFilename)
 	manifest := readCompiledManifest(t, path)
-	manifest.Plugins = []CompiledPlugin{{
+	manifest.Extensions = []CompiledExtension{{
 		Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64),
 		Capabilities: []string{"context.resources"},
 	}}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err != nil {
-		t.Fatalf("valid plugin provenance was rejected: %v", err)
+		t.Fatalf("valid extension provenance was rejected: %v", err)
 	}
 
-	mutations := map[string]func(*CompiledPlugin){
-		"version":    func(plugin *CompiledPlugin) { plugin.Version = "1.0.1" },
-		"digest":     func(plugin *CompiledPlugin) { plugin.Digest = "sha256:" + strings.Repeat("b", 64) },
-		"capability": func(plugin *CompiledPlugin) { plugin.Capabilities = []string{"context.session"} },
+	mutations := map[string]func(*CompiledExtension){
+		"version":    func(extension *CompiledExtension) { extension.Version = "1.0.1" },
+		"digest":     func(extension *CompiledExtension) { extension.Digest = "sha256:" + strings.Repeat("b", 64) },
+		"capability": func(extension *CompiledExtension) { extension.Capabilities = []string{"context.session"} },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			changed := manifest
-			changed.Plugins = append([]CompiledPlugin(nil), manifest.Plugins...)
-			mutate(&changed.Plugins[0])
+			changed.Extensions = append([]CompiledExtension(nil), manifest.Extensions...)
+			mutate(&changed.Extensions[0])
 			writeCompiledManifest(t, path, changed)
 			if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "manifest digest") {
-				t.Fatalf("got error %v, want plugin provenance digest rejection", err)
+				t.Fatalf("got error %v, want extension provenance digest rejection", err)
 			}
 		})
 	}
 }
 
-func TestCompiledArtifactRejectsUnknownPluginCapability(t *testing.T) {
+func TestCompiledArtifactRejectsUnknownExtensionCapability(t *testing.T) {
 	source, directory := compiledServerArtifactFixture(t)
 	path := filepath.Join(directory, compiledManifestFilename)
 	manifest := readCompiledManifest(t, path)
-	manifest.Plugins = []CompiledPlugin{{
+	manifest.Extensions = []CompiledExtension{{
 		Name: "clock", Version: "1.0.0", Digest: "sha256:" + strings.Repeat("a", 64),
 		Capabilities: []string{"system.root"},
 	}}
-	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Plugins, nil, nil, nil)
+	manifest.Digest = compiledManifestDigest(manifest.Files, manifest.Interfaces, manifest.Extensions, nil, nil, nil)
 	writeCompiledManifest(t, path, manifest)
 	if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), "unknown capability") {
-		t.Fatalf("got error %v, want unknown plugin capability rejection", err)
+		t.Fatalf("got error %v, want unknown extension capability rejection", err)
 	}
 }
 
-func TestCompiledPluginDigestMatchesPythonCompilerContract(t *testing.T) {
+func TestCompiledExtensionCapabilitiesIncludeRuntimeAuthorities(t *testing.T) {
+	capabilities := []string{"sandbox.provider", "storage.cron", "storage.tasks"}
+	if unknown := unknownCompiledExtensionCapability(capabilities); unknown != "" {
+		t.Fatalf("runtime extension capability %q is missing from the engine vocabulary", unknown)
+	}
+}
+
+func TestCompiledExtensionDigestMatchesPythonCompilerContract(t *testing.T) {
 	files := []CompiledFile{{Path: "agent.py", SHA256: strings.Repeat("a", 64), Size: 3}}
-	plugins := []CompiledPlugin{{
+	extensions := []CompiledExtension{{
 		Name: "clock", Version: "1.2.3", Digest: "sha256:" + strings.Repeat("b", 64),
 		Requires: []string{"core"}, Capabilities: []string{"context.resources", "lifecycle.tool"},
 		Dependencies: []string{"httpx>=0.28,<1"},
 	}}
-	want := "sha256:876d5e9f129cfc2e952acbfae50253a382a3393f8235fc69e0a95035bfd98ea6"
-	if got := compiledManifestDigest(files, CompiledInterfaces{}, plugins, nil, nil, nil); got != want {
+	want := "sha256:23a603182458ecc7bb2f52e6c9dbeb048d0ab1fffe21bb6041160d9808415bfd"
+	if got := compiledManifestDigest(files, CompiledInterfaces{}, extensions, nil, nil, nil); got != want {
 		t.Fatalf("compiled manifest digest %q does not match Python contract %q", got, want)
 	}
 }
@@ -723,7 +730,7 @@ func TestCompiledArtifactValidatesCronRecords(t *testing.T) {
 			changed.Crons = append([]CompiledCron(nil), baseline.Crons...)
 			testCase.mutate(&changed)
 			changed.Digest = compiledManifestDigest(
-				changed.Files, changed.Interfaces, changed.Plugins, changed.Tasks, changed.Crons, changed.RuntimeDependencies,
+				changed.Files, changed.Interfaces, changed.Extensions, changed.Tasks, changed.Crons, changed.RuntimeDependencies,
 			)
 			writeCompiledManifest(t, path, changed)
 			if _, err := loadCompiledArtifact(directory, source); err == nil || !strings.Contains(err.Error(), testCase.message) {
@@ -840,7 +847,7 @@ func compiledCronArtifactFixture(t *testing.T) (Bundle, string) {
 	}
 	manifest.RuntimeDependencies = []string{procrastinateRuntimeRequirement}
 	manifest.Digest = compiledManifestDigest(
-		manifest.Files, manifest.Interfaces, manifest.Plugins, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies,
+		manifest.Files, manifest.Interfaces, manifest.Extensions, manifest.Tasks, manifest.Crons, manifest.RuntimeDependencies,
 	)
 	writeCompiledManifest(t, filepath.Join(directory, compiledManifestFilename), manifest)
 	return source, directory

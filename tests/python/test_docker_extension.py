@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from harnest.plugins import activate_runtime_plugins, release_runtime_plugins
-from harnest.runtime_plugins import discover_application_extensions
+from harnest.extensions import activate_extensions, release_extensions
+from harnest.extension_descriptors import discover_application_extensions
 from harnest.sandbox import (
     SandboxNetworkPolicy,
     SandboxPolicyUnsupportedError,
@@ -29,11 +29,11 @@ def docker_extension(tmp_path: Path):
     target.parent.mkdir()
     shutil.copytree(_SOURCE, target)
     descriptors = discover_application_extensions(tmp_path)
-    activated = activate_runtime_plugins(descriptors)
+    activated = activate_extensions(descriptors)
     try:
         yield activated[0].module, descriptors[0]
     finally:
-        release_runtime_plugins(descriptors)
+        release_extensions(descriptors)
 
 
 def test_docker_extension_declares_provider_authority(docker_extension) -> None:
