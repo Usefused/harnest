@@ -1,12 +1,16 @@
 # Changelog
 
-## Unreleased
+## [0.21.1](https://github.com/Usefused/harnest/compare/v0.21.0...v0.21.1) (2026-09-15)
 
 ### Fixes
 
 * Prevent MCP subscription shutdown from hanging on Python 3.10 when a
   notification or handler completes concurrently with cancellation. Preserve
   startup, idle-probe, and handler deadlines.
+
+### Fixes
+
+* **mcp:** preserve subscription shutdown cancellation on Python 3.10 ([d780a2e](https://github.com/Usefused/harnest/commit/d780a2eb8528016d31c9fcb22380c9a312a7a359))
 
 ## [0.21.0](https://github.com/Usefused/harnest/compare/v0.20.0...v0.21.0) (2026-09-15)
 
