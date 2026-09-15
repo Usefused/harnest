@@ -55,9 +55,10 @@
 
 * Align the independently versioned official extensions with the current
   Harnest Extension structure. Prepare Docker extension `0.4.0` and Hatchet
-  extension `0.2.0` for Harnest `>=0.18,<0.19`, publish provider-specific
+  extension `0.2.0` for Harnest `>=0.18,<0.23`, publish provider-specific
   documentation metadata, and remove stale Runtime Plugin terminology. Prepare
-  RAG extension `0.1.1` with its expanded PyPI guide and an explicit distinction
+  RAG extension `0.1.1` for the same Harnest range, with its expanded PyPI guide
+  and an explicit distinction
   between retrieval knowledge and Harnest long-term memory. The Harnest core
   version is unchanged.
 

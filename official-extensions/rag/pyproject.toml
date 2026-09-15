@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "asyncpg>=0.30,<1",
-  "harnest>=0.18,<0.19",
+  "harnest>=0.18,<0.23",
 ]
 
 [project.urls]
