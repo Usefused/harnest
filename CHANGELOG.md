@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.19.0](https://github.com/Usefused/harnest/compare/v0.18.3...v0.19.0) (2026-09-15)
 
 ### Features
 
@@ -80,9 +80,6 @@
   `harnest.agent.approval`, alongside the agent tools it protects. Remove the
   old root module and teach `harnest upgrade` to rewrite authored imports and
   qualified access to the new namespace.
-
-## [0.19.0](https://github.com/Usefused/harnest/compare/v0.18.3...v0.19.0) (2026-09-15)
-
 
 ### Features
 
