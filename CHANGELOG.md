@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.21.0](https://github.com/Usefused/harnest/compare/v0.20.0...v0.21.0) (2026-09-15)
 
 ### Features
 
@@ -26,6 +26,17 @@
   metadata repeats Harnest or compiler-owned runtime dependencies. Materialized
   projects now retain only extension-owned requirements, and the published RAG
   package is classified as an official Fused extension.
+
+### Features
+
+* **mcp:** add protocol-aware discovery, resources, and subscriptions ([4e9922c](https://github.com/Usefused/harnest/commit/4e9922c58ba576bcb34bc1341e30524480adef1c))
+
+
+### Fixes
+
+* **a2a:** converge concurrent durable task cancellation ([98016bf](https://github.com/Usefused/harnest/commit/98016bf2c780d5fa835f5e6cb42780e468e54426))
+* **mcp:** preserve HTTP timeout support on Python 3.10 ([1cd5ce6](https://github.com/Usefused/harnest/commit/1cd5ce6543a60f99af8678c88c20de2ecb6d3d4e))
+* support published extension runtime dependencies ([d6acfc7](https://github.com/Usefused/harnest/commit/d6acfc7e44d0623ddcd60a6886ddaf436b29070c))
 
 ## [0.20.0](https://github.com/Usefused/harnest/compare/v0.19.0...v0.20.0) (2026-09-15)
 
