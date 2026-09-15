@@ -530,14 +530,19 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._mcp_clients.append(client)
         tools: list[Any] = []
         for server_name, configured in names:
-            discovered = await _discover_configured_mcp_tools(
-                client, server_name, configured, resources=self._mcp_clients,
-            )
+            from .mcp_resources import discover_remote_tools
+
+            discovered = await discover_remote_tools(
+                lambda: _discover_configured_mcp_tools(client, server_name, configured, resources=self._mcp_clients),
+                configured, "langgraph", server_name=server_name, interceptors=interceptors)
             selected = _filtered_mcp_tools(
                 discovered, server_name=server_name, allowed=configured.tool_filter
             )
             _validate_mcp_approval(selected, server_name, configured)
             _apply_mcp_permissions(selected, server_name, configured)
+            from .mcp_capability_tools import langgraph_capability_tools
+
+            selected.extend(langgraph_capability_tools(configured, server_name, discovered))
             public_name = configured.identity or server_name
             self._register_mcp_context_tools(public_name, server_name, selected)
             tools.extend(selected)
@@ -590,13 +595,29 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         owned = {id(binding.controller) for binding in self._mcp_lifecycles}
         new_bindings: list[_MCPClientLifecycleBinding] = []
         for configured in configured_group:
-            binding = configured._lifecycle_binding("langgraph")
-            if binding is None or id(binding.controller) in owned:
-                continue
-            owned.add(id(binding.controller))
-            new_bindings.append(binding)
+            for binding in configured._runtime_bindings("langgraph"):
+                if id(binding.controller) not in owned:
+                    owned.add(id(binding.controller))
+                    new_bindings.append(binding)
         await start_mcp_lifecycles(new_bindings)
         self._mcp_lifecycles.extend(new_bindings)
+
+    async def start(self) -> None:
+        """Start opt-in MCP listeners at serve time without eagerly loading ordinary agents."""
+
+        from .backends.langgraph import ManagedAgentPlan, managed_graph_mcp_clients
+
+        if self._plan is None:
+            return
+        groups = ((tuple(self._plan.definition.mcp),) if isinstance(self._plan, ManagedAgentPlan)
+                  else managed_graph_mcp_clients(self._plan))
+        try:
+            for group in groups:
+                subscribed = tuple(item for item in group if item.subscriptions)
+                await self._start_mcp_lifecycles(subscribed)
+        except BaseException:
+            await self._close_mcp_resources(reset_lifecycles=True)
+            raise
 
     async def _close_mcp_resources(
         self,

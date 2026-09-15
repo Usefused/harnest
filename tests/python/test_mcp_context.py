@@ -46,6 +46,18 @@ def _listener(phase, callback, *, order=0, line=1):
 
 
 class MCPInvocationContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resource_facade_uses_governed_dispatch_and_expires(self):
+        async def read(arguments):
+            return {"contents": [{"uri": arguments["uri"], "text": "retained"}]}
+
+        marker = _managed_mcp_tool("catalog", "harnest_read_resource", read)
+        with activate_context(_invocation()), _activate_mcp_context({"catalog": {"harnest_read_resource": marker}}):
+            client = mcp("catalog")
+            result = await client.read_resource("catalog://latest")
+            self.assertEqual(result["contents"][0]["text"], "retained")
+        with self.assertRaises(MCPContextUnavailableError):
+            await client.read_resource("catalog://latest")
+
     async def test_adk_toolset_attaches_metadata_without_approval_subclass(self):
         class Recording:
             def __init__(self, *_args, **kwargs):

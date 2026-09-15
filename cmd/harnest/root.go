@@ -50,6 +50,7 @@ Typical workflow:
   harnest extensions search postgres
   harnest init minimal-agent --minimal
   harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN --project minimal-agent
+  harnest mcp inspect catalog --project minimal-agent
   harnest add subagent researcher --project minimal-agent
   harnest add tool search --project minimal-agent
   harnest init my-agent --framework adk
@@ -139,6 +140,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 	command.AddCommand(
 		app.newInitCommand(),
 		app.newAddCommand(),
+		app.newMCPCommand(),
 		app.newCompileCommand(),
 		app.newTestCommand(),
 		app.newRunCommand(),

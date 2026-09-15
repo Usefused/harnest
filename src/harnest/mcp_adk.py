@@ -230,8 +230,11 @@ def _managed_toolsets(target: Any) -> tuple[Any, ...]:
 
 
 def _remote_tool_name(toolset: Any, remote_tool: Any) -> str:
-    """Remove only the prefix added by this managed ADK toolset."""
+    """Keep local capability aliases stable while removing remote presentation prefixes."""
 
+    capability = getattr(remote_tool, "__harnest_mcp_capability__", None)
+    if capability is not None:
+        return capability
     exposed = getattr(remote_tool, "name", None)
     if not isinstance(exposed, str) or not exposed:
         raise ValueError("ADK MCP tool is missing a stable name")

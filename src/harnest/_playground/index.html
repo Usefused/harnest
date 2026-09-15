@@ -28,6 +28,7 @@
         <nav class="workspace-nav" aria-label="Workspace">
           <button class="workspace-nav-item active" data-workspace="chat" type="button" aria-pressed="true"><span aria-hidden="true">⌁</span> Playground</button>
           <button class="workspace-nav-item" data-workspace="evals" type="button" aria-pressed="false"><span aria-hidden="true">✓</span> Evals</button>
+          <button class="workspace-nav-item" data-workspace="mcp" type="button" aria-pressed="false"><span aria-hidden="true">⌘</span> MCP</button>
         </nav>
 
         <section class="session-panel chat-only" aria-labelledby="session-heading">
@@ -144,6 +145,30 @@
             </button>
           </form>
         </div>
+
+        <section id="mcp-workspace" class="eval-workspace" aria-labelledby="mcp-heading" hidden>
+          <header class="eval-header">
+            <div><span class="eyebrow">Local developer access</span><h2 id="mcp-heading">MCP resources &amp; prompts</h2>
+            <p>Discover what each connection provides. Content is fetched only when you ask; subscriptions are not started here.</p></div>
+          </header>
+          <form id="mcp-query" class="eval-runner">
+            <label>Connection<select id="mcp-client" required></select></label>
+            <label>Operation<select id="mcp-operation">
+              <option value="inspect">Discover capabilities</option>
+              <option value="list_tools">List tools</option>
+              <option value="list_resources">List resources</option>
+              <option value="list_resource_templates">List URI templates</option>
+              <option value="list_prompts">List prompts</option>
+              <option value="read_resource">Read resource</option>
+              <option value="get_prompt">Get prompt</option>
+            </select></label>
+            <label>Resource URI or prompt name<input id="mcp-identifier" placeholder="Copy from discovery results"></label>
+            <label>Prompt arguments (JSON)<input id="mcp-arguments" value="{}"></label>
+            <label>Page cursor (optional)<input id="mcp-cursor" placeholder="nextCursor from a list result"></label>
+            <button class="secondary-button" type="submit">Query MCP</button>
+          </form>
+          <pre id="mcp-results" class="mcp-results" aria-live="polite">Choose a connection to discover its tools, resources, templates, and prompts.</pre>
+        </section>
 
         <section id="eval-workspace" class="eval-workspace" aria-labelledby="eval-heading" hidden>
           <header class="eval-header">

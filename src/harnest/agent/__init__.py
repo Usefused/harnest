@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
@@ -23,7 +23,10 @@ from ..client_tool import (
     client_tool_execution,
     current_transient_media,
 )
-from ..mcp import MCPClient
+# MCP imports approval from this package; annotations must not make the domain
+# modules depend on which public import a developer happens to write first.
+if TYPE_CHECKING:
+    from ..mcp import MCPClient
 from ..mcp_lifecycle import propagate_mcp_lifecycles
 from ..model import ModelInput, resolve_model
 from ..tokens import TokenPolicy

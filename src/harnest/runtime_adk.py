@@ -358,6 +358,12 @@ class ADKRuntimeDriver(RuntimeDriver):
         self._closed = False
         self._close_lock = asyncio.Lock()
 
+    async def start(self) -> None:
+        """Activate runtime-owned MCP listeners before the first user invocation."""
+
+        self._ensure_open()
+        await start_mcp_lifecycles(mcp_lifecycle_bindings(self.application.target))
+
     def fork_application(self, application: CompiledApplication) -> "ADKRuntimeDriver":
         """Create a dynamic target that shares this driver's session authority."""
 

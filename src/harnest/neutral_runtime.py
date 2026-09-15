@@ -948,6 +948,7 @@ def create_neutral_app(
     http_routes: Sequence[HTTPRouteExtension] = (),
     lifecycle_extensions: Sequence[Any] = (),
     playground_eval_service: Any | None = None,
+    playground_mcp_service: Any | None = None,
 ) -> Any:
     """Build a neutral app with explicit documentation and development UI policy."""
 
@@ -1000,7 +1001,7 @@ def create_neutral_app(
     install_live_policy(app, live_enabled)
     if playground_enabled:
         app.include_router(
-            create_playground_router(trace_store, playground_eval_service, openapi_enabled=openapi_enabled)
+            create_playground_router(trace_store, playground_eval_service, openapi_enabled=openapi_enabled, mcp_service=playground_mcp_service)
         )
     app.include_router(
         create_neutral_router(

@@ -332,9 +332,17 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         return self._extensions_by_phase.get(phase, ())
 
     async def start(self) -> None:
-        """Eagerly enter credentials and resources for an application lifespan."""
+        """Start application resources before backend listeners, unwinding on failure."""
 
         await self._start_resources()
+        starter = getattr(self._driver, "start", None)
+        if callable(starter):
+            try:
+                await starter()
+            except BaseException as error:
+                cleanup = await _cleanup_failure(self.close)
+                _merge_cleanup_failure(error, cleanup, label="runtime startup")
+                raise
 
     async def _start_resources(self) -> None:
         """Enter resources once without calling their factories at compile time."""

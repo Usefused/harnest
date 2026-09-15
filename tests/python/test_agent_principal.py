@@ -578,7 +578,11 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             revoke_agent_principal(allowed)
 
         self.assertEqual(discovered, 1)
-        self.assertEqual([item.name for item in tools], ["read"])
+        self.assertEqual([item.name for item in tools], ["read", *[
+            f"harnest_{name}" for name in (
+                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
+            )
+        ]])
 
     async def test_adk_mcp_permissions_use_unprefixed_remote_names(self):
         class Toolset:

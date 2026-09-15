@@ -21,7 +21,7 @@ class MCPClientContext:
     """Privacy-safe identity supplied to an MCP client lifecycle."""
 
     name: str
-    transport: Literal["sse", "streamable-http"]
+    transport: Literal["stdio", "sse", "streamable-http"]
     framework: MCPFramework
     url: str = field(repr=False)
 

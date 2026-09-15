@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+### Features
+
+* Discover MCP resources, URI templates, and prompts through `context.mcp`,
+  model-accessible retrieval tools, `harnest mcp inspect/read/prompt`, and the
+  local development playground. Apply client permissions, explicit allowlists,
+  pagination, and content limits without promoting remote prompts to instructions.
+* Add opt-in MCP resource subscriptions with async handlers, latest-value reads
+  on startup/reconnect, bounded retry, and runtime-owned shutdown. Support SDK 1.x
+  resource subscriptions and explicit HTTP `subscriptions/listen` streams.
+
 ### Fixes
 
+* Prefer MCP `2026-07-28` HTTP discovery for CLI inspection, agent tools,
+  resources, and prompts instead of hiding capabilities behind the SDK 1.x
+  compatibility handshake. Preserve initialized-server fallback without replaying tool calls.
+* Allow `harnest.mcp` to be imported before `harnest.agent` in standalone code.
 * Let verified PyPI Harnest Extensions synchronize successfully when their wheel
   metadata repeats Harnest or compiler-owned runtime dependencies. Materialized
   projects now retain only extension-owned requirements, and the published RAG

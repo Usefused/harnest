@@ -1,0 +1,174 @@
+"""Real MCP subprocess coverage for discovery, retrieval, policy, and subscriptions."""
+
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from pathlib import Path
+import sys
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from harnest.mcp import MCPClient, MCPResourceError, MCPSubscription
+from harnest.mcp_capability_tools import adk_capability_tools, langgraph_capability_tools
+from harnest.mcp_lifecycle import close_mcp_lifecycles, start_mcp_lifecycles
+
+SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "mcp_capabilities_server.py"
+
+
+def client(**kwargs):
+    return MCPClient.stdio(sys.executable, str(SERVER), **kwargs)
+
+
+class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_serving_pipeline_starts_subscriptions_before_any_invocation(self):
+        from google.adk.apps import App
+        from harnest.agent import AgentDefinition
+        from harnest.application import CompiledApplication
+        from harnest.backends.langgraph import ManagedAgentPlan
+        from harnest.runtime_adk import ADKRuntimeDriver
+        from harnest.runtime_langgraph import LangGraphRuntimeDriver
+        from harnest.runtime_pipeline import build_runtime_pipeline
+
+        for framework in ("adk", "langgraph"):
+            received = []
+
+            async def handler(event):
+                received.append(event)
+
+            definition = AgentDefinition(name="listener", model="unused", instruction="Listen without invoking the model.", mcp=(client(subscriptions=[MCPSubscription("knowledge://handbook", handler)]),))
+            target = definition.build() if framework == "adk" else ManagedAgentPlan(definition)
+            native_app = App(name="listener", root_agent=target) if framework == "adk" else None
+            application = CompiledApplication(name="listener", framework=framework, mode="managed", target=target, native_app=native_app)
+            backend = ADKRuntimeDriver(application) if framework == "adk" else LangGraphRuntimeDriver(application)
+            driver = build_runtime_pipeline(backend, application.runtime_capabilities, ())
+            try:
+                await driver.start()
+                self.assertEqual(received[0].reason, "start", framework)
+            finally:
+                await asyncio.wait_for(driver.close(), 5)
+
+    async def test_developer_connection_cannot_be_used_after_its_scope(self):
+        async with client().connect() as connection:
+            pass
+        with patch("harnest.mcp_resources.resource_session") as session:
+            with self.assertRaisesRegex(MCPResourceError, "closed"):
+                await connection.inspect()
+            session.assert_not_called()
+
+    async def test_filtered_empty_page_keeps_cursor_and_unsupported_lists_are_empty(self):
+        from mcp import types
+
+        session = SimpleNamespace(list_resources=AsyncMock(return_value=types.ListResourcesResult(
+            resources=[types.Resource(name="private", uri="knowledge://private")], nextCursor="opaque/next=2",
+        )))
+        capabilities = types.ServerCapabilities(resources=types.ResourcesCapability())
+
+        @asynccontextmanager
+        async def connection(*args):
+            yield session, SimpleNamespace(capabilities=capabilities)
+
+        with patch("harnest.mcp_resources.resource_session", connection):
+            async with client(resources=()).connect() as resource_client:
+                page = await resource_client.list_resources("opaque/first=1")
+                self.assertEqual(page, {"resources": [], "nextCursor": "opaque/next=2"})
+                self.assertEqual(await resource_client.list_prompts(), {"prompts": []})
+        session.list_resources.assert_awaited_once_with(cursor="opaque/first=1")
+
+    async def test_real_server_discovers_resources_templates_and_prompt_arguments(self):
+        async with client().connect() as connection:
+            catalog = await connection.inspect()
+            self.assertEqual(catalog["tools"]["tools"][0]["name"], "echo")
+            self.assertEqual(catalog["resources"]["resources"][0]["uri"], "knowledge://handbook")
+            self.assertEqual(catalog["resource_templates"]["resourceTemplates"][0]["uriTemplate"], "knowledge://documents/{id}")
+            self.assertEqual(catalog["prompts"]["prompts"][0]["arguments"][0]["name"], "topic")
+            resource = await connection.read_resource("knowledge://handbook")
+            self.assertEqual(resource["contents"][0]["text"], "# Handbook v0")
+            prompt = await connection.get_prompt("summarize", {"topic": "MCP"})
+            self.assertEqual(prompt["messages"][0]["role"], "user")
+            self.assertEqual(prompt["messages"][0]["content"]["text"], "Summarize MCP")
+
+    async def test_filters_and_bounds_apply_before_exposing_content(self):
+        async with client(resources=(), prompts=()).connect() as connection:
+            self.assertEqual((await connection.list_resources())["resources"], [])
+            self.assertEqual((await connection.list_prompts())["prompts"], [])
+            with patch("harnest.mcp_resources.resource_session") as session:
+                with self.assertRaises(MCPResourceError):
+                    await connection.read_resource("file:///etc/passwd")
+                with self.assertRaises(MCPResourceError):
+                    await connection.get_prompt("summarize")
+                session.assert_not_called()
+        async with client(max_content_bytes=1024).connect() as connection:
+            with self.assertRaisesRegex(MCPResourceError, "max_content_bytes"):
+                await connection.read_resource("knowledge://large")
+
+    async def test_both_frameworks_render_native_tool_schemas_and_retrieve_prompt(self):
+        configured = client()
+        adk = adk_capability_tools(configured, [])
+        for tool in adk:
+            self.assertIsNotNone(tool._get_declaration())
+        result = await adk[-1].run_async(args={"name": "summarize", "arguments": {"topic": "ADK"}}, tool_context=None)
+        self.assertEqual(result["messages"][0]["content"]["text"], "Summarize ADK")
+        graph = langgraph_capability_tools(configured, "knowledge", [])
+        result = await graph[-1].ainvoke({"name": "summarize", "arguments": {"topic": "LangGraph"}})
+        self.assertEqual(result["messages"][0]["content"]["text"], "Summarize LangGraph")
+
+    async def test_runtime_subscription_receives_start_and_update_then_closes(self):
+        events = []
+        updated = asyncio.Event()
+
+        async def handler(event):
+            events.append(event)
+            if event.reason == "update":
+                updated.set()
+
+        configured = client(subscriptions=[MCPSubscription("knowledge://handbook", handler)])
+        bindings = configured._runtime_bindings("langgraph")
+        try:
+            await start_mcp_lifecycles(bindings)
+            await asyncio.wait_for(updated.wait(), 5)
+        finally:
+            await close_mcp_lifecycles(bindings)
+        self.assertEqual([event.reason for event in events], ["start", "update"])
+        self.assertEqual(events[-1].resource["contents"][0]["text"], "# Handbook v1")
+
+    async def test_cli_inspection_does_not_start_subscription_handlers(self):
+        async def forbidden(event):
+            raise AssertionError("inspection must not start listeners")
+
+        configured = client(subscriptions=[MCPSubscription("knowledge://handbook", forbidden)])
+        async with configured.connect() as connection:
+            self.assertIn("capabilities", await connection.inspect())
+        self.assertEqual(configured._subscription_controller._state, "new")
+
+    async def test_resource_only_server_still_exposes_agent_context_tools(self):
+        configured = MCPClient.stdio(sys.executable, str(SERVER), "--resources-only")
+        toolset = configured.to_adk_toolset()
+        try:
+            tools = await toolset.get_tools()
+            self.assertEqual(len(tools), 7)
+            self.assertTrue(all(getattr(tool, "__harnest_mcp_capability__", None) for tool in tools))
+        finally:
+            await toolset.close()
+
+    async def test_adk_capability_names_are_unique_across_unprefixed_clients(self):
+        first = adk_capability_tools(replace(client(), identity="first"), [])
+        second = adk_capability_tools(replace(client(), identity="second"), [])
+        self.assertFalse({tool.name for tool in first} & {tool.name for tool in second})
+        self.assertEqual(first[0].__harnest_mcp_capability__, "harnest_inspect")
+
+    def test_subscription_validates_transport_and_allowlist(self):
+        async def handler(event):
+            pass
+
+        subscription = MCPSubscription("knowledge://handbook", handler)
+        with self.assertRaises(ValueError):
+            client(resources=(), subscriptions=[subscription])
+        with self.assertRaises(ValueError):
+            client(subscriptions=[replace(subscription, method="subscriptions/listen")])
+        with self.assertRaises(TypeError):
+            MCPSubscription("knowledge://handbook", lambda event: None)
+
+
+if __name__ == "__main__":
+    unittest.main()

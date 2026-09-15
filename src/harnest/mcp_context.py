@@ -261,6 +261,41 @@ class ManagedMCPClient:
     _invocation_id: str = field(repr=False)
     _lifetime: _MCPContextLifetime = field(repr=False, compare=False)
 
+    async def inspect(self) -> Any:
+        """Discover bounded MCP catalogues through the invocation's governed path."""
+
+        return await self.call_tool("harnest_inspect")
+
+    async def list_resources(self, cursor: str | None = None) -> Any:
+        """List one resource page without reading its contents."""
+
+        return await self.call_tool("harnest_list_resources", {"cursor": cursor})
+
+    async def list_tools(self, cursor: str | None = None) -> Any:
+        """List remote tool metadata within this invocation's permission scope."""
+
+        return await self.call_tool("harnest_list_tools", {"cursor": cursor})
+
+    async def list_resource_templates(self, cursor: str | None = None) -> Any:
+        """List one page of parameterized resource URIs."""
+
+        return await self.call_tool("harnest_list_resource_templates", {"cursor": cursor})
+
+    async def list_prompts(self, cursor: str | None = None) -> Any:
+        """List prompt descriptions and arguments without rendering messages."""
+
+        return await self.call_tool("harnest_list_prompts", {"cursor": cursor})
+
+    async def read_resource(self, uri: str) -> Any:
+        """Read an allowed MCP URI through the same audit and permission boundary."""
+
+        return await self.call_tool("harnest_read_resource", {"uri": uri})
+
+    async def get_prompt(self, name: str, arguments: Mapping[str, str] | None = None) -> Any:
+        """Return prompt messages as data, never as higher-priority instructions."""
+
+        return await self.call_tool("harnest_get_prompt", {"name": name, "arguments": arguments})
+
     async def call_tool(
         self, name: str, arguments: Mapping[str, Any] | None = None
     ) -> Any:

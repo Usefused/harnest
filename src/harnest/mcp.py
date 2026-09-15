@@ -29,6 +29,8 @@ from .mcp_context import (
     MCPLifecycleError, MCPLifecyclePipeline, MCPToolCallError, MCPToolCallRequest,
     MCPToolLifecycleContext, MCPToolUnavailableError, ManagedMCPClient,
 )
+from .mcp_resources import MCPResourceClient, MCPResourceError
+from .mcp_subscriptions import MCPResourceEvent, MCPSubscription, SubscriptionLifecycle
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _ADK_PUBLIC_NAME = "__harnest_mcp_public_name__"
@@ -43,6 +45,8 @@ __all__ = [
     "MCPClientContext",
     "MCPClientLifecycle",
     "MCPHTTPClientOptions",
+    "MCPResourceClient", "MCPResourceError",
+    "MCPResourceEvent", "MCPSubscription",
 ]
 
 
@@ -81,6 +85,13 @@ class MCPClient:
     portable: Any = field(default=None, repr=False)
     permission: str | None = None
     tool_permissions: Mapping[str, str] = field(default_factory=dict, repr=False)
+    resources: Sequence[str] | None = None
+    prompts: Sequence[str] | None = None
+    max_content_bytes: int = 1024 * 1024
+    subscriptions: Sequence[MCPSubscription] = field(default_factory=tuple, repr=False)
+    _subscription_controller: _MCPClientLifecycleController | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
     _lifecycle_controller: _MCPClientLifecycleController | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -97,6 +108,10 @@ class MCPClient:
         tool_permissions: Mapping[str, str] | None = None,
         timeout_seconds: float = 30,
         lifecycle: MCPClientLifecycle | None = None,
+        resources: Sequence[str] | None = None,
+        prompts: Sequence[str] | None = None,
+        max_content_bytes: int = 1024 * 1024,
+        subscriptions: Sequence[MCPSubscription] = (),
     ) -> "MCPClient":
         """Create an MCP client that starts and communicates with a subprocess."""
 
@@ -104,6 +119,8 @@ class MCPClient:
             "stdio",
             command=command,
             args=args,
+            resources=resources, prompts=prompts, max_content_bytes=max_content_bytes,
+            subscriptions=subscriptions,
             env=env or {},
             tool_filter=tools,
             tool_name_prefix=prefix,
@@ -126,11 +143,17 @@ class MCPClient:
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
+        resources: Sequence[str] | None = None,
+        prompts: Sequence[str] | None = None,
+        max_content_bytes: int = 1024 * 1024,
+        subscriptions: Sequence[MCPSubscription] = (),
     ) -> "MCPClient":
         """Create an MCP client using the Streamable HTTP transport."""
 
         return cls(
             "streamable-http",
+            resources=resources, prompts=prompts, max_content_bytes=max_content_bytes,
+            subscriptions=subscriptions,
             url=url,
             headers=headers or {},
             tool_filter=tools,
@@ -155,11 +178,17 @@ class MCPClient:
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
+        resources: Sequence[str] | None = None,
+        prompts: Sequence[str] | None = None,
+        max_content_bytes: int = 1024 * 1024,
+        subscriptions: Sequence[MCPSubscription] = (),
     ) -> "MCPClient":
         """Create an MCP client using the legacy HTTP/SSE transport."""
 
         return cls(
             "sse",
+            resources=resources, prompts=prompts, max_content_bytes=max_content_bytes,
+            subscriptions=subscriptions,
             url=url,
             headers=headers or {},
             tool_filter=tools,
@@ -172,10 +201,67 @@ class MCPClient:
         )
 
     def __post_init__(self) -> None:
+        """Validate authoring policy without opening connections or running handlers."""
+
+        self._validate_resource_policy()
         self._validate_timeouts()
         self._validate_transport()
         self._validate_permissions()
         self._initialize_lifecycle()
+        self._initialize_subscriptions()
+
+    def _initialize_subscriptions(self) -> None:
+        """Bind opt-in listeners separately so inspection cannot start application work."""
+
+        subscriptions = tuple(self.subscriptions)
+        for subscription in subscriptions:
+            if not isinstance(subscription, MCPSubscription):
+                raise TypeError("MCP subscriptions must contain MCPSubscription values")
+            if subscription.method == "subscriptions/listen" and self.transport != "streamable-http":
+                raise ValueError("subscriptions/listen currently requires Streamable HTTP")
+            if self.resources is not None and subscription.uri not in self.resources:
+                raise ValueError("MCP subscription URI must be allowed by resources")
+        if len({item.uri for item in subscriptions}) != len(subscriptions):
+            raise ValueError("MCP subscription URIs must be unique per client")
+        object.__setattr__(self, "subscriptions", subscriptions)
+        if subscriptions:
+            controller = _mcp_lifecycle_controller(SubscriptionLifecycle(self))
+            object.__setattr__(self, "_subscription_controller", controller)
+
+    def _runtime_bindings(self, framework: str) -> tuple[Any, ...]:
+        """Start credentials before listeners and close listeners before credentials."""
+
+        bindings = []
+        binding = self._lifecycle_binding(framework)
+        if binding is not None:
+            bindings.append(binding)
+        if self._subscription_controller is not None:
+            context = MCPClientContext(
+                name=self._client_name(), transport=self.transport, framework=framework,
+                url=self._expand(self.url or ""),
+            )
+            bindings.append(_MCPClientLifecycleBinding(self._subscription_controller, context))
+        return tuple(bindings)
+
+    def _validate_resource_policy(self) -> None:
+        """Freeze explicit filters and reject ambiguous content limits before connection."""
+
+        if type(self.max_content_bytes) is not int or not 1024 <= self.max_content_bytes <= 16 * 1024 * 1024:
+            raise ValueError("max_content_bytes must be between 1024 and 16777216")
+        for name in ("resources", "prompts"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if isinstance(value, (str, bytes)) or any(not isinstance(item, str) or not item.strip() for item in value):
+                raise TypeError(f"MCP {name} must be a sequence of non-empty identifiers")
+            object.__setattr__(self, name, tuple(value))
+
+    def connect(self, *, framework: Literal["adk", "langgraph"] = "langgraph") -> Any:
+        """Open a developer-owned read client using the configured lifecycle and credentials."""
+
+        from .mcp_resources import managed_resource_client
+
+        return managed_resource_client(self, framework=framework)
 
     def _validate_permissions(self) -> None:
         """Freeze client and tool requirements using permissioned-tool identifiers."""
@@ -253,8 +339,8 @@ class MCPClient:
             client_name=self._client_name(),
             approval_wrapped=self.approval is not None,
         )
-        if binding is not None:
-            attach_mcp_lifecycle(toolset, binding)
+        for runtime_binding in self._runtime_bindings("adk"):
+            attach_mcp_lifecycle(toolset, runtime_binding)
         return toolset
 
     def _construct_adk_toolset(self, classes, binding):
@@ -277,6 +363,9 @@ class MCPClient:
             return disabled_adk_toolset()
 
     def _adk_toolset_type(self, base: Any) -> Any:
+        """Project remote tools and local context operations through one client policy."""
+
+        configured = self
         policy = self.approval
         required_permission = self.permission
         tool_permissions = dict(self.tool_permissions)
@@ -293,6 +382,8 @@ class MCPClient:
             __harnest_mcp_approval_wrapped__ = policy is not None
 
             async def get_tools(self, readonly_context: Any = None) -> list[Any]:
+                """Apply client authorization before discovery, then project each operation."""
+
                 from .agent_principal import (
                     attach_required_permissions,
                     capability_is_available,
@@ -313,7 +404,10 @@ class MCPClient:
                     and not permissions_are_available(client_requirements)
                 ):
                     return []
-                tools = await super().get_tools(readonly_context)
+                from .mcp_resources import discover_remote_tools
+
+                native = super().get_tools
+                tools = await discover_remote_tools(lambda: native(readonly_context), configured, "adk")
                 names = tuple(
                     str(getattr(tool, "name", ""))
                     for tool in tools
@@ -344,6 +438,12 @@ class MCPClient:
                         )
                     if capability_is_available(remote_tool):
                         selected.append(remote_tool)
+                from .mcp_capability_tools import adk_capability_tools
+
+                selected.extend(
+                    tool for tool in adk_capability_tools(configured, tools)
+                    if capability_is_available(tool)
+                )
                 return selected
 
         return GovernedMcpToolset
@@ -563,6 +663,10 @@ def _mcp_connection_configuration(client: MCPClient) -> tuple[Any, ...]:
         client.sse_read_timeout_seconds,
         client.cwd,
         client.portable,
+        client.resources,
+        client.prompts,
+        client.max_content_bytes,
+        tuple(client.subscriptions),
         # Lifecycle instances may hold distinct certificate and gateway state.
         id(client.lifecycle) if client.lifecycle is not None else None,
     )

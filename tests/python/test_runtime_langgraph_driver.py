@@ -510,6 +510,17 @@ class _MCPNativeErrorTarget:
         return None
 
 
+class _CapabilityToolStub:
+    """Project local MCP operations while this suite replaces LangChain modules."""
+
+    @classmethod
+    def from_function(cls, *, coroutine, name):
+        async def invoke(arguments, config=None, **kwargs):
+            return await coroutine(**arguments)
+
+        return SimpleNamespace(name=name, ainvoke=invoke)
+
+
 class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         _MCPAdapterClient.instances.clear()
@@ -519,6 +530,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         messages.HumanMessage = _HumanMessage
         tools = ModuleType("langchain_core.tools")
         tools.__path__ = []
+        tools.StructuredTool = _CapabilityToolStub
         tools_base = ModuleType("langchain_core.tools.base")
         tools_base._format_output = _format_tool_output
         self.langchain_modules = patch.dict(
@@ -1643,7 +1655,11 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.tool_interceptors), 1)
         passed_plan, passed_tools = materialize.call_args.args
         self.assertIs(passed_plan, plan)
-        self.assertEqual([tool.name for tool in passed_tools], ["mcp__legacy_echo"])
+        self.assertEqual([tool.name for tool in passed_tools], ["mcp__legacy_echo", *[
+            f"mcp__legacy_harnest_{name}" for name in (
+                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
+            )
+        ]])
 
         await driver.close()
 
@@ -1960,6 +1976,8 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             await driver.close()
 
     async def test_mcp_gateway_lifecycle_wraps_adapter_owned_sessions(self):
+        """Keep native adapter ownership isolated from modern discovery coverage."""
+
         lifecycle = _RuntimeMCPLifecycle()
         configured = replace(
             MCPClient.streamable_http(
@@ -1995,6 +2013,8 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "harnest.backends.langgraph.materialize_agent",
             return_value=_Target(),
+        ), patch(
+            "harnest.mcp_http_tools.modern_tools", return_value=None,
         ):
             await driver.invoke(_request())
 
@@ -2059,7 +2079,11 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.tool_interceptors, [])
         passed_plan, tool_groups = materialize.call_args.args
         self.assertIs(passed_plan, plan)
-        self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo"])
+        self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo", *[
+            f"graph_harnest_{name}" for name in (
+                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
+            )
+        ]])
         self.assertIs(tool_groups[0], tool_groups[1])
 
         await driver.close()

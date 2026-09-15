@@ -554,15 +554,20 @@ function configureLiveTransport(agent) {
   }
 }
 
-/** Switch between conversation and local evaluation without discarding either view. */
+/** Switch developer views without discarding the conversation or retrieved context. */
 async function selectWorkspace(name) {
   runtime.workspace = name;
   const evaluating = name === "evals";
-  document.body.classList.toggle("eval-mode", evaluating);
-  ui.chatWorkspace.hidden = evaluating;
+  document.body.classList.toggle("eval-mode", name !== "chat");
+  ui.chatWorkspace.hidden = name !== "chat";
   ui.evalWorkspace.hidden = !evaluating;
+  document.querySelector("#mcp-workspace").hidden = name !== "mcp";
   ui.workspaceEyebrow.textContent = evaluating ? "Evaluation" : "Playground";
   ui.workspaceTitle.textContent = evaluating ? "Evals" : "Conversation";
+  if (name === "mcp") {
+    ui.workspaceTitle.textContent = "MCP";
+    await loadMCPClients();
+  }
   ui.inspector.classList.remove("open");
   ui.inspectorToggle.setAttribute("aria-expanded", "false");
   for (const button of document.querySelectorAll(".workspace-nav-item")) {
@@ -571,6 +576,44 @@ async function selectWorkspace(name) {
     button.setAttribute("aria-pressed", String(active));
   }
   if (evaluating && !runtime.evalCatalog) await loadEvals();
+}
+
+/** List configured names only; do not fetch remote catalogues on navigation. */
+async function loadMCPClients() {
+  const response = await api("/_harnest/mcp", { method: "GET" });
+  const catalog = await response.json();
+  const select = document.querySelector("#mcp-client");
+  select.replaceChildren();
+  for (const name of catalog.clients || []) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.append(option);
+  }
+}
+
+/** Retrieve explicitly selected context and display it as inert JSON. */
+async function queryMCP(event) {
+  event.preventDefault();
+  const output = document.querySelector("#mcp-results");
+  const button = event.currentTarget.querySelector("button");
+  button.disabled = true;
+  try {
+    const client = document.querySelector("#mcp-client").value;
+    const body = {
+      operation: document.querySelector("#mcp-operation").value,
+      identifier: document.querySelector("#mcp-identifier").value,
+      arguments: JSON.parse(document.querySelector("#mcp-arguments").value || "{}"),
+      cursor: document.querySelector("#mcp-cursor").value || null,
+    };
+    const response = await api(`/_harnest/mcp/${encodeURIComponent(client)}`, { method: "POST", body: JSON.stringify(body) });
+    // Provider prompts and resource text remain inert data, never injected HTML.
+    output.textContent = JSON.stringify(await response.json(), null, 2);
+  } catch (error) {
+    output.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /** Refresh validated suites and the effective installed metric catalog. */
@@ -1752,6 +1795,7 @@ function moveThemeFocus(event, index) {
 }
 
 function bindEvents() {
+  document.querySelector("#mcp-query").addEventListener("submit", queryMCP);
   ui.composer.addEventListener("submit", submitMessage);
   ui.input.addEventListener("input", resizeComposer);
   ui.input.addEventListener("keydown", (event) => {

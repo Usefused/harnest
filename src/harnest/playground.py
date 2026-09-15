@@ -63,6 +63,7 @@ def create_playground_router(
     trace_store: PlaygroundTraceStore | None = None,
     eval_service: PlaygroundEvalService | None = None,
     *, openapi_enabled: bool = True,
+    mcp_service: Any | None = None,
 ) -> Any:
     """Capture development asset ownership before handling asynchronous requests."""
 
@@ -161,6 +162,10 @@ def create_playground_router(
             except (EvaluationError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if mcp_service is not None:
+        from .playground_mcp import install_mcp_routes
+
+        install_mcp_routes(router, mcp_service)
     return router
 
 
