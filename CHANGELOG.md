@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.20.0](https://github.com/Usefused/harnest/compare/v0.19.0...v0.20.0) (2026-09-15)
 
 ### Features
 
@@ -24,9 +24,6 @@
 
 * Default the agent HTTP port to `1907` in the CLI, runtime, new agent cards,
   and examples. Explicit configured ports and `--port` overrides are unchanged.
-
-## [0.20.0](https://github.com/Usefused/harnest/compare/v0.19.0...v0.20.0) (2026-09-15)
-
 
 ### Features
 
