@@ -21,6 +21,79 @@ def client(**kwargs):
 
 
 class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_cancellation_wins_over_simultaneous_notification(self):
+        """Force Python 3.10's completed-wait cancellation race without timing sleeps."""
+
+        from harnest.mcp_subscriptions import _ResourceListener
+
+        handler = AsyncMock()
+        worker = _ResourceListener(client(), MCPSubscription("knowledge://handbook", handler), "langgraph")
+        session = SimpleNamespace(subscribe_resource=AsyncMock())
+        initialized = SimpleNamespace(capabilities=SimpleNamespace(resources=SimpleNamespace(subscribe=True)))
+        closed = asyncio.Event()
+
+        @asynccontextmanager
+        async def connection(*args, **kwargs):
+            try:
+                yield session, initialized
+            finally:
+                closed.set()
+
+        async def notification_and_shutdown():
+            # Match close() exactly as a notification wait completes. wait_for
+            # on Python 3.10 used to discard this external cancellation.
+            worker.stopping = True
+            worker.task.cancel()
+            return True
+
+        worker.dirty.wait = notification_and_shutdown
+        with patch("harnest.mcp_subscriptions.resource_session", connection), patch.object(worker, "connected", AsyncMock()), patch.object(worker, "deliver", AsyncMock()) as deliver:
+            worker.task = asyncio.create_task(worker._run())
+            try:
+                done, _ = await asyncio.wait({worker.task}, timeout=1)
+                self.assertIn(worker.task, done, "listener ignored shutdown cancellation")
+                self.assertTrue(closed.is_set())
+                deliver.assert_not_awaited()
+            finally:
+                worker.dirty.wait = AsyncMock(side_effect=asyncio.CancelledError)
+                await worker.close()
+
+    async def test_handler_completion_does_not_swallow_listener_cancellation(self):
+        """A completed handler must not turn shutdown cancellation into a committed delivery."""
+
+        from harnest.mcp_subscriptions import _ResourceListener
+
+        async def handler(event):
+            worker.task.cancel()
+
+        worker = _ResourceListener(client(), MCPSubscription("knowledge://handbook", handler), "langgraph")
+        read = AsyncMock(return_value={"contents": [{"text": "retained"}]})
+        worker.task = asyncio.create_task(worker.deliver(read, "update"))
+        with self.assertRaises(asyncio.CancelledError):
+            await worker.task
+        self.assertIsNone(worker.digest)
+
+    async def test_handler_deadline_cancels_work_without_committing_delivery(self):
+        """The cancellation-safe deadline must still stop a stalled authored handler."""
+
+        from harnest.mcp_subscriptions import _ResourceListener
+
+        stopped = asyncio.Event()
+
+        async def handler(event):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        subscription = MCPSubscription("knowledge://handbook", handler, handler_timeout_seconds=0.01)
+        worker = _ResourceListener(client(), subscription, "langgraph")
+        read = AsyncMock(return_value={"contents": [{"text": "retained"}]})
+        with self.assertRaises(TimeoutError):
+            await worker.deliver(read, "update")
+        self.assertTrue(stopped.is_set())
+        self.assertIsNone(worker.digest)
+
     async def test_serving_pipeline_starts_subscriptions_before_any_invocation(self):
         from google.adk.apps import App
         from harnest.agent import AgentDefinition

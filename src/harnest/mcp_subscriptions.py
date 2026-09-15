@@ -95,12 +95,14 @@ class _ResourceListener:
     async def start(self) -> None:
         """Do not inherit a request's principal, session, credentials, or context lease."""
 
+        import anyio
+
         self.task = Context().run(asyncio.create_task, self._run())
         try:
-            await asyncio.wait_for(
-                asyncio.shield(self.ready),
+            with anyio.fail_after(
                 self.configured.timeout_seconds + self.subscription.handler_timeout_seconds,
-            )
+            ):
+                await asyncio.shield(self.ready)
         except BaseException:
             await self.close()
             if self.ready.done() and not self.ready.cancelled():
@@ -139,7 +141,9 @@ class _ResourceListener:
             delay = min(delay * 2, 30)
 
     async def _listen(self) -> None:
-        """Keep protocol selection explicit; never silently downgrade subscription semantics."""
+        """Keep protocol selection explicit and preserve shutdown across idle deadlines."""
+
+        import anyio
 
         if self.subscription.method == "subscriptions/listen":
             from .mcp_subscription_http import listen
@@ -155,13 +159,15 @@ class _ResourceListener:
             await session.subscribe_resource(self.subscription.uri)
             read = lambda: session.read_resource(self.subscription.uri)
             await self.connected(read)
-            while True:
+            while not self.stopping:
                 # SDK 1.x has no public disconnect waiter. A bounded idle probe
                 # detects clean transport loss as well as exceptional closure.
-                try:
-                    await asyncio.wait_for(self.dirty.wait(), min(30, self.configured.sse_read_timeout_seconds))
-                except asyncio.TimeoutError:
-                    pass
+                # A task-local deadline avoids Python 3.10 wait_for swallowing
+                # cancellation when a notification completes at the same time.
+                with anyio.move_on_after(min(30, self.configured.sse_read_timeout_seconds)):
+                    await self.dirty.wait()
+                if self.stopping:
+                    return
                 self.dirty.clear()
                 await self.deliver(read, "update")
 
@@ -190,6 +196,8 @@ class _ResourceListener:
     async def deliver(self, read: Any, reason: str) -> None:
         """Commit deduplication only after a successful handler; recovery may deliver again."""
 
+        import anyio
+
         result = await read()
         resource = result if isinstance(result, dict) else _bounded_result(result, self.configured.max_content_bytes)
         serialized = json.dumps(resource.get("contents", []), sort_keys=True).encode()
@@ -200,7 +208,10 @@ class _ResourceListener:
             return
         event = MCPResourceEvent(self.configured._client_name(), self.subscription.uri, resource, reason)
         try:
-            await asyncio.wait_for(self.subscription.handler(event), self.subscription.handler_timeout_seconds)
+            with anyio.fail_after(self.subscription.handler_timeout_seconds):
+                # Retain handler context isolation, but await its task directly:
+                # wait_for can lose a concurrent shutdown on Python 3.10.
+                await asyncio.create_task(self.subscription.handler(event))
         except BaseException:
             self._audit("failed")
             raise
