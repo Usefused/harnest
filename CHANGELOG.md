@@ -7,6 +7,13 @@
 * Fix the checked-in MCP agent example to use explicit OpenAI-compatible model
   configuration. Declare AnyIO directly for MCP transport and subscription deadlines.
 
+## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
+
+
+### Fixes
+
+* update MCP example model and declare AnyIO dependency ([1af838e](https://github.com/Usefused/harnest/commit/1af838e022412581add32715b71b474887fb3e65))
+
 ## [0.21.2](https://github.com/Usefused/harnest/compare/v0.21.1...v0.21.2) (2026-09-15)
 
 ### Fixes
