@@ -597,6 +597,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn(f"{package}/__init__.py", archived_paths)
             self.assertIn(f"{package}/py.typed", archived_paths)
         requirements = distribution_requirements(metadata_text)
+        self.assertEqual(requirements["anyio"], "<5,>=4.5")
         self.assertNotIn("harnest-postgres", requirements)
         self.assertNotIn("harnest-redis", requirements)
         self.assertIn("harnest/extensions/docker.pyi", archived_paths)

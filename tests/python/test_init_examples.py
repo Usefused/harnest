@@ -4,6 +4,7 @@ import ast
 import asyncio
 import json
 import os
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
@@ -136,6 +137,26 @@ class InitExampleTests(unittest.TestCase):
 
 class ExampleContractTests(unittest.TestCase):
     """Keep checked-in agent examples on the current project contracts."""
+
+    def test_mcp_example_uses_explicit_compatible_model_configuration(self):
+        """Import the committed MCP example and build its real model adapter offline."""
+        root = _ROOT / "mcp-agent"
+        config = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+        environment = {key: str(value) for key, value in config["spec"]["environment"].items()}
+        environment.update(
+            OPENAI_MODEL="team/chosen", OPENAI_BASE_URL="https://models.example.invalid/v1",
+            HARNEST_MCP_TOKEN="synthetic-test-token",
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            definition = runpy.run_path(str(root / "agent.py"))["root_agent"]
+            self.assertEqual(definition.model.model, "openai/team/chosen")
+            self.assertEqual(definition.model.completion_args["api_base"], environment["OPENAI_BASE_URL"])
+            # Exercise the connector independently of the example's exact framework pin.
+            adapter = definition.model.build_for("adk")
+            self.assertEqual(adapter.model, "openai/team/chosen")
+        for name in ("agent.py", "config.yaml", "README.md"):
+            with self.subTest(file=name):
+                self.assertNotIn("ollama", (root / name).read_text(encoding="utf-8").lower())
 
     def test_managed_examples_pin_their_selected_framework(self):
         """Prevent examples from silently resolving a different framework release."""

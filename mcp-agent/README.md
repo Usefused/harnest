@@ -1,19 +1,24 @@
 # MCP Agent
 
 This Harnest agent connects to the configured authenticated Streamable HTTP MCP
-server and makes its discovered tools available to an ADK agent running through
-Ollama.
+server and makes its discovered tools available to an ADK agent using your
+OpenAI-compatible model endpoint.
 
 ## Configure
 
-Keep the bearer token in the environment. Do not add it to this project:
+From this agent folder, configure your model endpoint and MCP bearer token.
+Keep credentials in the environment, not in this project:
 
 ```bash
 export HARNEST_MCP_TOKEN='<token>'
+export OPENAI_MODEL='<model-served-by-your-endpoint>'
+export OPENAI_BASE_URL='https://your-model-server.example/v1'
+# Only if your model endpoint requires authentication:
+export OPENAI_API_KEY='<model-api-key>'
 ```
 
-The non-secret MCP URL, Ollama endpoint, and model are configured in
-`config.yaml`. Change `OLLAMA_MODEL` if you want to use another installed model.
+Set the non-secret MCP URL in `config.yaml`. Harnest does not select a default
+model or provider endpoint.
 
 ## Verify
 
