@@ -703,7 +703,7 @@ func TestServeRunsGeneratedLauncherWithSelectedPython(t *testing.T) {
 	want := "CALL\t" + filepath.Join(artifact, "harnest-agent") +
 		"\tserve\t--host\t0.0.0.0\t--port\t9090\t--request-timeout\t30" +
 		"\t--max-concurrency\t4\t--allow-remote"
-	if lines[1] != want {
+	if withoutPlaygroundArgument(t, lines[1]) != want {
 		t.Fatalf("selected Python got %q, want only explicit override %q", lines[1], want)
 	}
 }
@@ -720,7 +720,7 @@ func TestServeUsesCompiledServerDefaultsWithoutOverrides(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(string(mustReadTestFile(t, record))), "\n")
 	want := "CALL\t" + filepath.Join(artifact, "harnest-agent") + "\tserve"
-	if len(lines) != 2 || lines[1] != want {
+	if len(lines) != 2 || withoutPlaygroundArgument(t, lines[1]) != want {
 		t.Fatalf("serve overrode compiled server.yaml defaults: %q", lines)
 	}
 }

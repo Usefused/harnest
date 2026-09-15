@@ -1,5 +1,10 @@
 import asyncio
 import logging
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Annotated, Any
 import unittest
@@ -717,6 +722,13 @@ class NeutralRuntimeTests(unittest.TestCase):
         page = self.client.get("/")
         stylesheet = self.client.get("/_harnest/playground.css")
         javascript = self.client.get("/_harnest/playground.js")
+        for asset in ("markdown-it.min.js", "markdown.js"):
+            response = self.client.get(f"/_harnest/{asset}")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("text/javascript", response.headers["content-type"])
+            self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertLess(page.text.index("markdown-it.min.js"), page.text.index("markdown.js"))
+        self.assertLess(page.text.index("markdown.js"), page.text.index("playground.js"))
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("Harnest Playground", page.text)
@@ -892,6 +904,34 @@ class NeutralRuntimeTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("ui.sessionStateEmpty.hidden = !empty", javascript)
+
+    def test_production_runtime_without_assets_has_no_playground_routes(self):
+        """Missing production assets disable UI, traces, and eval routes together."""
+        with patch("harnest.playground.playground_available", return_value=False):
+            client = TestClient(create_neutral_app(FakeDriver()))
+        for path in ("/", "/_harnest/playground.js", "/_harnest/markdown.js", "/_harnest/traces", "/_harnest/evals"):
+            self.assertEqual(client.get(path).status_code, 404, path)
+        self.assertEqual(client.get("/agent").status_code, 200)
+
+    def test_cli_assets_remain_owned_by_the_app_after_construction(self):
+        """Request handling uses the captured directory, not another app's override."""
+        from harnest.playground import playground_assets
+
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            clients = []
+            for directory, content in ((first, "first UI"), (second, "second UI")):
+                (Path(directory) / "index.html").write_text(content)
+                with playground_assets(Path(directory)):
+                    clients.append(TestClient(create_neutral_app(FakeDriver())))
+            self.assertEqual(clients[0].get("/").text, "first UI")
+            self.assertEqual(clients[1].get("/").text, "second UI")
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for browser logic tests")
+    def test_playground_markdown_behavior(self):
+        """Run the bundled parser and response handlers, not string-presence tests."""
+        script = Path(__file__).resolve().parents[1] / "javascript/playground_markdown.cjs"
+        result = subprocess.run([shutil.which("node"), "--test", str(script)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_playground_new_session_resets_conversation_owned_state(self):
         javascript = self.client.get("/_harnest/playground.js").text

@@ -1,8 +1,11 @@
-"""Bundled framework-neutral development playground routes."""
+"""Framework-neutral development routes backed by CLI-owned browser assets."""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +21,7 @@ if TYPE_CHECKING:
 
 
 _ASSET_DIRECTORY = "_playground"
+_asset_override: ContextVar[Path | None] = ContextVar("playground_assets", default=None)
 _SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -38,11 +42,28 @@ class _EvalRunRequest(BaseModel):
     trajectory: str = "business"
 
 
+@contextmanager
+def playground_assets(directory: Path | None):
+    """Scope CLI-owned assets to app construction, not global process state."""
+
+    token = _asset_override.set(directory)
+    try:
+        yield
+    finally:
+        _asset_override.reset(token)
+
+
+def playground_available() -> bool:
+    """Installed production wheels have no UI; source checkouts support development."""
+
+    return _asset_path("index.html").is_file()
+
+
 def create_playground_router(
     trace_store: PlaygroundTraceStore | None = None,
     eval_service: PlaygroundEvalService | None = None,
 ) -> Any:
-    """Expose the same bundled UI for every Harnest runtime driver."""
+    """Capture development asset ownership before handling asynchronous requests."""
 
     try:
         from fastapi import APIRouter, HTTPException
@@ -51,11 +72,12 @@ def create_playground_router(
         raise RuntimeError("The development playground requires FastAPI") from exc
 
     router = APIRouter()
+    directory = _asset_path("index.html").parent
 
     @router.get("/", include_in_schema=False)
     async def playground() -> Any:
         return FileResponse(
-            _asset_path("index.html"),
+            directory / "index.html",
             media_type="text/html",
             headers=_headers(cache=False),
         )
@@ -63,7 +85,7 @@ def create_playground_router(
     @router.get("/_harnest/playground.css", include_in_schema=False)
     async def playground_css() -> Any:
         return FileResponse(
-            _asset_path("playground.css"),
+            directory / "playground.css",
             media_type="text/css",
             headers=_headers(cache=True),
         )
@@ -71,7 +93,19 @@ def create_playground_router(
     @router.get("/_harnest/playground.js", include_in_schema=False)
     async def playground_javascript() -> Any:
         return FileResponse(
-            _asset_path("playground.js"),
+            directory / "playground.js",
+            media_type="text/javascript",
+            headers=_headers(cache=True),
+        )
+
+    @router.get("/_harnest/markdown.js", include_in_schema=False)
+    @router.get("/_harnest/markdown-it.min.js", include_in_schema=False)
+    async def playground_markdown(request: Request) -> Any:
+        """Serve only the two fixed parser assets, never arbitrary directory contents."""
+
+        filename = request.url.path.rsplit("/", 1)[-1]
+        return FileResponse(
+            directory / filename,
             media_type="text/javascript",
             headers=_headers(cache=True),
         )
@@ -124,8 +158,11 @@ def create_playground_router(
 
 
 def _asset_path(filename: str) -> Any:
-    """Resolve package data without depending on the caller's working directory."""
+    """Resolve CLI assets or editable source files, absent from production wheels."""
 
+    directory = _asset_override.get()
+    if directory is not None:
+        return directory / filename
     return files("harnest").joinpath(_ASSET_DIRECTORY, filename)
 
 

@@ -20,6 +20,8 @@ _PUBLIC_PATHS = frozenset(
         "/",
         "/_harnest/playground.css",
         "/_harnest/playground.js",
+        "/_harnest/markdown-it.min.js",
+        "/_harnest/markdown.js",
         "/healthz",
         "/.well-known/agent-card.json",
         "/agent",

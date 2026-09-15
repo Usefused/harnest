@@ -564,6 +564,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             wheel = next(Path(temporary).glob("harnest-*.whl"))
             with zipfile.ZipFile(wheel) as archive:
                 archived_paths = set(archive.namelist())
+                self.assertFalse(any(name.startswith("harnest/_playground/") for name in archived_paths))
                 extension_stubs = {
                     path: archive.read(path)
                     for path in (
@@ -604,6 +605,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
             import harnest_redis
             from harnest.cron import CronStore
             from harnest.task import TaskStore
+            from harnest.playground import playground_available
+            assert not playground_available(), 'production wheel must not contain UI assets'
             for module in (harnest_postgres, harnest_redis):
                 assert module.__file__.startswith(sys.argv[1]), module.__file__
             postgres = harnest_postgres.PostgresStore('postgresql://not-connected')

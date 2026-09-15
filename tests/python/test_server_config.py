@@ -21,6 +21,18 @@ from harnest.server_config import (
 
 
 class ServerConfigTests(unittest.TestCase):
+    def test_compiled_launcher_requires_cli_assets_to_enable_playground(self):
+        """Even an enabled server preference cannot ship UI in a deployed launcher."""
+        from harnest.runtime import _create_server_app
+        from harnest.server_config import ServerConfig, PlaygroundConfig
+
+        for assets, enabled, expected in ((None, True, False), (Path("/tmp/ui"), True, True), (Path("/tmp/ui"), False, False)):
+            with self.subTest(assets=assets, enabled=enabled):
+                args = SimpleNamespace(artifact=Path("/tmp/agent"), playground_assets=assets)
+                with patch("harnest.runtime.create_fastapi_app") as create_app:
+                    _create_server_app(args, ServerConfig(playground=PlaygroundConfig(enabled=enabled)))
+                self.assertEqual(create_app.call_args.kwargs["playground_enabled"], expected)
+
     def test_loads_strict_versioned_configuration_and_binary_size(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.yaml"

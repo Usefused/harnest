@@ -178,7 +178,8 @@ function appendTurn(role, text = "") {
   label.textContent = role === "user" ? "You" : "Agent";
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = text;
+  if (role === "assistant") setAssistantText(bubble, text);
+  else bubble.textContent = text;
   turn.append(label, bubble);
   if (role === "assistant" && text) {
     runtime.responseAssistantTurn = turn;
@@ -186,6 +187,15 @@ function appendTurn(role, text = "") {
   ui.conversation.append(turn);
   scrollConversation();
   return bubble;
+}
+
+/** Retain Markdown source separately: rendered text cannot reconstruct stream deltas. */
+function setAssistantText(bubble, text) {
+  bubble.markdownSource = text;
+  bubble.classList.add("markdown-body");
+  // Only the bundled parser may produce HTML here; raw HTML and unsafe URLs
+  // are disabled in its shared configuration for every response transport.
+  bubble.innerHTML = harnestMarkdown.render(text);
 }
 
 /** Show an activity indicator until the runtime supplies a concrete event. */
@@ -1513,10 +1523,11 @@ function appendStreamingText(delta) {
   closeThinkingBoundary();
   if (!runtime.streamingBubble) runtime.streamingBubble = takeTypingBubble() || appendTurn("assistant");
   runtime.responseAssistantTurn = runtime.streamingBubble.closest(".turn");
-  runtime.streamingBubble.textContent += delta;
+  setAssistantText(runtime.streamingBubble, (runtime.streamingBubble.markdownSource || "") + delta);
   scrollConversation();
 }
 
+/** Complete the visible segment without duplicating text across tool boundaries. */
 function finishStreamingOutput(frame) {
   closeThinkingBoundary();
   if (frame.status === "requires_action") {
@@ -1531,7 +1542,7 @@ function finishStreamingOutput(frame) {
   } else if (frame.outputText && !runtime.responseAssistantTurn) {
     const bubble = takeTypingBubble() || appendTurn("assistant");
     runtime.responseAssistantTurn = bubble.closest(".turn");
-    bubble.textContent = frame.outputText;
+    setAssistantText(bubble, frame.outputText);
   } else {
     clearTypingIndicator();
   }

@@ -232,13 +232,14 @@ func (a *application) newServeCommand() *cobra.Command {
 }
 
 type serveOptions struct {
-	output, host   string
-	port           int
-	requestTimeout float64
-	maxConcurrency int
-	allowRemote    bool
-	reload         bool
-	overrides      serveOverrides
+	playgroundAssets string
+	output, host     string
+	port             int
+	requestTimeout   float64
+	maxConcurrency   int
+	allowRemote      bool
+	reload           bool
+	overrides        serveOverrides
 }
 
 type serveOverrides struct {
@@ -285,7 +286,14 @@ func (o serveOptions) validateReload() error {
 }
 
 // serveBundle selects one-shot execution unless development reload is explicit.
+// serveBundle lends CLI assets only for the lifetime of the local server or reload supervisor.
 func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, options serveOptions) error {
+	assets, releaseAssets, err := stagePlayground()
+	if err != nil {
+		return err
+	}
+	defer releaseAssets()
+	options.playgroundAssets = assets
 	if options.reload {
 		return a.serveReload(command, bundle, options)
 	}
@@ -402,6 +410,9 @@ func compiledLauncher(artifact string) (string, error) {
 // arguments forces loopback host ownership when the reload supervisor is active.
 func (o serveOptions) arguments(launcher string) []string {
 	args := []string{launcher, "serve"}
+	if o.playgroundAssets != "" {
+		args = append(args, "--playground-assets", o.playgroundAssets)
+	}
 	if o.reload || o.overrides.host {
 		args = append(args, "--host", o.host)
 	}

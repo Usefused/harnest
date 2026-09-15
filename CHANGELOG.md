@@ -29,6 +29,12 @@
 
 ### Fixes
 
+* Render playground agent replies as safe Markdown, including streamed responses
+  and restored sessions. Keep playground assets and the parser in the local CLI,
+  outside production runtime wheels and compiled agents; deployed launchers no
+  longer expose the playground by default. Local `harnest serve` retains the UI
+  and honors `server.playground.enabled: false`.
+
 * Remove the Procrastinate task/cron backend, implicit PostgreSQL fallback, and
   queue-library dependency injection. Queued tasks require an explicit
   `lifecycle.storage.tasks` provider; recurring work also requires the same

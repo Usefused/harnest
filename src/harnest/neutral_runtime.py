@@ -948,7 +948,11 @@ def create_neutral_app(
     lifecycle_extensions: Sequence[Any] = (),
     playground_eval_service: Any | None = None,
 ) -> Any:
-    """Build a neutral app with explicit live policy and compatible embedding defaults."""
+    """Build a neutral app; expose development routes only when UI assets exist."""
+
+    from .playground import playground_available
+
+    playground_enabled = playground_enabled and playground_available()
 
     try:
         from fastapi import FastAPI

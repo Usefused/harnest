@@ -755,7 +755,7 @@ def create_fastapi_app(
     langgraph_session_store: SessionStore | None = None,
     authenticator: Authenticator | None = None,
 ) -> Any:
-    """Build a server with explicit transport and principal policy."""
+    """Build a server with explicit policy and no UI when production assets are absent."""
 
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
@@ -767,6 +767,9 @@ def create_fastapi_app(
         raise TypeError("live_enabled must be boolean")
     if not isinstance(playground_enabled, bool):
         raise TypeError("playground_enabled must be boolean")
+    from .playground import playground_available
+
+    playground_enabled = playground_enabled and playground_available()
     if not isinstance(agent_principal_required, bool):
         raise TypeError("agent_principal_required must be boolean")
     application = load_compiled_application(artifact)
@@ -1132,6 +1135,7 @@ def _runtime_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--request-timeout", type=float, default=None)
     serve.add_argument("--max-concurrency", type=int, default=None)
+    serve.add_argument("--playground-assets", type=Path, default=None, help=argparse.SUPPRESS)
     serve.add_argument(
         "--allow-remote",
         action="store_true",
@@ -1160,17 +1164,34 @@ def _load_server(args: Any) -> tuple[Any, Any]:
         raise ServerConfigError(
             "non-loopback binds require http.allowRemote: true in server.yaml"
         )
-    application = create_fastapi_app(
-        args.artifact,
+    application = _create_server_app(args, server)
+    return application, http
+
+
+def _create_server_app(args: Any, server: Any) -> Any:
+    """Only the local CLI lends assets; a deployed launcher never enables UI by default."""
+
+    from .playground import playground_assets
+
+    directory = getattr(args, "playground_assets", None)
+    with playground_assets(directory):
+        return _create_configured_app(args.artifact, server, directory is not None)
+
+
+def _create_configured_app(artifact: Path, server: Any, development: bool) -> Any:
+    """Apply the compiled HTTP policy without making UI a production dependency."""
+
+    http = server.http
+    return create_fastapi_app(
+        artifact,
         bind_host=http.host,
         request_timeout=http.request_timeout_seconds,
         max_concurrency=http.max_concurrent_requests,
         max_request_bytes=server.limits.max_request_bytes,
-        playground_enabled=server.playground.enabled,
+        playground_enabled=development and server.playground.enabled,
         live_enabled=server.live,
         agent_principal_required=server.agent_principal == "required",
     )
-    return application, http
 
 
 def _serve_command(args: Any) -> int:
