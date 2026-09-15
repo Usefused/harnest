@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.21.2](https://github.com/Usefused/harnest/compare/v0.21.1...v0.21.2) (2026-09-15)
 
 ### Fixes
 
@@ -9,6 +9,10 @@
   developer operations available through `context.mcp` without extra model tools,
   with structured results in both ADK and LangGraph.
   Keep ADK helper schema names aligned with their registered namespaced names.
+
+### Fixes
+
+* **mcp:** expose only advertised model capabilities ([faea73b](https://github.com/Usefused/harnest/commit/faea73bcc6ebf5fe866299890d5623e8ffc4fcac))
 
 ## [0.21.1](https://github.com/Usefused/harnest/compare/v0.21.0...v0.21.1) (2026-09-15)
 
