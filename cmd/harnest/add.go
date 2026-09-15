@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,6 +15,8 @@ import (
 )
 
 var agentResourceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
+var environmentVariableNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+var httpHeaderNamePattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 var pythonReservedNames = map[string]bool{
 	"and": true, "as": true, "assert": true, "async": true, "await": true,
@@ -34,6 +38,15 @@ type agentResourceScaffold struct {
 	Next        func(string) string
 }
 
+type addMCPOptions struct {
+	Project     string
+	URL         string
+	Transport   string
+	TokenEnv    string
+	TokenHeader string
+	TokenPrefix string
+}
+
 // newAddCommand groups incremental resource scaffolds for minimal agents.
 func (a *application) newAddCommand() *cobra.Command {
 	command := &cobra.Command{
@@ -48,7 +61,116 @@ dedicated extensions, plugins, and skills commands for packaged resources.`,
 	for _, scaffold := range agentResourceScaffolds() {
 		command.AddCommand(a.newAddResourceCommand(scaffold))
 	}
+	command.AddCommand(a.newAddMCPCommand())
 	return command
+}
+
+// newAddMCPCommand scaffolds one remote connection without accepting secret values.
+func (a *application) newAddMCPCommand() *cobra.Command {
+	options := addMCPOptions{}
+	command := &cobra.Command{
+		Use:   "mcp NAME",
+		Short: "Add a remote MCP client connection",
+		Long: `Add a Streamable HTTP or legacy SSE MCP connection to a managed agent.
+
+The command stores only an environment-variable reference, never a token value.
+Choose the destination header and token prefix to match the server's auth scheme.`,
+		Example: `  harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN
+  harnest add mcp internal --url https://mcp.example.com/mcp --token-env INTERNAL_KEY --token-header X-API-Key --token-prefix=`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, arguments []string) error {
+			if err := options.validate(
+				command.Flags().Changed("token-header"),
+				command.Flags().Changed("token-prefix"),
+			); err != nil {
+				return err
+			}
+			created, normalized, err := addMCPResource(
+				options, arguments[0],
+			)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Added mcp %q at %s\n", normalized, created)
+			if options.TokenEnv == "" {
+				fmt.Fprintln(command.OutOrStdout(), "Next: run `harnest test .` from the agent folder")
+			} else {
+				fmt.Fprintf(
+					command.OutOrStdout(),
+					"Next: export %s, then run `harnest test .` from the agent folder\n",
+					options.TokenEnv,
+				)
+			}
+			return nil
+		},
+	}
+	flags := command.Flags()
+	flags.StringVar(&options.Project, "project", ".", "Harnest agent root containing config.yaml")
+	flags.StringVar(&options.URL, "url", "", "remote MCP server URL")
+	flags.StringVar(&options.Transport, "transport", "streamable-http", "HTTP transport: streamable-http or sse")
+	flags.StringVar(&options.TokenEnv, "token-env", "", "environment variable containing the token")
+	flags.StringVar(&options.TokenHeader, "token-header", "Authorization", "HTTP header that receives the token")
+	flags.StringVar(&options.TokenPrefix, "token-prefix", "Bearer ", "text placed before the token; use --token-prefix= for a raw token")
+	return command
+}
+
+// validate rejects unsafe or ineffective remote MCP settings before filesystem writes.
+func (options addMCPOptions) validate(headerChanged, prefixChanged bool) error {
+	if err := validateRemoteMCPURL(options.URL); err != nil {
+		return err
+	}
+	if options.Transport != "streamable-http" && options.Transport != "sse" {
+		return fmt.Errorf("--transport must be streamable-http or sse")
+	}
+	return options.validateToken(headerChanged, prefixChanged)
+}
+
+// validateToken keeps auth settings explicit while allowing public MCP servers.
+func (options addMCPOptions) validateToken(headerChanged, prefixChanged bool) error {
+	if options.TokenEnv == "" {
+		if headerChanged || prefixChanged {
+			return fmt.Errorf("--token-header and --token-prefix require --token-env")
+		}
+		return nil
+	}
+	if !environmentVariableNamePattern.MatchString(options.TokenEnv) {
+		return fmt.Errorf("--token-env must name an uppercase environment variable")
+	}
+	if !httpHeaderNamePattern.MatchString(options.TokenHeader) {
+		return fmt.Errorf("--token-header must be a valid HTTP header name")
+	}
+	if len(options.TokenPrefix) > 128 || strings.ContainsAny(options.TokenPrefix, "\r\n") {
+		return fmt.Errorf("--token-prefix must be at most 128 characters without newlines")
+	}
+	return nil
+}
+
+// validateRemoteMCPURL permits explicit HTTP transports without embedded credentials.
+func validateRemoteMCPURL(raw string) error {
+	if raw == "" || raw != strings.TrimSpace(raw) {
+		return fmt.Errorf("--url must be a non-empty HTTP or HTTPS URL")
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("--url must be a valid HTTP or HTTPS URL")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("--url must not contain credentials; use --token-env")
+	}
+	return nil
+}
+
+// addMCPResource reuses the standard project, mode, path, and collision policy.
+func addMCPResource(
+	options addMCPOptions, requestedName string,
+) (string, string, error) {
+	scaffold := agentResourceScaffold{
+		Kind: "mcp", Directory: "mcp", ManagedOnly: true,
+		Source: func(name string) string {
+			return mcpResourceSource(name, options)
+		},
+	}
+	return addAgentResource(options.Project, requestedName, scaffold)
 }
 
 // newAddResourceCommand binds shared project and collision policy to one kind.
@@ -302,4 +424,31 @@ def %s():
     """Create one invocation-scoped %s value."""
     return {}
 `, name, name, strings.ReplaceAll(name, "_", " "))
+}
+
+// mcpResourceSource emits only configuration and an environment placeholder.
+func mcpResourceSource(name string, options addMCPOptions) string {
+	constructor := strings.ReplaceAll(options.Transport, "-", "_")
+	headers := ""
+	if options.TokenEnv != "" {
+		value := options.TokenPrefix + "${" + options.TokenEnv + "}"
+		headers = fmt.Sprintf(
+			"\n        headers={%s: %s},",
+			strconv.Quote(options.TokenHeader),
+			strconv.Quote(value),
+		)
+	}
+	return fmt.Sprintf(`"""Connect to the %s MCP server."""
+
+from harnest.mcp import MCPClient
+
+
+def client() -> MCPClient:
+    """Create the remote MCP client from non-secret authored configuration."""
+
+    return MCPClient.%s(
+        %s,%s
+        prefix=%s,
+    )
+`, strings.ReplaceAll(name, "_", " "), constructor, strconv.Quote(options.URL), headers, strconv.Quote(name))
 }

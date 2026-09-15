@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import os
 import sys
@@ -21,6 +21,46 @@ from harnest.server_config import (
 
 
 class ServerConfigTests(unittest.TestCase):
+    def test_openapi_policy_defaults_and_environment_references(self):
+        """Keep old artifacts enabled while allowing strict deployment-time opt-out."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.yaml"
+            path.write_text(DEFAULT_SERVER_YAML.replace("openapi: true\n", ""), encoding="utf-8")
+            self.assertTrue(load_server_config(path).openapi)
+            path.write_text(DEFAULT_SERVER_YAML.replace("openapi: true", "openapi: ${API_DOCS}"), encoding="utf-8")
+            self.assertFalse(load_server_config(path, environment={"API_DOCS": "false"}).openapi)
+            with self.assertRaises(ServerConfigError):
+                load_server_config(path, environment={"API_DOCS": "nope"})
+
+    def test_api_startup_urls_follow_effective_host_port_and_visibility(self):
+        """Print discoverable resources only when enabled, including usable IPv6 URLs."""
+        from harnest.runtime_openapi import announce_openapi
+
+        for host, authority in (("localhost", "localhost"), ("0.0.0.0", "127.0.0.1"), ("::", "[::1]")):
+            stream = StringIO()
+            app = SimpleNamespace(state=SimpleNamespace(openapi_enabled=True))
+            with redirect_stdout(stream):
+                announce_openapi(app, host=host, port=9123)
+            for path in ("/docs", "/openapi.json", "/openapi.yaml"):
+                self.assertIn(f"http://{authority}:9123{path}", stream.getvalue())
+        stream = StringIO()
+        app.state.openapi_enabled = False
+        with redirect_stdout(stream):
+            announce_openapi(app, host="localhost", port=9123)
+        self.assertEqual(stream.getvalue(), "")
+
+    def test_default_port_and_generated_config_use_1907(self):
+        """Keep implicit serving and newly materialized configuration aligned."""
+        from harnest.server_config import HTTPServerConfig
+
+        self.assertEqual(HTTPServerConfig().port, 1907)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.yaml"
+            path.write_text(DEFAULT_SERVER_YAML, encoding="utf-8")
+            self.assertEqual(load_server_config(path).http.port, 1907)
+            path.write_text(DEFAULT_SERVER_YAML.replace("1907", "8080"), encoding="utf-8")
+            self.assertEqual(load_server_config(path).http.port, 8080)
+
     def test_compiled_launcher_requires_cli_assets_to_enable_playground(self):
         """Even an enabled server preference cannot ship UI in a deployed launcher."""
         from harnest.runtime import _create_server_app
@@ -38,7 +78,7 @@ class ServerConfigTests(unittest.TestCase):
             path = Path(directory) / "server.yaml"
             path.write_text(
                 DEFAULT_SERVER_YAML.replace("1MiB", "10MiB")
-                .replace("port: 8080", "port: 9090")
+                .replace("port: 1907", "port: 9090")
                 .replace("enabled: true", "enabled: false"),
                 encoding="utf-8",
             )
@@ -116,7 +156,7 @@ class ServerConfigTests(unittest.TestCase):
 
             templated = root / "templated.yaml"
             template_contents = DEFAULT_SERVER_YAML.replace(
-                "port: 8080", "port: ${PORT}"
+                "port: 1907", "port: ${PORT}"
             )
             templated.write_text(template_contents, encoding="utf-8")
             templated_copy = root / "templated-copy.yaml"
@@ -128,7 +168,7 @@ class ServerConfigTests(unittest.TestCase):
     def test_resolves_exact_environment_references_for_all_scalar_types(self):
         contents = (
             DEFAULT_SERVER_YAML.replace("host: 127.0.0.1", "host: ${HOST}")
-            .replace("port: 8080", "port: ${PORT}")
+            .replace("port: 1907", "port: ${PORT}")
             .replace("allowRemote: false", "allowRemote: ${ALLOW_REMOTE}")
             .replace(
                 "requestTimeoutSeconds: 300", "requestTimeoutSeconds: ${TIMEOUT}"
@@ -163,7 +203,7 @@ class ServerConfigTests(unittest.TestCase):
         self.assertTrue(config.playground.enabled)
 
     def test_environment_failures_name_reference_and_field_without_value(self):
-        contents = DEFAULT_SERVER_YAML.replace("port: 8080", "port: ${PORT}")
+        contents = DEFAULT_SERVER_YAML.replace("port: 1907", "port: ${PORT}")
         cases = {
             "missing": ({}, "unset"),
             "empty": ({"PORT": "  "}, "empty"),
@@ -206,7 +246,7 @@ class ServerConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory)
             (artifact / "server.yaml").write_text(
-                DEFAULT_SERVER_YAML.replace("port: 8080", "port: ${SERVER_PORT}")
+                DEFAULT_SERVER_YAML.replace("port: 1907", "port: ${SERVER_PORT}")
                 .replace("1MiB", "${SERVER_MAX_BYTES}")
                 .replace("enabled: true", "enabled: ${SERVER_PLAYGROUND}")
                 .replace("agentPrincipal: optional", "agentPrincipal: required"),
@@ -245,7 +285,7 @@ class ServerConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory)
             (artifact / "server.yaml").write_text(
-                DEFAULT_SERVER_YAML.replace("port: 8080", "port: ${SERVER_PORT}"),
+                DEFAULT_SERVER_YAML.replace("port: 1907", "port: ${SERVER_PORT}"),
                 encoding="utf-8",
             )
             stderr = StringIO()

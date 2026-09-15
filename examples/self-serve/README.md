@@ -117,13 +117,13 @@ another terminal, inspect the agent, create a session, and run an agent turn
 through Harnest's neutral API:
 
 ```bash
-curl -sS http://127.0.0.1:8080/agent
+curl -sS http://127.0.0.1:1907/agent
 
-curl -sS -X POST http://127.0.0.1:8080/sessions \
+curl -sS -X POST http://127.0.0.1:1907/sessions \
   -H 'Content-Type: application/json' \
   --data '{"id":"demo-session","state":{}}'
 
-curl -sS -X POST http://127.0.0.1:8080/responses \
+curl -sS -X POST http://127.0.0.1:1907/responses \
   -H 'Content-Type: application/json' \
   --data '{"input":"Triage a fictional production API authentication outage.","sessionId":"demo-session"}'
 ```
@@ -133,7 +133,7 @@ provider-neutral `output` items, and `metadata`. Reuse the session for a
 follow-up, or set `stream: true` for named SSE events:
 
 ```bash
-curl -N -sS -X POST http://127.0.0.1:8080/responses \
+curl -N -sS -X POST http://127.0.0.1:1907/responses \
   -H 'Content-Type: application/json' \
   --data '{"input":"What should I collect next?","sessionId":"demo-session","stream":true}'
 ```
@@ -156,8 +156,8 @@ WebSocket stream starts use a typed `error` event. The matching helpers are
 Health and Agent Card discovery are also available:
 
 ```bash
-curl -sS http://127.0.0.1:8080/healthz
-curl -sS http://127.0.0.1:8080/.well-known/agent-card.json
+curl -sS http://127.0.0.1:1907/healthz
+curl -sS http://127.0.0.1:1907/.well-known/agent-card.json
 ```
 
 This managed example exposes only Harnest's neutral routes. Advanced-mode ADK

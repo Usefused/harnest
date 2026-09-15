@@ -221,25 +221,29 @@ subagent owns private resources.
 
 Optional: Yes. Delete this folder if the agent has no direct MCP connections.
 
-Add one public Python file per connection. Its zero-argument ` + "`client()`" + ` factory
-must return MCPClient. For example, ` + "`mcp/knowledge.py`" + ` can contain:
+Start with ` + "`harnest add mcp knowledge --url https://mcp.example.com/mcp`" + `.
+Add ` + "`--token-env KNOWLEDGE_MCP_TOKEN`" + ` for bearer authentication, or
+choose ` + "`--token-header`" + ` and ` + "`--token-prefix`" + ` to match the server.
+The command writes only an environment placeholder, never the token value.
+
+Each public Python file is one connection. Its zero-argument ` + "`client()`" + ` factory
+must return MCPClient. The equivalent authored ` + "`mcp/knowledge.py`" + ` can contain:
 
 ` + "```python" + `
-import os
-
 from harnest.mcp import MCPClient
 
 
 def client():
     """Connect to the configured knowledge server."""
     return MCPClient.streamable_http(
-        os.environ["KNOWLEDGE_MCP_URL"],
+        "https://mcp.example.com/mcp",
+        headers={"Authorization": "Bearer ${KNOWLEDGE_MCP_TOKEN}"},
         prefix="knowledge",
     )
 ` + "```" + `
 
 The filename is the client identity. Keep credentials in the runtime
-environment, never in source.
+environment, never in source or command history.
 `,
 		"extensions": `# Harnest Extensions
 

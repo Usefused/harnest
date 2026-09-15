@@ -62,12 +62,13 @@ def playground_available() -> bool:
 def create_playground_router(
     trace_store: PlaygroundTraceStore | None = None,
     eval_service: PlaygroundEvalService | None = None,
+    *, openapi_enabled: bool = True,
 ) -> Any:
     """Capture development asset ownership before handling asynchronous requests."""
 
     try:
         from fastapi import APIRouter, HTTPException
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse, HTMLResponse
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("The development playground requires FastAPI") from exc
 
@@ -76,9 +77,15 @@ def create_playground_router(
 
     @router.get("/", include_in_schema=False)
     async def playground() -> Any:
-        return FileResponse(
-            directory / "index.html",
-            media_type="text/html",
+        """Omit disabled API links even before JavaScript loads."""
+
+        contents = (directory / "index.html").read_text(encoding="utf-8")
+        if not openapi_enabled:
+            before, _, remainder = contents.partition("<!-- openapi:start -->")
+            _, _, after = remainder.partition("<!-- openapi:end -->")
+            contents = before + after
+        return HTMLResponse(
+            contents,
             headers=_headers(cache=False),
         )
 

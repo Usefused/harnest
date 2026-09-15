@@ -384,7 +384,7 @@ spec:
 description: A self-contained Harnest agent.
 version: 0.1.0
 supportedInterfaces:
-  - url: http://127.0.0.1:8080
+  - url: http://127.0.0.1:1907
     protocolBinding: HTTP+JSON
     protocolVersion: "1.0"
 capabilities:
@@ -441,10 +441,13 @@ def echo(message: str) -> str:
 		"cron/_README.md":   optionalFolderGuide("cron", mode),
 		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
 `,
-		"mcp/_README.md": `Add direct MCP client connections here. Each public file exports a
-zero-argument client() factory returning MCPClient; its filename is the client
-identity. Package reusable skills, declarative MCP servers, or both under
-plugins/<name>/ with an Agent Plugins 1.0 plugin.json manifest.
+		"mcp/_README.md": `Run harnest add mcp NAME --url URL to scaffold a direct connection. Add
+--token-env ENV for bearer authentication, or choose --token-header and
+--token-prefix to match the server. The command stores only an environment
+placeholder. Each public file exports a zero-argument client() factory returning
+MCPClient; its filename is the client identity. Package reusable skills,
+declarative MCP servers, or both under plugins/<name>/ with an Agent Plugins 1.0
+plugin.json manifest.
 `,
 		"plugins/starter/plugin.json": `{
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",

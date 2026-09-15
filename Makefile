@@ -3,7 +3,7 @@ GOCACHE ?= $(CURDIR)/.cache/go-build
 OPENAI_BASE_URL ?= https://models.example.invalid/v1
 OPENAI_MODEL ?= your-model
 COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
-AGENT_URL ?= http://127.0.0.1:8080
+AGENT_URL ?= http://127.0.0.1:1907
 DEMO_SESSION_ID ?= demo-session
 
 .PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test

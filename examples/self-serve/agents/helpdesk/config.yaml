@@ -45,5 +45,5 @@ spec:
 server:
   live: false
   http:
-    port: 8080
+    port: 1907
     maxConcurrentRequests: 8

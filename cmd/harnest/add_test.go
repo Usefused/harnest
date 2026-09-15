@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,76 @@ func TestAddResourcesBuildsUpMinimalAgent(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected duplicate resource error, got %v", err)
+	}
+}
+
+// TestAddMCPScaffoldsAuthChoices validates secure remote-client generation and flags.
+func TestAddMCPScaffoldsAuthChoices(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "mcp-agent")
+	if _, _, err := executeForTest(t, defaultSystem(), "init", root, "--minimal"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := executeForTest(
+		t, defaultSystem(), "add", "mcp", "orders", "--project", root,
+		"--url", "http://127.0.0.1:28081/mcp/orders",
+		"--token-env", "ORDERS_MCP_TOKEN",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "default MCP output", stdout, []string{
+		`Added mcp "orders"`, "export ORDERS_MCP_TOKEN", "harnest test .",
+	})
+	orders := string(mustReadTestFile(t, filepath.Join(root, "mcp", "orders.py")))
+	assertContainsAll(t, "default MCP source", orders, []string{
+		"from harnest.mcp import MCPClient",
+		"MCPClient.streamable_http(",
+		`"http://127.0.0.1:28081/mcp/orders"`,
+		`headers={"Authorization": "Bearer ${ORDERS_MCP_TOKEN}"}`,
+		`prefix="orders"`,
+	})
+
+	_, _, err = executeForTest(
+		t, defaultSystem(), "add", "mcp", "internal", "--project", root,
+		"--url", "https://mcp.example.com/events", "--transport", "sse",
+		"--token-env", "INTERNAL_KEY", "--token-header", "X-API-Key",
+		"--token-prefix=",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal := string(mustReadTestFile(t, filepath.Join(root, "mcp", "internal.py")))
+	assertContainsAll(t, "custom MCP source", internal, []string{
+		"MCPClient.sse(", `headers={"X-API-Key": "${INTERNAL_KEY}"}`,
+	})
+
+	_, _, err = executeForTest(
+		t, defaultSystem(), "add", "mcp", "public", "--project", root,
+		"--url", "https://mcp.example.com/public",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := string(mustReadTestFile(t, filepath.Join(root, "mcp", "public.py")))
+	if strings.Contains(public, "headers=") {
+		t.Fatalf("unauthenticated MCP source unexpectedly contains headers:\n%s", public)
+	}
+
+	invalid := [][]string{
+		{},
+		{"--url", "ftp://mcp.example.com"},
+		{"--url", "https://secret@mcp.example.com", "--token-env", "TOKEN"},
+		{"--url", "https://mcp.example.com", "--transport", "websocket"},
+		{"--url", "https://mcp.example.com", "--token-env", "actual-secret"},
+		{"--url", "https://mcp.example.com", "--token-env", "TOKEN", "--token-header", "Bad Header"},
+		{"--url", "https://mcp.example.com", "--token-header", "X-API-Key"},
+	}
+	for index, arguments := range invalid {
+		command := []string{"add", "mcp", fmt.Sprintf("invalid-%d", index), "--project", root}
+		command = append(command, arguments...)
+		if _, _, err := executeForTest(t, defaultSystem(), command...); err == nil {
+			t.Fatalf("invalid MCP arguments were accepted: %v", arguments)
+		}
 	}
 }
 
@@ -107,6 +178,12 @@ func TestAddResourceHonorsFrameworkOwnership(t *testing.T) {
 		t, defaultSystem(), "add", "tool", "lookup", "--project", advanced,
 	); err == nil || !strings.Contains(err.Error(), "requires managed mode") {
 		t.Fatalf("expected advanced ownership error, got %v", err)
+	}
+	if _, _, err := executeForTest(
+		t, defaultSystem(), "add", "mcp", "catalog", "--project", advanced,
+		"--url", "https://mcp.example.com/mcp",
+	); err == nil || !strings.Contains(err.Error(), "requires managed mode") {
+		t.Fatalf("expected advanced MCP ownership error, got %v", err)
 	}
 
 	langgraph := filepath.Join(t.TempDir(), "langgraph-agent")

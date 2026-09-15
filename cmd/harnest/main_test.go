@@ -18,7 +18,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--minimal", "--example", "harnest add subagent", "harnest add tool", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--minimal", "--example", "harnest add mcp", "harnest add subagent", "harnest add tool", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}

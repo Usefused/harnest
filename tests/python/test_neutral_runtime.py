@@ -1856,6 +1856,85 @@ class NeutralRuntimeTests(unittest.TestCase):
             400,
         )
 
+    def test_openapi_examples_can_start_stream_and_continue_a_conversation(self):
+        """Exercise the documented requests against the actual HTTP coordinator."""
+        schema = self.client.get("/openapi.json").json()
+        operation = schema["paths"]["/responses"]["post"]
+        self.assertEqual(schema["tags"][0]["name"], "Responses")
+        self.assertEqual(operation["operationId"], "createAgentResponse")
+        self.assertIn("/openapi.json", schema["info"]["description"])
+        self.assertEqual(self.client.get("/agent").json()["endpoints"]["openapi"], "/openapi.json")
+        examples = operation["requestBody"]["content"]["application/json"]["examples"]
+        response = self.client.post("/responses", json=examples["newConversation"]["value"])
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        required = operation["responses"]["200"]["content"]["application/json"]["schema"]["required"]
+        self.assertTrue(set(required) <= body.keys())
+        follow_up = dict(examples["followUp"]["value"], sessionId=body["sessionId"])
+        continued = self.client.post("/responses", json=follow_up)
+        self.assertEqual(continued.status_code, 200)
+        self.assertEqual(continued.json()["sessionId"], body["sessionId"])
+        streamed = self.client.post("/responses", json=examples["stream"]["value"])
+        self.assertEqual(streamed.status_code, 200)
+        self.assertIn("event: response.completed", streamed.text)
+
+    def test_openapi_json_and_yaml_are_equivalent_discoverable_resources(self):
+        """Let clients choose a serialization without losing authored route schemas."""
+        import yaml
+        from fastapi import APIRouter
+
+        app = create_neutral_app(FakeDriver())
+        router = APIRouter()
+
+        @router.get("/business/status")
+        async def business_status() -> dict[str, str]:
+            """Expose a typed route to verify the exported spec is application-wide."""
+            return {"status": "ok"}
+
+        app.include_router(router)
+        with TestClient(app) as client:
+            document = client.get("/openapi.json").json()
+            exported = client.get("/openapi.yaml")
+            resources = client.get("/agent").json()["resources"]
+        self.assertEqual(yaml.safe_load(exported.text), document)
+        self.assertIn("/business/status", document["paths"])
+        self.assertEqual(exported.headers["content-type"], "application/yaml")
+        self.assertEqual({item["uri"] for item in resources}, {"/openapi.json", "/openapi.yaml"})
+
+    def test_disabled_openapi_removes_routes_links_and_discovery_not_invocation(self):
+        """Hiding docs must remove access to the specs, not merely hide navigation."""
+        with TestClient(create_neutral_app(FakeDriver(), openapi_enabled=False)) as client:
+            for path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json", "/openapi.yaml"):
+                with self.subTest(path=path):
+                    self.assertEqual(client.get(path).status_code, 404)
+            discovery = client.get("/agent").json()
+            self.assertEqual(discovery["resources"], [])
+            self.assertFalse({"docs", "openapi", "openapiYaml"} & discovery["endpoints"].keys())
+            page = client.get("/")
+            self.assertEqual(page.status_code, 200)
+            self.assertNotIn('href="/docs"', page.text)
+            self.assertNotIn('href="/openapi.', page.text)
+            self.assertIn('href="/agent"', page.text)
+            self.assertEqual(client.post("/responses", json={"input": "hello"}).status_code, 200)
+
+    def test_yaml_spec_keeps_the_same_authentication_as_json(self):
+        """Offering another serialization must not create an authentication bypass."""
+        with TestClient(create_neutral_app(FakeDriver(), authenticator=HeaderAuthenticator())) as client:
+            for path in ("/openapi.json", "/openapi.yaml"):
+                self.assertEqual(client.get(path).status_code, 401)
+
+    def test_openapi_typed_input_references_resolve_from_document_root(self):
+        """Keep authored schemas resolvable without advertising invalid text input."""
+        with TestClient(create_neutral_app(StructuredInputDriver())) as client:
+            document = client.get("/openapi.json").json()
+        media = document["paths"]["/responses"]["post"]["requestBody"]["content"]["application/json"]
+        self.assertNotIn("examples", media)
+        reference = media["schema"]["properties"]["input"]["$ref"]
+        resolved = document
+        for part in reference.removeprefix("#/").split("/"):
+            resolved = resolved[part.replace("~1", "/").replace("~0", "~")]
+        self.assertIn("query", resolved["properties"])
+
     def test_structured_input_is_shared_by_json_sse_and_websocket(self):
         driver = StructuredInputDriver()
         with TestClient(create_neutral_app(driver)) as client:

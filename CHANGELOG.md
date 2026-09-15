@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add `harnest add mcp` for safe Streamable HTTP and SSE connection scaffolding.
+  Users choose the token environment variable, destination HTTP header, and
+  value prefix without passing or persisting the secret itself. Reject embedded
+  URL credentials and MCP files that advanced-mode projects would ignore.
+
+### Fixes
+
+* Make `harnest doctor [AGENT_DIR]` detect the agent's framework and inspect its
+  synchronized environment instead of assuming ADK in the shared runtime.
+  Outside an agent, check core dependencies unless `--framework` is specified.
+  Add discoverable response examples and schemas to OpenAPI and a curl quickstart
+  to the API docs, including session reuse and streaming.
+  Expose equivalent JSON/YAML OpenAPI resources through `/agent` and startup
+  URLs. Let `server.openapi: false` disable both specs, documentation pages,
+  and their playground/discovery links without disabling the agent API.
+
+### Changed
+
+* Default the agent HTTP port to `1907` in the CLI, runtime, new agent cards,
+  and examples. Explicit configured ports and `--port` overrides are unchanged.
+
 ## [0.19.0](https://github.com/Usefused/harnest/compare/v0.18.3...v0.19.0) (2026-09-15)
 
 ### Features

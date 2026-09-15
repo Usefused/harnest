@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,7 +29,7 @@ dependencies = [
 ]
 if framework == "adk":
     dependencies.append(("google.adk", "google-adk"))
-else:
+elif framework == "langgraph":
     dependencies.extend((
         ("langgraph", "langgraph"),
         ("langchain", "langchain"),
@@ -74,30 +76,37 @@ type doctorPackage struct {
 	Error   string `json:"error"`
 }
 
+// newDoctorCommand inspects core packages or an agent's existing environment.
 func (a *application) newDoctorCommand() *cobra.Command {
 	var framework string
 	command := &cobra.Command{
-		Use:   "doctor",
+		Use:   "doctor [AGENT_DIR]",
 		Short: "Diagnose the Go CLI, Python runtime, and required packages",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			return a.runDoctor(command, framework)
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, arguments []string) error {
+			return a.runDoctor(command, arguments, framework)
 		},
 	}
-	command.Flags().StringVar(&framework, "framework", "adk", "framework dependencies to diagnose: adk or langgraph")
+	command.Flags().StringVar(&framework, "framework", "", "framework dependencies: adk or langgraph (default: agent framework, otherwise core only)")
 	return command
 }
 
-func (a *application) runDoctor(command *cobra.Command, framework string) error {
-	if framework != "adk" && framework != "langgraph" {
+// runDoctor reports the selected environment without installing dependencies.
+func (a *application) runDoctor(command *cobra.Command, arguments []string, framework string) error {
+	if framework != "" && framework != "adk" && framework != "langgraph" {
 		return fmt.Errorf("--framework must be adk or langgraph")
 	}
 	writer := command.OutOrStdout()
 	fmt.Fprintf(writer, "[ok] Go CLI: harnest %s\n", a.version)
-	python, err := a.resolvePython()
+	python, framework, err := a.doctorPython(arguments, framework)
 	if err != nil {
 		fmt.Fprintf(writer, "[fail] Python runtime: %v\n", err)
 		return fmt.Errorf("doctor found a Python runtime problem")
+	}
+	if framework == "" {
+		fmt.Fprintln(writer, "Checking core runtime only; use doctor AGENT_DIR to check an agent.")
+	} else {
+		fmt.Fprintf(writer, "Checking %s framework dependencies.\n", framework)
 	}
 	result, err := a.probePython(command, python, framework)
 	if err != nil {
@@ -105,12 +114,78 @@ func (a *application) runDoctor(command *cobra.Command, framework string) error 
 	}
 	problems := writeDoctorResult(writer, python, result)
 	if problems != 0 {
+		fmt.Fprintln(writer, "For an agent, run harnest env sync AGENT_DIR, then harnest doctor AGENT_DIR.")
 		return fmt.Errorf("doctor found %d problem(s)", problems)
 	}
 	fmt.Fprintln(writer, "Harnest is ready.")
 	return nil
 }
 
+// doctorPython detects the project while preserving explicit interpreter choices.
+func (a *application) doctorPython(arguments []string, framework string) (pythonSelection, string, error) {
+	directory, err := doctorProjectDirectory(arguments)
+	if err != nil {
+		return pythonSelection{}, framework, err
+	}
+	if directory != "" {
+		bundle, err := loadAgentBundle(directory)
+		if err != nil {
+			return pythonSelection{}, framework, err
+		}
+		if framework == "" {
+			framework = bundle.Config.Spec.Framework.Name
+		}
+	}
+	if directory == "" || strings.TrimSpace(a.pythonFlag) != "" || strings.TrimSpace(a.system.getenv("HARNEST_PYTHON")) != "" {
+		python, err := a.resolvePython()
+		return python, framework, err
+	}
+	python, err := existingDoctorEnvironment(directory)
+	return python, framework, err
+}
+
+// doctorProjectDirectory treats an explicit target as mandatory and auto-detects cwd.
+func doctorProjectDirectory(arguments []string) (string, error) {
+	if len(arguments) != 0 {
+		return filepath.Abs(arguments[0])
+	}
+	directory, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(directory, "config.yaml")); os.IsNotExist(err) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	return directory, nil
+}
+
+// existingDoctorEnvironment reads the published runtime without syncing or pruning it.
+func existingDoctorEnvironment(directory string) (pythonSelection, error) {
+	root := filepath.Join(directory, ".harnest")
+	// Serve and eval may have synced their own profile before runtime was used.
+	for _, profile := range environmentProfiles {
+		paths := environmentPaths{root: root, state: filepath.Join(root, profile.stateFile())}
+		if python, found := publishedDoctorEnvironment(paths); found {
+			python.Source = fmt.Sprintf("agent %s environment", profile)
+			return python, nil
+		}
+	}
+	return pythonSelection{}, fmt.Errorf("agent environment unavailable; run harnest env sync %q, then retry doctor", directory)
+}
+
+// publishedDoctorEnvironment validates a saved pointer before probing its interpreter.
+func publishedDoctorEnvironment(paths environmentPaths) (pythonSelection, bool) {
+	contents, err := readRegularDependencyFile(paths.state)
+	var state environmentState
+	if err == nil && json.Unmarshal(contents, &state) == nil && state.Fingerprint != "" {
+		return cachedAgentPython(paths, state.Fingerprint)
+	}
+	return pythonSelection{}, false
+}
+
+// probePython imports packages in the interpreter selected for this diagnostic.
 func (a *application) probePython(command *cobra.Command, python pythonSelection, framework string) (doctorResult, error) {
 	probe := a.system.commandContext(command.Context(), python.Executable, "-c", doctorProbe, framework)
 	var stdout, stderr bytes.Buffer

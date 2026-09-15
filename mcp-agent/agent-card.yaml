@@ -1,0 +1,18 @@
+name: MCP Agent
+description: A Harnest agent connected to an authenticated Streamable HTTP MCP server.
+version: 0.1.0
+supportedInterfaces:
+  - url: http://127.0.0.1:8080
+    protocolBinding: HTTP+JSON
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+defaultInputModes:
+  - text/plain
+defaultOutputModes:
+  - text/plain
+skills:
+  - id: use-mcp-tools
+    name: Use MCP tools
+    description: Uses the connected MCP server to answer and perform requests.
+    tags: [assistant, mcp]

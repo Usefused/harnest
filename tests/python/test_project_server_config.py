@@ -41,7 +41,7 @@ class ProjectServerConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "config.yaml").write_text(
-                "server:\n  http:\n    port: ${PORT}\n"
+                "server:\n  openapi: false\n  http:\n    port: ${PORT}\n"
                 "  limits:\n    maxRequestBytes: 3MiB\n"
                 "  playground:\n    enabled: false\n",
                 encoding="utf-8",
@@ -59,10 +59,12 @@ class ProjectServerConfigTests(unittest.TestCase):
             self.assertFalse(config.http.allow_remote)
             self.assertEqual(config.limits.max_request_bytes, 3 * 1024**2)
             self.assertFalse(config.playground.enabled)
+            self.assertFalse(config.openapi)
 
     def test_rejects_invalid_and_ambiguous_inline_settings(self):
         """Unknown fields, nulls, duplicates, and invalid scalars never become defaults."""
         cases = [
+            "server: {openapi: null}\n", "server: {openapi: 'false'}\n",
             "server: null\n", "server: []\n", "server: {http: null}\n",
             "server: {unknown: true}\n", "server: {http: {prot: 8080}}\n",
             "server: {http: {port: 0}}\n", "server: {http: {port: true}}\n",

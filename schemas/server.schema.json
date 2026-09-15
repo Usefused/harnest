@@ -114,6 +114,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "openapi": {
+          "$ref": "#/$defs/openapi"
+        },
         "http": {
           "$ref": "#/$defs/http"
         },
@@ -132,6 +135,11 @@
           "$ref": "#/$defs/agentPrincipal"
         }
       }
+    },
+    "openapi": {
+      "oneOf": [{"type": "boolean"}, {"$ref": "#/$defs/environmentReference"}],
+      "default": true,
+      "description": "Expose Swagger, ReDoc, and JSON/YAML OpenAPI resources."
     },
     "live": {
       "oneOf": [
@@ -158,6 +166,9 @@
     "playground"
   ],
   "properties": {
+    "openapi": {
+      "$ref": "#/$defs/openapi"
+    },
     "apiVersion": {
       "const": "harnest.dev/v1alpha1"
     },

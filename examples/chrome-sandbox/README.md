@@ -65,7 +65,7 @@ key to `config.yaml`, source files, or the image.
 harnest serve examples/chrome-sandbox
 ```
 
-Open `http://127.0.0.1:8080/` and ask the agent: “Read
+Open `http://127.0.0.1:1907/` and ask the agent: “Read
 https://example.com and tell me what it is for.”
 
 The Playwright image is large, so its first build can take a few minutes. Add

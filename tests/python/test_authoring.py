@@ -1004,6 +1004,27 @@ class AuthoringTests(unittest.TestCase):
             self.assertEqual(native_response.status_code, 404)
             self.assertEqual(native_health.status_code, 404)
 
+    def test_compiled_adk_documentation_policy_in_managed_and_native_modes(self):
+        """Keep spec exposure and real agent invocation independent in both ADK servers."""
+        from fastapi.testclient import TestClient
+        import yaml
+
+        for advanced in (False, True):
+            with self.subTest(advanced=advanced), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "authored"
+                output = Path(directory) / "compiled"
+                self._write(root / "agent.py", _deterministic_adk_source(advanced=advanced))
+                self._write(root / "instructions.md", "Answer clearly.\n")
+                self._write(root / "agent-card.yaml", json.dumps({"name": "Root", "description": "Test agent"}))
+                compile_artifact(root, output, mode="advanced" if advanced else "managed")
+                with TestClient(create_fastapi_app(output, bind_host="testserver")) as client:
+                    self.assertEqual(yaml.safe_load(client.get("/openapi.yaml").text), client.get("/openapi.json").json())
+                with TestClient(create_fastapi_app(output, bind_host="testserver", openapi_enabled=False)) as client:
+                    for path in ("/docs", "/openapi.json", "/openapi.yaml", "/redoc"):
+                        self.assertEqual(client.get(path).status_code, 404)
+                    self.assertEqual(client.get("/agent").json()["resources"], [])
+                    self.assertEqual(client.post("/responses", json={"input": "hello"}).status_code, 200)
+
     def test_advanced_adk_fastapi_reuses_official_route_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

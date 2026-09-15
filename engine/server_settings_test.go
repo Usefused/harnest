@@ -20,7 +20,7 @@ func TestLoadBundleServerSettings(t *testing.T) {
 		name, section string
 		valid         bool
 	}{
-		{"partial", "server:\n  live: true\n  agentPrincipal: required\n  http:\n    port: ${PORT}\n  playground:\n    enabled: false\n", true},
+		{"partial", "server:\n  openapi: false\n  live: true\n  agentPrincipal: required\n  http:\n    port: ${PORT}\n  playground:\n    enabled: false\n", true},
 		{"empty", "server: {}\n", true},
 		{"unknown section", "server:\n  tls: true\n", false},
 		{"unknown field", "server:\n  http:\n    prot: 9090\n", false},
@@ -53,7 +53,7 @@ func TestLoadBundleServerSettings(t *testing.T) {
 // assertPartialServerSettings verifies that Go preserves values owned by Python decoding.
 func assertPartialServerSettings(t *testing.T, settings *AgentServerSettings) {
 	t.Helper()
-	if settings.HTTP.Port != "${PORT}" || settings.Live != true || settings.AgentPrincipal != "required" {
+	if settings.HTTP.Port != "${PORT}" || settings.Live != true || settings.AgentPrincipal != "required" || settings.OpenAPI != false {
 		t.Fatalf("lost server setting: %#v", settings)
 	}
 }

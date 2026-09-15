@@ -51,6 +51,7 @@ from .dynamic_agent_plugins import (
     forward_session_plugins,
 )
 from .server_config import format_byte_size, validate_max_request_bytes
+from .runtime_openapi import API_DESCRIPTION, configure_openapi, openapi_resources, response_operation
 from .http_routes import (
     HTTPRouteExtension,
     mount_http_route_extensions,
@@ -363,8 +364,8 @@ def create_neutral_router(
         return driver.info.card
 
     @router.get("/agent")
-    async def agent_info() -> dict[str, Any]:
-        """Describe enabled endpoints without advertising a disabled live route."""
+    async def agent_info(request: Request) -> dict[str, Any]:
+        """Describe only enabled transport and documentation resources."""
 
         info = driver.info
         value: dict[str, Any] = {
@@ -373,6 +374,9 @@ def create_neutral_router(
             "description": info.description,
             "card": dict(info.card),
             "endpoints": {
+                "openapi": "/openapi.json",
+                "openapiYaml": "/openapi.yaml",
+                "docs": "/docs",
                 "responses": "/responses",
                 "responseStatus": "/responses/{responseId}",
                 "sessions": "/sessions",
@@ -385,6 +389,11 @@ def create_neutral_router(
                 **dict(info.extra_endpoints),
             },
         }
+        value["resources"] = openapi_resources()
+        if not getattr(request.app.state, "openapi_enabled", True):
+            value["resources"] = []
+            for name in ("openapi", "openapiYaml", "docs"):
+                value["endpoints"].pop(name, None)
         # Discovery must agree with route availability, including custom driver metadata.
         if not live_enabled:
             value["endpoints"].pop("live", None)
@@ -644,16 +653,7 @@ def create_neutral_router(
 
     @router.post(
         "/responses",
-        openapi_extra={
-            "requestBody": {
-                "required": True,
-                "content": {
-                    "application/json": {
-                        "schema": response_request_model.model_json_schema(by_alias=True)
-                    }
-                },
-            }
-        },
+        **response_operation(response_request_model, text_input=driver.info.input_schema is None),
     )
     async def responses(request: Request) -> Any:
         """Adapt one public response request to the shared invocation coordinator."""
@@ -690,7 +690,7 @@ def create_neutral_router(
             media_type="text/event-stream",
         )
 
-    @router.get("/responses/{response_id}")
+    @router.get("/responses/{response_id}", tags=["Responses"], summary="Read response status and output")
     async def response_status(
         response_id: str,
         request: Request,
@@ -937,6 +937,7 @@ def create_neutral_app(
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     playground_enabled: bool = True,
+    openapi_enabled: bool = True,
     live_enabled: bool = True,
     agent_principal_required: bool = False,
     authenticator: Authenticator | None = None,
@@ -948,7 +949,7 @@ def create_neutral_app(
     lifecycle_extensions: Sequence[Any] = (),
     playground_eval_service: Any | None = None,
 ) -> Any:
-    """Build a neutral app; expose development routes only when UI assets exist."""
+    """Build a neutral app with explicit documentation and development UI policy."""
 
     from .playground import playground_available
 
@@ -984,7 +985,12 @@ def create_neutral_app(
         trace_store = PlaygroundTraceStore()
         runtime_driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
 
-    app = FastAPI(title=f"Harnest: {runtime_driver.info.name}", lifespan=lifespan)
+    app = FastAPI(
+        title=f"Harnest: {runtime_driver.info.name}",
+        description=API_DESCRIPTION,
+        openapi_tags=[{"name": "Responses", "description": "Start here: send a message, then reuse its session ID or poll pending work."}],
+        lifespan=lifespan,
+    )
     from .playground import create_playground_router
     from .http_lifecycle import install_http_lifecycle
     from .server_limits import install_request_size_limit
@@ -994,7 +1000,7 @@ def create_neutral_app(
     install_live_policy(app, live_enabled)
     if playground_enabled:
         app.include_router(
-            create_playground_router(trace_store, playground_eval_service)
+            create_playground_router(trace_store, playground_eval_service, openapi_enabled=openapi_enabled)
         )
     app.include_router(
         create_neutral_router(
@@ -1015,6 +1021,7 @@ def create_neutral_app(
     # allowing HTTP lifecycle contexts to observe only the verified user ID.
     install_http_lifecycle(app, lifecycle_extensions)
     install_authentication(app, authenticator)
+    configure_openapi(app, enabled=openapi_enabled)
     return app
 
 

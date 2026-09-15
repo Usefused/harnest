@@ -749,6 +749,7 @@ def create_fastapi_app(
     max_concurrency: int = 8,
     max_request_bytes: int = DEFAULT_SERVER_CONFIG.limits.max_request_bytes,
     playground_enabled: bool = True,
+    openapi_enabled: bool = True,
     live_enabled: bool = True,
     agent_principal_required: bool = False,
     adk_session_storage: ADKSessionStorage | None = None,
@@ -783,6 +784,7 @@ def create_fastapi_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
+            openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
             agent_principal_required=agent_principal_required,
             adk_session_storage=adk_session_storage,
@@ -804,6 +806,7 @@ def _build_fastapi_app(
     max_concurrency: int,
     max_request_bytes: int,
     playground_enabled: bool,
+    openapi_enabled: bool,
     live_enabled: bool,
     agent_principal_required: bool,
     adk_session_storage: ADKSessionStorage | None,
@@ -845,6 +848,7 @@ def _build_fastapi_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             playground_enabled=playground_enabled,
+            openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
             agent_principal_required=agent_principal_required,
             authenticator=authenticator,
@@ -880,6 +884,7 @@ def _build_fastapi_app(
             http_routes=application.http_routes,
             lifecycle_extensions=application.lifecycle_extensions,
             playground_enabled=playground_enabled,
+            openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
             agent_principal_required=agent_principal_required,
             playground_eval_service=eval_service,
@@ -947,14 +952,16 @@ def _build_native_adk_app(
     max_concurrency: int,
     max_request_bytes: int,
     playground_enabled: bool,
+    openapi_enabled: bool,
     live_enabled: bool,
     agent_principal_required: bool,
     authenticator: Authenticator | None,
     telemetry_exporter_factories: Any,
 ) -> tuple[Any, Any]:
-    """Keep native ADK WebSockets behind the same live policy as neutral routes."""
+    """Apply neutral transport and API-documentation policy to native ADK routes."""
 
     from .neutral_runtime import create_neutral_router
+    from .runtime_openapi import configure_openapi
     from .http_lifecycle import install_http_lifecycle
     from .playground import create_playground_router
     from .server_limits import install_request_size_limit
@@ -993,7 +1000,7 @@ def _build_native_adk_app(
             pipeline_driver,
         )
         app.router.routes.extend(
-            create_playground_router(trace_store, eval_service).routes
+            create_playground_router(trace_store, eval_service, openapi_enabled=openapi_enabled).routes
         )
     neutral = create_neutral_router(
         driver,
@@ -1014,6 +1021,7 @@ def _build_native_adk_app(
     install_authentication(app, authenticator)
     install_request_size_limit(app, max_request_bytes)
     install_live_policy(app, live_enabled)
+    configure_openapi(app, enabled=openapi_enabled)
     telemetry = configure_observability(
         application.name,
         framework=application.framework,
@@ -1189,6 +1197,7 @@ def _create_configured_app(artifact: Path, server: Any, development: bool) -> An
         max_concurrency=http.max_concurrent_requests,
         max_request_bytes=server.limits.max_request_bytes,
         playground_enabled=development and server.playground.enabled,
+        openapi_enabled=server.openapi,
         live_enabled=server.live,
         agent_principal_required=server.agent_principal == "required",
     )
@@ -1210,6 +1219,9 @@ def _serve_command(args: Any) -> int:
     ) as exc:
         print(f"harnest-agent: {exc}", file=sys.stderr)
         return 2
+    from .runtime_openapi import announce_openapi
+
+    announce_openapi(app, host=http.host, port=http.port)
     uvicorn.run(
         app,
         host=http.host,

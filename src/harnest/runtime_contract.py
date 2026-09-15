@@ -19,9 +19,12 @@ class _ResponseEnvelope(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
-    session_id: str | None = Field(default=None, alias="sessionId")
-    stream: bool = False
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(
+        default=None, alias="sessionId",
+        description="Existing session ID from a previous response or POST /sessions. Omit to create a new session.",
+    )
+    stream: bool = Field(default=False, description="Set true for text/event-stream (SSE); false returns one JSON response.")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Optional caller metadata. Does not set authentication or user identity.")
 
     @field_validator("session_id")
     @classmethod
@@ -36,7 +39,7 @@ class _ResponseEnvelope(BaseModel):
 class ResponseRequest(_ResponseEnvelope):
     """Strict Pydantic body accepted by default by ``POST /responses``."""
 
-    input: str
+    input: str = Field(description="Non-empty message to send to the agent.", examples=["Hello! What can you help me with?"])
 
     @field_validator("input")
     @classmethod

@@ -49,6 +49,7 @@ Typical workflow:
   harnest extensions install docker --project my-agent
   harnest extensions search postgres
   harnest init minimal-agent --minimal
+  harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN --project minimal-agent
   harnest add subagent researcher --project minimal-agent
   harnest add tool search --project minimal-agent
   harnest init my-agent --framework adk

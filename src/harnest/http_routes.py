@@ -148,6 +148,7 @@ _RESERVED_PREFIXES = (
     "/live",
     "/list-apps",
     "/openapi.json",
+    "/openapi.yaml",
     "/redoc",
     "/responses",
     "/run",

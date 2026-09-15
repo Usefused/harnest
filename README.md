@@ -124,12 +124,15 @@ Start with only the runnable core, then add capabilities as needed:
 ```bash
 harnest init minimal-agent --framework adk --minimal
 cd minimal-agent
+harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN
 harnest add tool customer-lookup
 harnest add subagent researcher
 ```
 
 `harnest add` also scaffolds `task`, `lifecycle`, and `context` resources without
-overwriting existing files. When running outside the agent folder, pass
+overwriting existing files. MCP scaffolds keep token values out of source: use
+`--token-header` and `--token-prefix` when the server does not use
+`Authorization: Bearer`. When running outside the agent folder, pass
 `--project <agent-root>`.
 
 Synchronize the isolated project environment and run its offline tests:
@@ -227,10 +230,10 @@ harnest serve . --reload
 
 Reload uses fresh immutable artifacts and never mutates a running ADK or LangGraph graph. It is restricted to loopback development serving.
 
-Open [http://127.0.0.1:8080/](http://127.0.0.1:8080/) for the built-in test UI.
+Open [http://127.0.0.1:1907/](http://127.0.0.1:1907/) for the built-in test UI.
 The same playground works with managed or advanced ADK and LangGraph agents.
 The neutral API is documented at
-[http://127.0.0.1:8080/docs](http://127.0.0.1:8080/docs).
+[http://127.0.0.1:1907/docs](http://127.0.0.1:1907/docs).
 
 Configure the local bind, request limits, concurrency, timeout, and playground
 in the optional `server:` section of `config.yaml`. Omit it to use the defaults. Set `server.live: true` to enable WebSockets on the same host and port. See [Serving agents](https://docs.usefused.com/harnest/runtime/serving)

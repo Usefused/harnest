@@ -38,7 +38,7 @@ class HTTPServerConfig:
     """Configure the compiled agent's HTTP listener and request concurrency."""
 
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 1907
     allow_remote: bool = False
     request_timeout_seconds: float = 300
     max_concurrent_requests: int = 8
@@ -67,6 +67,7 @@ class ServerConfig:
     playground: PlaygroundConfig = PlaygroundConfig()
     live: bool = False
     agent_principal: Literal["optional", "required"] = "optional"
+    openapi: bool = True
 
     def with_overrides(
         self,
@@ -101,11 +102,12 @@ class ServerConfig:
 DEFAULT_SERVER_CONFIG = ServerConfig()
 DEFAULT_SERVER_YAML = """apiVersion: harnest.dev/v1alpha1
 kind: Server
+openapi: true
 live: false
 agentPrincipal: optional
 http:
   host: 127.0.0.1
-  port: 8080
+  port: 1907
   allowRemote: false
   requestTimeoutSeconds: 300
   maxConcurrentRequests: 8
@@ -216,11 +218,11 @@ def _project_server_document(value: Any) -> dict[str, Any]:
 
     settings = _mapping(value, "config.yaml server")
     document = yaml.safe_load(DEFAULT_SERVER_YAML)
-    sections = {"http", "limits", "playground", "live", "agentPrincipal"}
+    sections = {"http", "limits", "playground", "live", "agentPrincipal", "openapi"}
     _require_keys(dict.fromkeys(sections) | dict(settings), sections, "server")
     for name, value in settings.items():
-        # Live is a transport switch, while the other sections merge nested defaults.
-        if name in {"live", "agentPrincipal"}:
+        # Scalar policies replace defaults; structured sections merge supplied fields.
+        if name in {"live", "agentPrincipal", "openapi"}:
             document[name] = value
             continue
         overrides = _mapping(value, f"server.{name}")
@@ -279,13 +281,14 @@ def _decode_config(
     path: Path,
     environment: Mapping[str, str] | None,
 ) -> ServerConfig:
-    """Validate current policy while retaining live access for legacy documents."""
+    """Validate compiled policy while preserving defaults for existing documents."""
 
     # Older compiled/authored server files exposed WebSockets unconditionally.
     # New defaults explicitly include live: false and do not take this fallback.
     root = {
         "live": True,
         "agentPrincipal": "optional",
+        "openapi": True,
         **_mapping(value, "server.yaml"),
     }
     _require_keys(
@@ -298,6 +301,7 @@ def _decode_config(
             "playground",
             "live",
             "agentPrincipal",
+            "openapi",
         },
         "server.yaml",
     )
@@ -313,6 +317,7 @@ def _decode_config(
         playground=_decode_playground(root["playground"], environment),
         live=_resolved_boolean(root["live"], "live", environment),
         agent_principal=_agent_principal_mode(root["agentPrincipal"]),
+        openapi=_resolved_boolean(root["openapi"], "openapi", environment),
     )
 
 
