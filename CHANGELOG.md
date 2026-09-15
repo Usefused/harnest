@@ -1,14 +1,11 @@
 # Changelog
 
-## Unreleased
+## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
 ### Fixes
 
 * Fix the checked-in MCP agent example to use explicit OpenAI-compatible model
   configuration. Declare AnyIO directly for MCP transport and subscription deadlines.
-
-## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
-
 
 ### Fixes
 
