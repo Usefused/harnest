@@ -552,10 +552,11 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             async def get_tools(self, _readonly_context=None):
                 nonlocal discovered
                 discovered += 1
-                return [
+                from harnest.mcp_resources import DiscoveredMCPTools
+                return DiscoveredMCPTools([
                     SimpleNamespace(name="read"),
                     SimpleNamespace(name="write"),
-                ]
+                ])
 
         client = MCPClient.sse(
             "https://mcp.invalid/sse",
@@ -578,18 +579,15 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             revoke_agent_principal(allowed)
 
         self.assertEqual(discovered, 1)
-        self.assertEqual([item.name for item in tools], ["read", *[
-            f"harnest_{name}" for name in (
-                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
-            )
-        ]])
+        self.assertEqual([item.name for item in tools], ["read"])
 
     async def test_adk_mcp_permissions_use_unprefixed_remote_names(self):
         class Toolset:
             async def get_tools(self, _readonly_context=None):
                 # ADK adds the configured prefix in get_tools_with_prefix(),
                 # after the governed get_tools() method returns.
-                return [SimpleNamespace(name="remote_write")]
+                from harnest.mcp_resources import DiscoveredMCPTools
+                return DiscoveredMCPTools([SimpleNamespace(name="remote_write")])
 
         client = MCPClient.sse(
             "https://mcp.invalid/sse",

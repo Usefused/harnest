@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.mcp import MCPClient, MCPResourceError, MCPSubscription
 from harnest.mcp_capability_tools import adk_capability_tools, langgraph_capability_tools
@@ -20,7 +20,117 @@ def client(**kwargs):
     return MCPClient.stdio(sys.executable, str(SERVER), **kwargs)
 
 
+@asynccontextmanager
+async def projected_client(configured, framework):
+    """Exercise real framework discovery and retain its separate developer registry."""
+
+    if framework == "adk":
+        from harnest.mcp_adk import _discover_adk_mcp_clients
+        from test_mcp_adk import _native_invocation
+
+        toolset = configured.to_adk_toolset()
+        try:
+            tools = await toolset.get_tools_with_prefix()
+            target = SimpleNamespace(tools=[toolset], sub_agents=[])
+            clients = await _discover_adk_mcp_clients(target, _native_invocation())
+            yield tools, clients
+        finally:
+            await toolset.close()
+        return
+    from harnest.agent import AgentDefinition
+    from harnest.application import CompiledApplication
+    from harnest.backends.langgraph import ManagedAgentPlan
+    from harnest.runtime_langgraph import LangGraphRuntimeDriver
+
+    definition = AgentDefinition(name="projection", model="unused", instruction="Inspect capabilities.")
+    app = CompiledApplication(name="projection", framework="langgraph", mode="managed", target=ManagedAgentPlan(definition))
+    driver = LangGraphRuntimeDriver(app)
+    try:
+        tools = await driver._resolve_tool_group((configured,))
+        yield tools, driver._mcp_context_clients
+    finally:
+        await driver.close()
+
+
 class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_both_frameworks_expose_only_advertised_model_helpers(self):
+        """Cover tools-only, resource-only, prompt-only, and mixed real MCP servers."""
+
+        resources = {"harnest_list_resources", "harnest_list_resource_templates", "harnest_read_resource"}
+        prompts = {"harnest_list_prompts", "harnest_get_prompt"}
+        cases = (("--tools-only", set(), 1), ("--resources-only", resources, 0),
+                 ("--prompts-only", prompts, 0), ("--mixed", resources | prompts, 1))
+        for framework in ("adk", "langgraph"):
+            for flag, expected, remote_count in cases:
+                with self.subTest(framework=framework, server=flag):
+                    configured = replace(MCPClient.stdio(sys.executable, str(SERVER), flag), identity="knowledge", capability_id="knowledge")
+                    async with projected_client(configured, framework) as (tools, clients):
+                        helpers = {getattr(tool, "__harnest_mcp_capability__", None) for tool in tools}
+                        self.assertEqual(helpers - {None}, expected)
+                        self.assertEqual(len(tools), len(expected) + remote_count)
+                        self.assertIn("harnest_inspect", clients["knowledge"])
+                        self.assertIn("harnest_list_tools", clients["knowledge"])
+
+    def test_empty_allowlists_hide_only_the_denied_model_family(self):
+        """Use advertisements, never catalogue contents, to select retrieval helpers."""
+
+        from mcp.types import ServerCapabilities, ResourcesCapability, PromptsCapability
+        from harnest.mcp_capability_tools import model_capability_tools
+
+        capabilities = ServerCapabilities(resources=ResourcesCapability(), prompts=PromptsCapability())
+        for resources, prompts, expected in ((None, None, 5), ([], None, 2), (None, [], 3), ([], [], 0)):
+            configured = client(resources=resources, prompts=prompts)
+            helpers = adk_capability_tools(configured, [])
+            self.assertEqual(len(model_capability_tools(helpers, configured, capabilities)), expected)
+
+    async def test_resource_only_portable_server_retains_capabilities(self):
+        """A plugin's persistent stdio owner must not require remote tools to expose resources."""
+
+        portable = SimpleNamespace(
+            prepare=lambda: None,
+            stdio=lambda configured: {"command": configured.command, "args": list(configured.args)},
+            failed=Mock(),
+        )
+        configured = replace(MCPClient.stdio(sys.executable, str(SERVER), "--resources-only"),
+                             identity="knowledge", capability_id="knowledge", portable=portable)
+        async with projected_client(configured, "langgraph") as (tools, _):
+            self.assertEqual({tool.__harnest_mcp_capability__ for tool in tools},
+                             {"harnest_list_resources", "harnest_list_resource_templates", "harnest_read_resource"})
+        portable.failed.assert_not_called()
+
+    async def test_tools_only_developer_inspection_remains_governed_and_revocable(self):
+        """Hidden model helpers retain the same scoped developer dispatch and permissions."""
+
+        from harnest import context
+        from harnest.context import activate_context, revoke_context
+        from harnest.mcp_context import _activate_mcp_context, MCPContextUnavailableError
+        from harnest.agent_principal import activate_agent_principal, create_agent_principal_binding, revoke_agent_principal
+        from harnest.agent import AgentRuntimePermissionError, AgentRuntimePrincipal
+        from test_mcp_adk import _agent_context
+
+        for framework in ("adk", "langgraph"):
+            configured = replace(MCPClient.stdio(sys.executable, str(SERVER), "--tools-only", permission="knowledge.connect"), identity="knowledge", capability_id="knowledge")
+            async with projected_client(configured, framework) as (_, clients):
+                active = _agent_context()
+                allowed = create_agent_principal_binding(AgentRuntimePrincipal.create(permissions={"knowledge.connect"}))
+                denied = create_agent_principal_binding(AgentRuntimePrincipal.create())
+                try:
+                    with activate_context(active), _activate_mcp_context(clients):
+                        facade = context.mcp("knowledge")
+                        with activate_agent_principal(allowed):
+                            self.assertEqual((await facade.inspect())["tools"]["tools"][0]["name"], "echo")
+                            self.assertEqual(await facade.list_resources(), {"resources": []})
+                        with patch("harnest.mcp_resources.resource_session") as transport:
+                            with activate_agent_principal(denied), self.assertRaises(AgentRuntimePermissionError):
+                                await facade.inspect()
+                            transport.assert_not_called()
+                    with self.assertRaises(MCPContextUnavailableError):
+                        await facade.inspect()
+                finally:
+                    revoke_context(active)
+                    revoke_agent_principal(allowed)
+                    revoke_agent_principal(denied)
+
     async def test_shutdown_cancellation_wins_over_simultaneous_notification(self):
         """Force Python 3.10's completed-wait cancellation race without timing sleeps."""
 
@@ -180,6 +290,7 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
         adk = adk_capability_tools(configured, [])
         for tool in adk:
             self.assertIsNotNone(tool._get_declaration())
+            self.assertEqual(tool._get_declaration().name, tool.name)
         result = await adk[-1].run_async(args={"name": "summarize", "arguments": {"topic": "ADK"}}, tool_context=None)
         self.assertEqual(result["messages"][0]["content"]["text"], "Summarize ADK")
         graph = langgraph_capability_tools(configured, "knowledge", [])
@@ -219,7 +330,7 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
         toolset = configured.to_adk_toolset()
         try:
             tools = await toolset.get_tools()
-            self.assertEqual(len(tools), 7)
+            self.assertEqual(len(tools), 3)
             self.assertTrue(all(getattr(tool, "__harnest_mcp_capability__", None) for tool in tools))
         finally:
             await toolset.close()

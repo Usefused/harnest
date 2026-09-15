@@ -4,11 +4,11 @@ from typing import Any
 
 from .mcp_http_session import modern_session
 from .mcp_http_transport import _call, _client
-from .mcp_resources import MCPResourceError
+from .mcp_resources import DiscoveredMCPTools, MCPResourceError
 
 
 async def modern_tools(configured: Any, framework: str, *, server_name: str | None = None, interceptors: Any = None) -> list[Any] | None:
-    """Discover modern schemas before asking framework adapters to initialize."""
+    """Carry modern capabilities alongside schemas without another discovery request."""
 
     from .mcp_http_tool_headers import valid_tool_schema
 
@@ -17,12 +17,15 @@ async def modern_tools(configured: Any, framework: str, *, server_name: str | No
             return None
         session, initialized = modern
         if initialized.capabilities.tools is None:
-            return []
+            return DiscoveredMCPTools(capabilities=initialized.capabilities)
         schemas = await _tool_pages(session, configured.max_content_bytes)
     schemas = [tool for tool in schemas if valid_tool_schema(tool.inputSchema)]
     if configured.tool_filter is not None:
         schemas = [tool for tool in schemas if tool.name in configured.tool_filter]
-    return _framework_tools(configured, framework, schemas, server_name, interceptors)
+    return DiscoveredMCPTools(
+        _framework_tools(configured, framework, schemas, server_name, interceptors),
+        capabilities=initialized.capabilities,
+    )
 
 
 def _framework_tools(configured: Any, framework: str, schemas: list[Any], server_name: str | None, interceptors: Any) -> list[Any]:

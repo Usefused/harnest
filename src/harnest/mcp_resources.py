@@ -12,6 +12,30 @@ class MCPResourceError(RuntimeError):
     """An MCP capability request failed without exposing connection credentials."""
 
 
+class DiscoveredMCPTools(list):
+    """Keep advertised capabilities with tools from the same discovery boundary."""
+
+    def __init__(self, tools: Any = (), *, capabilities: Any = None) -> None:
+        super().__init__(tools)
+        self.capabilities = capabilities
+
+
+async def tool_capabilities(tools: list[Any], configured: Any, framework: str, *, session_manager: Any = None) -> Any:
+    """Reuse discovered metadata or ADK's session; probe only stateless legacy adapters."""
+
+    if isinstance(tools, DiscoveredMCPTools):
+        return tools.capabilities
+    try:
+        if session_manager is not None:
+            session = await session_manager.create_session()
+            return session.get_server_capabilities()
+        async with sdk_resource_session(configured, framework) as (_, initialized):
+            return initialized.capabilities
+    except Exception as error:
+        failure = _resource_failure(error, "capability discovery")
+    raise failure from None
+
+
 @asynccontextmanager
 async def managed_resource_client(configured: Any, *, framework: str = "langgraph"):
     """Acquire only this caller's lifecycle ownership and release it on every exit."""
@@ -242,7 +266,7 @@ async def discover_remote_tools(operation: Any, configured: Any, framework: str,
     except Exception as error:
         if configured.portable is not None:
             configured.portable.failed(error)
-            return []
+            return DiscoveredMCPTools()
         failure = _resource_failure(error, "tool discovery")
         raise failure from None
     if modern is not None:
@@ -256,7 +280,7 @@ async def discover_remote_tools(operation: Any, configured: Any, framework: str,
         async with sdk_resource_session(configured, framework) as (_, initialized):
             if initialized.capabilities.tools is not None:
                 raise error
-        return []
+        return DiscoveredMCPTools(capabilities=initialized.capabilities)
 
 
 def _missing_method(error: Exception, depth: int = 0) -> bool:

@@ -5,6 +5,17 @@ from typing import Any
 from .mcp_resources import MCPResourceClient
 
 
+def model_capability_tools(tools: list[Any], configured: Any, capabilities: Any) -> list[Any]:
+    """Expose only advertised, allowed retrieval families; inspection stays developer-only."""
+
+    names = set()
+    if getattr(capabilities, "resources", None) is not None and configured.resources != ():
+        names.update(("harnest_list_resources", "harnest_list_resource_templates", "harnest_read_resource"))
+    if getattr(capabilities, "prompts", None) is not None and configured.prompts != ():
+        names.update(("harnest_list_prompts", "harnest_get_prompt"))
+    return [tool for tool in tools if getattr(tool, "__harnest_mcp_capability__", None) in names]
+
+
 def capability_functions(configured: Any, *, framework: str) -> tuple[Any, ...]:
     """Expose bounded retrieval tools without promoting server content to instructions."""
 
@@ -53,11 +64,16 @@ def adk_capability_tools(configured: Any, existing: list[Any]) -> list[Any]:
     # our local helpers without changing the author's existing remote tool names.
     prefix = "" if configured.tool_name_prefix else f"{configured._client_name()}_"
     _check_names(existing, functions, prefix=prefix)
-    tools = [FunctionTool(func=operation) for operation in functions]
-    for tool in tools:
-        setattr(tool, "__harnest_mcp_capability__", tool.name)
-        tool.name = prefix + tool.name
+    tools = []
+    for operation in functions:
+        canonical = operation.__name__
+        # ADK builds declarations from the callable, not tool.name. Each
+        # operation is connection-local, so naming it here keeps both aligned.
+        operation.__name__ = prefix + canonical
+        tool = FunctionTool(func=operation)
+        setattr(tool, "__harnest_mcp_capability__", canonical)
         attach_required_permissions(tool, () if configured.permission is None else (configured.permission,))
+        tools.append(tool)
     return tools
 
 
@@ -70,7 +86,8 @@ def langgraph_capability_tools(configured: Any, server_name: str, existing: list
     functions = capability_functions(configured, framework="langgraph")
     _check_names(existing, functions, prefix=f"{server_name}_")
     tools = [StructuredTool.from_function(coroutine=operation, name=f"{server_name}_{operation.__name__}") for operation in functions]
-    for tool in tools:
+    for tool, operation in zip(tools, functions):
+        object.__setattr__(tool, "__harnest_mcp_capability__", operation.__name__)
         attach_required_permissions(tool, () if configured.permission is None else (configured.permission,))
     return tools
 

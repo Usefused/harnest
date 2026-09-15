@@ -329,6 +329,7 @@ class _MCPAdapterClient:
         self.__class__.instances.append(self)
 
     async def get_tools(self, *, server_name):
+        from harnest.mcp_resources import DiscoveredMCPTools
         self.requests.append(server_name)
         factory = self.connections[server_name].get("httpx_client_factory")
         if factory is not None:
@@ -355,10 +356,10 @@ class _MCPAdapterClient:
                 )
             return result
 
-        return [
+        return DiscoveredMCPTools([
             SimpleNamespace(name=f"{server_name}_echo", ainvoke=invoke),
             SimpleNamespace(name=f"{server_name}_hidden", ainvoke=invoke),
-        ]
+        ])
 
     async def aclose(self):
         for client in self.http_clients:
@@ -370,15 +371,16 @@ class _DuplicateMCPAdapterClient(_MCPAdapterClient):
     """Return an invalid duplicate discovery result for collision coverage."""
 
     async def get_tools(self, *, server_name):
+        from harnest.mcp_resources import DiscoveredMCPTools
         async def invoke(arguments, config=None, **kwargs):
             del config, kwargs
             return dict(arguments)
 
         name = f"{server_name}_echo"
-        return [
+        return DiscoveredMCPTools([
             SimpleNamespace(name=name, ainvoke=invoke),
             SimpleNamespace(name=name, ainvoke=invoke),
-        ]
+        ])
 
 
 class _TrackedHTTPClient(httpx.AsyncClient):
@@ -1655,11 +1657,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.tool_interceptors), 1)
         passed_plan, passed_tools = materialize.call_args.args
         self.assertIs(passed_plan, plan)
-        self.assertEqual([tool.name for tool in passed_tools], ["mcp__legacy_echo", *[
-            f"mcp__legacy_harnest_{name}" for name in (
-                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
-            )
-        ]])
+        self.assertEqual([tool.name for tool in passed_tools], ["mcp__legacy_echo"])
 
         await driver.close()
 
@@ -2079,11 +2077,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.tool_interceptors, [])
         passed_plan, tool_groups = materialize.call_args.args
         self.assertIs(passed_plan, plan)
-        self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo", *[
-            f"graph_harnest_{name}" for name in (
-                "inspect", "list_tools", "list_resources", "list_resource_templates", "list_prompts", "read_resource", "get_prompt",
-            )
-        ]])
+        self.assertEqual([tool.name for tool in tool_groups[0]], ["graph_echo"])
         self.assertIs(tool_groups[0], tool_groups[1])
 
         await driver.close()

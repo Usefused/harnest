@@ -32,8 +32,8 @@ class _DiscoveryModel(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         replies = [message for message in messages if isinstance(message, ToolMessage)]
-        if len(replies) == 3:
-            resource, prompt = (json.loads(message.content) for message in replies[1:])
+        if len(replies) == 4:
+            resource, prompt = (json.loads(replies[index].content) for index in (1, 3))
             answer = resource["contents"][0]["text"] + " / " + prompt["messages"][0]["content"]["text"]
             message = AIMessage(content=answer)
         else:
@@ -45,11 +45,13 @@ class _DiscoveryModel(BaseChatModel):
         """Use the catalogue's identifiers and argument schema to select the next read."""
 
         if not replies:
-            return "inspect", {}
+            return "list_resources", {}
         catalog = json.loads(replies[0].content)
         if len(replies) == 1:
-            return "read_resource", {"uri": catalog["resources"]["resources"][0]["uri"]}
-        prompt = catalog["prompts"]["prompts"][0]
+            return "read_resource", {"uri": catalog["resources"][0]["uri"]}
+        if len(replies) == 2:
+            return "list_prompts", {}
+        prompt = json.loads(replies[2].content)["prompts"][0]
         return "get_prompt", {"name": prompt["name"], "arguments": {prompt["arguments"][0]["name"]: "MCP"}}
 
 

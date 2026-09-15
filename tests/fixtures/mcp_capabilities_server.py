@@ -64,12 +64,19 @@ async def subscribe(uri):
 
 
 async def main():
-    if "--resources-only" in sys.argv:
+    if "--resources-only" in sys.argv or "--prompts-only" in sys.argv:
         server.request_handlers.pop(types.ListToolsRequest)
         server.request_handlers.pop(types.CallToolRequest)
+    if "--tools-only" in sys.argv or "--prompts-only" in sys.argv:
+        for request in (types.ListResourcesRequest, types.ListResourceTemplatesRequest, types.ReadResourceRequest, types.SubscribeRequest):
+            server.request_handlers.pop(request, None)
+    if "--tools-only" in sys.argv or "--resources-only" in sys.argv:
+        server.request_handlers.pop(types.ListPromptsRequest)
+        server.request_handlers.pop(types.GetPromptRequest)
     async with stdio_server() as (read, write):
         options = server.create_initialization_options()
-        options.capabilities.resources.subscribe = True
+        if options.capabilities.resources is not None:
+            options.capabilities.resources.subscribe = True
         await server.run(read, write, options)
 
 

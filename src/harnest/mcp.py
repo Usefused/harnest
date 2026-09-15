@@ -438,13 +438,26 @@ class MCPClient:
                         )
                     if capability_is_available(remote_tool):
                         selected.append(remote_tool)
+                from .mcp_capability_tools import model_capability_tools
+                from .mcp_resources import tool_capabilities
+
+                local = self.get_context_tools(tools)
+                capabilities = await tool_capabilities(
+                    tools, configured, "adk", session_manager=getattr(self, "_mcp_session_manager", None),
+                )
+                selected.extend(model_capability_tools(local, configured, capabilities))
+                return selected
+
+            def get_context_tools(self, existing: list[Any]) -> list[Any]:
+                """Build developer operations independently of the model's capability projection."""
+
+                from .agent_principal import capability_is_available
                 from .mcp_capability_tools import adk_capability_tools
 
-                selected.extend(
-                    tool for tool in adk_capability_tools(configured, tools)
-                    if capability_is_available(tool)
-                )
-                return selected
+                # Local helpers already carry canonical aliases. Exclude model
+                # projections before checking collisions with remote names.
+                remote = [tool for tool in existing if not getattr(tool, "__harnest_mcp_capability__", None)]
+                return [tool for tool in adk_capability_tools(configured, remote) if capability_is_available(tool)]
 
         return GovernedMcpToolset
 

@@ -123,7 +123,7 @@ async def _discover_adk_mcp_clients(
         )
         if public_name in clients:
             raise ValueError("ADK MCP toolsets use a duplicate public identity")
-        discovered = await toolset.get_tools_with_prefix(readonly)
+        discovered = await _context_tools(toolset, readonly)
         client_tools: dict[str, _GovernedMCPTool] = {}
         clients[public_name] = client_tools
         for remote_tool in discovered:
@@ -138,6 +138,18 @@ async def _discover_adk_mcp_clients(
                 marker, _original_operation(remote_tool.run_async)
             )
     return clients
+
+
+async def _context_tools(toolset: Any, readonly: Any) -> list[Any]:
+    """Keep native markers shared while adding developer-only governed operations."""
+
+    discovered = await toolset.get_tools_with_prefix(readonly)
+    context_tools = getattr(toolset, "get_context_tools", None)
+    if context_tools is None:
+        return discovered
+    exposed = {_remote_tool_name(toolset, tool) for tool in discovered}
+    return [*discovered, *(tool for tool in context_tools(discovered)
+                          if _remote_tool_name(toolset, tool) not in exposed)]
 
 
 def _adk_mcp_marker(

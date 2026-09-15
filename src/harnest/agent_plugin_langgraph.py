@@ -40,7 +40,8 @@ class PortableStdioOwner:
             self._ready.set_exception(error)
 
     async def _serve(self) -> None:
-        """Pass already-expanded portable values directly to the native MCP SDK."""
+        """Retain native discovery metadata without reopening a portable process."""
+        from .mcp_resources import DiscoveredMCPTools
         from langchain_mcp_adapters.tools import load_mcp_tools
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -54,14 +55,16 @@ class PortableStdioOwner:
             async with ClientSession(
                 read, write, read_timeout_seconds=timedelta(seconds=configured.timeout_seconds),
             ) as session:
-                await session.initialize()
-                tools = await load_mcp_tools(
-                    session, server_name=self._name, tool_name_prefix=True,
-                    tool_interceptors=self._client.tool_interceptors,
-                    callbacks=self._client.callbacks,
-                    handle_tool_errors=self._client.handle_tool_errors,
-                )
-                self._ready.set_result(tools)
+                initialized = await session.initialize()
+                tools = []
+                if initialized.capabilities.tools is not None:
+                    tools = await load_mcp_tools(
+                        session, server_name=self._name, tool_name_prefix=True,
+                        tool_interceptors=self._client.tool_interceptors,
+                        callbacks=self._client.callbacks,
+                        handle_tool_errors=self._client.handle_tool_errors,
+                    )
+                self._ready.set_result(DiscoveredMCPTools(tools, capabilities=initialized.capabilities))
                 await self._stop.wait()
 
     async def aclose(self) -> None:

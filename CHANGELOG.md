@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Expose MCP resource and prompt tools to models only when the server advertises
+  that capability and the client allows it. Keep inspection and all governed
+  developer operations available through `context.mcp` without extra model tools,
+  with structured results in both ADK and LangGraph.
+  Keep ADK helper schema names aligned with their registered namespaced names.
+
 ## [0.21.1](https://github.com/Usefused/harnest/compare/v0.21.0...v0.21.1) (2026-09-15)
 
 ### Fixes

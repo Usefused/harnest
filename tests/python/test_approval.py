@@ -462,13 +462,14 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
             async def get_tools(self, _readonly_context=None):
+                from harnest.mcp_resources import DiscoveredMCPTools
                 async def run_async(*, args, tool_context):
                     return {"args": args, "context": tool_context}
 
-                return [
+                return DiscoveredMCPTools([
                     SimpleNamespace(name="merge", run_async=run_async),
                     SimpleNamespace(name="read", run_async=run_async),
-                ]
+                ])
 
         guarded_type = client._adk_toolset_type(Toolset)
         tools = await guarded_type().get_tools()

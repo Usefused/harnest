@@ -515,7 +515,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     async def _resolve_tool_group(
         self, configured_group: tuple[Any, ...]
     ) -> list[Any]:
-        """Attach approval at transport time before exposing discovered tools."""
+        """Share governed operations with context while projecting advertised model helpers."""
 
         await self._start_mcp_lifecycles(configured_group)
         client_type = _mcp_client_type()
@@ -540,11 +540,14 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             )
             _validate_mcp_approval(selected, server_name, configured)
             _apply_mcp_permissions(selected, server_name, configured)
-            from .mcp_capability_tools import langgraph_capability_tools
+            from .mcp_capability_tools import langgraph_capability_tools, model_capability_tools
+            from .mcp_resources import tool_capabilities
 
-            selected.extend(langgraph_capability_tools(configured, server_name, discovered))
+            local = langgraph_capability_tools(configured, server_name, discovered)
+            capabilities = await tool_capabilities(discovered, configured, "langgraph")
             public_name = configured.identity or server_name
-            self._register_mcp_context_tools(public_name, server_name, selected)
+            self._register_mcp_context_tools(public_name, server_name, [*selected, *local])
+            selected.extend(model_capability_tools(local, configured, capabilities))
             tools.extend(selected)
         return tools
 
@@ -1706,11 +1709,17 @@ def _langgraph_mcp_marker(
     owner = object()
 
     async def operation(arguments: Mapping[str, Any]) -> Any:
+        """Preserve native error envelopes and structured local developer results."""
+
         native = _MCP_NATIVE_CALL_SCOPE.get()
         if native is not None and native[0] is owner:
             _, tool_input, config, kwargs = native
             result = await original(tool_input, config=config, **dict(kwargs))
             return _checked_mcp_tool_result(result)
+        if getattr(tool, "__harnest_mcp_capability__", None) is not None:
+            # Local helpers raise failures directly. A ToolCall envelope would
+            # stringify their dictionaries, breaking the developer read API.
+            return await original(dict(arguments))
         result = await original(
             _context_mcp_tool_call(tool_name, arguments)
         )
@@ -1904,7 +1913,8 @@ async def _discover_configured_mcp_tools(
         if getattr(configured, "portable", None) is None:
             raise
         configured.portable.failed(error)
-        return []
+        from .mcp_resources import DiscoveredMCPTools
+        return DiscoveredMCPTools()
 
 
 def _mcp_server_approval_policies(
