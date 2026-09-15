@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.19.0](https://github.com/Usefused/harnest/compare/v0.18.3...v0.19.0) (2026-09-15)
 
 ### Features
 
@@ -80,6 +80,20 @@
   `harnest.agent.approval`, alongside the agent tools it protects. Remove the
   old root module and teach `harnest upgrade` to rewrite authored imports and
   qualified access to the new namespace.
+
+### Features
+
+* add dynamic agent plugins and extension packages ([0959a0b](https://github.com/Usefused/harnest/commit/0959a0bb2e104445be01e32c6bfeac149581bbb3))
+* add explicit durable memory with scoped provider cleanup ([a4304cc](https://github.com/Usefused/harnest/commit/a4304cc6343c1a87cc0768f2a0c31f1812a8133d))
+* add PostgreSQL RAG extension ([aff613c](https://github.com/Usefused/harnest/commit/aff613c53e101fb8e6f750e2ba48f08a30427017))
+
+
+### Fixes
+
+* harden live continuations and release safety ([f41e6cf](https://github.com/Usefused/harnest/commit/f41e6cf99a2ea90b63826f2b71f74c50a81efd9a))
+* render playground Markdown and exclude UI from deployments ([2be254f](https://github.com/Usefused/harnest/commit/2be254f980e593c2ef0a4861c3d189ff08988c05))
+* support PostgreSQL memory locks on Python 3.10 ([7eaee7d](https://github.com/Usefused/harnest/commit/7eaee7d338321e6ad96c749ff09dfeda4961e3c8))
+* widen official extension Harnest compatibility ([4239e05](https://github.com/Usefused/harnest/commit/4239e052e61b385d34cca9b9933d33124a508972))
 
 ## [0.18.3](https://github.com/Usefused/harnest/compare/v0.18.2...v0.18.3) (2026-09-11)
 
