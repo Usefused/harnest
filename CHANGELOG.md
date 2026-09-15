@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.21.0](https://github.com/Usefused/harnest/compare/v0.20.0...v0.21.0) (2026-09-15)
 
 ### Features
 
@@ -26,9 +26,6 @@
   metadata repeats Harnest or compiler-owned runtime dependencies. Materialized
   projects now retain only extension-owned requirements, and the published RAG
   package is classified as an official Fused extension.
-
-## [0.21.0](https://github.com/Usefused/harnest/compare/v0.20.0...v0.21.0) (2026-09-15)
-
 
 ### Features
 
