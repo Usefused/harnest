@@ -80,6 +80,11 @@ func compilerOwnedDistributions(selectedFramework string) (map[string]struct{}, 
 	if _, err := compatibilityForFramework(selectedFramework); err != nil {
 		return nil, err
 	}
+	return allCompilerOwnedDistributions(), nil
+}
+
+// allCompilerOwnedDistributions identifies packages supplied by Harnest runtime profiles.
+func allCompilerOwnedDistributions() map[string]struct{} {
 	owned := map[string]struct{}{"harnest": {}}
 	for _, compatibility := range frameworkCompatibilityByName {
 		requirements := append(
@@ -90,7 +95,7 @@ func compilerOwnedDistributions(selectedFramework string) (map[string]struct{}, 
 			owned[normalizedRequirementName(requirement)] = struct{}{}
 		}
 	}
-	return owned, nil
+	return owned
 }
 
 func authoredDependencyRequirements(document map[string]any) []string {

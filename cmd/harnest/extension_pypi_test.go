@@ -41,7 +41,7 @@ func TestExtensionInstallFromPyPIPinsVerifiedReleaseWithoutImporting(t *testing.
 		t.Fatalf("PyPI install requests = %d, want metadata plus wheel", requests)
 	}
 	values, _, err := extensionRuntimeRequirements(project)
-	if err != nil || fmt.Sprint(values) != "[docker>=7.1,<8 harnest>=0.14,<0.15]" {
+	if err != nil || fmt.Sprint(values) != "[docker>=7.1,<8]" {
 		t.Fatalf("installed runtime dependencies = %v, %v", values, err)
 	}
 }
@@ -226,7 +226,9 @@ func TestExtensionInstallRejectsAmbiguousSources(t *testing.T) {
 }
 
 func TestExtensionInstallRecognizesOfficialProjects(t *testing.T) {
-	for _, project := range []string{"harnest-extension-docker", "Harnest_Extension_Hatchet"} {
+	for _, project := range []string{
+		"harnest-extension-docker", "Harnest_Extension_Hatchet", "harnest-extension-rag",
+	} {
 		if trust := extensionProjectTrust(project); trust != "official" {
 			t.Errorf("trust for %s = %s", project, trust)
 		}
@@ -345,6 +347,30 @@ func TestPyPIExtensionProjectIsValidTOML(t *testing.T) {
 	dependencies, ok := project["dependencies"].([]any)
 	if !ok || fmt.Sprint(dependencies) != "[docker>=7.1,<8]" {
 		t.Fatalf("generated loader dependencies = %#v", project["dependencies"])
+	}
+}
+
+// TestPyPIExtensionProjectOmitsCompilerOwnedDependencies protects runtime pins.
+func TestPyPIExtensionProjectOmitsCompilerOwnedDependencies(t *testing.T) {
+	downloaded := pypiExtensionPackage{
+		ProjectName: "harnest-extension-rag", Version: "0.1.1",
+		Dependencies: []string{
+			"asyncpg>=0.30,<1", "harnest>=0.18,<0.23", "redis>=6,<8", "httpx>=0.28,<1",
+		},
+		Resources: map[string][]byte{},
+	}
+	contents, err := pypiExtensionProjectSource(downloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "pyproject.toml")
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := projectRuntimeRequirements(path, "installed extension")
+	if err != nil || fmt.Sprint(requirements) != "[httpx>=0.28,<1]" {
+		t.Fatalf("materialized dependencies = %v, %v", requirements, err)
 	}
 }
 

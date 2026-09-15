@@ -31,6 +31,7 @@ const (
 var officialPyPIExtensionProjects = []string{
 	"harnest-extension-docker",
 	"harnest-extension-hatchet",
+	"harnest-extension-rag",
 }
 
 type pypiReleaseFile struct {

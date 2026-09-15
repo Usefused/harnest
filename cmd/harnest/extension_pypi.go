@@ -183,12 +183,25 @@ func pypiExtensionProjectSource(downloaded pypiExtensionPackage) ([]byte, error)
 		document.Project.Readme = "README.md"
 	}
 	document.Project.RequiresPython = downloaded.RequiresPython
-	document.Project.Dependencies = downloaded.Dependencies
+	document.Project.Dependencies = materializedExtensionDependencies(downloaded.Dependencies)
 	contents, err := toml.Marshal(document)
 	if err != nil {
 		return nil, fmt.Errorf("encode installed Harnest Extension pyproject.toml: %w", err)
 	}
 	return contents, nil
+}
+
+// materializedExtensionDependencies leaves compiler-owned packages to the pinned runtime.
+func materializedExtensionDependencies(dependencies []string) []string {
+	owned := allCompilerOwnedDistributions()
+	materialized := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		if _, compilerOwned := owned[normalizedRequirementName(dependency)]; compilerOwned {
+			continue
+		}
+		materialized = append(materialized, dependency)
+	}
+	return materialized
 }
 
 // readPyPIExtensionPackage extracts only the verified module root and bounded core metadata.

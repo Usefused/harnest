@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Let verified PyPI Harnest Extensions synchronize successfully when their wheel
+  metadata repeats Harnest or compiler-owned runtime dependencies. Materialized
+  projects now retain only extension-owned requirements, and the published RAG
+  package is classified as an official Fused extension.
+
 ## [0.20.0](https://github.com/Usefused/harnest/compare/v0.19.0...v0.20.0) (2026-09-15)
 
 ### Features
