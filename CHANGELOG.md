@@ -14,6 +14,8 @@
 
 ### Fixes
 
+* Restore MCP HTTP discovery, resource reads, and subscription startup on Python
+  3.10 while preserving total request deadlines and stream cleanup.
 * Prefer MCP `2026-07-28` HTTP discovery for CLI inspection, agent tools,
   resources, and prompts instead of hiding capabilities behind the SDK 1.x
   compatibility handshake. Preserve initialized-server fallback without replaying tool calls.

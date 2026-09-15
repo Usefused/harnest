@@ -9,16 +9,34 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import anyio
 
 from harnest.mcp import MCPClient, MCPClientLifecycle, MCPResourceError
 from harnest.mcp_http_session import modern_session
 from harnest.mcp_http_tools import modern_tools
 from harnest.mcp_http_tool_headers import tool_headers, valid_tool_schema
-from harnest.mcp_http_transport import header_value
+from harnest.mcp_http_transport import _call, header_value
 
 URI = "events://orders/latest"
 VERSION = "2026-07-28"
 SCHEMA = {"type": "object", "properties": {"text": {"type": "string", "x-mcp-header": "Text"}}, "required": ["text"]}
+
+
+class KeepaliveStream(httpx.AsyncByteStream):
+    """Keep the read active until the total deadline or caller cancellation closes it."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        self.started.set()
+        while True:
+            yield b": keepalive\n\n"
+            await asyncio.sleep(.005)
+
+    async def aclose(self):
+        self.closed = True
 
 
 class Gateway(MCPClientLifecycle):
@@ -73,6 +91,41 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
         binding = self.configured._lifecycle_binding("langgraph")
         await binding.start()
         self.addAsyncCleanup(binding.close, reset=True)
+
+    async def test_total_deadline_closes_keepalive_stream_without_replay(self):
+        """A busy SSE stream cannot extend the RPC deadline on Python 3.10 or newer."""
+
+        stream = KeepaliveStream()
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=.03) as client:
+            with self.assertRaises(TimeoutError):
+                await _call(client, "https://modern.invalid", "tools/call", {"name": "echo", "arguments": {}}, 1024)
+        self.assertTrue(stream.started.is_set())
+        self.assertTrue(stream.closed)
+        self.assertEqual(len(requests), 1)
+
+    async def test_caller_cancellation_closes_stream_and_stays_cancelled(self):
+        """The timeout scope must not swallow caller cancellation or leak the stream."""
+
+        stream = KeepaliveStream()
+
+        def respond(request):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond), timeout=30) as client:
+            task = asyncio.create_task(_call(client, "https://modern.invalid", "server/discover", {}, 1024))
+            try:
+                await asyncio.wait_for(stream.started.wait(), 1)
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        self.assertTrue(stream.closed)
 
     async def test_cli_facade_discovers_and_reads_without_initialize(self):
         async with self.configured.connect() as client:
@@ -228,7 +281,7 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
         server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="error", ws="none"))
         task = asyncio.create_task(server.serve(sockets=[listener]))
         try:
-            async with asyncio.timeout(5):
+            with anyio.fail_after(5):
                 while not server.started:
                     await asyncio.sleep(.01)
                 configured = MCPClient.streamable_http(f"http://127.0.0.1:{listener.getsockname()[1]}")

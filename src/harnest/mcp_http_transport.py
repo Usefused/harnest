@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import asyncio
 import base64
 import json
 from typing import Any
@@ -96,9 +95,13 @@ async def _messages(response: Any, limit: int):
 
 
 async def _call(client: Any, url: str, method: str, params: dict[str, Any], limit: int, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    """Bound total RPC duration even when a peer sends endless SSE keepalives."""
+    """Bound total RPC duration on every supported Python version, including 3.10."""
 
-    async with asyncio.timeout(client.timeout.connect or 30):
+    import anyio
+
+    # Stay in the owning task so stream cleanup runs inside the same cancel scope.
+    # asyncio.timeout is unavailable on our minimum supported Python version.
+    with anyio.fail_after(client.timeout.connect or 30):
         return await _exchange(client, url, method, params, limit, headers=headers)
 
 
