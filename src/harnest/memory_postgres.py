@@ -139,9 +139,10 @@ def _identity(scope: MemoryScope, key: str) -> tuple[str, str, str, str]:
 
 
 async def _locked_record(connection: Any, scope: MemoryScope, key: str) -> MemoryRecord | None:
-    """Lock absent keys too, so stale writers cannot resurrect deleted revisions."""
+    """Fence absent keys with the same signed lock identity on every Python version."""
     identity = _identity(scope, key)
-    lock = int.from_bytes(hashlib.sha256(json.dumps(identity).encode()).digest()[:8], signed=True)
+    # Python 3.10 requires byteorder; big-endian preserves locks used by 3.11+ replicas.
+    lock = int.from_bytes(hashlib.sha256(json.dumps(identity).encode()).digest()[:8], "big", signed=True)
     await connection.execute("SELECT pg_advisory_xact_lock($1)", lock)
     raw = await connection.fetchval(
         "SELECT record::text FROM harnest_memories WHERE application_id=$1 AND user_id=$2 AND namespace=$3 AND key=$4",

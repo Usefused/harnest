@@ -1,9 +1,12 @@
 """Explicit writes, isolated identity and revocable cross-session memory."""
 
 import asyncio
+import hashlib
+import json
+import struct
 from dataclasses import replace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from harnest import context
 from harnest.context import activate_context, create_agent_context, derive_agent_context, revoke_context
@@ -22,6 +25,30 @@ class ReferenceMemoryTests(MemoryStoreConformanceMixin, unittest.IsolatedAsyncio
     async def make_store(self):
         """Exercise the public contract against the process-local reference."""
         return InMemoryStore()
+
+
+class PostgresMemoryLockTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lock_has_explicit_python310_byte_order_and_stable_identity(self):
+        """Require the 3.10 call signature while preserving existing replica lock IDs."""
+        from harnest.memory_postgres import _locked_record
+
+        def from_bytes(value, byteorder, *, signed=False):
+            """Model Python 3.10, where byteorder has no default value."""
+            return int.from_bytes(value, byteorder, signed=signed)
+
+        scope = MemoryScope("memory-test", "alice")
+        for key in ("preference", "other", "unicode-你好"):
+            with self.subTest(key=key):
+                connection = AsyncMock()
+                connection.fetchval.return_value = None
+                identity = (scope.application_id, scope.user_id, scope.namespace, key)
+                digest = hashlib.sha256(json.dumps(identity).encode()).digest()[:8]
+                expected = struct.unpack(">q", digest)[0]
+                with patch("harnest.memory_postgres.int", create=True) as integer:
+                    integer.from_bytes.side_effect = from_bytes
+                    self.assertIsNone(await _locked_record(connection, scope, key))
+                connection.execute.assert_awaited_once_with("SELECT pg_advisory_xact_lock($1)", expected)
+                self.assertEqual(connection.fetchval.await_args.args[1:], identity)
 
 
 class MemoryContextTests(unittest.IsolatedAsyncioTestCase):
