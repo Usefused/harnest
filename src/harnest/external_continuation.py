@@ -551,11 +551,44 @@ class ExternalContinuationRuntime:
         record: ContinuationRecord,
         error_code: str,
     ) -> ContinuationRecord:
-        """Commit provider cancellation without replaying the durable tool."""
+        """Converge a cancellation CAS with checkpoint arming or another canceller."""
 
         self._require_open()
+        if record.application_id != self._application_id or record.provider != provider:
+            raise ContinuationConflictError("continuation cancellation ownership changed")
         failure = ContinuationFailure(error_code)
-        return await self.provider(provider).cancel(record, failure)
+        port = self.provider(provider)
+        for _attempt in range(2):
+            try:
+                return await port.cancel(record, failure)
+            except ContinuationConflictError:
+                latest = await port.get(
+                    user_id=record.user_id, session_id=record.session_id,
+                    run_id=record.run_id, continuation_id=record.continuation_id,
+                )
+                if latest is None:
+                    raise
+                if await self._matching_cancelled_wait(latest, failure):
+                    return latest
+                # Arming only advances the revision of a still-pending wait.
+                # Never overwrite a provider outcome or a claimed continuation.
+                if latest.status != "pending" or latest.revision == record.revision:
+                    raise
+                record = latest
+        raise ContinuationConflictError("continuation cancellation kept changing")
+
+    async def _matching_cancelled_wait(
+        self, record: ContinuationRecord, failure: ContinuationFailure,
+    ) -> bool:
+        """Accept duplicate cancellation only when the owned run also confirms it."""
+
+        if record.status != "failed" or record.failure != failure:
+            return False
+        get_run = getattr(self._store, "get_run", None)
+        if not callable(get_run):
+            return False
+        run = await get_run(scope=record.scope)
+        return run is not None and run.status == "cancelled" and run.pending_action is None
 
     async def cancel_task_wait(
         self, *, response_id: str, user_id: str, session_id: str

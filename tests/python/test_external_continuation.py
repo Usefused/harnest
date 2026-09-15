@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from harnest.agent.approval import ApprovalRun
 from harnest.agent import AgentRuntimePrincipal
@@ -294,6 +296,59 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.application_port("hatchet").complete(
                 "provider-run-live-cancel", {"report": "late"}
             )
+
+    async def _cancellable_wait(self):
+        """Return an unarmed pending snapshot to exercise cancellation CAS races."""
+
+        request = _request("run-cancel-race")
+        await _begin(self.store, request)
+        await self._suspend(request)
+        pending = await self.runtime.provider("hatchet").list_pending()
+        return request, pending[0].record
+
+    async def test_cancel_retries_checkpoint_revision_and_accepts_duplicate(self):
+        """Arming and another successful canceller must not become transport errors."""
+
+        request, stale = await self._cancellable_wait()
+        await self.runtime.arm(response_id=request.invocation_id, user_id=request.user_id, session_id=request.session_id)
+        cancelled = await self.runtime.application_port("hatchet").cancel(stale, "task_cancelled")
+        duplicate = await self.runtime.application_port("hatchet").cancel(stale, "task_cancelled")
+        self.assertEqual(cancelled, duplicate)
+        self.assertEqual(cancelled.status, "failed")
+        self.assertGreater(cancelled.revision, stale.revision)
+        run = await self.store.get_run(scope=stale.scope)
+        self.assertEqual(run.status, "cancelled")
+        self.assertIsNone(run.pending_action)
+        self.assertEqual(self.driver.requests, [])
+
+    async def test_cancel_never_overwrites_a_completed_provider_outcome(self):
+        """A completion winning the CAS is not successful cancellation."""
+
+        _, stale = await self._cancellable_wait()
+        completed = await self.runtime.application_port("hatchet").complete("provider-run-cancel-race", {"report": "done"})
+        with self.assertRaises(ContinuationConflictError):
+            await self.runtime.application_port("hatchet").cancel(stale, "task_cancelled")
+        latest = await self.runtime.provider("hatchet").get(user_id=stale.user_id, session_id=stale.session_id, run_id=stale.run_id, continuation_id=stale.continuation_id)
+        self.assertEqual(latest, completed)
+
+    async def test_duplicate_cancel_requires_matching_failure_and_owner(self):
+        """Conflict recovery cannot change the cancellation reason or ownership."""
+
+        _, stale = await self._cancellable_wait()
+        await self.runtime.application_port("hatchet").cancel(stale, "task_cancelled")
+        for record, reason in ((stale, "different_reason"), (replace(stale, application_id="other"), "task_cancelled"), (replace(stale, provider="other"), "task_cancelled")):
+            with self.assertRaises(ContinuationConflictError):
+                await self.runtime.application_port("hatchet").cancel(record, reason)
+
+    async def test_cancel_does_not_retry_storage_outages_or_unchanged_conflicts(self):
+        """Only a verified newer pending revision is eligible for one retry."""
+
+        _, stale = await self._cancellable_wait()
+        for error in (OSError("store unavailable"), ContinuationConflictError("unchanged")):
+            with patch.object(self.store, "cancel_continuation", side_effect=error) as cancel:
+                with self.assertRaises(type(error)):
+                    await self.runtime.application_port("hatchet").cancel(stale, "task_cancelled")
+                self.assertEqual(cancel.await_count, 1)
 
     async def test_checkpoint_before_completion_resumes_on_callback_replica(self):
         """Verify provider output before a callback replica resumes ADK."""

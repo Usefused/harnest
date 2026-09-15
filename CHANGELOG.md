@@ -14,6 +14,8 @@
 
 ### Fixes
 
+* Avoid A2A cancellation errors when task recovery cancels the same durable wait
+  first; verify committed cancellation and handle concurrent checkpoint arming.
 * Restore MCP HTTP discovery, resource reads, and subscription startup on Python
   3.10 while preserving total request deadlines and stream cleanup.
 * Prefer MCP `2026-07-28` HTTP discovery for CLI inspection, agent tools,

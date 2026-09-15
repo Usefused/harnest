@@ -537,6 +537,30 @@ class A2ADurableTaskIntegrationTests(unittest.TestCase):
     def test_a2a_cancel_atomically_stops_real_task_and_durable_wait(self):
         """Assert transport cancellation against committed database state."""
 
+        self._assert_a2a_task_cancellation()
+
+    def test_a2a_cancel_succeeds_when_reconciliation_commits_first(self):
+        """Force recovery to cancel the continuation after the task row commits."""
+
+        cancel_payload = ProviderTaskRuntimeManager._cancel_payload_job
+        reconciled = []
+
+        async def cancel_then_reconcile(manager, payload_id):
+            """Reproduce the worker sweep between the two cancellation commits."""
+
+            stopped = await cancel_payload(manager, payload_id)
+            if stopped:
+                await manager.reconcile_continuations()
+                reconciled.append(payload_id)
+            return stopped
+
+        with patch.object(ProviderTaskRuntimeManager, "_cancel_payload_job", cancel_then_reconcile):
+            self._assert_a2a_task_cancellation()
+        self.assertEqual(len(reconciled), 1)
+
+    def _assert_a2a_task_cancellation(self):
+        """Check the public response and all durable cancellation records together."""
+
         unique = uuid.uuid4().hex
 
         @task(queue=f"a2a-{unique}")
