@@ -13,6 +13,25 @@
   or restrict each specification explicitly, provision through `fused-cli`
   during setup, and use a standard MCP client at runtime.
 
+* Add agent-focused Studio inside the playground with graph navigation, subagent
+  and capability relationships, source inspection, and local configuration and
+  workflow editing through `harnest serve --reload`. Move MCP discovery into
+  Studio with connection creation, removal, tool search, and tool selection.
+* Add eval suite and case authoring, duplication, metric configuration, and
+  reviewable Playground conversation capture. Save native eval files to the
+  source workspace and activate them through validated development reload.
+
+### Fixes
+
+* Align Studio and Evals with the playground theme. Distinguish primary actions,
+  secondary controls, navigation, and row utilities; add titled form sections,
+  dividers, and separate suite setup, cases, settings, and run results. Keep all
+  three workspace tabs in one compact mobile row and reduce unused header space.
+* Standardize selects across Playground, Studio, Evals, and forms with shared
+  themed option menus, selected checkmarks, keyboard navigation, and viewport-aware
+  positioning. Apply the same option styling to the searchable session picker,
+  keep its menu inside phone screens, and preserve a readable mobile trigger.
+
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
 ### Fixes

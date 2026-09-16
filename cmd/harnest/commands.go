@@ -233,6 +233,7 @@ func (a *application) newServeCommand() *cobra.Command {
 
 type serveOptions struct {
 	playgroundAssets string
+	authoringRoot    string
 	output, host     string
 	port             int
 	requestTimeout   float64
@@ -295,6 +296,7 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 	defer releaseAssets()
 	options.playgroundAssets = assets
 	if options.reload {
+		options.authoringRoot = bundle.Directory
 		return a.serveReload(command, bundle, options)
 	}
 	refreshed, python, err := a.reloadBundleAndPython(command, bundle.Directory)
@@ -407,9 +409,12 @@ func compiledLauncher(artifact string) (string, error) {
 	return launcher, nil
 }
 
-// arguments forces loopback host ownership when the reload supervisor is active.
+// arguments carries CLI-owned source authority and forces loopback under reload.
 func (o serveOptions) arguments(launcher string) []string {
 	args := []string{launcher, "serve"}
+	if o.authoringRoot != "" {
+		args = append(args, "--authoring-root", o.authoringRoot)
+	}
 	if o.playgroundAssets != "" {
 		args = append(args, "--playground-assets", o.playgroundAssets)
 	}

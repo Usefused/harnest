@@ -28,7 +28,7 @@ func TestPlaygroundAssetsAreCLIOwnedAndEphemeral(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	for _, name := range []string{"index.html", "playground.css", "playground.js", "markdown.js", "markdown-it.min.js"} {
+	for _, name := range []string{"index.html", "playground.css", "playground.js", "selects.js", "selects.css", "markdown.js", "markdown-it.min.js"} {
 		if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -40,5 +40,18 @@ func TestPlaygroundAssetsAreCLIOwnedAndEphemeral(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(directory); !os.IsNotExist(err) {
 		t.Fatalf("playground assets survived CLI shutdown: %v", err)
+	}
+}
+
+// TestAuthoringWorkspaceIsExplicit verifies the separate source handoff used by reload.
+func TestAuthoringWorkspaceIsExplicit(t *testing.T) {
+	ordinary := (serveOptions{playgroundAssets: "assets"}).arguments("agent")
+	if slices.Contains(ordinary, "--authoring-root") {
+		t.Fatal("ordinary launch gained source write authority")
+	}
+	development := (serveOptions{reload: true, authoringRoot: "/tmp/source", playgroundAssets: "assets"}).arguments("agent")
+	index := slices.Index(development, "--authoring-root")
+	if index < 0 || development[index+1] != "/tmp/source" {
+		t.Fatalf("missing authoring handoff: %v", development)
 	}
 }

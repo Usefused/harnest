@@ -129,7 +129,10 @@
       "test_tool_adk",
       "test_memory_runtime",
       "test_fused_setup",
-      "test_mcp_openapi"
+      "test_mcp_openapi",
+      "test_playground_inspector",
+      "test_playground_studio",
+      "test_playground_builder"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

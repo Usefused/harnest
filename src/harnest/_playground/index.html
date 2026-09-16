@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
     <title>Harnest Playground</title>
-    <link rel="stylesheet" href="/_harnest/playground.css?v=9">
+    <link rel="stylesheet" href="/_harnest/playground.css?v=13">
+    <link rel="stylesheet" href="/_harnest/studio.css?v=4">
+    <link rel="stylesheet" href="/_harnest/builder.css?v=4">
+    <link rel="stylesheet" href="/_harnest/selects.css?v=3">
   </head>
   <body>
     <div class="shell">
@@ -27,8 +30,8 @@
 
         <nav class="workspace-nav" aria-label="Workspace">
           <button class="workspace-nav-item active" data-workspace="chat" type="button" aria-pressed="true"><span aria-hidden="true">⌁</span> Playground</button>
+          <button class="workspace-nav-item" data-workspace="studio" type="button" aria-pressed="false"><span aria-hidden="true">◇</span> Studio</button>
           <button class="workspace-nav-item" data-workspace="evals" type="button" aria-pressed="false"><span aria-hidden="true">✓</span> Evals</button>
-          <button class="workspace-nav-item" data-workspace="mcp" type="button" aria-pressed="false"><span aria-hidden="true">⌘</span> MCP</button>
         </nav>
 
         <section class="session-panel chat-only" aria-labelledby="session-heading">
@@ -40,19 +43,19 @@
             </div>
           </div>
           <label class="sr-only" for="session-select">Active session</label>
-          <select id="session-select" class="sr-only" aria-label="Active session" tabindex="-1">
+          <select id="session-select" class="sr-only" data-select-proxy="session-trigger" aria-hidden="true" aria-label="Active session" tabindex="-1">
             <option value="">No session</option>
           </select>
           <div id="session-picker" class="session-picker">
-            <button id="session-trigger" class="session-trigger" type="button" aria-haspopup="listbox" aria-controls="session-options" aria-expanded="false">
+            <button id="session-trigger" class="session-trigger harnest-select-trigger" type="button" aria-haspopup="listbox" aria-controls="session-options" aria-expanded="false">
               <span class="session-trigger-mark" aria-hidden="true"></span>
               <span class="session-trigger-copy">
                 <strong id="session-value">No session</strong>
                 <small id="session-value-detail">Create one to begin</small>
               </span>
-              <span class="session-chevron" aria-hidden="true"></span>
+              <span class="session-chevron harnest-select-chevron" aria-hidden="true"></span>
             </button>
-            <div id="session-menu" class="session-menu" hidden>
+            <div id="session-menu" class="session-menu harnest-option-menu" hidden>
               <label class="sr-only" for="session-search">Search sessions by ID</label>
               <input id="session-search" class="session-search" type="search" placeholder="Search session ID…" autocomplete="off">
               <div id="session-search-empty" class="session-search-empty" role="status" hidden>No matching session</div>
@@ -138,6 +141,7 @@
           </section>
 
           <form id="composer" class="composer">
+            <div class="conversation-actions"><button id="save-as-eval" class="secondary-button" type="button">Save as eval</button></div>
             <label class="sr-only" for="message-input">Message</label>
             <textarea id="message-input" rows="1" placeholder="Send a message to the agent…" required></textarea>
             <button id="send-message" class="send-button" type="submit">
@@ -146,12 +150,55 @@
           </form>
         </div>
 
-        <section id="mcp-workspace" class="eval-workspace" aria-labelledby="mcp-heading" hidden>
-          <header class="eval-header">
-            <div><span class="eyebrow">Local developer access</span><h2 id="mcp-heading">MCP resources &amp; prompts</h2>
-            <p>Discover what each connection provides. Content is fetched only when you ask; subscriptions are not started here.</p></div>
+        <section id="studio-workspace" class="studio-workspace" aria-labelledby="studio-heading" hidden>
+          <header class="studio-header">
+            <div><span class="eyebrow">Agent architecture</span><h2 id="studio-heading">Inside this agent</h2>
+            <p>Explore the components and relationships in the served build.</p></div>
+            <div class="studio-header-actions"><span id="studio-access" class="pill">Read only</span><button id="studio-refresh" class="quiet-button" type="button">↻ Reload architecture</button></div>
           </header>
-          <form id="mcp-query" class="eval-runner">
+          <p id="studio-status" class="studio-status" role="status">Select Studio to inspect this agent.</p>
+          <nav class="builder-tabs" aria-label="Studio views">
+            <button class="builder-tab" data-studio-view="architecture" aria-pressed="true">Architecture</button>
+            <button class="builder-tab" data-studio-view="tools" aria-pressed="false">Tools</button>
+            <button class="builder-tab" data-studio-view="connections" aria-pressed="false">MCP connections</button>
+            <button class="builder-tab" data-studio-view="configuration" aria-pressed="false">Configuration</button>
+          </nav>
+          <div id="studio-toolbar" class="studio-toolbar">
+            <label class="studio-search">Agent<select id="studio-agent" aria-label="Studio agent"></select></label>
+            <label class="studio-search">Find a component<input id="studio-search" type="search" placeholder="Search name, kind, or source file…"></label>
+          </div>
+          <div id="studio-architecture">
+          <p id="studio-scope" class="builder-note"></p>
+          <div class="studio-legend"><span>○ Capability</span><span>⇢ Delegation</span><span>→ Workflow</span></div>
+          <div class="studio-layout">
+            <section class="studio-map" aria-label="Agent components">
+              <div id="studio-canvas" class="studio-canvas" aria-label="Architecture map"></div>
+              <div id="studio-components" class="studio-components"></div>
+              <details class="studio-files"><summary>Source files</summary><div id="studio-files"></div></details>
+            </section>
+            <aside id="studio-detail" class="studio-detail" aria-label="Selected component">
+              <h3>Select a component</h3><p>Inspect its configuration, connections, and source location.</p>
+            </aside>
+          </div>
+          </div>
+          <div id="studio-tools" hidden></div>
+          <div id="studio-configuration" hidden></div>
+          <details id="studio-diagnostics" class="studio-diagnostics" hidden><summary>Inspection notes</summary><ul></ul></details>
+        <section id="mcp-workspace" class="studio-connections" aria-labelledby="mcp-heading" hidden>
+          <header class="eval-header">
+            <div><span class="eyebrow">Local developer access</span><h2 id="mcp-heading">MCP connections</h2>
+            <p>Discover what each connection provides. Content is fetched only when you ask; subscriptions are not started here.</p></div>
+            <button id="add-mcp" class="primary-button" type="button">Add connection</button>
+          </header>
+          <div id="studio-connections"></div>
+          <section id="mcp-tool-catalog" class="builder-catalog" hidden>
+          <h3 class="builder-section-title">Server tools</h3>
+          <label class="studio-search">Find a remote tool<input id="mcp-tool-search" type="search" placeholder="Search discovered tool names and descriptions"></label>
+          <div id="mcp-tools" class="builder-cards"></div>
+          </section>
+          <details id="mcp-advanced" class="builder-advanced">
+          <summary>Resources, prompts & advanced queries</summary>
+          <form id="mcp-query" class="eval-runner mcp-query">
             <label>Connection<select id="mcp-client" required></select></label>
             <label>Operation<select id="mcp-operation">
               <option value="inspect">Discover capabilities</option>
@@ -165,34 +212,41 @@
             <label>Resource URI or prompt name<input id="mcp-identifier" placeholder="Copy from discovery results"></label>
             <label>Prompt arguments (JSON)<input id="mcp-arguments" value="{}"></label>
             <label>Page cursor (optional)<input id="mcp-cursor" placeholder="nextCursor from a list result"></label>
-            <button class="secondary-button" type="submit">Query MCP</button>
+            <button class="primary-button" type="submit">Query MCP</button>
           </form>
           <pre id="mcp-results" class="mcp-results" aria-live="polite">Choose a connection to discover its tools, resources, templates, and prompts.</pre>
+          </details>
+        </section>
+
+          <p class="studio-footnote">Capability connections describe what an agent can use. Workflow edges describe explicit routing. Dynamic framework wiring may not be visible in this static view.</p>
         </section>
 
         <section id="eval-workspace" class="eval-workspace" aria-labelledby="eval-heading" hidden>
           <header class="eval-header">
             <div>
               <span class="eyebrow">Local evaluation</span>
-              <h2 id="eval-heading">Run authored eval suites</h2>
-              <p>Uses the same ADK metric registry for ADK and LangGraph. Results stay in this process.</p>
+              <h2 id="eval-heading">Evaluation suites</h2>
+              <p>Build a repeatable set of checks for your agent.</p>
             </div>
-            <button id="refresh-evals" class="secondary-button" type="button">Refresh suites</button>
+            <div class="builder-actions"><button id="new-eval-suite" class="quiet-button" type="button">+ New suite</button><button id="refresh-evals" class="icon-button" type="button" aria-label="Refresh suites" title="Refresh suites">↻</button></div>
           </header>
+          <p id="eval-authoring-status" class="builder-note" role="status"></p>
+          <div id="eval-authoring" class="eval-content"></div>
           <div id="eval-empty" class="eval-empty" hidden>
             <div class="empty-mark">✓</div>
             <h3>No eval suites found</h3>
-            <p>Add a validated <code>evals/*.evalset.json</code> file and reload the server.</p>
+            <p>Create your first suite, then add a case or save a Playground conversation as an eval.</p>
           </div>
           <div id="eval-content" class="eval-content">
             <form id="eval-runner" class="eval-runner">
               <label>Suite<select id="eval-suite" required></select></label>
               <label>Tool trajectory<select id="eval-trajectory"><option value="business">Business · in order</option><option value="strict">Strict · exact</option></select></label>
-              <button id="run-eval" class="send-button eval-run-button" type="submit">Run eval</button>
+              <button id="run-eval" class="primary-button eval-run-button" type="submit">Run eval</button>
             </form>
             <div id="eval-catalog-summary" class="eval-catalog-summary"></div>
+            <h3 class="builder-section-title">Run results</h3>
             <section id="eval-results" class="eval-results" aria-live="polite">
-              <div class="eval-results-empty"><strong>Choose a suite and run it</strong><p>Case scores, metric thresholds, responses, and tool trajectories will appear here.</p></div>
+              <div class="eval-results-empty"><strong>No runs yet</strong><p>Run this suite to compare responses and tool calls against your expectations.</p></div>
             </section>
           </div>
         </section>
@@ -275,6 +329,10 @@
     </div>
     <script src="/_harnest/markdown-it.min.js?v=15.0.2" defer></script>
     <script src="/_harnest/markdown.js?v=1" defer></script>
-    <script src="/_harnest/playground.js?v=9" defer></script>
+    <dialog id="builder-dialog" class="builder-dialog" aria-labelledby="builder-dialog-title"></dialog>
+    <script src="/_harnest/selects.js?v=2" defer></script>
+    <script src="/_harnest/builder.js?v=1" defer></script>
+    <script src="/_harnest/studio.js?v=2" defer></script>
+    <script src="/_harnest/playground.js?v=13" defer></script>
   </body>
 </html>

@@ -1,0 +1,41 @@
+/* Workspace-wide select and option styling. Keep specialized pickers on these same primitives. */
+.harnest-select { display: block; position: relative; min-width: 0; width: 100%; }
+.harnest-select-native { display: none !important; position: absolute !important; width: 1px !important; height: 1px !important; min-height: 0 !important; padding: 0 !important; opacity: 0; clip-path: inset(50%); pointer-events: none; }
+.harnest-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; height: var(--control-height); padding: 0 12px; color: var(--text); background: var(--panel-soft); border: 1px solid var(--line); border-radius: var(--control-radius); font: 500 12px/1.4 var(--font-body); text-transform: none; letter-spacing: normal; text-align: left; cursor: pointer; }
+.harnest-select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harnest-select-chevron { flex: 0 0 auto; width: 7px; height: 7px; margin: -4px 2px 0; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); }
+.harnest-select-trigger:hover:not(:disabled) { border-color: var(--line-strong); background: var(--panel-hover); }
+.harnest-select-trigger:focus-visible, .harnest-select-trigger[aria-expanded="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+.harnest-select-trigger[aria-expanded="true"] .harnest-select-chevron { transform: rotate(225deg); margin-top: 4px; border-color: var(--accent); }
+.harnest-select-trigger:disabled { cursor: not-allowed; opacity: .45; }
+.harnest-select-menu { position: fixed; inset: auto; margin: 0; overflow: auto; overscroll-behavior: contain; }
+.harnest-option-menu { padding: 5px; box-sizing: border-box; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel-raised); color: var(--text); box-shadow: 0 12px 32px rgba(0,0,0,.28); scrollbar-width: thin; }
+.harnest-select-menu::backdrop { background: transparent; }
+.harnest-select-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 40px; padding: 9px 11px; border: 0; color: var(--text); background: transparent; text-align: left; border-radius: 7px; font: 500 12px/1.5 var(--font-body); cursor: pointer; text-transform: none; letter-spacing: normal; }
+.harnest-select-option-text { min-width: 0; overflow-wrap: anywhere; }
+.harnest-select-option[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
+.harnest-select-option:is(.is-active, :hover, :focus-visible) { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.harnest-select-option[aria-selected="true"]:is(.is-active, :hover, :focus-visible) { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.harnest-select-option[aria-disabled="true"] { color: var(--muted); opacity: .45; cursor: not-allowed; }
+.harnest-select-check { flex: 0 0 16px; color: var(--accent); font-weight: 700; }
+.suite-heading .harnest-select-trigger { font-weight: 600; font-size: 13px; }
+@media (max-width: 720px) { .harnest-select-option { min-height: 44px; } }
+
+.session-trigger.harnest-select-trigger { height: auto; min-height: 48px; padding: 7px 11px; box-shadow: none; }
+.session-trigger-copy { flex: 1; }
+.session-trigger-copy strong, .harnest-select-option .session-option-copy strong { font: 600 12px/1.4 var(--font-body); color: inherit; letter-spacing: normal; }
+.session-menu.harnest-option-menu { backdrop-filter: none; }
+.session-option.harnest-select-option { width: 100%; }
+.session-option .harnest-select-check { visibility: hidden; }
+.session-option[aria-selected="true"] .harnest-select-check { visibility: visible; }
+
+@media (max-width: 720px) {
+  .session-trigger.harnest-select-trigger { min-width: 40px; gap: 8px; padding: 0 10px; }
+  .session-trigger-mark, .session-trigger-copy small { display: none; }
+  .session-trigger-copy { display: grid; }
+  .session-trigger .session-chevron { flex: 0 0 7px; }
+  /* The compact header trigger is narrower than its searchable menu. */
+  .session-menu.harnest-option-menu { position: fixed; top: 68px; left: 14px; right: 14px; width: auto; }
+}
+
+@media (max-width: 520px) { .brand > span:not(.brand-mark) { display: none; } }
