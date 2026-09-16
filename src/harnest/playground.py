@@ -64,6 +64,7 @@ def create_playground_router(
     eval_service: PlaygroundEvalService | None = None,
     *, openapi_enabled: bool = True,
     mcp_service: Any | None = None,
+    studio_service: Any | None = None,
 ) -> Any:
     """Capture development asset ownership before handling asynchronous requests."""
 
@@ -106,17 +107,30 @@ def create_playground_router(
             headers=_headers(cache=True),
         )
 
+    @router.get("/_harnest/selects.css", include_in_schema=False)
+    @router.get("/_harnest/selects.js", include_in_schema=False)
+    @router.get("/_harnest/builder.js", include_in_schema=False)
+    @router.get("/_harnest/builder.css", include_in_schema=False)
+    @router.get("/_harnest/studio.js", include_in_schema=False)
+    @router.get("/_harnest/studio.css", include_in_schema=False)
     @router.get("/_harnest/markdown.js", include_in_schema=False)
     @router.get("/_harnest/markdown-it.min.js", include_in_schema=False)
     async def playground_markdown(request: Request) -> Any:
-        """Serve only the two fixed parser assets, never arbitrary directory contents."""
+        """Serve fixed auxiliary assets, never arbitrary directory contents."""
 
         filename = request.url.path.rsplit("/", 1)[-1]
         return FileResponse(
             directory / filename,
-            media_type="text/javascript",
+            media_type="text/css" if filename.endswith(".css") else "text/javascript",
             headers=_headers(cache=True),
         )
+
+    from .playground_studio import install_studio_routes
+
+    install_studio_routes(router, studio_service)
+    if studio_service is not None:
+        from .playground_builder import install_builder_routes
+        install_builder_routes(router, studio_service)
 
     if trace_store is not None:
         from .runtime_auth import principal_for

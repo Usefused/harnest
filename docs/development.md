@@ -33,6 +33,16 @@ The datastore rule does not prohibit bounded filesystem discovery or decoding a
 single validated document: those sources do not offer a query planner. Keep such
 work streaming or bounded where practical and avoid repeated reads.
 
+## Playground controls
+
+Use native `select` and `option` elements as the value and validation contract.
+The shared `selects.js` enhancer applies the standard dropdown to existing and
+newly rendered single selects automatically; do not build page-specific option
+menus. `selects.css` owns trigger, menu, selected, disabled, and focus styling.
+Specialized pickers that retain search or extra metadata must reuse these style
+primitives and explicitly associate their native backing select with its trigger
+using `data-select-proxy`. Verify keyboard selection and narrow-screen placement.
+
 ## OpenTelemetry audit boundary
 
 Runtime operations that change durable state because of a user- or agent-

@@ -719,6 +719,8 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIsNone(final["nextCursor"])
 
     def test_development_playground_is_bundled_and_framework_neutral(self):
+        """Serve the shared UI assets and preserve framework-neutral control contracts."""
+
         page = self.client.get("/")
         stylesheet = self.client.get("/_harnest/playground.css")
         javascript = self.client.get("/_harnest/playground.js")
@@ -812,7 +814,12 @@ class NeutralRuntimeTests(unittest.TestCase):
         self.assertIn(".log-entry", stylesheet.text)
         self.assertIn(".log-level.active", stylesheet.text)
         self.assertIn('.tool-event[data-status="completed"]', stylesheet.text)
-        self.assertIn(".session-option[aria-selected=\"true\"]", stylesheet.text)
+        selects = self.client.get("/_harnest/selects.css")
+        self.assertEqual(selects.status_code, 200)
+        self.assertIn("text/css", selects.headers["content-type"])
+        self.assertIn('.harnest-select-option[aria-selected="true"]', selects.text)
+        self.assertIn('.session-option[aria-selected="true"]', selects.text)
+        self.assertIn('data-select-proxy="session-trigger"', page.text)
         self.assertIn("renderSessionState(session.state || {})", javascript.text)
         self.assertIn("ui.sessionState.hidden = false", javascript.text)
         self.assertIn("syncSessionPicker()", javascript.text)

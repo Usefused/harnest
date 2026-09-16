@@ -561,13 +561,10 @@ async function selectWorkspace(name) {
   document.body.classList.toggle("eval-mode", name !== "chat");
   ui.chatWorkspace.hidden = name !== "chat";
   ui.evalWorkspace.hidden = !evaluating;
-  document.querySelector("#mcp-workspace").hidden = name !== "mcp";
+
+  document.querySelector("#studio-workspace").hidden = name !== "studio";
   ui.workspaceEyebrow.textContent = evaluating ? "Evaluation" : "Playground";
   ui.workspaceTitle.textContent = evaluating ? "Evals" : "Conversation";
-  if (name === "mcp") {
-    ui.workspaceTitle.textContent = "MCP";
-    await loadMCPClients();
-  }
   ui.inspector.classList.remove("open");
   ui.inspectorToggle.setAttribute("aria-expanded", "false");
   for (const button of document.querySelectorAll(".workspace-nav-item")) {
@@ -575,44 +572,14 @@ async function selectWorkspace(name) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   }
-  if (evaluating && !runtime.evalCatalog) await loadEvals();
-}
-
-/** List configured names only; do not fetch remote catalogues on navigation. */
-async function loadMCPClients() {
-  const response = await api("/_harnest/mcp", { method: "GET" });
-  const catalog = await response.json();
-  const select = document.querySelector("#mcp-client");
-  select.replaceChildren();
-  for (const name of catalog.clients || []) {
-    const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
-    select.append(option);
+  if (evaluating) {
+    if (!runtime.evalCatalog) await loadEvals();
+    if (typeof harnestBuilder !== "undefined") await harnestBuilder.openEvals(api, runtime.evalCatalog);
   }
-}
-
-/** Retrieve explicitly selected context and display it as inert JSON. */
-async function queryMCP(event) {
-  event.preventDefault();
-  const output = document.querySelector("#mcp-results");
-  const button = event.currentTarget.querySelector("button");
-  button.disabled = true;
-  try {
-    const client = document.querySelector("#mcp-client").value;
-    const body = {
-      operation: document.querySelector("#mcp-operation").value,
-      identifier: document.querySelector("#mcp-identifier").value,
-      arguments: JSON.parse(document.querySelector("#mcp-arguments").value || "{}"),
-      cursor: document.querySelector("#mcp-cursor").value || null,
-    };
-    const response = await api(`/_harnest/mcp/${encodeURIComponent(client)}`, { method: "POST", body: JSON.stringify(body) });
-    // Provider prompts and resource text remain inert data, never injected HTML.
-    output.textContent = JSON.stringify(await response.json(), null, 2);
-  } catch (error) {
-    output.textContent = error.message;
-  } finally {
-    button.disabled = false;
+  if (name === "studio") {
+    ui.workspaceEyebrow.textContent = "Studio";
+    ui.workspaceTitle.textContent = "Agent architecture";
+    await harnestStudio.open(api);
   }
 }
 
@@ -637,6 +604,7 @@ function renderEvalCatalog(catalog) {
   ui.evalEmpty.hidden = !empty;
   ui.evalContent.hidden = empty;
   renderEvalCatalogSummary(catalog);
+  if (typeof harnestBuilder !== "undefined") harnestBuilder.syncEvalSelection();
 }
 
 function renderEvalCatalogSummary(catalog) {
@@ -853,11 +821,11 @@ function addSessionOption(value, label, detail) {
 
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "session-option";
+  button.className = "session-option harnest-select-option";
   button.dataset.value = value;
   button.setAttribute("role", "option");
   button.setAttribute("aria-label", value ? `${label}, ${value}` : label);
-  button.innerHTML = `<span class="session-option-mark" aria-hidden="true">✓</span><span class="session-option-copy"><strong></strong><small></small></span><span class="session-option-status">Active</span>`;
+  button.innerHTML = `<span class="session-option-copy"><strong></strong><small></small></span><span class="harnest-select-check" aria-hidden="true">✓</span>`;
   button.querySelector("strong").textContent = label;
   button.querySelector("small").textContent = detail;
   button.addEventListener("click", () => chooseSession(value));
@@ -871,9 +839,11 @@ function compactSessionId(sessionId) {
   return `${sessionId.slice(0, 12)}…${sessionId.slice(-6)}`;
 }
 
+/** Keep the compact mobile trigger named even when its visual caption is hidden. */
 function syncSessionPicker() {
   const selected = ui.sessionSelect.selectedOptions[0];
   ui.sessionValue.textContent = selected?.textContent || "No session";
+  ui.sessionTrigger.setAttribute("aria-label", `Active session: ${ui.sessionValue.textContent}`);
   ui.sessionValueDetail.textContent = selected?.dataset.detail || "Create one to begin";
   for (const option of ui.sessionOptions.querySelectorAll(".session-option")) {
     option.setAttribute("aria-selected", String(option.dataset.value === runtime.sessionId));
@@ -1795,7 +1765,10 @@ function moveThemeFocus(event, index) {
 }
 
 function bindEvents() {
-  document.querySelector("#mcp-query").addEventListener("submit", queryMCP);
+  document.querySelector("#save-as-eval").addEventListener("click", () => runAction(async () => {
+    await selectWorkspace("evals");
+    await harnestBuilder.captureConversation();
+  }));
   ui.composer.addEventListener("submit", submitMessage);
   ui.input.addEventListener("input", resizeComposer);
   ui.input.addEventListener("keydown", (event) => {
@@ -1818,7 +1791,7 @@ function bindEvents() {
   }
   ui.inspectorToggle.addEventListener("click", toggleInspector);
   ui.evalRunner.addEventListener("submit", runEval);
-  ui.evalRefresh.addEventListener("click", () => runAction(loadEvals));
+  ui.evalRefresh.addEventListener("click", () => runAction(async () => { await loadEvals(); await harnestBuilder.openEvals(api, runtime.evalCatalog); }));
   for (const button of document.querySelectorAll(".workspace-nav-item")) {
     button.addEventListener("click", () => runAction(() => selectWorkspace(button.dataset.workspace)));
   }

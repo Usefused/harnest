@@ -126,7 +126,10 @@
       "test_token_policy",
       "test_token_policy_backends",
       "test_tool_adk",
-      "test_memory_runtime"
+      "test_memory_runtime",
+      "test_playground_inspector",
+      "test_playground_studio",
+      "test_playground_builder"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

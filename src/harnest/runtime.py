@@ -825,6 +825,7 @@ def _build_fastapi_app(
     )
 
     from .neutral_runtime import create_neutral_app
+    from .playground_studio import PlaygroundStudioService
     from .telemetry import (
         configure_observability,
         instrument_fastapi,
@@ -892,6 +893,7 @@ def _build_fastapi_app(
             agent_principal_required=agent_principal_required,
             playground_eval_service=eval_service,
             playground_mcp_service=mcp_service,
+            playground_studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework) if playground_enabled else None,
             authenticator=authenticator,
             a2a_task_store=_a2a_task_store(application),
         )
@@ -968,6 +970,7 @@ def _build_native_adk_app(
     from .runtime_openapi import configure_openapi
     from .http_lifecycle import install_http_lifecycle
     from .playground import create_playground_router
+    from .playground_studio import PlaygroundStudioService
     from .server_limits import install_request_size_limit
     from .server_transports import install_live_policy
     from .telemetry import configure_observability
@@ -1008,6 +1011,7 @@ def _build_native_adk_app(
             create_playground_router(
                 trace_store, eval_service, openapi_enabled=openapi_enabled,
                 mcp_service=PlaygroundMCPService(Path(artifact) / "source", application.framework),
+                studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework),
             ).routes
         )
     neutral = create_neutral_router(
@@ -1151,6 +1155,7 @@ def _runtime_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--request-timeout", type=float, default=None)
     serve.add_argument("--max-concurrency", type=int, default=None)
+    serve.add_argument("--authoring-root", type=Path, default=None, help=argparse.SUPPRESS)
     serve.add_argument("--playground-assets", type=Path, default=None, help=argparse.SUPPRESS)
     serve.add_argument(
         "--allow-remote",
@@ -1190,7 +1195,10 @@ def _create_server_app(args: Any, server: Any) -> Any:
     from .playground import playground_assets
 
     directory = getattr(args, "playground_assets", None)
-    with playground_assets(directory):
+    from .playground_authoring import authoring_workspace
+
+    root = getattr(args, "authoring_root", None) if directory is not None else None
+    with playground_assets(directory), authoring_workspace(root):
         return _create_configured_app(args.artifact, server, directory is not None)
 
 

@@ -1,0 +1,50 @@
+.studio-workspace { grid-row: 1 / -1; min-height: 0; overflow: auto; padding: 30px clamp(18px, 3vw, 44px); }
+.studio-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.studio-header h2 { margin: 6px 0 8px; font-size: 24px; }
+.studio-header p, .studio-status, .studio-footnote { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.studio-status { overflow-wrap: anywhere; }
+.studio-toolbar { display: flex; align-items: end; gap: 16px; margin: 22px 0; }
+.studio-search { flex: 1; }
+.studio-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 310px); gap: 22px; align-items: start; }
+.studio-map, .studio-detail { min-width: 0; }
+.studio-group { margin-bottom: 24px; }
+.studio-group h3 { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin: 0 0 12px; }
+.studio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.studio-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; text-align: left; padding: 18px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; cursor: pointer; }
+.studio-card:hover { border-color: var(--line-strong); background: var(--panel-hover); }
+.studio-card[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+:is(.studio-card, .studio-relation, .studio-file):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.studio-card strong { font: 800 12px/1.4 var(--font-display); letter-spacing: -.025em; overflow-wrap: anywhere; }
+.studio-card small { font: 11px ui-monospace, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.studio-detail { position: sticky; top: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+.studio-detail h3 { margin: 8px 0 12px; font-size: 16px; overflow-wrap: anywhere; }
+.studio-detail h4 { font-size: 12px; margin-top: 22px; }
+.studio-detail p { font-size: 12px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.studio-config, .studio-source { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 520px; overflow: auto; font: 12px/1.7 ui-monospace, monospace; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-deep); }
+.studio-relation, .studio-file { display: block; width: 100%; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-soft); text-align: left; color: var(--muted); font: 600 11px/1.5 var(--font-body); overflow-wrap: anywhere; }
+.studio-relation:hover:not(:disabled), .studio-file:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-hover); }
+.studio-relation:disabled { cursor: default; opacity: .5; }
+.studio-detail > .secondary-button { margin-top: 14px; }
+.studio-files, .studio-diagnostics { border-top: 1px solid var(--line); padding: 16px 0; font-size: 12px; }
+.studio-files summary, .studio-diagnostics summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
+.studio-empty { color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { .studio-layout { grid-template-columns: 1fr; } .studio-detail { position: static; } }
+@media (max-width: 640px) { .studio-workspace { padding: 22px 14px; } .studio-toolbar { align-items: stretch; flex-direction: column; } .studio-cards { grid-template-columns: 1fr; } }
+
+.studio-legend { display: flex; flex-wrap: wrap; gap: 20px; color: var(--muted); font-size: 11px; margin: 16px 0 10px; }
+.studio-canvas { overflow: auto; max-height: 560px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 14px; background-color: var(--panel-deep); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; }
+.studio-canvas svg { display: block; width: 100%; min-width: 650px; height: auto; }
+.studio-map-node { cursor: pointer; }
+.studio-map-node rect { fill: var(--panel); stroke: var(--line-strong); }
+.studio-map-node:hover rect { fill: var(--panel-hover); }
+.studio-map-node[aria-pressed="true"] rect { fill: var(--accent-soft); stroke: var(--accent); }
+.studio-map-node:focus-visible { outline: none; }
+.studio-map-node:focus-visible rect { stroke: var(--accent); stroke-width: 2px; }
+.studio-map-node text { fill: var(--text); font: 13px var(--font-body); pointer-events: none; }
+.studio-map-node .studio-map-kind, .studio-lane { fill: var(--muted); font: 11px var(--font-body); }
+.studio-edge { fill: none; stroke: var(--accent); stroke-width: 1.5px; }
+.studio-edge.capability { stroke: var(--muted); stroke-dasharray: 3 5; }
+.studio-edge.delegation { stroke: var(--tool); stroke-dasharray: 8 4; }
+.studio-arrow { fill: var(--accent); }
+
+.studio-map-node.dimmed { opacity: .3; }
