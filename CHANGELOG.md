@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add `MCPClient.from_openapi(...)` to connect directly to an OpenAPI spec
+  through a runtime FastMCP bridge, with environment credential references
+  and no CLI generation or setup step.
+
+* Add the optional `harnest-fused` Python package to compose multiple OpenAPI
+  specifications into one Fused MCP server. Select all operations by default
+  or restrict each specification explicitly, provision through `fused-cli`
+  during setup, and use a standard MCP client at runtime.
+
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
 ### Fixes

@@ -513,5 +513,11 @@
     "MemoryScope",
     "MemoryStorageError",
     "MemoryStore"
+  ],
+  "harnest_fused": [
+    "FusedCLIError",
+    "FusedMCPClient",
+    "FusedSetupResult",
+    "OpenAPISpec"
   ]
 }

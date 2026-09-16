@@ -29,7 +29,7 @@ test-live:
 quality: test complexity skill-quality format-check vet validate-examples
 
 complexity:
-	$(PYTHON) scripts/check_python_complexity.py --max 10 src scripts tests/python examples/self-serve
+	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve
 	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
 
 skill-quality:

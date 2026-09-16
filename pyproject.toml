@@ -52,9 +52,11 @@ langgraph = [
   "redis>=6,<8",
 ]
 langgraph-mcp = ["langchain-mcp-adapters>=0.3,<1"]
+openapi = ["fastmcp>=2.14.5,<3"]
 test = ["pytest>=8,<9"]
 eval = ["google-adk[eval]>=2.8,<3", "pytest>=8,<9"]
 all = [
+  "fastmcp>=2.14.5,<3",
   "google-adk[eval,mcp]>=2.8,<3",
   "langgraph>=1.2,<2",
   "langchain>=1.3,<2",
@@ -70,5 +72,5 @@ packages = ["src/harnest", "src/harnest_postgres", "src/harnest_redis"]
 exclude = ["src/harnest/_playground/**"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "packages/harnest-fused/src"]
 testpaths = ["tests/python"]

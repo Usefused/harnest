@@ -69,7 +69,8 @@
       "test_transient_media",
       "test_transient_media_privacy",
       "test_uv_assets",
-      "test_memory"
+      "test_memory",
+      "test_fused_client"
     ],
     "integration": [
       "test_a2a",
@@ -126,7 +127,9 @@
       "test_token_policy",
       "test_token_policy_backends",
       "test_tool_adk",
-      "test_memory_runtime"
+      "test_memory_runtime",
+      "test_fused_setup",
+      "test_mcp_openapi"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

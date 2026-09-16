@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
@@ -95,6 +96,27 @@ class MCPClient:
     _lifecycle_controller: _MCPClientLifecycleController | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    @classmethod
+    def from_openapi(
+        cls, source: str | Path, *, base_url: str | None = None,
+        headers: Mapping[str, str] | None = None, **client_options: Any,
+    ) -> "MCPClient":
+        """Connect to a local or remote spec through a runtime OpenAPI bridge.
+
+        Reading and conversion happen when the MCP connection opens, never
+        during authoring or compilation. Use a path relative to ``__file__``
+        for specs bundled with an agent. Headers support ``${VARIABLE}``.
+        ``client_options`` accepts the standard ``stdio`` policy options.
+        Requires the optional ``harnest[openapi]`` runtime dependency.
+        """
+
+        import sys
+        from .openapi_bridge import connection_environment
+
+        environment = connection_environment(source, base_url, headers)
+        return cls.stdio(sys.executable, "-m", "harnest.openapi_bridge",
+                         env=environment, **client_options)
 
     @classmethod
     def stdio(

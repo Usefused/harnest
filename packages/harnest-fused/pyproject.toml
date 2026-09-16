@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harnest-fused"
+version = "0.1.0"
+description = "Compose OpenAPI services into one Fused MCP client for Harnest"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Fused" }]
+dependencies = ["harnest>=0.21.2,<0.23"]
+
+[project.urls]
+Documentation = "https://docs.usefused.com/harnest/build/fused-mcp"
+Repository = "https://github.com/Usefused/harnest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harnest_fused"]
