@@ -188,7 +188,13 @@
           <header class="eval-header">
             <div><span class="eyebrow">Local developer access</span><h2 id="mcp-heading">MCP connections</h2>
             <p>Discover what each connection provides. Content is fetched only when you ask; subscriptions are not started here.</p></div>
+            <div class="builder-actions">
+            <button id="connect-fused-workspace" class="secondary-button" type="button" hidden>Connect Fused workspace</button>
             <button id="add-mcp" class="primary-button" type="button">Add connection</button>
+            <button id="browse-existing-connector" class="secondary-button" type="button" hidden>Add Fused server</button>
+            <button id="create-connector" class="secondary-button" type="button" hidden>Create Fused server</button>
+            </div>
+            <p id="fused-connection-status" class="builder-note" hidden></p>
           </header>
           <div id="studio-connections"></div>
           <section id="mcp-tool-catalog" class="builder-catalog" hidden>

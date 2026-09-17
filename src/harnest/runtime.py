@@ -869,11 +869,14 @@ def _build_fastapi_app(
         )
         eval_service = None
         mcp_service = None
+        connectors_service = None
         if playground_enabled:
+            from .playground_connectors import PlaygroundConnectorsService
             from .playground_eval import PlaygroundEvalService
             from .playground_mcp import PlaygroundMCPService
 
             mcp_service = PlaygroundMCPService(Path(artifact) / "source", application.framework)
+            connectors_service = PlaygroundConnectorsService()
             eval_service = PlaygroundEvalService(
                 artifact,
                 application,
@@ -893,6 +896,7 @@ def _build_fastapi_app(
             agent_principal_required=agent_principal_required,
             playground_eval_service=eval_service,
             playground_mcp_service=mcp_service,
+            playground_connectors_service=connectors_service,
             playground_studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework) if playground_enabled else None,
             authenticator=authenticator,
             a2a_task_store=_a2a_task_store(application),
@@ -999,6 +1003,7 @@ def _build_native_adk_app(
 
         trace_store = PlaygroundTraceStore()
         driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
+        from .playground_connectors import PlaygroundConnectorsService
         from .playground_eval import PlaygroundEvalService
         from .playground_mcp import PlaygroundMCPService
 
@@ -1012,6 +1017,7 @@ def _build_native_adk_app(
                 trace_store, eval_service, openapi_enabled=openapi_enabled,
                 mcp_service=PlaygroundMCPService(Path(artifact) / "source", application.framework),
                 studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework),
+                connectors_service=PlaygroundConnectorsService(),
             ).routes
         )
     neutral = create_neutral_router(

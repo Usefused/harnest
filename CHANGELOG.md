@@ -21,6 +21,16 @@
   reviewable Playground conversation capture. Save native eval files to the
   source workspace and activate them through validated development reload.
 
+* Rework Studio's MCP connections tab to authenticate into Fused with OAuth
+  instead of requiring a local `fused-cli` install. Connect a Fused workspace
+  by dynamically registering an ephemeral public (PKCE) OAuth client from a
+  per-user registration key, then list deployed MCP servers, deploy a new one
+  from a pasted `kind: mcp` config, and mint a one-time execution token shown
+  once in the Studio. The redirect URI is derived from the served origin;
+  configure only the Engine URL and registration key through the
+  `HARNEST_FUSED_ENGINE_URL` and `HARNEST_FUSED_OAUTH_REGISTRATION_KEY`
+  environment variables.
+
 ### Fixes
 
 * Align Studio and Evals with the playground theme. Distinguish primary actions,
@@ -31,6 +41,9 @@
   themed option menus, selected checkmarks, keyboard navigation, and viewport-aware
   positioning. Apply the same option styling to the searchable session picker,
   keep its menu inside phone screens, and preserve a readable mobile trigger.
+* Record the active Playground workspace and Studio view in the URL so browser
+  back and forward follow tab changes, and restore the workspace from the URL
+  when the playground loads.
 
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 

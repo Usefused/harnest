@@ -3,6 +3,7 @@ const harnestBuilder = (() => {
   let api, authoring = {available: false, scopes: [], suites: []}, projection, focus, reloadStudio;
   let buildRequest = 0;
   let bound = false, evalBound = false, selectedSuite = "", tools = [], toolConnection = "", evalCatalog;
+  let connectorsAvailable = false, connectorsConnected = false;
   const byId = id => document.getElementById(id);
   const pretty = value => JSON.stringify(value, null, 2);
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -125,14 +126,50 @@ const harnestBuilder = (() => {
   async function openStudio(request, snapshot, selected, reload) {
     api = request; projection = snapshot; focus = selected; reloadStudio = reload;
     await refreshAuthoring();
+    await refreshConnectors();
     byId("studio-access").textContent = authoring.available ? "Local builder" : "Read only";
     if (!bound) {
+      byId("connect-fused-workspace").addEventListener("click", () => Promise.resolve().then(connectWorkspace).catch(showError));
       byId("add-mcp").addEventListener("click", () => addConnection());
+      byId("browse-existing-connector").addEventListener("click", () => Promise.resolve().then(browseExistingConnector).catch(showError));
+      byId("create-connector").addEventListener("click", () => Promise.resolve().then(browseNewConnector).catch(showError));
       byId("mcp-query").addEventListener("submit", queryConnection);
       byId("mcp-tool-search").addEventListener("input", renderRemoteTools);
       bound = true;
     }
     renderStudio(snapshot, selected);
+  }
+  /** Refresh the Fused connector state and show the right actions for it. */
+  async function refreshConnectors() {
+    try {
+      const status = await json("/_harnest/connectors");
+      connectorsAvailable = status.available;
+      connectorsConnected = status.connected;
+    } catch (_) { connectorsAvailable = false; connectorsConnected = false; }
+    renderConnectorActions(true);
+  }
+  /** Present connect, add, and create actions according to OAuth state and write access. */
+  function renderConnectorActions(canWriteConnection) {
+    const configured = connectorsAvailable, connected = connectorsConnected;
+    byId("connect-fused-workspace").hidden = !(configured && !connected);
+    byId("browse-existing-connector").hidden = !(configured && connected);
+    byId("create-connector").hidden = !(configured && connected);
+    const status = byId("fused-connection-status");
+    status.hidden = !configured;
+    if (configured) {
+      status.textContent = connected
+        ? "Connected to your Fused workspace."
+        : "Connect your Fused workspace to list or create Fused MCP servers.";
+    }
+    if (configured && connected) {
+      byId("browse-existing-connector").disabled = !canWriteConnection;
+      byId("create-connector").disabled = !canWriteConnection;
+    }
+  }
+  /** Navigate to the Engine's consent screen; the callback stores the token. */
+  async function connectWorkspace() {
+    const started = await json("/_harnest/connectors/oauth/start", "POST");
+    window.location.href = started.url;
   }
   function renderStudio(snapshot, selected) {
     if (!api || !snapshot) return;
@@ -190,10 +227,18 @@ const harnestBuilder = (() => {
     }
     if (connections.some(item => item.path === prior)) select.value = prior;
     if (!connections.length) host.append(el("p", "No MCP connections in this build. Add a connection to an agent to get started.", "builder-note"));
-    byId("add-mcp").disabled = !authoring.available || !(authoring.connectionScopes || []).length;
-    if (authoring.available && !(authoring.connectionScopes || []).length) host.append(el("p", "MCP connections are consumed by Agent nodes. Add an Agent to this workflow before attaching a connection.", "builder-note"));
+    // Writing a connection (manual or Fused-discovered) always ends at the same authoring
+    // endpoint, so every entry point shares this gate. Without it, the Fused flows could run
+    // `fused-cli init --mcp` (a real, billable provisioning call) and then fail to save the
+    // resulting client file, leaving an orphaned server with nothing pointing at it.
+    const canWriteConnection = authoring.available && !!(authoring.connectionScopes || []).length;
+    byId("add-mcp").disabled = !canWriteConnection;
+    renderConnectorActions(canWriteConnection);
+    if (!authoring.available) host.append(el("p", "Start this agent with harnest serve --reload to add connections.", "builder-note"));
+    else if (!(authoring.connectionScopes || []).length) host.append(el("p", "MCP connections are consumed by Agent nodes. Add an Agent to this workflow before attaching a connection.", "builder-note"));
   }
-  async function addConnection() {
+  /** ``defaults`` prefills a connection discovered through Fused; every field stays editable. */
+  async function addConnection(defaults = {}) {
     let scope, name, transport, endpoint, args, token;
     const form = modal("Add MCP connection", "Add connection", async () => {
       await json("/_harnest/authoring/mcp", "POST", {scope: scope.value, name: name.value, transport: transport.value, endpoint: endpoint.value, arguments: JSON.parse(args.value || "[]"), token_env: token.value});
@@ -202,19 +247,80 @@ const harnestBuilder = (() => {
     const owner = projection.blocks.find(item => item.id === focus);
     const connection = section(form, "Connection details");
     scope = choices(connection, "Attach to agent scope", (authoring.connectionScopes || []).map(value => [value, value === "." ? "Root agent" : value]), owner ? scopeOf(owner.path) : ".");
-    name = field(connection, "Connection name"); name.required = true;
-    transport = choices(connection, "Transport", [["streamable_http", "Streamable HTTP"], ["stdio", "Local command (stdio)"]]);
+    name = field(connection, "Connection name", defaults.name || ""); name.required = true;
+    transport = choices(connection, "Transport", [["streamable_http", "Streamable HTTP"], ["stdio", "Local command (stdio)"]], defaults.transport || "streamable_http");
     const server = section(form, "Server settings");
-    endpoint = field(server, "Server URL"); endpoint.required = true;
+    endpoint = field(server, "Server URL", defaults.endpoint || ""); endpoint.required = true;
     args = field(server, "Command arguments (JSON array)", "[]");
-    token = field(server, "Bearer token environment variable (optional)");
+    token = field(server, "Bearer token environment variable (optional)", defaults.tokenEnv || "");
     const updateTransport = () => {
       const stdio = transport.value === "stdio";
       endpoint.parentElement.firstChild.textContent = stdio ? "Command" : "Server URL";
       args.parentElement.hidden = !stdio; token.parentElement.hidden = stdio;
     };
     transport.addEventListener("change", updateTransport); updateTransport();
-    form.append(el("p", "Use an environment variable name for credentials. The connection belongs to the selected agent scope.", "builder-note"));
+    if (defaults.token) {
+      const secret = section(form, "Execution token", "Copy this now; it will not be shown again.");
+      const secretField = field(secret, "One-time token", defaults.token);
+      secretField.readOnly = true;
+      secretField.addEventListener("click", () => secretField.select());
+    }
+    form.append(el("p", defaults.note || "Use an environment variable name for credentials. The connection belongs to the selected agent scope.", "builder-note"));
+  }
+  /** Resolve an already-deployed Fused MCP server, then hand its URL to addConnection. */
+  async function browseExistingConnector() {
+    let server, version;
+    const status = el("p", "Reading deployed servers…", "builder-note");
+    const form = modal("Add an existing Fused MCP server", "Continue", async () => {
+      if (!server.value || !version.value) throw new Error("Choose a server and version");
+      const result = await json("/_harnest/connectors/add", "POST", {name: server.value, version: version.value});
+      byId("builder-dialog").close();
+      await addConnection({
+        name: server.value, endpoint: result.url, tokenEnv: result.tokenEnv, token: result.token,
+        note: result.token
+          ? `Set ${result.tokenEnv} to the token above before using this connection.`
+          : `Using the existing ${result.tokenEnv} from your environment; no new token was generated.`,
+      });
+    });
+    const picker = section(form, "Deployed MCP servers");
+    server = choices(picker, "Server", []);
+    version = choices(picker, "Version", []);
+    form.append(status);
+    const loadVersions = async () => {
+      version.replaceChildren();
+      if (!server.value) return;
+      const listed = await json(`/_harnest/connectors/servers/${encodeURIComponent(server.value)}/versions`);
+      for (const item of (listed.items || listed || [])) { const option = el("option", item.version); option.value = item.version; version.append(option); }
+    };
+    try {
+      const listed = await json("/_harnest/connectors/servers");
+      const servers = listed.items || listed || [];
+      server.replaceChildren();
+      for (const item of servers) { const option = el("option", item.name); option.value = item.name; server.append(option); }
+      server.addEventListener("change", () => loadVersions().catch(error => status.textContent = error.message));
+      status.textContent = servers.length ? "" : "No deployed MCP servers were found for this workspace.";
+      if (servers.length) await loadVersions();
+    } catch (error) { status.textContent = error.message; }
+  }
+  /** Deploy a new Fused MCP server from a pasted declarative ``kind: mcp`` config. */
+  async function browseNewConnector() {
+    let configText;
+    const form = modal("Create a new Fused MCP server", "Create", async () => {
+      if (!configText.value.trim()) throw new Error("Paste a kind:mcp config first");
+      const result = await json("/_harnest/connectors/create", "POST", {
+        configYaml: configText.value, tokenName: "studio",
+      });
+      byId("builder-dialog").close();
+      await addConnection({
+        name: result.name, endpoint: result.url, tokenEnv: result.tokenEnv, token: result.token,
+        note: result.token
+          ? `Set ${result.tokenEnv} to the token above before using this connection.`
+          : `Using the existing ${result.tokenEnv} from your environment; no new token was generated.`,
+      });
+    });
+    form.append(el("p", "Paste a declarative kind:mcp config (YAML or JSON). The Engine deploys it and the Studio mints a one-time execution token.", "builder-note"));
+    configText = field(form, "kind:mcp config", "", "textarea");
+    configText.classList.add("builder-code"); configText.spellcheck = false;
   }
   async function removeConnection(block) {
     const document = await json(`/_harnest/authoring/document?path=${encodeURIComponent(block.path)}`);
@@ -227,15 +333,23 @@ const harnestBuilder = (() => {
     toolConnection = block.path;
     byId("mcp-tool-catalog").hidden = false;
     byId("mcp-tool-catalog").querySelector("h3").textContent = `${block.name} / Server tools`;
-    byId("mcp-tools").replaceChildren(el("p", "Reading tool catalogue…", "builder-note"));
+    const host = byId("mcp-tools");
+    host.replaceChildren(el("p", "Reading tool catalogue…", "builder-note"));
     tools = [];
     document.querySelector('[data-studio-view="connections"]').click();
     byId("mcp-client").value = block.path;
     byId("mcp-operation").value = "list_tools";
-    const result = await json("/_harnest/studio/mcp/query", "POST", {path: block.path, operation: "list_tools"});
-    tools = result.tools || result.result?.tools || [];
-    byId("mcp-results").textContent = pretty(result);
-    byId("mcp-cursor").value = result.nextCursor || "";
+    try {
+      const result = await json("/_harnest/studio/mcp/query", "POST", {path: block.path, operation: "list_tools"});
+      tools = result.tools || result.result?.tools || [];
+      byId("mcp-results").textContent = pretty(result);
+      byId("mcp-cursor").value = result.nextCursor || "";
+    } catch (error) {
+      // Surface the failure in place instead of leaving the loading label behind.
+      host.replaceChildren(el("p", error.message || "MCP discovery failed", "builder-error"));
+      tools = [];
+      return;
+    }
     renderRemoteTools();
   }
   function renderRemoteTools() {
