@@ -152,16 +152,17 @@ const harnestBuilder = (() => {
   function renderConnectorActions(canWriteConnection) {
     const configured = connectorsAvailable, connected = connectorsConnected;
     byId("connect-fused-workspace").hidden = !(configured && !connected);
-    byId("browse-existing-connector").hidden = !(configured && connected);
-    byId("create-connector").hidden = !(configured && connected);
+    byId("browse-existing-connector").hidden = !configured;
+    byId("create-connector").hidden = !configured;
     const status = byId("fused-connection-status");
     status.hidden = !configured;
     if (configured) {
       status.textContent = connected
         ? "Connected to your Fused workspace."
         : "Connect your Fused workspace to list or create Fused MCP servers.";
-    }
-    if (configured && connected) {
+      // The marketplace being reachable is enough to show these actions; gate
+      // only on write access here. A click while not yet connected surfaces a
+      // clear server error, which beats hiding buttons that clearly exist.
       byId("browse-existing-connector").disabled = !canWriteConnection;
       byId("create-connector").disabled = !canWriteConnection;
     }
