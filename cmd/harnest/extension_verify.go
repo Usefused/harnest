@@ -314,8 +314,15 @@ func readExtensionWheelMetadata(file *zip.File) ([]byte, error) {
 	return contents, nil
 }
 
-// parseExtensionEntryPointFile reads the standard INI group emitted by wheels.
+// parseExtensionEntryPointFile reads the extension group emitted by wheels.
 func parseExtensionEntryPointFile(contents string) (extensionEntryPoint, error) {
+	return parseWheelEntryPoint(contents, extensionEntryPointGroup, extensionWheelFormat)
+}
+
+// parseWheelEntryPoint reads exactly one entry from one INI group in a wheel.
+func parseWheelEntryPoint(
+	contents, group string, format func(string) (string, string),
+) (extensionEntryPoint, error) {
 	section := ""
 	entries := []extensionEntryPoint{}
 	for _, raw := range strings.Split(contents, "\n") {
@@ -327,42 +334,29 @@ func parseExtensionEntryPointFile(contents string) (extensionEntryPoint, error) 
 			section = strings.TrimSpace(line[1 : len(line)-1])
 			continue
 		}
-		entry, found, err := parseExtensionEntryPointLine(section, line)
-		if err != nil {
-			return extensionEntryPoint{}, err
+		if section != group {
+			continue
 		}
-		if found {
-			entries = append(entries, entry)
+		name, value, found := strings.Cut(line, "=")
+		if !found {
+			return extensionEntryPoint{}, fmt.Errorf("invalid Harnest entry point")
 		}
+		stem, _ := format(strings.TrimSpace(value))
+		if stem == "" {
+			return extensionEntryPoint{}, fmt.Errorf("Harnest entry point group does not match its format")
+		}
+		entries = append(entries, extensionEntryPoint{
+			Name: strings.TrimSpace(name), Value: strings.TrimSpace(value),
+		})
 	}
 	if len(entries) != 1 || !validPythonIdentifier(entries[0].Name) {
-		return extensionEntryPoint{}, fmt.Errorf("wheel must declare one Harnest extension")
+		return extensionEntryPoint{}, fmt.Errorf("wheel must declare one Harnest entry point")
 	}
 	return entries[0], nil
 }
 
 func ignoredExtensionEntryPointLine(line string) bool {
 	return line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";")
-}
-
-// parseExtensionEntryPointLine isolates the only INI group search consumes.
-func parseExtensionEntryPointLine(
-	section, line string,
-) (extensionEntryPoint, bool, error) {
-	if section != extensionEntryPointGroup {
-		return extensionEntryPoint{}, false, nil
-	}
-	name, value, found := strings.Cut(line, "=")
-	if !found {
-		return extensionEntryPoint{}, false, fmt.Errorf("invalid Harnest entry point")
-	}
-	stem, _ := extensionWheelFormat(strings.TrimSpace(value))
-	if stem != "extension" {
-		return extensionEntryPoint{}, false, fmt.Errorf("Harnest entry point group does not match its format")
-	}
-	return extensionEntryPoint{
-		Name: strings.TrimSpace(name), Value: strings.TrimSpace(value),
-	}, true, nil
 }
 
 // extensionModuleRoot binds the standard entry point to the fixed runtime object.

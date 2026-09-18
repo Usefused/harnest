@@ -118,6 +118,36 @@ Choose a scaffold profile:
 | Default | Runnable managed agent plus ignored guides for optional capabilities |
 | `--minimal` | Only the files required to compile and run |
 | `--example` | Default scaffold plus ignored, opt-in examples |
+| `--template` | Download a Harnest template wheel and materialize its agent tree |
+
+Templates are published as universal `harnest-template-*` wheels. `harnest init`
+downloads and unpacks the wheel's `template/` tree without installing, importing,
+or executing anything from it:
+
+```bash
+harnest init support-agent --template support
+harnest init custom-agent --template https://example.com/custom-agent.whl --template-sha256 <digest>
+```
+
+The template's `config.yaml` supplies the framework and mode, and placeholders
+such as `{{ .Name }}` are filled from the target directory name. Package an
+existing agent into a template wheel with:
+
+```bash
+harnest template package support-agent
+```
+
+This writes `dist/harnest_template_support_agent-0.1.0-py3-none-any.whl`,
+excluding `.harnest/`, `.venv/`, caches, and build output without executing the
+agent code. Publish the wheel to PyPI (or serve it over HTTPS) and reference it
+with `harnest init --template`.
+
+A template may also declare the backing services its agent needs under a
+`services:` list in `harnest-template.yaml`. `harnest init --template` renders
+those declarations into `docker-compose.yml` (localhost-only, digest-pinned
+images) and injects each service's `provides` URLs into `config.yaml`
+`spec.environment`. Harnest only writes the compose file — it never starts the
+services or runs template code.
 
 Start with only the runnable core, then add capabilities as needed:
 

@@ -36,6 +36,20 @@
   `HARNEST_FUSED_ENGINE_URL` and `HARNEST_FUSED_OAUTH_REGISTRATION_KEY`
   environment variables.
 
+* Add `harnest init --template` to download a universal `harnest-template-*`
+  wheel (by PyPI project, slug, or HTTPS URL) and materialize its inert
+  `template/` agent tree. The wheel is never installed, imported, or executed;
+  `config.yaml` supplies the framework and mode, and `{{ .Name }}`-style
+  placeholders are filled from the target directory.
+* Add `harnest template package` to turn an existing agent directory into a
+  universal `harnest-template-*` wheel, excluding build, cache, and environment
+  state without executing the agent code.
+* Let templates declare backing services under a `services:` list in
+  `harnest-template.yaml`. `harnest init --template` renders them into a
+  localhost-only, digest-pinned `docker-compose.yml` and injects each service's
+  `provides` URLs into the scaffolded `config.yaml`; Harnest never starts the
+  services or runs template code.
+
 ### Fixes
 
 * Align Studio and Evals with the playground theme. Distinguish primary actions,

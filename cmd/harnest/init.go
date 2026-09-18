@@ -26,49 +26,22 @@ const (
 	scaffoldExampleProfile scaffoldProfile = "example"
 )
 
-// newInitCommand exposes guided, strict-minimal, and example scaffold profiles.
+// newInitCommand exposes guided, strict-minimal, example, and template scaffold profiles.
 func (a *application) newInitCommand() *cobra.Command {
 	var framework string
 	var mode string
 	var example bool
 	var minimal bool
+	var templateRef string
+	var templateSHA256 string
 	command := &cobra.Command{
 		Use:   "init [directory]",
 		Short: "Scaffold a self-contained filesystem agent",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			target := "."
-			if len(arguments) == 1 {
-				target = arguments[0]
-			}
-			absolute, err := filepath.Abs(target)
-			if err != nil {
-				return fmt.Errorf("resolve scaffold directory: %w", err)
-			}
-			name, err := deploymentName(filepath.Base(filepath.Clean(absolute)))
-			if err != nil {
-				return err
-			}
-			if framework != "adk" && framework != "langgraph" {
-				return fmt.Errorf("--framework must be adk or langgraph")
-			}
-			if mode != "managed" && mode != "advanced" {
-				return fmt.Errorf("--mode must be managed or advanced")
-			}
-			profile := scaffoldProfileForFlags(minimal, example)
-			if err := createScaffoldForProfile(
-				absolute, name, framework, mode, profile,
-			); err != nil {
-				return err
-			}
-			fmt.Fprintf(
-				command.OutOrStdout(),
-				"Initialized %s agent %s in %s\n",
-				profile,
-				name,
-				absolute,
+			return a.runInit(
+				command, arguments, framework, mode, example, minimal, templateRef, templateSHA256,
 			)
-			return nil
 		},
 	}
 	command.Flags().StringVar(&framework, "framework", "adk", "agent framework: adk or langgraph")
@@ -85,8 +58,84 @@ func (a *application) newInitCommand() *cobra.Command {
 		false,
 		"create only files required to compile and run the agent",
 	)
+	command.Flags().StringVar(
+		&templateRef,
+		"template",
+		"",
+		"download a Harnest template wheel (HTTPS URL or harnest-template-* project/slug)",
+	)
+	command.Flags().StringVar(
+		&templateSHA256,
+		"template-sha256",
+		"",
+		"expected SHA-256 of an HTTPS template wheel",
+	)
 	command.MarkFlagsMutuallyExclusive("example", "minimal")
 	return command
+}
+
+// runInit dispatches one init invocation to the template or built-in scaffold path.
+func (a *application) runInit(
+	command *cobra.Command, arguments []string,
+	framework, mode string, example, minimal bool, templateRef, templateSHA256 string,
+) error {
+	target := "."
+	if len(arguments) == 1 {
+		target = arguments[0]
+	}
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve scaffold directory: %w", err)
+	}
+	name, err := deploymentName(filepath.Base(filepath.Clean(absolute)))
+	if err != nil {
+		return err
+	}
+	if templateRef != "" {
+		return a.initFromTemplate(command, absolute, name, templateRef, templateSHA256)
+	}
+	return a.initFromProfile(command, absolute, name, framework, mode, example, minimal)
+}
+
+func (a *application) initFromTemplate(
+	command *cobra.Command, absolute, name, templateRef, templateSHA256 string,
+) error {
+	if err := validateTemplateFlags(command); err != nil {
+		return err
+	}
+	framework, err := a.createScaffoldFromTemplate(
+		command.Context(), absolute, name, templateRef, templateSHA256,
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(
+		command.OutOrStdout(),
+		"Initialized %s agent %s from template in %s\n",
+		framework, name, absolute,
+	)
+	return nil
+}
+
+func (a *application) initFromProfile(
+	command *cobra.Command, absolute, name, framework, mode string, example, minimal bool,
+) error {
+	if framework != "adk" && framework != "langgraph" {
+		return fmt.Errorf("--framework must be adk or langgraph")
+	}
+	if mode != "managed" && mode != "advanced" {
+		return fmt.Errorf("--mode must be managed or advanced")
+	}
+	profile := scaffoldProfileForFlags(minimal, example)
+	if err := createScaffoldForProfile(absolute, name, framework, mode, profile); err != nil {
+		return err
+	}
+	fmt.Fprintf(
+		command.OutOrStdout(),
+		"Initialized %s agent %s in %s\n",
+		profile, name, absolute,
+	)
+	return nil
 }
 
 // scaffoldProfileForFlags converts mutually exclusive CLI intent to policy.
@@ -98,6 +147,16 @@ func scaffoldProfileForFlags(minimal, example bool) scaffoldProfile {
 		return scaffoldExampleProfile
 	}
 	return scaffoldGuidedProfile
+}
+
+// validateTemplateFlags keeps the template's own framework and mode authoritative.
+func validateTemplateFlags(command *cobra.Command) error {
+	for _, flag := range []string{"framework", "mode", "minimal", "example"} {
+		if command.Flags().Changed(flag) {
+			return fmt.Errorf("--%s cannot be combined with --template", flag)
+		}
+	}
+	return nil
 }
 
 func deploymentName(base string) (string, error) {

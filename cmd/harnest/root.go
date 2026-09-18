@@ -56,6 +56,8 @@ Typical workflow:
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph
   harnest init example-agent --framework adk --example
+  harnest init support-agent --template support
+  harnest template package support-agent
   harnest env sync my-agent
   harnest env sync my-agent --profile development
   harnest mode advanced my-agent --check
@@ -151,6 +153,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newSkillsCommand(),
 		app.newAgentPluginsCommand(),
 		app.newExtensionsCommand(),
+		app.newTemplateCommand(),
 		app.newModeCommand(),
 		app.newUpgradeCommand(),
 	)
