@@ -31,7 +31,12 @@ def read_project_lock(root: Path) -> dict[str, Any]:
         raise FrameworkCompatibilityError("invalid Harnest project lock")
     schema = value.get("projectSchema")
     if type(schema) is not int or not 0 <= schema <= PROJECT_SCHEMA:
-        raise FrameworkCompatibilityError("unsupported harnest.lock projectSchema")
+        raise FrameworkCompatibilityError(
+            f"unsupported harnest.lock projectSchema {schema!r}; this Harnest "
+            f"install supports schema 0-{PROJECT_SCHEMA}. Run `harnest env sync` "
+            "to update this agent's runtime, or point --python/HARNEST_PYTHON at "
+            "an interpreter with a matching harnest install."
+        )
     return value
 
 

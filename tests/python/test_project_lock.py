@@ -80,6 +80,18 @@ class ProjectLockTests(unittest.TestCase):
             with self.assertRaisesRegex(EvaluationError, "unsupported evaluator"):
                 eval_dependencies()
 
+    def test_unsupported_schema_names_the_remediation(self):
+        """A too-new or malformed schema must point contributors at the actual fix."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "harnest.lock").write_text(
+                "apiVersion: harnest.dev/v1alpha1\nkind: ProjectLock\nprojectSchema: 99\n"
+            )
+            with self.assertRaisesRegex(
+                FrameworkCompatibilityError, "env sync.*--python/HARNEST_PYTHON"
+            ):
+                read_project_lock(root)
+
     def test_pin_rejects_specifiers_wrong_packages_and_symlinks(self):
         """Never treat lock content as arbitrary installer arguments or follow links."""
         with tempfile.TemporaryDirectory() as directory:
