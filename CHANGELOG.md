@@ -64,6 +64,13 @@
   back and forward follow tab changes, and restore the workspace from the URL
   when the playground loads.
 
+### Changed
+
+* Widen the official Harnest Extensions' supported Harnest range to
+  `>=0.21.3,<0.24`, so the Docker, Hatchet, and RAG extensions accept the
+  current release and the next minor without claiming support for pre-0.21.3
+  hosts.
+
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
 ### Fixes

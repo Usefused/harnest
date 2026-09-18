@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "docker>=7.1,<8",
-  "harnest>=0.18,<0.23",
+  "harnest>=0.21.3,<0.24",
 ]
 
 [project.urls]

@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "hatchet-sdk>=1.38,<2",
-  "harnest>=0.18,<0.23",
+  "harnest>=0.21.3,<0.24",
 ]
 
 [project.urls]

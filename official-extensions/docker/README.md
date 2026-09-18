@@ -62,7 +62,7 @@ reproducible deployments.
 
 ## Compatibility and capabilities
 
-Version 0.4.0 requires Python 3.10 or newer, Harnest `>=0.18,<0.23`, and the
+Version 0.4.0 requires Python 3.10 or newer, Harnest `>=0.21.3,<0.24`, and the
 Docker Python SDK `>=7.1,<8`. The host must provide a reachable Docker daemon;
 installing this wheel does not install or start Docker.
 
