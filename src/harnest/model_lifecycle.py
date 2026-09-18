@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeAlias
 
@@ -57,6 +57,105 @@ class LiteLLMLifecycle:
         return None
 
 
+_ANTHROPIC_MODEL_PREFIX = "anthropic/"
+
+
+def _prompt_cache_transformers(
+    model: str, enabled: bool
+) -> tuple[Callable[[dict[str, Any]], Any], ...]:
+    """Select request transformers that maximize provider prompt-cache hits.
+
+    Anthropic requires an explicit ephemeral breakpoint on a message block to
+    cache the request prefix; OpenAI and Gemini cache automatically, so those
+    providers need no transformer.
+    """
+
+    if not enabled or not model.startswith(_ANTHROPIC_MODEL_PREFIX):
+        return ()
+    return (_annotate_anthropic_prompt_cache,)
+
+
+def _annotate_anthropic_prompt_cache(request: dict[str, Any]) -> dict[str, Any]:
+    """Mark the system and final messages as Anthropic ephemeral cache prefixes.
+
+    Marking the system message caches the instruction and tools; marking the
+    final message caches the whole conversation so the next turn reuses it.
+    """
+
+    messages = request.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return request
+    updated = [_copy_message(message) for message in messages]
+    _mark_message_for_cache(updated[-1])
+    for message in updated:
+        if _message_role(message) == "system":
+            _mark_message_for_cache(message)
+            break
+    request["messages"] = updated
+    return request
+
+
+def _copy_message(message: Any) -> Any:
+    """Copy one message so cache annotations never mutate authored content."""
+
+    if not isinstance(message, dict):
+        return message
+    content = message.get("content")
+    if isinstance(content, list):
+        return {**message, "content": list(content)}
+    return dict(message)
+
+
+def _message_role(message: Any) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    role = message.get("role")
+    return role if isinstance(role, str) else None
+
+
+def _mark_message_for_cache(message: Any) -> None:
+    if not isinstance(message, dict):
+        return
+    blocks = _content_blocks(message.get("content"))
+    if not blocks:
+        return
+    last = blocks[-1]
+    if not isinstance(last, dict) or "cache_control" in last:
+        return
+    message["content"] = [
+        *blocks[:-1],
+        {**last, "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def _content_blocks(content: Any) -> list[Any]:
+    """Normalize string or block-list content without mutating its source."""
+
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return list(content)
+    return []
+
+
+def _apply_request_transformers(
+    request: dict[str, Any],
+    transformers: Sequence[Callable[[dict[str, Any]], Any]],
+) -> dict[str, Any]:
+    """Run built-in request transformers before the authored lifecycle hook."""
+
+    for transform in transformers:
+        replacement = transform(request)
+        if replacement is None:
+            continue
+        if not isinstance(replacement, Mapping):
+            raise TypeError(
+                "LiteLLM request transformer must return a mapping or None"
+            )
+        request = dict(replacement)
+    return request
+
+
 class _LifecycleLiteLLMClient:
     """Apply lifecycle hooks around one adapter's LiteLLM client."""
 
@@ -67,10 +166,12 @@ class _LifecycleLiteLLMClient:
         *,
         model: str,
         framework: Literal["adk", "langgraph"],
+        request_transformers: Sequence[Callable[[dict[str, Any]], Any]] = (),
     ) -> None:
         self._delegate = delegate
         self._lifecycle = lifecycle
         self._context = LiteLLMContext(model=model, framework=framework)
+        self._transformers = tuple(request_transformers)
         self._transport: Any | None = None
         self._initialized = False
         self._state: Literal["open", "closing", "closed"] = "open"
@@ -215,7 +316,7 @@ class _LifecycleLiteLLMClient:
         request = dict(kwargs)
         if self._transport is not None:
             request["client"] = self._transport
-        return request
+        return _apply_request_transformers(request, self._transformers)
 
     def _validated_request(
         self, original: dict[str, Any], replacement: Any
@@ -455,13 +556,21 @@ def _attach_lifecycle_resource(value: Any, resource: Any) -> Any:
 
 
 def create_adk_lifecycle_client(
-    client_type: type[Any], lifecycle: LiteLLMLifecycle, *, model: str
+    client_type: type[Any],
+    lifecycle: LiteLLMLifecycle,
+    *,
+    model: str,
+    request_transformers: Sequence[Callable[[dict[str, Any]], Any]] = (),
 ) -> Any:
     """Create the concrete client type required by ADK's validated adapter."""
 
     delegate = client_type()
     controller = _LifecycleLiteLLMClient(
-        delegate, lifecycle, model=model, framework="adk"
+        delegate,
+        lifecycle,
+        model=model,
+        framework="adk",
+        request_transformers=request_transformers,
     )
 
     class ADKLifecycleClient(client_type):

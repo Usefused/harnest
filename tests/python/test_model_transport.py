@@ -344,3 +344,34 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
                 "openai/agent-model", ssl_verify=False,
                 model_kwargs={"ssl_verify": True},
             ).build_langgraph()
+
+    def test_prompt_cache_wraps_anthropic_models_by_default(self):
+        """Anthropic models gain cache annotation; others and opt-outs stay bare."""
+
+        anthropic = LiteLLMModel("anthropic/claude-3-5-sonnet").build()
+        self.assertTrue(hasattr(anthropic, "__harnest_litellm_resources__"))
+        self.assertEqual(len(model_transport_bindings(anthropic)), 1)
+
+        disabled = LiteLLMModel(
+            "anthropic/claude-3-5-sonnet", prompt_cache=False
+        ).build()
+        self.assertFalse(hasattr(disabled, "__harnest_litellm_resources__"))
+
+        openai = LiteLLMModel("openai/gpt-4o").build()
+        self.assertFalse(hasattr(openai, "__harnest_litellm_resources__"))
+
+    def test_prompt_cache_skips_an_explicit_transport_client(self):
+        """An authored client already owns the transport; annotation is skipped."""
+
+        native = object()
+        adapter = LiteLLMModel(
+            "anthropic/claude-3-5-sonnet", client=native
+        ).build()
+        self.assertFalse(hasattr(adapter, "__harnest_litellm_resources__"))
+        self.assertEqual(len(model_transport_bindings(adapter)), 1)
+
+    def test_prompt_cache_rejects_non_boolean(self):
+        """The opt-out flag must be a boolean, matching other model controls."""
+
+        with self.assertRaisesRegex(TypeError, "prompt_cache must be a boolean"):
+            LiteLLMModel("anthropic/claude-3-5-sonnet", prompt_cache="yes")

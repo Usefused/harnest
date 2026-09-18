@@ -4,6 +4,11 @@
 
 ### Features
 
+* Enable Anthropic prompt caching by default for agents using `LiteLLMModel`:
+  Harnest now marks the system instruction and final message with ephemeral
+  cache breakpoints before each Anthropic request, without changing OpenAI or
+  Gemini behavior. Opt out per model with `LiteLLMModel(..., prompt_cache=False)`.
+
 * Add `MCPClient.from_openapi(...)` to connect directly to an OpenAPI spec
   through a runtime FastMCP bridge, with environment credential references
   and no CLI generation or setup step.

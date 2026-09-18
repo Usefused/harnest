@@ -13,6 +13,7 @@ from .model_lifecycle import (
     LiteLLMLifecycle,
     _LifecycleLiteLLMClient,
     _attach_lifecycle_resource,
+    _prompt_cache_transformers,
     create_adk_lifecycle_client,
 )
 from .model_transport import attach_model_transport_binding
@@ -169,6 +170,16 @@ def _litellm_model_name(model: str) -> str:
     return qualified
 
 
+def _manages_litellm_transport(completion_args: Mapping[str, Any]) -> bool:
+    """Report whether Harnest may wrap the adapter's LiteLLM client.
+
+    An explicitly authored ``client`` or ``llm_client`` already owns the
+    transport, so the default prompt-cache wrapper must leave it untouched.
+    """
+
+    return not any(key in completion_args for key in ("client", "llm_client"))
+
+
 def _validate_lifecycle(
     lifecycle: LiteLLMLifecycle | None, completion_args: Mapping[str, Any]
 ) -> None:
@@ -187,11 +198,15 @@ class LiteLLMModel(ModelConnector):
     settings such as ``api_base``, ``api_key``, and generation options.
     ``thinking`` selects a portable on/off mode; omit it to use the provider
     default or pass ``reasoning_effort`` directly for provider-specific levels.
+    ``prompt_cache`` enables provider prompt-cache breakpoints where the
+    provider requires them; it defaults to ``True`` and never changes OpenAI or
+    Gemini requests.
     """
 
     model: str
     completion_args: Mapping[str, Any] = field(repr=False)
     lifecycle: LiteLLMLifecycle | None = field(default=None, repr=False)
+    prompt_cache: bool = field(default=True, repr=False)
 
     def __init__(
         self,
@@ -199,12 +214,16 @@ class LiteLLMModel(ModelConnector):
         *,
         thinking: bool | None = None,
         lifecycle: LiteLLMLifecycle | None = None,
+        prompt_cache: bool = True,
         **completion_args: Any,
     ) -> None:
         qualified = _litellm_model_name(model)
         _validate_lifecycle(lifecycle, completion_args)
+        if not isinstance(prompt_cache, bool):
+            raise TypeError("model prompt_cache must be a boolean")
         object.__setattr__(self, "model", qualified)
         object.__setattr__(self, "lifecycle", lifecycle)
+        object.__setattr__(self, "prompt_cache", prompt_cache)
         object.__setattr__(
             self,
             "completion_args",
@@ -218,6 +237,7 @@ class LiteLLMModel(ModelConnector):
         default_model: str | None = None,
         thinking: bool | None = None,
         lifecycle: LiteLLMLifecycle | None = None,
+        prompt_cache: bool = True,
         **completion_args: Any,
     ) -> "LiteLLMModel":
         """Use an explicitly configured OpenAI-compatible API, not a default vendor.
@@ -232,6 +252,7 @@ class LiteLLMModel(ModelConnector):
             _openai_model_name_from_environment(default_model),
             thinking=thinking,
             lifecycle=lifecycle,
+            prompt_cache=prompt_cache,
             **_openai_environment_arguments(completion_args),
         )
 
@@ -245,7 +266,11 @@ class LiteLLMModel(ModelConnector):
                 "LiteLLMModel requires Google ADK's LiteLLM support; install "
                 "harnest with its runtime dependencies"
             ) from exc
-        if self.lifecycle is None:
+        transformers = _prompt_cache_transformers(self.model, self.prompt_cache)
+        auto_wrap = bool(transformers) and _manages_litellm_transport(
+            self.completion_args
+        )
+        if self.lifecycle is None and not auto_wrap:
             adapter = LiteLlm(model=self.model, **dict(self.completion_args))
             return attach_model_transport_binding(
                 adapter,
@@ -256,7 +281,10 @@ class LiteLLMModel(ModelConnector):
         from google.adk.models.lite_llm import LiteLLMClient
 
         client = create_adk_lifecycle_client(
-            LiteLLMClient, self.lifecycle, model=self.model
+            LiteLLMClient,
+            self.lifecycle or LiteLLMLifecycle(),
+            model=self.model,
+            request_transformers=transformers,
         )
         adapter = LiteLlm(
             model=self.model,
@@ -283,12 +311,20 @@ class LiteLLMModel(ModelConnector):
         kwargs = _langgraph_completion_args(ChatLiteLLM, self.completion_args)
         adapter = ChatLiteLLM(model=self.model, **kwargs)
         binding_args = _langgraph_binding_args(kwargs)
-        if self.lifecycle is None:
+        transformers = _prompt_cache_transformers(self.model, self.prompt_cache)
+        auto_wrap = bool(transformers) and _manages_litellm_transport(
+            self.completion_args
+        )
+        if self.lifecycle is None and not auto_wrap:
             return attach_model_transport_binding(
                 adapter, model=self.model, completion_args=binding_args
             )
         client = _LifecycleLiteLLMClient(
-            adapter.client, self.lifecycle, model=self.model, framework="langgraph"
+            adapter.client,
+            self.lifecycle or LiteLLMLifecycle(),
+            model=self.model,
+            framework="langgraph",
+            request_transformers=transformers,
         )
         # ChatLiteLLM validates by replacing `client` with the LiteLLM module.
         # Assigning after construction scopes the wrapper to this model only.

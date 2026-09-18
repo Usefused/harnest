@@ -8,7 +8,9 @@ from harnest.agent import Agent
 from harnest.model import LiteLLMLifecycle, LiteLLMModel
 from harnest.model_lifecycle import (
     _LifecycleLiteLLMClient,
+    _annotate_anthropic_prompt_cache,
     _attach_lifecycle_resource,
+    _prompt_cache_transformers,
     close_litellm_lifecycles,
 )
 
@@ -543,6 +545,144 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         if notes:
             self.assertIn("ValueError", notes[0])
             self.assertNotIn("first", notes[0])
+
+
+class PromptCacheTransformerTests(unittest.TestCase):
+    def test_selects_anthropic_transformer_only_when_enabled(self):
+        self.assertEqual(
+            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", True),
+            (_annotate_anthropic_prompt_cache,),
+        )
+        self.assertEqual(
+            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", False), ()
+        )
+        self.assertEqual(_prompt_cache_transformers("openai/gpt-4o", True), ())
+        self.assertEqual(
+            _prompt_cache_transformers("gemini/gemini-1.5-pro", True), ()
+        )
+
+    def test_annotates_system_and_final_messages(self):
+        request = {
+            "model": "anthropic/claude-3-5-sonnet",
+            "messages": [
+                {"role": "system", "content": "be helpful"},
+                {"role": "user", "content": "hello"},
+            ],
+        }
+        messages = _annotate_anthropic_prompt_cache(request)["messages"]
+        self.assertEqual(
+            messages[0]["content"],
+            [
+                {
+                    "type": "text",
+                    "text": "be helpful",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        )
+        self.assertEqual(
+            messages[1]["content"],
+            [
+                {
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        )
+
+    def test_annotates_blocks_without_duplicating_existing_breakpoint(self):
+        request = {
+            "model": "anthropic/claude-3-5-sonnet",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "sys",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            ],
+        }
+        messages = _annotate_anthropic_prompt_cache(request)["messages"]
+        self.assertEqual(
+            messages[0]["content"],
+            [
+                {
+                    "type": "text",
+                    "text": "sys",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        )
+        self.assertEqual(
+            messages[1]["content"],
+            [
+                {
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        )
+
+    def test_ignores_missing_or_empty_messages(self):
+        self.assertEqual(
+            _annotate_anthropic_prompt_cache({"model": "anthropic/x"}),
+            {"model": "anthropic/x"},
+        )
+        self.assertEqual(
+            _annotate_anthropic_prompt_cache(
+                {"model": "anthropic/x", "messages": []}
+            ),
+            {"model": "anthropic/x", "messages": []},
+        )
+
+    def test_does_not_mutate_authored_messages(self):
+        original = [{"role": "user", "content": "hello"}]
+        request = {"model": "anthropic/x", "messages": original}
+        _annotate_anthropic_prompt_cache(request)
+        self.assertEqual(original, [{"role": "user", "content": "hello"}])
+
+
+class PromptCacheControllerTests(unittest.TestCase):
+    def test_transformers_run_before_authored_hook(self):
+        class HookLifecycle(LiteLLMLifecycle):
+            def before_request(self, request, context):
+                request["messages"].append(
+                    {"role": "user", "content": "from-hook"}
+                )
+                return request
+
+        def transformer(request):
+            request["messages"] = [{"role": "user", "content": "transformed"}]
+            return request
+
+        async def exercise():
+            delegate = _Delegate()
+            client = _LifecycleLiteLLMClient(
+                delegate,
+                HookLifecycle(),
+                model="anthropic/x",
+                framework="adk",
+                request_transformers=(transformer,),
+            )
+            await client.acompletion(model="anthropic/x", messages=[])
+            await client.aclose()
+            return delegate
+
+        delegate = asyncio.run(exercise())
+        self.assertEqual(
+            delegate.calls[0]["messages"],
+            [
+                {"role": "user", "content": "transformed"},
+                {"role": "user", "content": "from-hook"},
+            ],
+        )
 
 
 if __name__ == "__main__":
