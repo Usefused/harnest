@@ -417,6 +417,22 @@ def _inspect_python(relative: Path, absolute: Path, state: _Inspection) -> None:
     candidates = _collect_lib_import_candidates(module)
     if candidates:
         state.raw_lib_imports[relative.as_posix()] = candidates
+    symbols, functions, graphs = _collect_python_blocks(relative, module, state)
+    for _, call, graph in graphs:
+        _inspect_graph(relative, call, graph, symbols, functions, state)
+
+
+def _collect_python_blocks(
+    relative: Path,
+    module: ast.Module,
+    state: _Inspection,
+) -> tuple[
+    dict[str, StudioBlock],
+    dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    list[tuple[str, ast.Call, StudioBlock]],
+]:
+    """Index module-level symbols, functions, and graph calls without reading bodies."""
+
     symbols: dict[str, StudioBlock] = {}
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     graphs: list[tuple[str, ast.Call, StudioBlock]] = []
@@ -445,11 +461,16 @@ def _inspect_python(relative: Path, absolute: Path, state: _Inspection) -> None:
         symbols[name] = block
         if kind == "graph":
             graphs.append((name, call, block))
-    for _, call, graph in graphs:
-        _inspect_graph(relative, call, graph, symbols, functions, state)
+    return symbols, functions, graphs
 
 
 _LIB_NAMESPACE = "harnest.lib"
+
+
+def _lib_namespace_name(name: str) -> bool:
+    """Return whether a dotted name targets the shared `harnest.lib` namespace."""
+
+    return name == _LIB_NAMESPACE or name.startswith(f"{_LIB_NAMESPACE}.")
 
 
 def _collect_lib_import_candidates(module: ast.Module) -> tuple[str, ...]:
@@ -458,16 +479,30 @@ def _collect_lib_import_candidates(module: ast.Module) -> tuple[str, ...]:
     candidates: list[str] = []
     for node in ast.walk(module):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == _LIB_NAMESPACE or alias.name.startswith(f"{_LIB_NAMESPACE}."):
-                    candidates.append(alias.name)
+            candidates.extend(_lib_import_candidates(node))
         elif isinstance(node, ast.ImportFrom):
-            if node.level != 0 or node.module is None:
-                continue
-            if node.module == _LIB_NAMESPACE or node.module.startswith(f"{_LIB_NAMESPACE}."):
-                for alias in node.names:
-                    candidates.append(f"{node.module}.{alias.name}")
+            candidates.extend(_lib_from_import_candidates(node))
     return tuple(candidates)
+
+
+def _lib_import_candidates(node: ast.Import) -> list[str]:
+    """Collect `harnest.lib` names from a plain import statement."""
+
+    candidates: list[str] = []
+    for alias in node.names:
+        if _lib_namespace_name(alias.name):
+            candidates.append(alias.name)
+    return candidates
+
+
+def _lib_from_import_candidates(node: ast.ImportFrom) -> list[str]:
+    """Collect `harnest.lib` names from a relative-safe from-import statement."""
+
+    if node.level != 0 or node.module is None:
+        return []
+    if not _lib_namespace_name(node.module):
+        return []
+    return [f"{node.module}.{alias.name}" for alias in node.names]
 
 
 def _resolve_lib_imports(state: _Inspection) -> dict[str, tuple[str, ...]]:
