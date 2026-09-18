@@ -1897,6 +1897,11 @@ async function initialize() {
     await Promise.all([loadAgent(), loadSessions(requestedSessionId)]);
     await loadTraces(true);
     setStatus(runtime.sessionId ? "Ready" : "No session", "ok");
+  } catch (error) {
+    showError(error);
+  }
+  // A failed chat-only load must not strand a deep link on the wrong workspace.
+  try {
     const requestedWorkspace = workspaceFromLocation();
     if (requestedWorkspace !== "chat") await selectWorkspace(requestedWorkspace);
   } catch (error) {

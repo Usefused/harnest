@@ -1,12 +1,28 @@
-.studio-workspace { grid-row: 1 / -1; min-height: 0; overflow: auto; padding: 30px clamp(18px, 3vw, 44px); }
+.studio-workspace { grid-row: 1 / -1; min-height: 0; overflow: hidden; padding: 30px clamp(18px, 3vw, 44px) 0; display: flex; flex-direction: column; }
+.studio-workspace > .studio-header,
+.studio-workspace > .studio-status,
+.studio-workspace > .builder-tabs,
+.studio-workspace > .studio-toolbar { flex: 0 0 auto; }
+.studio-workspace > #studio-tools,
+.studio-workspace > #studio-configuration,
+.studio-workspace > #mcp-workspace,
+.studio-workspace > #studio-catalog,
+.studio-workspace > #studio-diagnostics { overflow: auto; padding-bottom: 30px; }
 .studio-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
 .studio-header h2 { margin: 6px 0 8px; font-size: 24px; }
 .studio-header p, .studio-status, .studio-footnote { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .studio-status { overflow-wrap: anywhere; }
 .studio-toolbar { display: flex; align-items: end; gap: 16px; margin: 22px 0; }
 .studio-search { flex: 1; }
-.studio-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 310px); gap: 22px; align-items: start; }
-.studio-map, .studio-detail { min-width: 0; }
+
+/* Architecture: a full-bleed canvas is the whole view — nothing else competes with it. */
+#studio-architecture { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; padding-bottom: 20px; }
+#studio-architecture-canvas-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#studio-architecture-canvas-view[hidden] { display: none; }
+.studio-architecture-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.studio-architecture-bar #studio-scope { margin: 0; }
+.studio-canvas-pane { position: relative; flex: 1 1 0; min-height: 380px; display: flex; }
+.studio-canvas-pane > .studio-canvas { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
 .studio-group { margin-bottom: 24px; }
 .studio-group h3 { color: var(--muted); font-size: 12px; letter-spacing: .02em; margin: 0 0 12px; }
 .studio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
@@ -16,7 +32,12 @@
 :is(.studio-card, .studio-relation, .studio-file):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .studio-card strong { font: 800 12px/1.4 var(--font-display); letter-spacing: -.025em; overflow-wrap: anywhere; }
 .studio-card small { font: 11px ui-monospace, monospace; color: var(--muted); overflow-wrap: anywhere; }
-.studio-detail { position: sticky; top: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+.studio-detail {
+  position: absolute; top: 12px; right: 12px; bottom: 12px; width: min(360px, calc(100% - 24px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px;
+  overflow: auto; box-shadow: -12px 0 32px rgba(0, 0, 0, .28); z-index: 3;
+}
+.studio-detail[hidden] { display: none; }
 .studio-detail h3 { margin: 8px 0 12px; font-size: 16px; overflow-wrap: anywhere; }
 .studio-detail h4 { font-size: 12px; margin-top: 22px; }
 .studio-detail p { font-size: 12px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
@@ -28,11 +49,11 @@
 .studio-files, .studio-diagnostics { border-top: 1px solid var(--line); padding: 16px 0; font-size: 12px; }
 .studio-files summary, .studio-diagnostics summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
 .studio-empty { color: var(--muted); font-size: 13px; }
-@media (max-width: 900px) { .studio-layout { grid-template-columns: 1fr; } .studio-detail { position: static; } }
-@media (max-width: 640px) { .studio-workspace { padding: 22px 14px; } .studio-toolbar { align-items: stretch; flex-direction: column; } .studio-cards { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .studio-workspace { padding: 22px 14px 0; } .studio-toolbar { align-items: stretch; flex-direction: column; } .studio-cards { grid-template-columns: 1fr; } }
 
-.studio-legend { display: flex; flex-wrap: wrap; gap: 20px; color: var(--muted); font-size: 11px; margin: 16px 0 10px; }
-.studio-canvas { overflow: auto; max-height: 560px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 14px; background-color: var(--panel-deep); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; }
+.studio-legend { display: flex; flex-wrap: wrap; gap: 20px; color: var(--muted); font-size: 11px; margin: 0; }
+.studio-canvas { overflow: auto; border: 1px solid var(--line); border-radius: 14px; background-color: var(--panel-deep); background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 20px 20px; cursor: grab; touch-action: none; }
+.studio-canvas.dragging { cursor: grabbing; user-select: none; }
 .studio-canvas svg { display: block; width: 100%; min-width: 650px; height: auto; }
 .studio-map-node { cursor: pointer; }
 .studio-map-node rect { fill: var(--panel); stroke: var(--line-strong); }
@@ -48,3 +69,52 @@
 .studio-arrow { fill: var(--accent); }
 
 .studio-map-node.dimmed { opacity: .3; }
+
+/* Workspace tab: extensions, agent plugins, static MCPs, and lifecycle hooks —
+   a separate page, not a permanent column competing with the flow canvas. */
+.studio-catalog { padding-top: 6px; }
+
+/* Agent/graph detail page. */
+.studio-agent-detail { flex: 1 1 auto; min-height: 0; overflow: auto; padding-bottom: 30px; }
+.studio-agent-detail[hidden] { display: none; }
+.studio-agent-detail-header { margin: 16px 0 10px; }
+.studio-agent-submap { max-height: 340px; margin: 14px 0 26px; }
+.studio-agent-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 26px; align-items: start; margin-top: 10px; }
+.studio-agent-detail-grid h4 { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+.studio-tool-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font: 700 10px var(--font-body); letter-spacing: .02em; vertical-align: middle; }
+.studio-tool-badge.durable { background: var(--accent-soft); color: var(--accent); }
+.studio-tool-badge.non-durable { background: var(--panel-soft); color: var(--muted); }
+.studio-lib-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.studio-lib-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.studio-lib-list li > code { font: 12px ui-monospace, monospace; overflow-wrap: anywhere; }
+.studio-lib-list li > .studio-source { flex-basis: 100%; margin: 0; }
+.studio-lib-empty { color: var(--muted); font-size: 12px; margin: 0; }
+
+/* Placed after the rules above so it wins the cascade at narrow widths.
+   A stacked layout can't both fill the pane and fit two full-size panes,
+   so it drops the flex-fill chain for real content height and lets the
+   architecture pane scroll instead. */
+@media (max-width: 900px) {
+  /* Let the whole pane scroll as one page instead of trapping the canvas in
+     its own inner scrollbox — the tab nav sticks once scrolled to the top.
+     With no side panel to share space with, the canvas gets most of the
+     screen: a viewport-relative height rather than a small fixed box. */
+  .studio-workspace { overflow-y: auto; overflow-x: hidden; }
+  .builder-tabs { position: sticky; top: 0; z-index: 5; background: var(--bg); }
+  #studio-architecture { flex: none; overflow: visible; }
+  #studio-architecture-canvas-view { flex: none; }
+  .studio-canvas-pane { flex: none; height: 68vh; min-height: 380px; }
+  .studio-detail { position: static; width: auto; box-shadow: none; margin-top: 16px; }
+  .studio-agent-detail { flex: none; overflow: visible; }
+}
+
+/* Get to the flow fast on a phone: trim the chrome above the canvas instead
+   of pushing it below a screen of headings, counts, and full-width fields. */
+@media (max-width: 640px) {
+  .studio-header h2 { font-size: 19px; margin: 4px 0 4px; }
+  .studio-header p, .studio-status { display: none; }
+  .builder-tabs { margin: 14px 0; }
+  .studio-toolbar { margin: 14px 0; gap: 10px; }
+  .studio-architecture-bar { margin: 10px 0; }
+  .studio-legend { display: none; }
+}

@@ -97,16 +97,21 @@ test("architecture renders real components as text and distinguishes capabilitie
   const page = browser();
   page.context.api = async () => ({ json: async () => snapshot() });
   await page.run("harnestStudio.open(api)");
+  // The top-level canvas is the high-level flow only: agents/graphs, no capability detail.
   const map = descendants(page.get("studio-canvas"));
   assert.ok(map.some((node) => node.textContent === "<script>unsafe</script>"));
   assert.ok(!map.some((node) => node.tag === "script"));
-  const edge = map.find((node) => node.attributes.class === "studio-edge capability");
+  const agent = map.find((node) => node.dataset.blockId === "agent");
+  agent.listeners.click();
+  // Clicking the agent opens its detail page, whose own sub-map shows its capabilities.
+  const submap = descendants(page.get("studio-agent-detail-map"));
+  const edge = submap.find((node) => node.attributes.class === "studio-edge capability");
   assert.ok(edge);
   assert.equal(edge.attributes["marker-end"], undefined);
-  const detail = descendants(page.get("studio-detail"));
-  assert.ok(detail.some((node) => node.textContent.includes("Uses capability")));
-  assert.ok(!detail.some((node) => node.textContent === "View source"));
-  const tool = map.find((node) => node.dataset.blockId === "tool");
+  const detailBody = descendants(page.get("studio-agent-detail-body"));
+  assert.ok(detailBody.some((node) => node.textContent.includes("Uses capability")));
+  assert.ok(!detailBody.some((node) => node.textContent === "View source"));
+  const tool = submap.find((node) => node.dataset.blockId === "tool");
   tool.listeners.keydown({ key: "Enter", preventDefault() {} });
   assert.equal(page.get("studio-detail").children[1].textContent, "lookup");
 });
@@ -122,14 +127,18 @@ test("local source is loaded on demand and stale source cannot replace another s
   };
   await page.run("harnestStudio.open(api)");
   assert.equal(calls.length, 1);
+  const agent = descendants(page.get("studio-canvas")).find((node) => node.dataset.blockId === "agent");
+  agent.listeners.click();
+  const tool = descendants(page.get("studio-agent-detail-map")).find((node) => node.dataset.blockId === "tool");
+  tool.listeners.click();
   const button = descendants(page.get("studio-detail")).find((node) => node.textContent === "View source");
   const pending = button.listeners.click();
-  assert.equal(calls[1], "/_harnest/studio/source?path=agent.py");
-  const tool = descendants(page.get("studio-canvas")).find((node) => node.dataset.blockId === "tool");
-  tool.listeners.click();
+  assert.equal(calls[1], "/_harnest/studio/source?path=tools%2Flookup.py");
+  const fileButton = descendants(page.get("studio-files")).find((node) => node.textContent === "agent.py");
+  fileButton.listeners.click();
   release({ json: async () => ({ text: "<script>source</script>" }) });
   await pending;
-  assert.equal(page.get("studio-detail").children[1].textContent, "lookup");
+  assert.equal(page.get("studio-detail").children[1].textContent, "agent.py");
   assert.ok(!descendants(page.get("studio-detail")).some((node) => node.textContent.includes("<script>source")));
 });
 
@@ -214,9 +223,11 @@ test("selecting a graph shows its owned workflow edges and opens the target comp
   data.connections = [{ graph: "graph", source: "agent", target: "tool", kind: "workflow", route: "ready" }];
   page.context.api = async () => ({ json: async () => data });
   await page.run("harnestStudio.open(api)");
-  const detail = descendants(page.get("studio-detail"));
-  assert.ok(!detail.some((node) => node.textContent === "No statically resolved connections."));
-  const edge = detail.find((node) => node.className === "studio-relation");
+  const graph = descendants(page.get("studio-canvas")).find((node) => node.dataset.blockId === "graph");
+  graph.listeners.click();
+  const body = descendants(page.get("studio-agent-detail-body"));
+  assert.ok(!body.some((node) => node.textContent === "No statically resolved connections."));
+  const edge = body.find((node) => node.className === "studio-relation");
   assert.match(edge.textContent, /unsafe.*Workflow.*ready.*lookup/);
   edge.listeners.click();
   assert.equal(page.get("studio-detail").children[1].textContent, "lookup");

@@ -430,6 +430,82 @@ private_token: extension-secret
             self.assertNotIn("secret", json.dumps(projection.to_dict()))
 
 
+class LibImportTests(unittest.TestCase):
+    """Verify static `harnest.lib` import resolution without executing source."""
+
+    def test_submodule_and_symbol_imports_resolve_to_lib_files(self) -> None:
+        """Both `import a submodule` and `import a symbol` resolve without ambiguity."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write(root / "config.yaml", _CONFIG)
+            _write(root / "agent.py", "root_agent = Agent(name='root')\n")
+            _write(root / "lib/validation.py", "def normalize(x): return x\n")
+            _write(root / "lib/storage/queries.py", "def get_conn(): return None\n")
+            _write(
+                root / "tools/lookup.py",
+                "from harnest.lib.validation import normalize\n"
+                "from harnest.lib.storage import queries\n"
+                "import harnest.lib.storage.queries as q2\n"
+                "@tool\ndef lookup(x: str) -> str:\n    return normalize(x)\n",
+            )
+            projection = inspect_workspace(root)
+            files = {item.path: item.lib_imports for item in projection.files}
+            self.assertEqual(
+                set(files["tools/lookup.py"]),
+                {"lib/validation.py", "lib/storage/queries.py"},
+            )
+
+    def test_symbol_defined_in_module_resolves_to_parent_file(self) -> None:
+        """Importing a name defined inside a lib module still resolves to that file."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write(root / "config.yaml", _CONFIG)
+            _write(root / "agent.py", "root_agent = Agent(name='root')\n")
+            _write(root / "lib/storage.py", "def get_conn(): return None\n")
+            _write(
+                root / "tools/lookup.py",
+                "from harnest.lib.storage import get_conn\n"
+                "@tool\ndef lookup() -> str:\n    return str(get_conn())\n",
+            )
+            projection = inspect_workspace(root)
+            files = {item.path: item.lib_imports for item in projection.files}
+            self.assertEqual(files["tools/lookup.py"], ("lib/storage.py",))
+
+    def test_nested_and_unrelated_imports(self) -> None:
+        """Function-body imports are still found; unresolvable ones are dropped silently."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write(root / "config.yaml", _CONFIG)
+            _write(root / "agent.py", "root_agent = Agent(name='root')\n")
+            _write(root / "lib/storage.py", "def get_conn(): return None\n")
+            _write(
+                root / "tools/lookup.py",
+                "from harnest.other import unrelated\n"
+                "@tool\ndef lookup() -> str:\n"
+                "    from harnest.lib.storage import get_conn\n"
+                "    from harnest.lib.missing import nope\n"
+                "    return str(get_conn())\n",
+            )
+            projection = inspect_workspace(root)
+            files = {item.path: item.lib_imports for item in projection.files}
+            self.assertEqual(files["tools/lookup.py"], ("lib/storage.py",))
+
+    def test_files_without_lib_imports_have_no_field_noise(self) -> None:
+        """Ordinary files report an empty tuple, not an omitted or null field."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write(root / "config.yaml", _CONFIG)
+            _write(root / "agent.py", "root_agent = Agent(name='root')\n")
+            projection = inspect_workspace(root)
+            file = next(item for item in projection.files if item.path == "agent.py")
+            self.assertEqual(file.lib_imports, ())
+            self.assertEqual(file.to_dict()["lib_imports"], [])
+
+
 def _write(path: Path, contents: str) -> None:
     """Create one fixture file and any conventional parent folder."""
 

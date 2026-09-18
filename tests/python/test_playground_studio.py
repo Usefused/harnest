@@ -25,7 +25,12 @@ class PlaygroundStudioTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         (self.root / "agent.py").write_text("raise RuntimeError('must not execute')\nroot_agent = Agent(name='support', model='openai/test')\n", encoding="utf-8")
         (self.root / "tools").mkdir()
-        (self.root / "tools/lookup.py").write_text("@tool\ndef lookup(query: str): return query\n", encoding="utf-8")
+        (self.root / "lib").mkdir()
+        (self.root / "lib/normalize.py").write_text("def normalize(value: str) -> str: return value\n", encoding="utf-8")
+        (self.root / "tools/lookup.py").write_text(
+            "from harnest.lib.normalize import normalize\n@tool\ndef lookup(query: str): return normalize(query)\n",
+            encoding="utf-8",
+        )
         (self.root / "instructions.md").write_text("Answer clearly. <script>never execute</script>", encoding="utf-8")
         (self.root / ".env").write_text("PRIVATE=never-read", encoding="utf-8")
         self.service = PlaygroundStudioService(self.root, mode="managed")
@@ -52,6 +57,9 @@ class PlaygroundStudioTests(unittest.TestCase):
         self.assertNotIn("never execute", response.text)
         self.assertEqual(value["connections"][0]["kind"], "capability")
         self.assertIn("instructions", [block["kind"] for block in value["blocks"]])
+        files = {item["path"]: item["lib_imports"] for item in value["files"]}
+        self.assertEqual(files["tools/lookup.py"], ["lib/normalize.py"])
+        self.assertEqual(files["agent.py"], [])
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(client.post("/_harnest/studio", json={}).status_code, 405)
         self.assertEqual(client.put("/_harnest/studio/source?path=agent.py", json={}).status_code, 405)

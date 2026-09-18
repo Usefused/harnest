@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Harnest Playground</title>
     <link rel="stylesheet" href="/_harnest/playground.css?v=13">
-    <link rel="stylesheet" href="/_harnest/studio.css?v=4">
+    <link rel="stylesheet" href="/_harnest/studio.css?v=7">
     <link rel="stylesheet" href="/_harnest/builder.css?v=4">
     <link rel="stylesheet" href="/_harnest/selects.css?v=3">
   </head>
@@ -162,27 +162,37 @@
             <button class="builder-tab" data-studio-view="tools" aria-pressed="false">Tools</button>
             <button class="builder-tab" data-studio-view="connections" aria-pressed="false">MCP connections</button>
             <button class="builder-tab" data-studio-view="configuration" aria-pressed="false">Configuration</button>
+            <button class="builder-tab" data-studio-view="catalog" aria-pressed="false">Workspace</button>
           </nav>
           <div id="studio-toolbar" class="studio-toolbar">
             <label class="studio-search">Agent<select id="studio-agent" aria-label="Studio agent"></select></label>
             <label class="studio-search">Find a component<input id="studio-search" type="search" placeholder="Search name, kind, or source file…"></label>
           </div>
           <div id="studio-architecture">
-          <p id="studio-scope" class="builder-note"></p>
-          <div class="studio-legend"><span>○ Capability</span><span>⇢ Delegation</span><span>→ Workflow</span></div>
-          <div class="studio-layout">
-            <section class="studio-map" aria-label="Agent components">
-              <div id="studio-canvas" class="studio-canvas" aria-label="Architecture map"></div>
-              <div id="studio-components" class="studio-components"></div>
-              <details class="studio-files"><summary>Source files</summary><div id="studio-files"></div></details>
-            </section>
-            <aside id="studio-detail" class="studio-detail" aria-label="Selected component">
-              <h3>Select a component</h3><p>Inspect its configuration, connections, and source location.</p>
-            </aside>
+          <div id="studio-architecture-canvas-view">
+            <div class="studio-architecture-bar">
+              <p id="studio-scope" class="builder-note"></p>
+              <div class="studio-legend"><span>○ Capability</span><span>⇢ Delegation</span><span>→ Workflow</span></div>
+            </div>
+            <div id="studio-canvas-pane" class="studio-canvas-pane">
+              <div id="studio-canvas" class="studio-canvas" aria-label="Architecture map — high-level agent and graph flow"></div>
+              <aside id="studio-detail" class="studio-detail" aria-label="Selected component" hidden>
+                <h3>Select a component</h3><p>Inspect its configuration, connections, and source location.</p>
+              </aside>
+            </div>
+            <div id="studio-components" class="studio-components" hidden></div>
+            <details class="studio-files"><summary>Source files</summary><div id="studio-files"></div></details>
           </div>
+          <section id="studio-agent-detail" class="studio-agent-detail" aria-labelledby="studio-agent-detail-heading" hidden>
+            <button id="studio-agent-back" class="quiet-button" type="button">← Back to architecture</button>
+            <div id="studio-agent-detail-header"></div>
+            <div id="studio-agent-detail-map" class="studio-canvas studio-agent-submap" aria-label="Selected component's internal flow"></div>
+            <div id="studio-agent-detail-body"></div>
+          </section>
           </div>
           <div id="studio-tools" hidden></div>
           <div id="studio-configuration" hidden></div>
+          <div id="studio-catalog" class="studio-catalog" aria-label="Extensions, agent plugins, static MCPs, and lifecycle" hidden></div>
           <details id="studio-diagnostics" class="studio-diagnostics" hidden><summary>Inspection notes</summary><ul></ul></details>
         <section id="mcp-workspace" class="studio-connections" aria-labelledby="mcp-heading" hidden>
           <header class="eval-header">
@@ -338,7 +348,7 @@
     <dialog id="builder-dialog" class="builder-dialog" aria-labelledby="builder-dialog-title"></dialog>
     <script src="/_harnest/selects.js?v=2" defer></script>
     <script src="/_harnest/builder.js?v=1" defer></script>
-    <script src="/_harnest/studio.js?v=2" defer></script>
-    <script src="/_harnest/playground.js?v=13" defer></script>
+    <script src="/_harnest/studio.js?v=5" defer></script>
+    <script src="/_harnest/playground.js?v=14" defer></script>
   </body>
 </html>

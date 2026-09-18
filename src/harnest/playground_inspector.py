@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import os
@@ -112,6 +112,7 @@ class SourceFile:
     size: int
     mtime_ns: int
     language: str
+    lib_imports: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-safe file metadata persisted by Studio."""
@@ -122,6 +123,7 @@ class SourceFile:
             "size": self.size,
             "mtime_ns": self.mtime_ns,
             "language": self.language,
+            "lib_imports": list(self.lib_imports),
         }
 
 
@@ -233,6 +235,7 @@ class _Inspection:
     blocks: list[StudioBlock] = field(default_factory=list)
     connections: list[StudioConnection] = field(default_factory=list)
     diagnostics: list[StudioDiagnostic] = field(default_factory=list)
+    raw_lib_imports: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def inspect_workspace(
@@ -254,7 +257,13 @@ def inspect_workspace(
         elif _is_skill_file(relative):
             _inspect_skill(relative, absolute, state)
     _inspect_composition(root, state, mode)
-    files = tuple(sorted(state.files, key=lambda item: item.path))
+    resolved_lib_imports = _resolve_lib_imports(state)
+    files = tuple(
+        sorted(
+            (replace(item, lib_imports=resolved_lib_imports.get(item.path, ())) for item in state.files),
+            key=lambda item: item.path,
+        )
+    )
     return WorkspaceProjection(
         workspace_path=str(root),
         source_digest=_source_digest(files),
@@ -405,6 +414,9 @@ def _inspect_python(relative: Path, absolute: Path, state: _Inspection) -> None:
     except (OSError, UnicodeError, SyntaxError) as exc:
         state.diagnostics.append(_python_diagnostic(relative, exc))
         return
+    candidates = _collect_lib_import_candidates(module)
+    if candidates:
+        state.raw_lib_imports[relative.as_posix()] = candidates
     symbols: dict[str, StudioBlock] = {}
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     graphs: list[tuple[str, ast.Call, StudioBlock]] = []
@@ -435,6 +447,56 @@ def _inspect_python(relative: Path, absolute: Path, state: _Inspection) -> None:
             graphs.append((name, call, block))
     for _, call, graph in graphs:
         _inspect_graph(relative, call, graph, symbols, functions, state)
+
+
+_LIB_NAMESPACE = "harnest.lib"
+
+
+def _collect_lib_import_candidates(module: ast.Module) -> tuple[str, ...]:
+    """Record every dotted name imported from the shared `harnest.lib` namespace."""
+
+    candidates: list[str] = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _LIB_NAMESPACE or alias.name.startswith(f"{_LIB_NAMESPACE}."):
+                    candidates.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level != 0 or node.module is None:
+                continue
+            if node.module == _LIB_NAMESPACE or node.module.startswith(f"{_LIB_NAMESPACE}."):
+                for alias in node.names:
+                    candidates.append(f"{node.module}.{alias.name}")
+    return tuple(candidates)
+
+
+def _resolve_lib_imports(state: _Inspection) -> dict[str, tuple[str, ...]]:
+    """Match imported `harnest.lib` names against indexed `lib/` files, never executed code."""
+
+    known = {item.path for item in state.files}
+    resolved: dict[str, tuple[str, ...]] = {}
+    for path, candidates in state.raw_lib_imports.items():
+        matches: list[str] = []
+        for candidate in candidates:
+            match = _resolve_lib_import(candidate, known)
+            if match is not None and match not in matches:
+                matches.append(match)
+        if matches:
+            resolved[path] = tuple(matches)
+    return resolved
+
+
+def _resolve_lib_import(dotted: str, known: set[str]) -> str | None:
+    """Trim trailing segments so both submodule and symbol imports resolve to one file."""
+
+    remainder = dotted.removeprefix(_LIB_NAMESPACE).lstrip(".")
+    segments = remainder.split(".") if remainder else []
+    for end in range(len(segments), 0, -1):
+        stem = "/".join(segments[:end])
+        for candidate in (f"lib/{stem}.py", f"lib/{stem}/__init__.py"):
+            if candidate in known:
+                return candidate
+    return None
 
 
 def _python_diagnostic(relative: Path, exc: Exception) -> StudioDiagnostic:
