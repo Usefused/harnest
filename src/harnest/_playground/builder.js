@@ -265,6 +265,15 @@ const harnestBuilder = (() => {
       secretField.readOnly = true;
       secretField.addEventListener("click", () => secretField.select());
     }
+    if (defaults.name) {
+      // A developer can mint the same credential from fused-cli instead of
+      // relying on the one-time token above, then set the token environment
+      // variable to the printed value.
+      const cli = section(form, "Generate a token with fused-cli", "Alternative to the one-time token: run this, then set the token environment variable above to the printed value.");
+      const cliField = field(cli, "Command", `fused-cli mcp token generate ${defaults.name} studio`);
+      cliField.readOnly = true;
+      cliField.addEventListener("click", () => cliField.select());
+    }
     form.append(el("p", defaults.note || "Use an environment variable name for credentials. The connection belongs to the selected agent scope.", "builder-note"));
   }
   /** Resolve an already-deployed Fused MCP server, then hand its URL to addConnection. */

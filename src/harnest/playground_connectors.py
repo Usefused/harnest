@@ -38,6 +38,9 @@ from ._fused_auth_client import FusedAuthClient, FusedAuthConfig, FusedAuthError
 
 _SESSION_COOKIE = "_harnest_fused_session"
 _OAUTH_CALLBACK_PATH = "/_harnest/connectors/oauth/callback"
+# After a successful OAuth callback the Studio returns to the MCP connections
+# view, which is where the connect action originates.
+_MCP_VIEW_URL = "/?view=studio&studioView=connections"
 # Scopes the Studio needs: list, deploy, and mint tokens for MCP servers. The
 # Engine intersects every delegated grant with these, so a missing scope denies
 # the matching management call instead of silently widening it.
@@ -550,7 +553,7 @@ def install_connector_routes(router: Any, service: PlaygroundConnectorsService |
             service.complete_authorization(code, state, redirect_uri, session_id)
         except (ConnectorError, FusedAuthError) as exc:
             return HTMLResponse(_oauth_page(str(exc), ok=False))
-        response = RedirectResponse("/", status_code=303)
+        response = RedirectResponse(_MCP_VIEW_URL, status_code=303)
         response.set_cookie(_SESSION_COOKIE, session_id, httponly=True, samesite="lax")
         return response
 
@@ -645,7 +648,7 @@ def _oauth_page(message: str, *, ok: bool) -> str:
   <p style="margin:0;font-size:.9rem;color:#c6cad3">{_escape_html(message)}</p>
   <p style="margin:1rem 0 0;font-size:.8rem;color:#7b8190">Returning to the Studio…</p>
 </main>
-<script>setTimeout(function () {{ window.location.href = "/"; }}, 1500);</script>
+<script>setTimeout(function () {{ window.location.href = "/?view=studio&studioView=connections"; }}, 1500);</script>
 </body>"""
 
 
