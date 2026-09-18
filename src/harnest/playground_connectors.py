@@ -3,7 +3,7 @@
 This replaces the previous fused-cli shell-outs with the built-in Fused Auth and
 Fused Admin clients. A developer authenticates into their Fused workspace with
 OAuth (authorization code + PKCE), and the Studio then lists Engine-hosted MCP
-servers, deploys new ones from a pasted ``kind: mcp`` config, and mints a
+servers, deploys new ones from selected workspace services, and mints a
 one-time execution token -- all without a fused-cli install or session.
 
 The OAuth access token lives only in server memory, keyed by an HttpOnly session
@@ -41,7 +41,15 @@ _OAUTH_CALLBACK_PATH = "/_harnest/connectors/oauth/callback"
 # Scopes the Studio needs: list, deploy, and mint tokens for MCP servers. The
 # Engine intersects every delegated grant with these, so a missing scope denies
 # the matching management call instead of silently widening it.
-_DEFAULT_SCOPES = ("app.read", "app.create", "app.manage", "app.tokens.manage")
+# Deployment also authorizes the workspace, the target bucket, and each bound
+# service, so the Studio must request those capabilities alongside app access.
+_DEFAULT_SCOPES = (
+    "app.read", "app.create", "app.manage", "app.tokens.manage",
+    "service.read", "service.consume",
+    "workspace.read",
+    "bucket.use",
+    "catalogue.read",
+)
 _SERVER_LIST_LIMIT = 200  # One bounded read resolves both list and version pickers.
 # Studio-minted execution tokens are temporary; a short, bounded lifetime lets a
 # developer reuse the same name once a previous token expires.
@@ -179,6 +187,18 @@ class PlaygroundConnectorsService:
         matches = [item for item in listed["items"] if item["name"] == name]
         return {"items": matches[offset : offset + limit], "total": len(matches)}
 
+    def services(self, session_id: str | None) -> dict[str, Any]:
+        """List workspace services so a new MCP server can bind a subset of them."""
+
+        client = self._admin_client(self._require_token(session_id))
+        return {"items": client.list_services()}
+
+    def operations(self, session_id: str | None, service_id: str, version: str) -> dict[str, Any]:
+        """List one service's operations so a new MCP server can bind a subset of them."""
+
+        client = self._admin_client(self._require_token(session_id))
+        return {"items": client.list_service_operations(service_id, version)}
+
     def add_existing(self, session_id: str | None, *, name: str, version: str, token_name: str = "studio") -> ConnectorResult:
         """Resolve an already-deployed server's URL and mint its execution token."""
 
@@ -186,13 +206,13 @@ class PlaygroundConnectorsService:
         token = self._generate_token(session_id, name, token_name)
         return ConnectorResult(name=name, url=url, token_env=_token_env(name), token=token)
 
-    def create(self, session_id: str | None, *, config: dict[str, Any], token_name: str = "studio") -> ConnectorResult:
-        """Deploy a new Engine-hosted MCP server from a declarative ``kind: mcp`` config."""
+    def create(self, session_id: str | None, *, name: str, description: str, services: Sequence[Any], token_name: str = "studio") -> ConnectorResult:
+        """Deploy a new Engine-hosted MCP server from the Studio's structured fields."""
 
-        if not isinstance(config, dict) or not config:
-            raise ValueError("a declarative kind:mcp config mapping is required")
+        if not services:
+            raise ValueError("select at least one workspace service")
         client = self._admin_client(self._require_token(session_id))
-        server = client.deploy_server(config)
+        server = client.deploy_server(_mcp_config(name, description, services))
         url = _url_from_server(server)
         token = self._generate_token(session_id, server.name, token_name)
         return ConnectorResult(name=server.name, url=url, token_env=_token_env(server.name), token=token)
@@ -230,9 +250,17 @@ class PlaygroundConnectorsService:
         # the fixed label stays readable and becomes reusable once the token
         # expires (the Engine purges expired tokens before enforcing the name
         # uniqueness constraint).
-        return client.generate_token(
-            name, AppTokenPayload(name=token_name, expires_in=_TOKEN_TTL_SECONDS)
-        ).token
+        try:
+            return client.generate_token(
+                name, AppTokenPayload(name=token_name, expires_in=_TOKEN_TTL_SECONDS)
+            ).token
+        except FusedAdminError as exc:
+            # A live token with this label already exists and its plaintext is
+            # unrecoverable, so fall back to referencing the environment
+            # variable the connection already expects.
+            if exc.code == "app_token_name_conflict":
+                return ""
+            raise
 
     def _pinned_url(self, session_id: str | None, name: str, version: str) -> str:
         """Resolve one exact, active immutable version's endpoint."""
@@ -341,18 +369,32 @@ def _token_env(name: str) -> str:
     return "HARNEST_MCP_" + re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_") + "_TOKEN"
 
 
-def _parse_config(text: str) -> dict[str, Any]:
-    """Parse a pasted declarative config, accepting both YAML and JSON."""
+def _mcp_config(name: str, description: str, services: Sequence[Any]) -> dict[str, Any]:
+    """Build a declarative ``kind: mcp`` config from the Studio's structured fields."""
 
-    import yaml
+    return {
+        "apiVersion": "fused/v1",
+        "kind": "mcp",
+        "name": name,
+        "version": "1.0.0",
+        # The Engine requires a non-empty description, so a blank one falls
+        # back to the server name rather than failing the deploy.
+        "description": description.strip() or name,
+        "bucket": "default",
+        "services": {
+            service.slug: _service_selection(service) for service in services
+        },
+    }
 
-    try:
-        value = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"kind:mcp config is not valid YAML: {exc}") from None
-    if not isinstance(value, dict):
-        raise ValueError("kind:mcp config must be a mapping")
-    return value
+
+def _service_selection(service: Any) -> dict[str, Any]:
+    """Choose ``select_all`` or an explicit operation allowlist for one service."""
+
+    # An empty allowlist means every operation, so it collapses back to the
+    # select_all form rather than producing an unbounded-looking config.
+    if service.select_all or not service.operations:
+        return {"version": service.version, "select_all": True}
+    return {"version": service.version, "operations": list(service.operations)}
 
 
 def _require_local(request: Request, *, allow_cross_site: bool = False) -> None:
@@ -389,13 +431,25 @@ class _AddRequest(BaseModel):
     token_name: str = Field(default="studio", min_length=1, max_length=64, alias="tokenName")
 
 
-class _CreateRequest(BaseModel):
-    """A pasted declarative ``kind: mcp`` config plus the token label."""
+class _CreateServiceRef(BaseModel):
+    """One workspace service bound into a new MCP server, optionally narrowed to specific operations."""
 
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
-    config: dict[str, Any] | None = None
-    config_yaml: str | None = Field(default=None, alias="configYaml")
+    slug: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=64)
+    select_all: bool = Field(default=True, alias="selectAll")
+    operations: list[str] = Field(default_factory=list)
+
+
+class _CreateRequest(BaseModel):
+    """Structured fields for deploying a new Engine-hosted MCP server."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=63)
+    description: str = Field(default="", max_length=512)
+    services: list[_CreateServiceRef] = Field(min_length=1)
     token_name: str = Field(default="studio", min_length=1, max_length=64, alias="tokenName")
 
 
@@ -532,19 +586,30 @@ def install_connector_routes(router: Any, service: PlaygroundConnectorsService |
         )
         return _result_payload(result)
 
+    @router.get("/_harnest/connectors/services", include_in_schema=False)
+    async def connectors_services(request: Request) -> Any:
+        """List the workspace services a new MCP server can bind."""
+
+        session_id = _require_session(request)
+        return _translated(request, lambda: service.services(session_id))
+
+    @router.get("/_harnest/connectors/services/{service_id}/operations", include_in_schema=False)
+    async def connectors_service_operations(service_id: str, request: Request, version: str = "") -> Any:
+        """List one service's operations for narrowing a new MCP server's selection."""
+
+        session_id = _require_session(request)
+        return _translated(request, lambda: service.operations(session_id, service_id, version))
+
     @router.post("/_harnest/connectors/create", include_in_schema=False)
     async def connectors_create(body: _CreateRequest, request: Request) -> dict[str, Any]:
         session_id = _require_session(request)
-
-        def run() -> ConnectorResult:
-            # Exactly one of a parsed object or pasted text may carry the config;
-            # accepting both would make the source of truth ambiguous.
-            if (body.config is not None) == (body.config_yaml is not None):
-                raise ValueError("provide exactly one of config or configYaml")
-            config = body.config if body.config is not None else _parse_config(body.config_yaml)
-            return service.create(session_id, config=config, token_name=body.token_name)
-
-        return _result_payload(_translated(request, run))
+        return _result_payload(_translated(
+            request,
+            lambda: service.create(
+                session_id, name=body.name, description=body.description,
+                services=body.services, token_name=body.token_name,
+            ),
+        ))
 
     @router.post("/_harnest/connectors/token", include_in_schema=False)
     async def connectors_token(body: _TokenRequest, request: Request) -> dict[str, Any]:

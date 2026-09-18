@@ -8,6 +8,8 @@ const harnestStudio = (() => {
   let focused = null;
   let view = "architecture";
   const byId = (id) => document.getElementById(id);
+  const studioViewQueryKey = "studioView";
+  const studioViews = new Set([...document.querySelectorAll("[data-studio-view]")].map((button) => button.dataset.studioView));
   const groups = [
     ["Agents & workflows", ["agent", "graph", "join", "condition", "input", "function"]],
     ["Capabilities", ["tool", "mcp", "skill", "model", "sandbox"]],
@@ -22,6 +24,27 @@ const harnestStudio = (() => {
     return node;
   }
 
+  /** Resolve the active Studio view from the URL, falling back to Architecture. */
+  function studioViewFromLocation() {
+    const name = new URLSearchParams(window.location.search).get(studioViewQueryKey)?.trim() || "";
+    return studioViews.has(name) ? name : "architecture";
+  }
+
+  /** Record a Studio view change so browser back/forward follows the tabs. */
+  function syncStudioViewUrl(name, { push = false } = {}) {
+    const url = new URL(window.location.href);
+    if (name && name !== "architecture") url.searchParams.set(studioViewQueryKey, name);
+    else url.searchParams.delete(studioViewQueryKey);
+    window.history[push ? "pushState" : "replaceState"](window.history.state, "", url);
+  }
+
+  /** Switch the visible Studio section and keep the URL in sync. */
+  function setView(name, { push = false } = {}) {
+    view = name;
+    syncStudioViewUrl(name, { push });
+    refreshView();
+  }
+
   /** Bind once so switching views preserves the selected component and conversation. */
   async function open(api) {
     request = api;
@@ -33,12 +56,14 @@ const harnestStudio = (() => {
         const block = projection.blocks.find(item => item.id === focused);
         if (block) select(block); else refreshView();
       });
-      for (const button of document.querySelectorAll("[data-studio-view]")) button.addEventListener("click", () => {
-        view = button.dataset.studioView;
-        refreshView();
+      for (const button of document.querySelectorAll("[data-studio-view]")) button.addEventListener("click", () => setView(button.dataset.studioView, { push: true }));
+      window.addEventListener("popstate", () => {
+        if (document.querySelector("#studio-workspace").hidden || !projection) return;
+        setView(studioViewFromLocation());
       });
       bound = true;
     }
+    view = studioViewFromLocation();
     if (!projection) await load();
     if (typeof harnestBuilder !== "undefined") await harnestBuilder.openStudio(api, projection, focused, load);
   }

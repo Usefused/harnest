@@ -69,6 +69,8 @@ const ui = {
 
 const themeStorageKey = "harnest.playground.theme";
 const sessionQueryKey = "session";
+const workspaceQueryKey = "view";
+const workspaceNames = new Set(["chat", "studio", "evals"]);
 const supportedThemes = new Set(["dark", "light", "system"]);
 const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
@@ -555,8 +557,9 @@ function configureLiveTransport(agent) {
 }
 
 /** Switch developer views without discarding the conversation or retrieved context. */
-async function selectWorkspace(name) {
+async function selectWorkspace(name, { push = false } = {}) {
   runtime.workspace = name;
+  syncWorkspaceUrl(name, { push });
   const evaluating = name === "evals";
   document.body.classList.toggle("eval-mode", name !== "chat");
   ui.chatWorkspace.hidden = name !== "chat";
@@ -991,6 +994,20 @@ function syncSessionUrl(sessionId) {
   if (sessionId) url.searchParams.set(sessionQueryKey, sessionId);
   else url.searchParams.delete(sessionQueryKey);
   window.history.replaceState(window.history.state, "", url);
+}
+
+/** Read the active workspace from the URL, defaulting to the conversation. */
+function workspaceFromLocation() {
+  const name = new URLSearchParams(window.location.search).get(workspaceQueryKey)?.trim() || "";
+  return workspaceNames.has(name) ? name : "chat";
+}
+
+/** Keep the active workspace shareable so browser back/forward follows tab changes. */
+function syncWorkspaceUrl(name, { push = false } = {}) {
+  const url = new URL(window.location.href);
+  if (name && name !== "chat") url.searchParams.set(workspaceQueryKey, name);
+  else url.searchParams.delete(workspaceQueryKey);
+  window.history[push ? "pushState" : "replaceState"](window.history.state, "", url);
 }
 
 function renderSessionState(state) {
@@ -1793,8 +1810,9 @@ function bindEvents() {
   ui.evalRunner.addEventListener("submit", runEval);
   ui.evalRefresh.addEventListener("click", () => runAction(async () => { await loadEvals(); await harnestBuilder.openEvals(api, runtime.evalCatalog); }));
   for (const button of document.querySelectorAll(".workspace-nav-item")) {
-    button.addEventListener("click", () => runAction(() => selectWorkspace(button.dataset.workspace)));
+    button.addEventListener("click", () => runAction(() => selectWorkspace(button.dataset.workspace, { push: true })));
   }
+  window.addEventListener("popstate", () => runAction(() => selectWorkspace(workspaceFromLocation())));
   ui.sessionTrigger.addEventListener("click", () => toggleSessionMenu());
   ui.sessionTrigger.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1879,6 +1897,8 @@ async function initialize() {
     await Promise.all([loadAgent(), loadSessions(requestedSessionId)]);
     await loadTraces(true);
     setStatus(runtime.sessionId ? "Ready" : "No session", "ok");
+    const requestedWorkspace = workspaceFromLocation();
+    if (requestedWorkspace !== "chat") await selectWorkspace(requestedWorkspace);
   } catch (error) {
     showError(error);
   }

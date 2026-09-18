@@ -1,6 +1,7 @@
 .builder-tabs, .builder-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .builder-tabs { margin: 20px 0; }
 .builder-note { color: var(--muted); font: 12px/1.6 var(--font-body); overflow-wrap: anywhere; }
+.eval-header .builder-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .builder-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; }
 .builder-card { padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; min-width: 0; }
 .builder-card h3 { font-size: 14px; margin: 0 0 8px; overflow-wrap: anywhere; }
@@ -84,6 +85,14 @@
 .builder-fieldset { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; }
 .builder-fieldset legend { padding: 0 7px; font: 600 13px/1.4 var(--font-body); color: var(--text); }
 .builder-fieldset > p { margin: 0; }
+.builder-service-list { display: grid; gap: 8px; max-height: 220px; overflow: auto; }
+.builder-form .builder-service-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; font: 500 13px/1.4 var(--font-body); text-transform: none; letter-spacing: normal; color: var(--text); }
+.builder-form .builder-service-row input { width: 16px; height: 16px; min-height: 0; margin: 0; flex: none; accent-color: var(--accent); }
+.builder-service-operations { display: grid; gap: 6px; padding: 2px 0 6px 26px; }
+.builder-form .builder-operation-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font: 400 12px/1.4 var(--font-body); text-transform: none; letter-spacing: normal; color: var(--text); }
+.builder-form .builder-operation-row input { width: 14px; height: 14px; min-height: 0; margin: 0; flex: none; accent-color: var(--accent); }
+.builder-operation-all { background: var(--panel-soft); }
+.builder-operation-list { display: grid; gap: 4px; max-height: 180px; overflow: auto; }
 .builder-section-title, .suite-section-title { color: var(--text); font: 600 14px/1.4 var(--font-body); margin: 0 0 8px; letter-spacing: normal; }
 .suite-section-title { padding: 20px 22px 0; margin: 0; }
 .suite-case-heading .builder-note { margin-top: 4px; }

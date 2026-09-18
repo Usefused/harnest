@@ -37,17 +37,46 @@ function browser() {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
+  const studioViewButtons = ["architecture", "tools", "connections", "configuration"].map((name) => {
+    const button = new Element("button");
+    button.dataset.studioView = name;
+    return button;
+  });
+  const workspaceNavButtons = ["chat", "studio", "evals"].map((name) => {
+    const button = new Element("button");
+    button.dataset.workspace = name;
+    return button;
+  });
   const document = {
     getElementById: get,
     querySelector: get,
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => {
+      if (selector === "[data-studio-view]") return studioViewButtons;
+      if (selector === ".workspace-nav-item") return workspaceNavButtons;
+      return [];
+    },
+    addEventListener() {},
     createElement: (tag) => new Element(tag),
     createElementNS: (_, tag) => new Element(tag),
     body: new Element("body"),
   };
-  const context = vm.createContext({ document, console, URL, URLSearchParams });
+  const listeners = {};
+  const location = { href: "http://127.0.0.1:28081/" };
+  Object.defineProperty(location, "search", { get() { return new URL(this.href).search; } });
+  let pushCount = 0;
+  const history = {
+    state: null,
+    pushState(state, _title, url) { this.state = state; pushCount += 1; location.href = String(url); },
+    replaceState(state, _title, url) { this.state = state; location.href = String(url); },
+  };
+  const window = {
+    location,
+    history,
+    addEventListener(name, callback) { (listeners[name] ||= []).push(callback); },
+  };
+  const context = vm.createContext({ document, window, console, URL, URLSearchParams });
   vm.runInContext(fs.readFileSync(path.join(assets, "studio.js"), "utf8"), context);
-  return { get, context, run: (code) => vm.runInContext(code, context) };
+  return { get, context, run: (code) => vm.runInContext(code, context), window, location, history, listeners, getPushCount: () => pushCount };
 }
 
 function snapshot(sourceAvailable = false) {
@@ -142,6 +171,42 @@ test("switching Studio and Playground preserves conversation and active session"
 });
 
 
+test("tab navigation records URLs so back/forward returns to the previous view", async () => {
+  const page = browser();
+  let code = fs.readFileSync(path.join(assets, "playground.js"), "utf8");
+  code = code.replace(/initialize\(\);\s*$/, "");
+  vm.runInContext(code, page.context);
+  page.context.fetch = async () => ({ ok: true, json: async () => snapshot() });
+  page.run("bindEvents()");
+
+  // Workspace tab clicks push a history entry and update the URL.
+  const nav = page.context.document.querySelectorAll(".workspace-nav-item");
+  await nav[1].listeners.click();
+  assert.equal(new URL(page.location.href).searchParams.get("view"), "studio");
+  assert.equal(page.getPushCount(), 1);
+
+  // A Studio view tab records the nested view alongside the workspace.
+  const views = page.context.document.querySelectorAll("[data-studio-view]");
+  views[2].listeners.click();
+  assert.equal(new URL(page.location.href).searchParams.get("view"), "studio");
+  assert.equal(new URL(page.location.href).searchParams.get("studioView"), "connections");
+  assert.equal(page.getPushCount(), 2);
+
+  // Back restores the previous Studio view without leaving the workspace.
+  page.location.href = "http://127.0.0.1:28081/?view=studio";
+  for (const listener of page.listeners.popstate) listener();
+  assert.equal(new URL(page.location.href).searchParams.get("view"), "studio");
+  assert.equal(new URL(page.location.href).searchParams.has("studioView"), false);
+
+  // Back again restores the previous workspace.
+  page.location.href = "http://127.0.0.1:28081/";
+  for (const listener of page.listeners.popstate) listener();
+  assert.equal(page.get("#studio-workspace").hidden, true);
+  assert.equal(page.get("#chat-workspace").hidden, false);
+  assert.equal(new URL(page.location.href).searchParams.has("view"), false);
+});
+
+
 test("selecting a graph shows its owned workflow edges and opens the target component", async () => {
   const page = browser();
   const data = snapshot();
@@ -213,6 +278,48 @@ test("remote read-only authoring denial does not hide the architecture", async (
   assert.equal(page.get("studio-access").textContent, "Read only");
   assert.equal(page.get("add-mcp").disabled, true);
   assert.ok(descendants(page.get("studio-configuration")).some(node => node.textContent === "<script>unsafe</script>"));
+});
+
+test("Fused connector actions stay visible but disabled until authoring can write, then unlock with a scope", async () => {
+  const page = builderPage();
+  page.context.data = snapshot();
+  // fused-cli is installed (connectors available) but Studio was not started with --reload,
+  // so authoring cannot write a client file yet. The Fused actions must stay visible (the
+  // marketplace exists) but disabled, otherwise a click could run `fused-cli init --mcp` and
+  // then fail to save the resulting connection, leaving an orphaned deployed server.
+  page.context.api = async (url) => {
+    if (url === "/_harnest/connectors") return {json: async () => ({available: true})};
+    return {json: async () => ({available: false, scopes: [], suites: [], files: [], connectionScopes: []})};
+  };
+  await page.run("harnestBuilder.openStudio(api, data, 'agent', () => {})");
+  assert.equal(page.get("browse-existing-connector").hidden, false);
+  assert.equal(page.get("create-connector").hidden, false);
+  assert.equal(page.get("browse-existing-connector").disabled, true);
+  assert.equal(page.get("create-connector").disabled, true);
+  assert.ok(descendants(page.get("studio-connections")).some(node => node.textContent.includes("harnest serve --reload")));
+
+  // Re-open once authoring is writable and an agent scope exists: every connection action,
+  // manual and Fused-discovered alike, unlocks together.
+  page.context.api = async (url) => {
+    if (url === "/_harnest/connectors") return {json: async () => ({available: true})};
+    return {json: async () => ({available: true, scopes: [], suites: [], files: [], connectionScopes: ["."]})};
+  };
+  await page.run("harnestBuilder.openStudio(api, data, 'agent', () => {})");
+  assert.equal(page.get("add-mcp").disabled, false);
+  assert.equal(page.get("browse-existing-connector").disabled, false);
+  assert.equal(page.get("create-connector").disabled, false);
+});
+
+test("Fused connector actions stay hidden when fused-cli is not installed, regardless of authoring state", async () => {
+  const page = builderPage();
+  page.context.data = snapshot();
+  page.context.api = async (url) => {
+    if (url === "/_harnest/connectors") return {json: async () => ({available: false})};
+    return {json: async () => ({available: true, scopes: [], suites: [], files: [], connectionScopes: ["."]})};
+  };
+  await page.run("harnestBuilder.openStudio(api, data, 'agent', () => {})");
+  assert.equal(page.get("browse-existing-connector").hidden, true);
+  assert.equal(page.get("create-connector").hidden, true);
 });
 
 test("MCP tool selection preserves existing names omitted from a paginated catalogue", async () => {

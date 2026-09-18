@@ -274,13 +274,14 @@ const harnestBuilder = (() => {
     const form = modal("Add an existing Fused MCP server", "Continue", async () => {
       if (!server.value || !version.value) throw new Error("Choose a server and version");
       const result = await json("/_harnest/connectors/add", "POST", {name: server.value, version: version.value});
-      byId("builder-dialog").close();
-      await addConnection({
+      // The modal submit handler closes this dialog after `save` resolves, so
+      // defer the follow-up modal until that close has completed.
+      setTimeout(() => addConnection({
         name: server.value, endpoint: result.url, tokenEnv: result.tokenEnv, token: result.token,
         note: result.token
           ? `Set ${result.tokenEnv} to the token above before using this connection.`
           : `Using the existing ${result.tokenEnv} from your environment; no new token was generated.`,
-      });
+      }), 0);
     });
     const picker = section(form, "Deployed MCP servers");
     server = choices(picker, "Server", []);
@@ -302,25 +303,92 @@ const harnestBuilder = (() => {
       if (servers.length) await loadVersions();
     } catch (error) { status.textContent = error.message; }
   }
-  /** Deploy a new Fused MCP server from a pasted declarative ``kind: mcp`` config. */
+  /** Deploy a new Fused MCP server by picking workspace services and operations in the Studio. */
   async function browseNewConnector() {
-    let configText;
+    let name, description;
+    const selections = [];
+    const status = el("p", "Reading workspace services…", "builder-note");
     const form = modal("Create a new Fused MCP server", "Create", async () => {
-      if (!configText.value.trim()) throw new Error("Paste a kind:mcp config first");
+      const services = selections
+        .filter(entry => entry.box.checked)
+        .map(entry => {
+          const all = entry.allBox.checked;
+          const operations = all ? [] : entry.opBoxes.filter(box => box.checked).map(box => box.value);
+          // A narrowed service must select at least one operation; otherwise
+          // the Engine would silently treat an empty allowlist as select_all.
+          if (!all && !operations.length) throw new Error(`Choose operations for ${entry.service.name} or keep "All operations" selected`);
+          return {slug: entry.service.slug, version: entry.service.version, selectAll: all, operations};
+        });
+      if (!name.value.trim()) throw new Error("Name the server first");
+      if (!services.length) throw new Error("Select at least one workspace service");
       const result = await json("/_harnest/connectors/create", "POST", {
-        configYaml: configText.value, tokenName: "studio",
+        name: name.value.trim(), description: description.value.trim(), services, tokenName: "studio",
       });
-      byId("builder-dialog").close();
-      await addConnection({
+      // The modal submit handler closes this dialog after `save` resolves, so
+      // defer the follow-up modal until that close has completed.
+      setTimeout(() => addConnection({
         name: result.name, endpoint: result.url, tokenEnv: result.tokenEnv, token: result.token,
         note: result.token
           ? `Set ${result.tokenEnv} to the token above before using this connection.`
           : `Using the existing ${result.tokenEnv} from your environment; no new token was generated.`,
-      });
+      }), 0);
     });
-    form.append(el("p", "Paste a declarative kind:mcp config (YAML or JSON). The Engine deploys it and the Studio mints a one-time execution token.", "builder-note"));
-    configText = field(form, "kind:mcp config", "", "textarea");
-    configText.classList.add("builder-code"); configText.spellcheck = false;
+    const details = section(form, "Server details");
+    name = field(details, "Server name"); name.required = true; name.placeholder = "my-mcp-server";
+    description = field(details, "Description (optional)");
+    description.placeholder = "What this server provides";
+    const picker = section(form, "Workspace services", "Pick services, then narrow each one to specific operations if needed.");
+    const list = el("div", "", "builder-service-list");
+    picker.append(list);
+    form.append(status);
+    const loadOperations = async entry => {
+      try {
+        const version = entry.service.version_id || entry.service.version || "";
+        const listed = await json(`/_harnest/connectors/services/${encodeURIComponent(entry.service.id)}/operations?version=${encodeURIComponent(version)}`);
+        const items = listed.items || listed || [];
+        entry.opList.replaceChildren();
+        entry.opBoxes.length = 0;
+        for (const op of items) {
+          const row = el("label", "", "builder-operation-row");
+          const box = el("input", ""); box.type = "checkbox"; box.value = op.name || "";
+          row.append(box, el("span", `${op.name} · ${op.method} ${op.path}`));
+          entry.opList.append(row); entry.opBoxes.push(box);
+        }
+        if (!items.length) entry.opList.append(el("p", "No operations were found for this service.", "builder-note"));
+        entry.allBox.dispatchEvent(new Event("change"));
+      } catch (error) { entry.opList.replaceChildren(el("p", error.message, "builder-note")); }
+    };
+    const buildServices = items => {
+      list.replaceChildren(); selections.length = 0;
+      for (const item of items) {
+        const entry = {service: item, loaded: false, opBoxes: [], opList: null};
+        const row = el("label", "", "builder-service-row");
+        const box = el("input", ""); box.type = "checkbox";
+        row.append(box, el("span", `${item.name} (${item.slug} · v${item.version || "?"})`));
+        list.append(row);
+        const ops = el("div", "", "builder-service-operations"); ops.hidden = true;
+        const allRow = el("label", "", "builder-operation-row builder-operation-all");
+        const allBox = el("input", ""); allBox.type = "checkbox"; allBox.checked = true;
+        allRow.append(allBox, el("span", "All operations"));
+        const opList = el("div", "", "builder-operation-list");
+        ops.append(allRow, opList); list.append(ops);
+        entry.box = box; entry.allBox = allBox; entry.opList = opList;
+        selections.push(entry);
+        box.addEventListener("change", () => {
+          ops.hidden = !box.checked;
+          // Lazy-load the operation catalogue the first time a service is selected.
+          if (box.checked && !entry.loaded) { entry.loaded = true; loadOperations(entry); }
+        });
+        const sync = () => { for (const ob of entry.opBoxes) ob.disabled = allBox.checked; };
+        allBox.addEventListener("change", sync);
+      }
+      if (!items.length) list.append(el("p", "No workspace services were found.", "builder-note"));
+    };
+    try {
+      const listed = await json("/_harnest/connectors/services");
+      buildServices(listed.items || listed || []);
+      status.textContent = "";
+    } catch (error) { status.textContent = error.message; }
   }
   async function removeConnection(block) {
     const document = await json(`/_harnest/authoring/document?path=${encodeURIComponent(block.path)}`);

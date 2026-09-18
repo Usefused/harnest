@@ -132,7 +132,8 @@
       "test_mcp_openapi",
       "test_playground_inspector",
       "test_playground_studio",
-      "test_playground_builder"
+      "test_playground_builder",
+      "test_playground_connectors"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

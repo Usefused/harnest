@@ -11,7 +11,7 @@ from harnest.neutral_runtime import create_neutral_app
 from harnest.playground_connectors import (
     ConnectorError,
     PlaygroundConnectorsService,
-    _parse_config,
+    _CreateServiceRef,
     _token_env,
 )
 from test_neutral_runtime import FakeDriver
@@ -81,6 +81,18 @@ class FakeAdminClient:
 
     def list_servers(self, limit=10, offset=0):
         return _ServerList(self.servers[offset : offset + limit])
+
+    def list_services(self):
+        return [
+            {"id": "svc-a", "version_id": "svc-a-v1", "slug": "verify-service-a", "name": "Verify Service A", "description": "", "version": "1.0.27"},
+            {"id": "svc-b", "version_id": "svc-b-v1", "slug": "verify-service-b", "name": "Verify Service B", "description": "", "version": "1.0.27"},
+        ]
+
+    def list_service_operations(self, service_id, version):
+        return [
+            {"id": "op-1", "name": "addPet", "method": "POST", "path": "/pet"},
+            {"id": "op-2", "name": "deletePet", "method": "DELETE", "path": "/pet/{petId}"},
+        ]
 
     def deploy_server(self, config):
         FakeAdminClient.last_deployed = config
@@ -184,15 +196,64 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(ConnectorError):
                 service.add_existing("sess1", name="support-agent", version="1.0.0")
 
-    def test_create_deploys_config_and_returns_token(self):
+    def test_create_builds_config_from_structured_fields(self):
         service = _configured_service()
         service._sessions["sess1"] = _session()
         with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
-            result = service.create("sess1", config={"name": "studio-mcp"})
-        self.assertEqual(FakeAdminClient.last_deployed, {"name": "studio-mcp"})
+            result = service.create(
+                "sess1",
+                name="studio-mcp",
+                description="Studio helper",
+                services=[_CreateServiceRef(slug="verify-service-a", version="1.0.27")],
+            )
+        self.assertEqual(FakeAdminClient.last_deployed, {
+            "apiVersion": "fused/v1",
+            "kind": "mcp",
+            "name": "studio-mcp",
+            "version": "1.0.0",
+            "description": "Studio helper",
+            "bucket": "default",
+            "services": {"verify-service-a": {"version": "1.0.27", "select_all": True}},
+        })
         self.assertEqual(result.name, "studio-mcp")
         self.assertEqual(result.url, "https://engine.test/mcp/pinned")
         self.assertEqual(result.token, "tok-1")
+
+    def test_create_defaults_description_to_name(self):
+        # The Engine rejects an empty MCP description, so the Studio falls
+        # back to the server name before deploying.
+        service = _configured_service()
+        service._sessions["sess1"] = _session()
+        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+            service.create(
+                "sess1",
+                name="studio-mcp",
+                description="",
+                services=[_CreateServiceRef(slug="verify-service-a", version="1.0.27")],
+            )
+        self.assertEqual(FakeAdminClient.last_deployed["description"], "studio-mcp")
+
+    def test_create_narrows_service_to_operations(self):
+        service = _configured_service()
+        service._sessions["sess1"] = _session()
+        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+            service.create(
+                "sess1",
+                name="studio-mcp",
+                description="",
+                services=[_CreateServiceRef(slug="verify-service-a", version="1.0.27", select_all=False, operations=["addPet"])],
+            )
+        self.assertEqual(
+            FakeAdminClient.last_deployed["services"]["verify-service-a"],
+            {"version": "1.0.27", "operations": ["addPet"]},
+        )
+
+    def test_operations_lists_service_operations(self):
+        service = _configured_service()
+        service._sessions["sess1"] = _session()
+        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+            result = service.operations("sess1", "svc-a", "svc-a-v1")
+        self.assertEqual(result["items"][0]["name"], "addPet")
 
     def test_require_token_rejects_missing_and_expired(self):
         service = _configured_service()
@@ -202,13 +263,12 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ConnectorError):
             service.servers("sess1")
 
-    def test_parse_config_accepts_yaml_and_json(self):
-        self.assertEqual(_parse_config('{"name": "studio-mcp"}'), {"name": "studio-mcp"})
-        self.assertEqual(_parse_config("name: studio-mcp\nversion: 1.0.0\n"), {"name": "studio-mcp", "version": "1.0.0"})
-        with self.assertRaises(ValueError):
-            _parse_config("- just\n- a list")
-        with self.assertRaises(ValueError):
-            _parse_config("{{ invalid")
+    def test_services_lists_workspace_services(self):
+        service = _configured_service()
+        service._sessions["sess1"] = _session()
+        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+            result = service.services("sess1")
+        self.assertEqual(result["items"][0]["slug"], "verify-service-a")
 
     def test_token_env_derives_a_collision_resistant_name(self):
         self.assertEqual(_token_env("support-agent"), "HARNEST_MCP_SUPPORT_AGENT_TOKEN")
@@ -302,16 +362,18 @@ class RouteTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_create_route_rejects_ambiguous_config(self):
+    def test_create_route_rejects_missing_services(self):
+        # An empty service list is rejected by request validation before it
+        # reaches the deployment call, so the framework answers with 422.
         service = _configured_service()
         service._sessions["sess1"] = _session()
         client = self.client(service)
         response = client.post(
             "/_harnest/connectors/create",
-            json={"config": {"name": "x"}, "configYaml": "name: x"},
+            json={"name": "x", "services": []},
             cookies={"_harnest_fused_session": "sess1"},
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
 
     def test_create_route_end_to_end(self):
         service = _configured_service()
@@ -320,7 +382,11 @@ class RouteTests(unittest.TestCase):
         with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
             response = client.post(
                 "/_harnest/connectors/create",
-                json={"configYaml": "name: studio-mcp\nversion: 1.0.0\n"},
+                json={
+                    "name": "studio-mcp",
+                    "description": "Studio helper",
+                    "services": [{"slug": "verify-service-a", "version": "1.0.27"}],
+                },
                 cookies={"_harnest_fused_session": "sess1"},
             )
         self.assertEqual(response.status_code, 200, response.text)

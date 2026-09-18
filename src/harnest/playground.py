@@ -65,6 +65,7 @@ def create_playground_router(
     *, openapi_enabled: bool = True,
     mcp_service: Any | None = None,
     studio_service: Any | None = None,
+    connectors_service: Any | None = None,
 ) -> Any:
     """Capture development asset ownership before handling asynchronous requests."""
 
@@ -180,6 +181,10 @@ def create_playground_router(
         from .playground_mcp import install_mcp_routes
 
         install_mcp_routes(router, mcp_service)
+
+    from .playground_connectors import install_connector_routes
+
+    install_connector_routes(router, connectors_service)
     return router
 
 

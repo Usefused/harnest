@@ -24,10 +24,12 @@ class FusedAdminError(Exception):
         message: str,
         status: Optional[int] = None,
         errors: Optional[List[dict]] = None,
+        code: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.errors = errors or []
+        self.code = code
 
 
 @dataclass
@@ -174,6 +176,65 @@ class FusedAdminClient:
             total=int(servers["total"]),
         )
 
+    def list_services(self) -> List[Dict[str, Any]]:
+        """Lists workspace services so a new MCP server can bind a subset of them."""
+        query = """
+        query ListWorkspaceServices {
+          workspaceServices {
+            service_id
+            service_slug
+            service_name
+            description
+            version
+            service_version_id
+          }
+        }
+        """
+        data = self._graphql(query, {})
+        services = data.get("workspaceServices") or []
+        return [
+            {
+                "id": item.get("service_id") or "",
+                "version_id": item.get("service_version_id") or "",
+                "slug": item.get("service_slug") or "",
+                "name": item.get("service_name") or item.get("service_slug") or "",
+                "description": item.get("description") or "",
+                "version": item.get("version") or "",
+            }
+            for item in services
+        ]
+
+    def list_service_operations(self, service_id: str, version: str) -> List[Dict[str, str]]:
+        """Lists one workspace service's operations for per-operation selection."""
+        query = """
+        query GetServiceOperations($serviceId: String!, $version: String!) {
+          serviceOperations(serviceId: $serviceId, version: $version) {
+            id
+            name
+            method
+            path
+          }
+        }
+        """
+        data = self._request("POST", "/graphql", {
+            "query": query,
+            "variables": {"serviceId": service_id, "version": version},
+        })
+        # The Registry proxy surfaces failures as either a GraphQL `errors`
+        # list or a single `error` envelope depending on the rejection stage.
+        if data.get("error") or data.get("errors"):
+            raise FusedAdminError("could not load service operations")
+        operations = (data.get("data") or {}).get("serviceOperations") or []
+        return [
+            {
+                "id": item.get("id") or "",
+                "name": item.get("name") or "",
+                "method": item.get("method") or "",
+                "path": item.get("path") or "",
+            }
+            for item in operations
+        ]
+
     def deploy_server(self, config: Dict[str, Any], owner_team: Optional[str] = None) -> MCPServer:
         """Deploys a new MCP server from a declarative `kind: mcp` config dict."""
         query = f"""
@@ -260,4 +321,6 @@ class FusedAdminClient:
                 or payload.get("error")
                 or f"Request failed ({error.code})"
             )
-            raise FusedAdminError(message, status=error.code) from error
+            raise FusedAdminError(
+                message, status=error.code, code=payload.get("code")
+            ) from error
