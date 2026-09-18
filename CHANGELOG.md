@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
 
 ### Features
 
@@ -72,6 +72,14 @@
   hosts.
 * Apply the same `>=0.21.3,<0.24` Harnest range to the optional `harnest-fused`
   package.
+
+### Features
+
+* add agent Studio and eval authoring to the playground ([4983ced](https://github.com/Usefused/harnest/commit/4983cedab88f7aad7f406c5a71888bd4e9de672c))
+* **mcp:** add runtime OpenAPI clients and Fused integration ([3cdf066](https://github.com/Usefused/harnest/commit/3cdf066f89bfa8459144bde84cc31dd24e3e411d))
+* **studio:** Fused OAuth-backed MCP connections ([3871638](https://github.com/Usefused/harnest/commit/38716382c05b8c79ea28cd779afcabaf173c7fe2))
+* **studio:** return to MCP view after connect and offer fused-cli token command ([e9e0ff2](https://github.com/Usefused/harnest/commit/e9e0ff205d638ed4cdf94a8ece0d74d1bc218684))
+* **studio:** structured MCP creation with per-operation selection ([68cc479](https://github.com/Usefused/harnest/commit/68cc4794d0a2fb16916bf1980bec4dc7d9dd5a56))
 
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
