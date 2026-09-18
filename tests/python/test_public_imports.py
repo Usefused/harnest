@@ -283,10 +283,14 @@ for name in sys.argv[1:]:
     for symbol in getattr(module, '__all__', []):
         getattr(module, symbol)
 '''
+        # The root package and `harnest_fused` are excluded: the root is the
+        # package under test and `harnest_fused` is a separately distributed
+        # optional SDK, not a bundled provider. The fresh subprocess only sees
+        # installed wheels, so both are out of scope here.
         modules = [
             name
             for name in _public_api_snapshot()
-            if name != "harnest"
+            if name not in {"harnest", "harnest_fused"}
         ]
         result = subprocess.run(
             [sys.executable, "-c", code, *modules],
