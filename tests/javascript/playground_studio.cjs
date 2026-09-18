@@ -113,7 +113,44 @@ test("architecture renders real components as text and distinguishes capabilitie
   assert.ok(!detailBody.some((node) => node.textContent === "View source"));
   const tool = submap.find((node) => node.dataset.blockId === "tool");
   tool.listeners.keydown({ key: "Enter", preventDefault() {} });
-  assert.equal(page.get("studio-detail").children[1].textContent, "lookup");
+  // Selecting a capability keeps both surfaces in sync: the overlay panel...
+  assert.equal(page.get("studio-detail").children[2].textContent, "lookup");
+  // ...and a connected detail node dropped beside it in the same flow.
+  const refreshedSubmap = descendants(page.get("studio-agent-detail-map"));
+  const detailNode = refreshedSubmap.find((node) => node.attributes.class === "studio-detail-node");
+  assert.ok(detailNode);
+  assert.ok(descendants(detailNode).some((node) => node.textContent === "lookup"));
+});
+
+test("selecting an MCP or a tool surfaces what it exposes instead of raw config", async () => {
+  const page = browser();
+  const data = {
+    source_digest: "abcdef0123456789", source_available: false,
+    blocks: [
+      { id: "agent", kind: "agent", name: "root", path: "agent.py", line: 1, config: {} },
+      { id: "mcp", kind: "mcp", name: "knowledge", path: "mcp/knowledge.py", line: 1, config: { tools: ["search_articles", "get_article"], prefix: "knowledge", transport: "streamable_http" } },
+      { id: "tool", kind: "tool", name: "lookup", path: "tools/lookup.py", line: 2, config: { async: false, parameters: [{ name: "query", annotation: "str" }] } },
+    ],
+    connections: [{ source: "agent", target: "mcp", kind: "capability" }, { source: "agent", target: "tool", kind: "capability" }],
+    files: [], diagnostics: [],
+  };
+  page.context.api = async () => ({ json: async () => data });
+  await page.run("harnestStudio.open(api)");
+  const agent = descendants(page.get("studio-canvas")).find((node) => node.dataset.blockId === "agent");
+  agent.listeners.click();
+  const submap = descendants(page.get("studio-agent-detail-map"));
+
+  submap.find((node) => node.dataset.blockId === "mcp").listeners.click();
+  let overlay = descendants(page.get("studio-detail"));
+  assert.ok(overlay.some((node) => node.textContent === "Tools exposed · 2"));
+  assert.ok(overlay.some((node) => node.textContent === "search_articles"));
+  assert.ok(!overlay.some((node) => node.textContent.includes('"tools"')));
+
+  submap.find((node) => node.dataset.blockId === "tool").listeners.click();
+  overlay = descendants(page.get("studio-detail"));
+  assert.ok(overlay.some((node) => node.textContent === "Parameters · 1"));
+  assert.ok(overlay.some((node) => node.textContent === "query: str"));
+  assert.ok(!overlay.some((node) => node.textContent.includes('"parameters"')));
 });
 
 test("local source is loaded on demand and stale source cannot replace another selection", async () => {
@@ -138,7 +175,7 @@ test("local source is loaded on demand and stale source cannot replace another s
   fileButton.listeners.click();
   release({ json: async () => ({ text: "<script>source</script>" }) });
   await pending;
-  assert.equal(page.get("studio-detail").children[1].textContent, "agent.py");
+  assert.equal(page.get("studio-detail").children[2].textContent, "agent.py");
   assert.ok(!descendants(page.get("studio-detail")).some((node) => node.textContent.includes("<script>source")));
 });
 
@@ -230,7 +267,7 @@ test("selecting a graph shows its owned workflow edges and opens the target comp
   const edge = body.find((node) => node.className === "studio-relation");
   assert.match(edge.textContent, /unsafe.*Workflow.*ready.*lookup/);
   edge.listeners.click();
-  assert.equal(page.get("studio-detail").children[1].textContent, "lookup");
+  assert.equal(page.get("studio-detail").children[2].textContent, "lookup");
 });
 
 

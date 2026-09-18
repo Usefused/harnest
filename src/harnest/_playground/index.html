@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Harnest Playground</title>
     <link rel="stylesheet" href="/_harnest/playground.css?v=13">
-    <link rel="stylesheet" href="/_harnest/studio.css?v=7">
+    <link rel="stylesheet" href="/_harnest/studio.css?v=9">
     <link rel="stylesheet" href="/_harnest/builder.css?v=4">
     <link rel="stylesheet" href="/_harnest/selects.css?v=3">
   </head>
@@ -176,9 +176,6 @@
             </div>
             <div id="studio-canvas-pane" class="studio-canvas-pane">
               <div id="studio-canvas" class="studio-canvas" aria-label="Architecture map — high-level agent and graph flow"></div>
-              <aside id="studio-detail" class="studio-detail" aria-label="Selected component" hidden>
-                <h3>Select a component</h3><p>Inspect its configuration, connections, and source location.</p>
-              </aside>
             </div>
             <div id="studio-components" class="studio-components" hidden></div>
             <details class="studio-files"><summary>Source files</summary><div id="studio-files"></div></details>
@@ -189,6 +186,9 @@
             <div id="studio-agent-detail-map" class="studio-canvas studio-agent-submap" aria-label="Selected component's internal flow"></div>
             <div id="studio-agent-detail-body"></div>
           </section>
+          <aside id="studio-detail" class="studio-detail" aria-label="Selected component" hidden>
+            <h3>Select a component</h3><p>Inspect its configuration, connections, and source location.</p>
+          </aside>
           </div>
           <div id="studio-tools" hidden></div>
           <div id="studio-configuration" hidden></div>
@@ -348,7 +348,7 @@
     <dialog id="builder-dialog" class="builder-dialog" aria-labelledby="builder-dialog-title"></dialog>
     <script src="/_harnest/selects.js?v=2" defer></script>
     <script src="/_harnest/builder.js?v=1" defer></script>
-    <script src="/_harnest/studio.js?v=5" defer></script>
+    <script src="/_harnest/studio.js?v=8" defer></script>
     <script src="/_harnest/playground.js?v=14" defer></script>
   </body>
 </html>

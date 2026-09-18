@@ -324,11 +324,52 @@ const harnestStudio = (() => {
     return node;
   }
 
+  /** Summarize the selected block as a node connected to it, right in the flow. */
+  function detailNodeGroup(block, x, y) {
+    const width = 260, height = 150;
+    const group = svgElement("g", { transform: `translate(${x} ${y})`, class: "studio-detail-node" });
+    group.append(svgElement("rect", { width, height, rx: 12 }));
+    group.append(svgElement("text", { x: 16, y: 24, class: "studio-map-kind" }, block.kind.replaceAll("_", " ")));
+    group.append(svgElement("text", { x: 16, y: 47, class: "studio-detail-node-title" }, block.name.length > 26 ? `${block.name.slice(0, 25)}…` : block.name));
+    const lines = detailSummaryLines(block).map(line => line.length > 32 ? `${line.slice(0, 31)}…` : line);
+    lines.forEach((line, index) => group.append(svgElement("text", { x: 16, y: 70 + index * 18, class: "studio-detail-node-line" }, line)));
+    return group;
+  }
+
+  /** Mirror the overlay's highlights (an MCP's tools, a tool's parameters) in the flow. */
+  function detailSummaryLines(block) {
+    const highlights = detailHighlights(block);
+    if (highlights) {
+      const shown = highlights.items.slice(0, 4).map(item => `• ${item}`);
+      if (highlights.items.length > 4) shown.push(`+${highlights.items.length - 4} more`);
+      return shown;
+    }
+    const { nodes, ...details } = block.config;
+    return Object.entries(details).slice(0, 4).map(([key, value]) => {
+      const rendered = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+      return `${key}: ${rendered}`;
+    });
+  }
+
+  /** Connect the selected node to its in-flow detail summary. */
+  function detailEdgePath(from, to) {
+    const x1 = from.x + 230, y1 = from.y + 34;
+    const x2 = to.x, y2 = to.y + 34;
+    const bend = (x1 + x2) / 2;
+    return svgElement("path", { d: `M ${x1} ${y1} C ${bend} ${y1}, ${bend} ${y2}, ${x2} ${y2}`, class: "studio-edge studio-detail-edge" });
+  }
+
   /** Build a source-derived architecture map into any host, scoped to any owner. */
   function renderMap(host, blocks, edges, owner) {
     const positions = computePositions(blocks, owner);
-    const height = Math.max(230, ...positions.map((item) => item.y + 100));
-    const width = Math.max(300, ...positions.map(item => item.x + 260));
+    const selectedPosition = positions.find(item => item.block.id === selected && !agentDetailKinds.has(item.block.kind));
+    const detailBox = selectedPosition ? { x: selectedPosition.x + 260, y: selectedPosition.y } : null;
+    let height = Math.max(230, ...positions.map((item) => item.y + 100));
+    let width = Math.max(300, ...positions.map(item => item.x + 260));
+    if (detailBox) {
+      height = Math.max(height, detailBox.y + 170);
+      width = Math.max(width, detailBox.x + 280);
+    }
     const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, width, height, role: "group", "aria-label": owner ? `${owner.name}'s internal components` : "Agent architecture flow" });
     const defs = svgElement("defs", {});
     const arrowId = `${host.id || "studio-canvas"}-arrow`;
@@ -343,6 +384,10 @@ const harnestStudio = (() => {
       if (path) svg.append(path);
     }
     for (const position of positions) svg.append(mapNode(position));
+    if (detailBox) {
+      svg.append(detailEdgePath(selectedPosition, detailBox));
+      svg.append(detailNodeGroup(selectedPosition.block, detailBox.x, detailBox.y));
+    }
     host.replaceChildren(svg);
     enablePan(host);
   }
@@ -410,18 +455,78 @@ const harnestStudio = (() => {
   /** Inspect configuration and source location without changing the running agent. */
   function select(block) {
     if (agentDetailKinds.has(block.kind)) { openAgentDetail(block); return; }
-    if (agentDetail) closeAgentDetail({ push: false });
     selected = block.id;
     sourceRequest += 1;
     const host = byId("studio-detail");
     host.hidden = false;
-    host.replaceChildren(element("span", block.kind.replaceAll("_", " "), "eyebrow"), element("h3", block.name), element("p", `${block.path}:${block.line}`, "studio-location"));
+    host.replaceChildren(detailCloseButton(), element("span", block.kind.replaceAll("_", " "), "eyebrow"), element("h3", block.name), element("p", `${block.path}:${block.line}`, "studio-location"));
     const {nodes, ...details} = block.config;
+    const highlights = detailHighlights(block);
+    if (highlights) {
+      host.append(detailListSection(highlights.heading, highlights.items));
+      delete details[highlights.key];
+    }
     if (Object.keys(details).length) host.append(element("pre", JSON.stringify(details, null, 2), "studio-config"));
     renderRelations(block, host);
     appendSourceButton(host, block.path);
     renderComponents();
-    for (const node of byId("studio-canvas").querySelectorAll("[data-block-id]")) node.setAttribute("aria-pressed", String(node.dataset.blockId === selected));
+    refreshActiveMap();
+  }
+
+  /** What a block exposes to the rest of the flow — an MCP's remote tools, a
+      tool's own parameters — read better as a list than as raw config JSON. */
+  function detailHighlights(block) {
+    if (block.kind === "mcp" && Array.isArray(block.config.tools) && block.config.tools.length) {
+      return { heading: "Tools exposed", key: "tools", items: block.config.tools };
+    }
+    if (block.kind === "tool" && Array.isArray(block.config.parameters) && block.config.parameters.length) {
+      return { heading: "Parameters", key: "parameters", items: block.config.parameters.map(p => `${p.name}: ${p.annotation || "any"}`) };
+    }
+    return null;
+  }
+
+  /** A small labeled list, reused for anything highlighted out of raw config. */
+  function detailListSection(heading, items) {
+    const section = document.createElement("div");
+    section.append(element("h4", `${heading} · ${items.length}`));
+    const list = document.createElement("ul");
+    list.className = "studio-lib-list";
+    for (const item of items) {
+      const entry = document.createElement("li");
+      entry.append(element("code", item));
+      list.append(entry);
+    }
+    section.append(list);
+    return section;
+  }
+
+  /** Redraw whichever map is on screen so its connected detail node follows `selected`. */
+  function refreshActiveMap() {
+    if (agentDetail) {
+      const owner = projection.blocks.find(item => item.id === agentDetail);
+      if (owner) renderAgentDetail(owner);
+    } else {
+      renderTopLevelMap();
+    }
+  }
+
+  /** Build the dismiss control shared by every render into the detail overlay. */
+  function detailCloseButton() {
+    const button = element("button", "×", "studio-detail-close");
+    button.type = "button";
+    button.setAttribute("aria-label", "Close");
+    button.addEventListener("click", () => closeDetail());
+    return button;
+  }
+
+  /** Hide the detail overlay and clear its selection highlight on the canvas. */
+  function closeDetail() {
+    selected = null;
+    const host = byId("studio-detail");
+    host.hidden = true;
+    host.replaceChildren();
+    renderComponents();
+    refreshActiveMap();
   }
 
   /** Open the full-page view of one agent or graph: its own flow, tools, and lib usage. */
@@ -587,7 +692,7 @@ const harnestStudio = (() => {
         selected = null;
         const detail = byId("studio-detail");
         detail.hidden = false;
-        detail.replaceChildren(element("span", "Source file", "eyebrow"), element("h3", file.path), element("p", `${file.language} · ${file.size} bytes`));
+        detail.replaceChildren(detailCloseButton(), element("span", "Source file", "eyebrow"), element("h3", file.path), element("p", `${file.language} · ${file.size} bytes`));
         appendSourceButton(detail, file.path);
         renderComponents();
       });
