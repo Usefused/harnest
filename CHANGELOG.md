@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
 
 ### Features
 
@@ -72,9 +72,6 @@
   hosts.
 * Apply the same `>=0.21.3,<0.24` Harnest range to the optional `harnest-fused`
   package.
-
-## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
-
 
 ### Features
 
