@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Fused" }]
-dependencies = ["harnest>=0.21.2,<0.23"]
+dependencies = ["harnest>=0.21.3,<0.24"]
 
 [project.urls]
 Documentation = "https://docs.usefused.com/harnest/build/fused-mcp"

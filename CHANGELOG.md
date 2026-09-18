@@ -70,6 +70,8 @@
   `>=0.21.3,<0.24`, so the Docker, Hatchet, and RAG extensions accept the
   current release and the next minor without claiming support for pre-0.21.3
   hosts.
+* Apply the same `>=0.21.3,<0.24` Harnest range to the optional `harnest-fused`
+  package.
 
 ## [0.21.3](https://github.com/Usefused/harnest/compare/v0.21.2...v0.21.3) (2026-09-15)
 
