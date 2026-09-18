@@ -111,7 +111,7 @@ class StaticProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_provider_record_reports_task_cancellation(self):
         """Neutral cancelled states retain the released durable result semantics."""
 
-        manager = await self.start_manager()
+        await self.start_manager()
         handle = await self.authored.defer(value="private", schedule_in=60)
         self.assertTrue(await handle.cancel())
         with self.assertRaisesRegex(TaskExecutionError, "task_cancelled"):

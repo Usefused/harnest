@@ -34,6 +34,7 @@ quality = [
   "build>=1,<2",
   "hatchling>=1.25,<2",
   "radon>=6,<7",
+  "ruff>=0.14,<1",
   "setuptools>=82,<85",
 ]
 postgres = ["asyncpg>=0.30,<1"]
@@ -70,6 +71,21 @@ all = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/harnest", "src/harnest_postgres", "src/harnest_redis"]
 exclude = ["src/harnest/_playground/**"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Correctness-only for now (unused imports/vars, undefined names, etc.), mirroring
+# this repo's complexity gate: a narrow, high-signal bar rather than a full style
+# ruleset. Broader style rules (line length, import sorting, ...) can be layered
+# on later as a deliberate follow-up, not bundled in here.
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Declaration files executed by `harnest.cli` with `define_orchestrator` / `AgentSource`
+# injected into their globals (see src/harnest/cli.py) — not undefined names at runtime.
+"**/orchestrator.py" = ["F821"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "packages/harnest-fused/src"]

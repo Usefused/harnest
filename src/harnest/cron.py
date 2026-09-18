@@ -320,8 +320,8 @@ def _validate_schedule(value: Any) -> None:
     fields = value.split()
     if len(fields) != len(_CRON_LIMITS):
         raise ValueError("cron schedule must contain exactly five columns")
-    for field, limits in zip(fields, _CRON_LIMITS):
-        _validate_field(field, limits)
+    for column, limits in zip(fields, _CRON_LIMITS):
+        _validate_field(column, limits)
 
 
 def _validate_schedule_key(value: Any) -> None:

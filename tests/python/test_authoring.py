@@ -21,7 +21,7 @@ from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEv
 from harnest.model import LiteLLMModel
 from harnest.mcp import MCPClient
 from harnest.cli import load_orchestrator, main as cli_main
-from harnest.runtime import create_fastapi_app, run_agent_message
+from harnest.runtime import create_fastapi_app
 from harnest.server_config import DEFAULT_SERVER_YAML
 from harnest.testing import (
     AgentTestError,

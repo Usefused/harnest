@@ -115,7 +115,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             )
             backend = self._backend()
             with patch("harnest.bundle.get_backend", return_value=backend):
-                application = compile_application(
+                compile_application(
                     root, entrypoint="agent:root_agent", framework="langgraph"
                 )
 

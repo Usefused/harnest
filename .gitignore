@@ -15,6 +15,8 @@ internal/runtimewheel/assets/*.whl
 internal/uvbootstrap/assets/release/
 coverage.out
 bin/
+/harnest
+/harnest_dev
 
 # Harnest Studio is a local-only experiment and is not part of the main product tree.
 /studio/

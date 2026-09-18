@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import textwrap
 import uuid
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import yaml
 

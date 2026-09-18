@@ -8,8 +8,7 @@ import secrets
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from threading import Lock
-from types import UnionType
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 from pydantic import BaseModel
 

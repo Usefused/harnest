@@ -6,8 +6,7 @@ import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from types import UnionType
-from typing import Annotated, Any, Mapping, Union, get_args, get_origin
+from typing import Annotated, Any, Mapping, get_args, get_origin
 
 from pydantic import BaseModel
 

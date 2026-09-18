@@ -6,7 +6,7 @@ COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
 AGENT_URL ?= http://127.0.0.1:1907
 DEMO_SESSION_ID ?= demo-session
 
-.PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity lint skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
 
 test: schemas test-python
 	GOCACHE=$(GOCACHE) go test ./...
@@ -26,11 +26,14 @@ test-e2e:
 test-live:
 	$(PYTHON) scripts/run_python_tests.py live
 
-quality: test complexity skill-quality format-check vet validate-examples
+quality: test complexity lint skill-quality format-check vet validate-examples
 
 complexity:
 	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve
 	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
+
+lint:
+	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve official-extensions
 
 skill-quality:
 	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .

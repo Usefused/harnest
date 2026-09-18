@@ -22,7 +22,6 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from .agent_principal import AgentRuntimePrincipal
 from .assets import (
     DEFAULT_MAX_ASSET_BYTES,
-    AssetNotFoundError,
     AssetQuotaError,
     AssetRecord,
     AssetScope,

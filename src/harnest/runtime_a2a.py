@@ -41,8 +41,7 @@ from a2a.utils.errors import (
 )
 from starlette.exceptions import HTTPException
 
-from .agent.approval import ApprovalDenied, ApprovalRun, PendingApproval
-from .client_tool import PendingClientTool
+from .agent.approval import ApprovalDenied, ApprovalRun
 from .output import _agent_metadata_from_runtime_event, _aggregate_token_usage
 from .runtime_auth import (
     AuthPrincipal,

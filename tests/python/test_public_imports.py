@@ -297,7 +297,6 @@ for name in sys.argv[1:]:
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_context_contracts_are_discoverable_and_unknown_names_fail(self):
-        from harnest.context import AgentSession, SessionContext
 
         module = importlib.import_module("harnest.context")
         self.assertIn("AgentSession", dir(module))

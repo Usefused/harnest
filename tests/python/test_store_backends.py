@@ -27,7 +27,6 @@ from harnest.continuation import (
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
 from harnest.store_redis import _checkpoint_dump, _continuation_dump, _run_dump
-from harnest.store_redis import _a2a_task_dump
 
 
 class _Transaction(AbstractAsyncContextManager):
