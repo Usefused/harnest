@@ -101,28 +101,29 @@ class PlaygroundConnectorsService:
         self,
         *,
         engine_url: str | None = None,
-        registration_key: str | None = None,
         scopes: Sequence[str] = _DEFAULT_SCOPES,
     ) -> None:
+        """Configure Engine discovery and keep OAuth credentials only in memory."""
+
         # Explicit arguments win; environment supplies a server-side default so
         # a `harnest serve` process can be configured without touching code.
-        # The registration key mints an ephemeral public (PKCE) client at connect
-        # time, so no client_id or secret is ever configured.
+        # Temporary client credentials are requested at connect time, so the
+        # Engine URL is the only required configuration.
         self.engine_url = (engine_url or _env("HARNEST_FUSED_ENGINE_URL") or "").rstrip("/")
-        self.registration_key = registration_key or _env("HARNEST_FUSED_OAUTH_REGISTRATION_KEY") or ""
         scopes_env = _env("HARNEST_FUSED_OAUTH_SCOPES")
+        # Explicit environment scopes override the built-in development defaults.
         self.scopes = tuple(scopes_env.split(",")) if scopes_env else tuple(scopes)
         # OAuth state is in-memory by design: the playground is a single-process
         # local development surface, so no persistence or cross-process sharing
         # is required and no token material is ever written to disk.
         self._lock = threading.Lock()
-        self._flows: dict[str, tuple[str, str]] = {}
+        self._flows: dict[str, tuple[str, str, str]] = {}
         self._sessions: dict[str, _Session] = {}
 
     def available(self) -> bool:
-        """The feature needs a configured Engine and registration key, not fused-cli."""
+        """Connecting needs only the Engine URL; the user authenticates in the browser."""
 
-        return bool(self.engine_url and self.registration_key)
+        return bool(self.engine_url)
 
     def connected(self, session_id: str | None) -> bool:
         """True when a live access token is bound to the browser session."""
@@ -140,17 +141,17 @@ class PlaygroundConnectorsService:
         return f"{request.url.scheme}://{request.url.netloc}{_OAUTH_CALLBACK_PATH}"
 
     def authorize_url(self, redirect_uri: str) -> str:
-        """Register an ephemeral public client, then begin OAuth with a PKCE pair."""
+        """Request temporary credentials, then begin user login with a PKCE pair."""
 
-        client_id, _ = self._register_client(redirect_uri, "Harnest Studio")
-        client = self._auth_client(redirect_uri, client_id)
+        client_id, client_secret = self._register_client(redirect_uri, "Harnest Studio")
+        client = self._auth_client(redirect_uri, client_id, client_secret)
         state = secrets.token_urlsafe(24)
         request = client.authorize_url(scopes=list(self.scopes), state=state)
         # The verifier is the proof-of-possession half of PKCE and must never
         # be exposed; only the state travels in the browser URL. The client id is
-        # kept for the callback so the same ephemeral client exchanges the code.
+        # kept with its secret for the callback; neither secret enters the URL.
         with self._lock:
-            self._flows[state] = (client_id, request.code_verifier)
+            self._flows[state] = (client_id, client_secret, request.code_verifier)
         return request.url
 
     def complete_authorization(self, code: str, state: str, redirect_uri: str, session_id: str) -> None:
@@ -162,8 +163,8 @@ class PlaygroundConnectorsService:
         # failing closed prevents a replayed callback from minting a session.
         if flow is None:
             raise ConnectorError("OAuth state is missing or already consumed")
-        client_id, verifier = flow
-        tokens = self._auth_client(redirect_uri, client_id).exchange_code(code, verifier)
+        client_id, client_secret, verifier = flow
+        tokens = self._auth_client(redirect_uri, client_id, client_secret).exchange_code(code, verifier)
         with self._lock:
             self._sessions[session_id] = _Session(
                 access_token=tokens.access_token,
@@ -277,19 +278,20 @@ class PlaygroundConnectorsService:
             raise ConnectorError(f"MCP version {name}@{version} is missing, ambiguous, or inactive")
         return _url_from_dict(active[0], name, version)
 
-    def _auth_client(self, redirect_uri: str, client_id: str) -> FusedAuthClient:
-        """Construct the public (PKCE) OAuth client for one ephemeral client."""
+    def _auth_client(self, redirect_uri: str, client_id: str, client_secret: str) -> FusedAuthClient:
+        """Keep the temporary secret server-side while also requiring PKCE."""
 
         return FusedAuthClient(FusedAuthConfig(
             issuer=self.engine_url,
             client_id=client_id,
+            client_secret=client_secret,
             redirect_uri=redirect_uri,
         ))
 
     def _register_client(self, redirect_uri: str, name: str) -> tuple[str, str]:
-        """Dynamically register an ephemeral public client via the registration key.
+        """Request temporary client credentials before the user authenticates.
 
-        Returns the one-time (client_id, client_id_expires_at); the client is
+        Returns the one-time (client_id, client_secret); the client is
         loopback-bound and short-lived, and it is inert until the user consents.
         """
 
@@ -303,7 +305,6 @@ class PlaygroundConnectorsService:
             data=body,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.registration_key}",
             },
             method="POST",
         )
@@ -313,9 +314,11 @@ class PlaygroundConnectorsService:
         except urllib.error.HTTPError as error:
             raise ConnectorError(f"Fused OAuth client registration failed ({error.code})") from error
         client_id = payload.get("client_id")
-        if not client_id:
-            raise ConnectorError("Fused OAuth registration returned no client_id")
-        return client_id, payload.get("client_id_expires_at", "")
+        client_secret = payload.get("client_secret")
+        # An incomplete pair cannot authenticate the subsequent token exchange.
+        if not isinstance(client_id, str) or not client_id or not isinstance(client_secret, str) or not client_secret:
+            raise ConnectorError("Fused OAuth registration returned incomplete client credentials")
+        return client_id, client_secret
 
     def _admin_client(self, access_token: str) -> FusedAdminClient:
         """Construct the management client bound to the current access token."""

@@ -59,6 +59,11 @@ class FakeAuthClient:
         })()
 
     def exchange_code(self, code, verifier):
+        """Require the temporary secret as well as PKCE on code exchange."""
+        # The callback must reuse the pair issued before user login.
+        if self.config.client_secret != "fos_temporary":
+            raise ConnectorError("missing temporary secret")
+        # PKCE remains required even with confidential client credentials.
         if verifier != "verifier":
             raise ConnectorError("bad verifier")
         return type("TokenResponse", (), {
@@ -129,13 +134,15 @@ class _JSONResponse:
 
 
 def _configured_service():
-    return PlaygroundConnectorsService(engine_url="https://engine.test", registration_key="frk_test")
+    """Configure only discovery; registration requires no stored credential."""
+    return PlaygroundConnectorsService(engine_url="https://engine.test")
 
 
 class ServiceTests(unittest.TestCase):
-    def test_available_requires_engine_and_registration_key(self):
+    def test_available_requires_only_engine_url(self):
+        """A configured Engine enables the login flow without a registration key."""
         self.assertFalse(PlaygroundConnectorsService().available())
-        self.assertFalse(PlaygroundConnectorsService(engine_url="https://engine.test").available())
+        self.assertTrue(PlaygroundConnectorsService(engine_url="https://engine.test").available())
         self.assertTrue(_configured_service().available())
 
     def test_connected_reflects_live_session(self):
@@ -147,9 +154,10 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(service.connected("sess1"))
 
     def test_authorize_then_complete_binds_session(self):
+        """Carry temporary credentials through the one-time callback."""
         service = _configured_service()
         with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
-             patch.object(service, "_register_client", return_value=("foc_dynamic", "")):
+             patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             url = service.authorize_url("http://localhost:8000/_harnest/connectors/oauth/callback")
             self.assertIn("/oauth/authorize?", url)
             state = next(iter(service._flows))
@@ -158,9 +166,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(service._sessions["sess1"].access_token, "access-token")
 
     def test_replayed_state_fails_closed(self):
+        """Consume the temporary pair with its state so callback replay fails."""
         service = _configured_service()
         with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
-             patch.object(service, "_register_client", return_value=("foc_dynamic", "")):
+             patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             service.authorize_url("http://localhost:8000/_harnest/connectors/oauth/callback")
             state = next(iter(service._flows))
             service.complete_authorization("code", state, "http://localhost:8000/_harnest/connectors/oauth/callback", "sess1")
@@ -273,21 +282,24 @@ class ServiceTests(unittest.TestCase):
     def test_token_env_derives_a_collision_resistant_name(self):
         self.assertEqual(_token_env("support-agent"), "HARNEST_MCP_SUPPORT_AGENT_TOKEN")
 
-    def test_register_client_sends_bearer_key(self):
+    def test_register_client_requests_temporary_pair_without_bearer_key(self):
+        """Anonymous registration returns both credentials for the OAuth exchange."""
         service = _configured_service()
         captured = {}
 
         def fake_urlopen(request):
+            """Capture the registration request without making a network call."""
             captured["url"] = request.full_url
             captured["headers"] = request.headers
             captured["body"] = json.loads(request.data.decode("utf-8"))
-            return _JSONResponse({"client_id": "foc_dynamic", "client_id_expires_at": ""})
+            return _JSONResponse({"client_id": "foc_dynamic", "client_secret": "fos_temporary", "client_id_expires_at": ""})
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            client_id, _ = service._register_client("http://localhost:4321/cb", "Harnest Studio")
+            client_id, client_secret = service._register_client("http://localhost:4321/cb", "Harnest Studio")
         self.assertEqual(client_id, "foc_dynamic")
         self.assertEqual(captured["url"], "https://engine.test/oauth/register")
-        self.assertEqual(captured["headers"]["Authorization"], "Bearer frk_test")
+        self.assertNotIn("Authorization", captured["headers"])
+        self.assertEqual(client_secret, "fos_temporary")
         self.assertEqual(captured["body"]["redirect_uri"], "http://localhost:4321/cb")
 
 
@@ -309,10 +321,11 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(client.get("/_harnest/connectors/servers").status_code, 409)
 
     def test_oauth_start_and_callback_end_to_end(self):
+        """Exercise browser routes with a freshly registered client pair."""
         service = _configured_service()
         client = self.client(service)
         with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
-             patch.object(service, "_register_client", return_value=("foc_dynamic", "")):
+             patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             start = client.post("/_harnest/connectors/oauth/start")
             self.assertEqual(start.status_code, 200)
             self.assertIn("/oauth/authorize?", start.json()["url"])

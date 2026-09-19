@@ -28,13 +28,12 @@
 
 * Rework Studio's MCP connections tab to authenticate into Fused with OAuth
   instead of requiring a local `fused-cli` install. Connect a Fused workspace
-  by dynamically registering an ephemeral public (PKCE) OAuth client from a
-  per-user registration key, then list deployed MCP servers, deploy a new one
+  by requesting a temporary client ID and secret, then authenticating with
+  browser login, consent, and PKCE. List deployed MCP servers, deploy a new one
   from a pasted `kind: mcp` config, and mint a one-time execution token shown
   once in the Studio. The redirect URI is derived from the served origin;
-  configure only the Engine URL and registration key through the
-  `HARNEST_FUSED_ENGINE_URL` and `HARNEST_FUSED_OAUTH_REGISTRATION_KEY`
-  environment variables.
+  configure only the Engine URL through the `HARNEST_FUSED_ENGINE_URL`
+  environment variable.
 
 * Add `harnest init --template` to download a universal `harnest-template-*`
   wheel (by PyPI project, slug, or HTTPS URL) and materialize its inert
