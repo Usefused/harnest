@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25", "harnest[adk]==0.21.3"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harnest-agent-builder"
+version = "0.1.0"
+description = "A local visual and LLM-assisted builder for Harnest agents by Fused"
+requires-python = ">=3.10"
+dependencies = ["harnest[adk]==0.21.3", "fastapi>=0.115", "uvicorn>=0.31", "httpx>=0.28,<1", "PyYAML>=6,<7", "litellm>=1.84,<2", "tomli>=2; python_version < '3.11'"]
+
+[project.scripts]
+harnest-builder = "harnest_builder.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harnest_builder"]
+
+exclude = ["src/harnest_builder/assistant_source/**"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"

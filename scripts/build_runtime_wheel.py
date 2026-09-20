@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the embedded runtime wheel with an explicit, verified version."""
+"""Build the release-matched runtime wheel with Studio and its compiled assistant."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 uses the project compatibility dependency.
     import tomli as tomllib
+
+
+from bundle_studio import bundle_studio
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +96,7 @@ def build_wheel(arguments: argparse.Namespace) -> None:
         # Snapshot names are GoReleaser state, so they belong only in disposable
         # build inputs; real releases must already carry their reviewed version.
         stage_source(ROOT, staged, arguments.version)
+        bundle_studio(ROOT, staged, arguments.version)
         command = [sys.executable, "-m", "build", "--wheel"]
         if arguments.no_isolation:
             command.append("--no-isolation")
@@ -105,7 +109,7 @@ def main() -> int:
 
     try:
         build_wheel(parse_arguments())
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"build runtime wheel: {exc}", file=sys.stderr)
         return 1
     return 0

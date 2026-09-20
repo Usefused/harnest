@@ -70,7 +70,8 @@
       "test_transient_media_privacy",
       "test_uv_assets",
       "test_memory",
-      "test_fused_client"
+      "test_fused_client",
+      "test_provisioner"
     ],
     "integration": [
       "test_a2a",
@@ -133,7 +134,15 @@
       "test_playground_inspector",
       "test_playground_studio",
       "test_playground_builder",
-      "test_playground_connectors"
+      "test_playground_connectors",
+      "test_agent_builder",
+      "test_agent_builder_release_support",
+      "test_agent_builder_assistant",
+      "test_agent_builder_deletion",
+      "test_agent_builder_deployment",
+      "test_provisioner_lifecycle",
+      "test_provisioner_revisions",
+      "test_agent_builder_deployment_overview"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

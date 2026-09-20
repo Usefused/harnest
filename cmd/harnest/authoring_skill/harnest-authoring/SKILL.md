@@ -35,7 +35,7 @@ Produce agents. Never edit `.harnest/`.
    expose pagination and ordering as typed arguments rather than prompt hints.
    Invalid resources fail.
 7. Put agent dependencies in root `pyproject.toml`; Harnest Extensions may own a
-   matching PEP 621 project but never add Harnest/framework packages. Put deployment and optional `server` settings in `config.yaml`; use exact `${NAME}` references
+   matching PEP 621 project but never add Harnest/framework packages. Put agent and optional `server` settings in `config.yaml`; use exact `${NAME}` references
    for startup environment values. Put public identity in `agent-card.yaml`.
    Run `harnest env sync`; commit used locks. Upgrade Harnest.
 
@@ -52,6 +52,7 @@ Produce agents. Never edit `.harnest/`.
   migration, tests, evals, compilation, and serving.
 - Read [references/quality.md](references/quality.md) when contributing to
   Harnest source.
+- Read [references/deployment.md](references/deployment.md) for deployment.
 
 ## Finish with evidence
 

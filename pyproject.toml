@@ -30,6 +30,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Release staging pins this to the compiled Studio assistant framework.
+studio = ["google-adk>=2.8,<3"]
 quality = [
   "build>=1,<2",
   "hatchling>=1.25,<2",
@@ -70,7 +72,7 @@ all = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/harnest", "src/harnest_postgres", "src/harnest_redis"]
-exclude = ["src/harnest/_playground/**"]
+exclude = ["src/harnest/_playground/**", "src/harnest/_studio/**", "src/harnest/studio_*.py"]
 
 [tool.ruff]
 target-version = "py310"

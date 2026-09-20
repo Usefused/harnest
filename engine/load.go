@@ -307,11 +307,13 @@ func validateFrameworkRuntime(directory string, config AgentConfig) error {
 	return nil
 }
 
+// validateResourceQuantities keeps legacy deployment hints valid when supplied,
+// while allowing CPU and memory to be owned exclusively by deployment configuration.
 func validateResourceQuantities(directory string, resources AgentResources) error {
-	if !cpuPattern.MatchString(resources.CPU) {
+	if resources.CPU != "" && !cpuPattern.MatchString(resources.CPU) {
 		return fmt.Errorf("%s/config.yaml: invalid CPU quantity %q", directory, resources.CPU)
 	}
-	if !memoryPattern.MatchString(resources.Memory) {
+	if resources.Memory != "" && !memoryPattern.MatchString(resources.Memory) {
 		return fmt.Errorf("%s/config.yaml: invalid memory quantity %q", directory, resources.Memory)
 	}
 	if resources.EphemeralStorage != "" && !memoryPattern.MatchString(resources.EphemeralStorage) {

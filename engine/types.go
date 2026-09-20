@@ -69,7 +69,7 @@ type AgentConfigSpec struct {
 	Framework   AgentFramework    `yaml:"framework" json:"framework"`
 	Interfaces  AgentInterfaces   `yaml:"interfaces,omitempty" json:"interfaces,omitempty"`
 	Runtime     PythonRuntime     `yaml:"runtime" json:"runtime"`
-	Resources   AgentResources    `yaml:"resources" json:"resources"`
+	Resources   AgentResources    `yaml:"resources,omitempty" json:"resources,omitempty"`
 	Scaling     Scaling           `yaml:"scaling,omitempty" json:"scaling,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
 	Secrets     []SecretBinding   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
@@ -101,8 +101,9 @@ type PythonRuntime struct {
 }
 
 type AgentResources struct {
-	CPU                   string `yaml:"cpu" json:"cpu"`
-	Memory                string `yaml:"memory" json:"memory"`
+	// CPU and Memory are optional legacy hints; new projects put limits in harnest-deployment.yaml.
+	CPU                   string `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory                string `yaml:"memory,omitempty" json:"memory,omitempty"`
 	EphemeralStorage      string `yaml:"ephemeralStorage,omitempty" json:"ephemeralStorage,omitempty"`
 	TimeoutSeconds        int    `yaml:"timeoutSeconds,omitempty" json:"timeoutSeconds,omitempty"`
 	MaxConcurrentRequests int    `yaml:"maxConcurrentRequests,omitempty" json:"maxConcurrentRequests,omitempty"`

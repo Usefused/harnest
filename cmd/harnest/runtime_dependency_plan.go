@@ -195,7 +195,7 @@ func hasAuthoredMCP(root string) (bool, error) {
 	return hasSubagentMCP(filepath.Join(root, "subagents"))
 }
 
-// hasSubagentMCP recursively limits capability discovery to active agent folders.
+// hasSubagentMCP traverses folder agents while allowing flat agents without owned resources.
 func hasSubagentMCP(subagents string) (bool, error) {
 	entries, err := optionalRegularDirectoryEntries(subagents)
 	if err != nil {
@@ -206,8 +206,12 @@ func hasSubagentMCP(subagents string) (bool, error) {
 			continue
 		}
 		path := filepath.Join(subagents, entry.Name())
-		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
-			return false, fmt.Errorf("subagent dependency path must be a regular directory: %s", path)
+		folder, err := subagentDependencyFolder(entry, path)
+		if err != nil {
+			return false, err
+		}
+		if !folder {
+			continue
 		}
 		found, err := hasAuthoredMCP(path)
 		if err != nil || found {
@@ -215,6 +219,18 @@ func hasSubagentMCP(subagents string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// subagentDependencyFolder preserves both authored layouts without following links.
+func subagentDependencyFolder(entry os.DirEntry, path string) (bool, error) {
+	// Flat subagents are emitted by harnest add and cannot own nested MCP folders.
+	if entry.Type().IsRegular() && filepath.Ext(entry.Name()) == ".py" {
+		return false, nil
+	}
+	if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+		return false, fmt.Errorf("subagent dependency path must be a regular directory or Python file: %s", path)
+	}
+	return true, nil
 }
 
 // hasActivePythonResource recognizes one direct convention folder without imports.

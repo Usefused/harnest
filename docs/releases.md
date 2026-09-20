@@ -162,9 +162,24 @@ the reviewed source version for releases while allowing local snapshot versions
 without modifying the checkout. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
-machine needs Go 1.24 or newer, Python 3.10 or newer, the Python `build`
-package, GoReleaser, and permission to download the pinned `uv` assets and
+machine needs Go 1.24 or newer, Python 3.10 or newer, the build dependencies
+from `.[adk,quality]` with `requirements/frameworks.txt` constraints, GoReleaser, and permission to download the pinned `uv` assets and
 publish to the GitHub repository.
+
+The embedded wheel also contains `harnest_builder`, its fixed browser asset set,
+and the compiled Studio assistant with the release's authoring skills. The wheel
+staging script compiles against staged release sources and pins the `studio`
+extra to the assistant's framework version. No assistant compilation occurs on
+first use. Keep Studio's environment separate from authored agent environments;
+its cache key includes the release wheel contents.
+
+CI builds a release-equivalent native CLI on Linux, macOS, and Windows, then runs
+`scripts/smoke_studio_release.py --cli PATH`. That check starts Studio outside the
+checkout, verifies default/current and explicit workspaces, authenticated API
+access, browser assets, cache reuse, and the packaged assistant server without a
+model call. Run the same check against extracted release binaries when changing
+packaging or startup. The first run needs access to managed Python and dependency
+downloads.
 
 Run the full non-live checks and a local package build first:
 

@@ -71,6 +71,8 @@ Typical workflow:
   harnest run my-agent "Summarize today's activity"
   harnest serve my-agent
   harnest serve my-agent --reload
+  harnest studio
+  harnest studio --workspace my-agent
 
 Released commands select isolated production runtime, development, or eval environments derived
 from config.yaml, authored dependency metadata, the corresponding committed
@@ -144,9 +146,11 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newAddCommand(),
 		app.newMCPCommand(),
 		app.newCompileCommand(),
+		app.newProvisionCommand(),
 		app.newTestCommand(),
 		app.newRunCommand(),
 		app.newServeCommand(),
+		app.newStudioCommand(),
 		app.newDoctorCommand(),
 		app.newRuntimeCommand(),
 		app.newEnvironmentCommand(),

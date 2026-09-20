@@ -29,11 +29,11 @@ test-live:
 quality: test complexity lint skill-quality format-check vet validate-examples
 
 complexity:
-	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve
+	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve agent-builder/src
 	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
 
 lint:
-	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve official-extensions
+	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve official-extensions agent-builder/src
 
 skill-quality:
 	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .
@@ -49,6 +49,7 @@ schemas:
 	$(PYTHON) -m json.tool schemas/project-lock.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/agent-card.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/deployment-plan.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/provisioner.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/extension.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/eval-run-result.schema.json >/dev/null

@@ -246,6 +246,18 @@ Follow the [framework migration checklist](https://docs.usefused.com/harnest/run
 
 ## Serve a project
 
+Start the bundled visual workspace from the folder you want to work in:
+
+```bash
+harnest studio
+# Or select another existing folder:
+harnest studio --workspace /path/to/agents
+```
+
+Studio prints its private local URL (port 1940 by default). The first launch
+prepares its managed runtime; subsequent launches reuse it. See
+[Studio and source review](https://docs.usefused.com/harnest/build/testing-and-compilation#review-changes-in-agent-builder).
+
 From the agent folder, compile and start the standalone development server:
 
 ```bash

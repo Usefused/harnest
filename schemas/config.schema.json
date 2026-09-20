@@ -26,7 +26,7 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["entrypoint", "framework", "runtime", "resources"],
+      "required": ["entrypoint", "framework", "runtime"],
       "properties": {
         "enabled": { "type": "boolean", "default": true },
         "entrypoint": {
@@ -67,10 +67,9 @@
         "resources": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["cpu", "memory"],
           "properties": {
-            "cpu": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\\.[0-9]+)?)$" },
-            "memory": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$" },
+            "cpu": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\\.[0-9]+)?)$", "description": "Optional legacy hint. Configure CPU limits in harnest-deployment.yaml." },
+            "memory": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$", "description": "Optional legacy hint. Configure memory limits in harnest-deployment.yaml." },
             "ephemeralStorage": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$" },
             "timeoutSeconds": { "type": "integer", "minimum": 1 },
             "maxConcurrentRequests": { "type": "integer", "minimum": 1 }

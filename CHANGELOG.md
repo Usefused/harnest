@@ -4,6 +4,84 @@
 
 ### Features
 
+* Bundle Harnest Studio's web server, browser assets, and compiled assistant in
+  release CLI artifacts. Start it with `harnest studio`; use the current folder
+  by default or select another with `--workspace`. Cache Studio's isolated,
+  release-matched runtime and verify packaged launches in CI on Linux, macOS,
+  and Windows.
+
+* Recover Studio AI proposals from transient model/connection failures with one
+  bounded retry. Report specific credential-safe failure categories and a log
+  reference instead of attributing every runtime failure to provider setup.
+  Let the model correct unavailable tool calls instead of aborting source-reading
+  requests, and discard failed private runtimes to clear retained sessions. Include
+  existing deployment configuration in initial AI context and keep storage changes
+  consistent with deployment dependencies.
+
+* Stop generating CPU and memory limits in agent config.yaml. Configure them in
+  harnest-deployment.yaml instead; the core loader and schema accept omitted
+  resource hints while continuing to validate values in older projects.
+
+* Generate reviewable Studio deployment configuration from agent environment and
+  service usage, with editable images, memory/CPU, services, and network settings.
+  Ground Build with AI in the deployment schema and authoring guidance; support
+  separate multi-document Kubernetes YAML and explain invalid manifest formats.
+  Add per-workload host aliases and DNS for local and Kubernetes deployments.
+
+* Run Studio Build with AI through a private compiled Harnest agent grounded in
+  the release’s authoring and authentication skills. Production wheels include
+  the compiled server; development compiles it on demand. Keep proposal review,
+  source-access limits, revision checks, and provider settings intact.
+
+* Delete capabilities from the Agent Builder inspector with a revision-checked
+  preview of affected files and possible references. Keep complete source packages
+  in project-local recovery storage and restore them from Deleted capabilities
+  without overwriting newer files.
+
+* Preserve command-output text selections during polling and add per-line and
+  full-output copy controls in Agent Builder.
+
+* Show highlighted line diffs in Agent Builder proposal previews, with added and
+  removed lines, original/new line numbers, and expandable unchanged context.
+
+* Clear the Agent Builder prompt when sending, preserve subsequent drafts while
+  the model responds, and restore failed submissions when the composer is untouched.
+
+* Reconnect every Agent Builder canvas edge by dragging its line or endpoints,
+  with destination validation before source changes. Move tools, MCP connections,
+  whole skill packages, subagent branches, and category batches between managed
+  agents; reject cycles, root-only assignments, stale edits, and collisions.
+  Preserve supporting assets and roll back incomplete moves.
+
+* Group Agent Builder architecture components into expandable categories and
+  package folders, with per-project expansion state and direct source access.
+  Simplify canvas cards with clean disclosure chevrons and direct edge dragging,
+  and provide automatic arrangement while retaining expanded branches.
+
+* Add configurable agent and service provisioning through `harnest provision`
+  and the Agent Builder Deploy menu. Run images locally with Docker Compose or
+  in an existing Kubernetes/K3s namespace, connect external databases and Redis,
+  override dependencies per environment, and retain persistent data during removal.
+  Track numbered deployment revisions and optional release labels, pin image
+  identities, and roll back successful snapshots with current credential references
+  while preventing implicit persistent-service downgrades.
+  Guide Studio deployment with a configuration review, readiness progress, local
+  endpoint links or Kubernetes port-forward commands, and selectable rollback
+  history. Distinguish planned access from running agents and show missing inputs
+  before deployment.
+
+
+* Add an independent local Agent Builder with a Harnest capability palette,
+  drag-and-drop canvas, source-backed graph connections, revision-checked code
+  editing, and reviewable LLM proposals. Project initialization, capability
+  scaffolding, builds, tests, and serving run through the Harnest CLI. Browse local
+  folders to open agents or choose new-project destinations, and manage installed
+  extensions with catalog search, local/PyPI installation, source configuration,
+  and dependency synchronization.
+  Let the assistant read related project source when enabled and regenerate edits
+  from actual file contents, preserving review and revision checks instead of
+  failing when a requested change needs an unselected file.
+
 * Enable Anthropic prompt caching by default for agents using `LiteLLMModel`:
   Harnest now marks the system instruction and final message with ephemeral
   cache breakpoints before each Anthropic request, without changing OpenAI or
@@ -50,6 +128,16 @@
   services or runs template code.
 
 ### Fixes
+
+* Preserve Agent Builder browser connections across refreshes with an authenticated
+  session cookie, provide in-page reconnection, and block project creation until
+  the workspace loads to prevent null-path errors.
+
+* Initialize Agent Builder creation fields before opening the dialog and retain
+  submitted values independently of dialog changes while initialization runs.
+
+* Allow flat Python subagents during runtime dependency discovery, so agents
+  created with `harnest add subagent` can synchronize their environments.
 
 * Align Studio and Evals with the playground theme. Distinguish primary actions,
   secondary controls, navigation, and row utilities; add titled form sections,

@@ -1,0 +1,24 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: studio-builder
+  displayName: Harnest Studio Builder
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    dependencyFile: pyproject.toml
+server:
+  live: false
+  openapi: false
+  http:
+    host: 127.0.0.1
+    port: 1941
+    requestTimeoutSeconds: 180
+    maxConcurrentRequests: 4
+  playground:
+    enabled: false

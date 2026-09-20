@@ -424,8 +424,6 @@ spec:
     version: "3.12"
     dependencyFile: pyproject.toml
   resources:
-    cpu: "1"
-    memory: 1Gi
     ephemeralStorage: 1Gi
     timeoutSeconds: 300
     maxConcurrentRequests: 8

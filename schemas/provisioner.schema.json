@@ -1,0 +1,546 @@
+{
+  "$defs": {
+    "Agent": {
+      "additionalProperties": false,
+      "description": "Give each agent image its own workload and explicit dependency bindings.",
+      "properties": {
+        "image": {
+          "maxLength": 300,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$",
+          "title": "Image",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Command",
+          "type": "array"
+        },
+        "ports": {
+          "maxProperties": 16,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,14}$": {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Ports",
+          "type": "object"
+        },
+        "publish": {
+          "maxProperties": 16,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,14}$": {
+              "maximum": 65535,
+              "minimum": 1024,
+              "type": "integer"
+            }
+          },
+          "title": "Publish",
+          "type": "object"
+        },
+        "environment": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SecretReference"
+                }
+              ]
+            }
+          },
+          "title": "Environment",
+          "type": "object"
+        },
+        "depends_on": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9-]{0,39}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "healthcheck": {
+          "$ref": "#/$defs/Healthcheck"
+        },
+        "persistence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Persistence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources"
+        },
+        "network": {
+          "$ref": "#/$defs/Network"
+        },
+        "replicas": {
+          "default": 1,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Replicas",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "image",
+        "healthcheck"
+      ],
+      "title": "Agent",
+      "type": "object"
+    },
+    "ConnectedService": {
+      "additionalProperties": false,
+      "description": "Attach externally owned services without provisioning or deleting infrastructure.",
+      "properties": {
+        "mode": {
+          "const": "connect",
+          "title": "Mode",
+          "type": "string"
+        },
+        "type": {
+          "default": "custom",
+          "maxLength": 64,
+          "title": "Type",
+          "type": "string"
+        },
+        "provides": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SecretReference"
+                }
+              ]
+            }
+          },
+          "title": "Provides",
+          "type": "object"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/SecretReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "variable": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variable"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "ConnectedService",
+      "type": "object"
+    },
+    "Healthcheck": {
+      "additionalProperties": false,
+      "description": "Use the same explicit exec probe for Compose and Kubernetes readiness.",
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Command",
+          "type": "array"
+        },
+        "interval": {
+          "default": 5,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Interval",
+          "type": "integer"
+        },
+        "timeout": {
+          "default": 3,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "integer"
+        },
+        "retries": {
+          "default": 20,
+          "maximum": 120,
+          "minimum": 1,
+          "title": "Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "Healthcheck",
+      "type": "object"
+    },
+    "Network": {
+      "additionalProperties": false,
+      "description": "Declare per-workload host aliases and DNS without granting host networking.",
+      "properties": {
+        "hosts": {
+          "maxProperties": 32,
+          "patternProperties": {
+            "^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$": {
+              "type": "string"
+            }
+          },
+          "title": "Hosts",
+          "type": "object"
+        },
+        "dns": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Dns",
+          "type": "array"
+        }
+      },
+      "title": "Network",
+      "type": "object"
+    },
+    "Persistence": {
+      "additionalProperties": false,
+      "description": "Declare a retained named volume locally or a retained PVC on Kubernetes.",
+      "properties": {
+        "mount": {
+          "maxLength": 512,
+          "pattern": "^/[^:\\x00]+$",
+          "title": "Mount",
+          "type": "string"
+        },
+        "size": {
+          "default": "5Gi",
+          "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$",
+          "title": "Size",
+          "type": "string"
+        },
+        "storage_class": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Storage Class"
+        }
+      },
+      "required": [
+        "mount"
+      ],
+      "title": "Persistence",
+      "type": "object"
+    },
+    "ProvisionedService": {
+      "additionalProperties": false,
+      "description": "Run a user-selected database, cache, or custom service image.",
+      "properties": {
+        "image": {
+          "maxLength": 300,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$",
+          "title": "Image",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Command",
+          "type": "array"
+        },
+        "ports": {
+          "maxProperties": 16,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,14}$": {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Ports",
+          "type": "object"
+        },
+        "publish": {
+          "maxProperties": 16,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,14}$": {
+              "maximum": 65535,
+              "minimum": 1024,
+              "type": "integer"
+            }
+          },
+          "title": "Publish",
+          "type": "object"
+        },
+        "environment": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SecretReference"
+                }
+              ]
+            }
+          },
+          "title": "Environment",
+          "type": "object"
+        },
+        "depends_on": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9-]{0,39}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "healthcheck": {
+          "$ref": "#/$defs/Healthcheck"
+        },
+        "persistence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Persistence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources"
+        },
+        "network": {
+          "$ref": "#/$defs/Network"
+        },
+        "mode": {
+          "const": "provision",
+          "title": "Mode",
+          "type": "string"
+        },
+        "type": {
+          "default": "custom",
+          "maxLength": 64,
+          "title": "Type",
+          "type": "string"
+        },
+        "provides": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/SecretReference"
+                }
+              ]
+            }
+          },
+          "title": "Provides",
+          "type": "object"
+        }
+      },
+      "required": [
+        "image",
+        "healthcheck",
+        "mode"
+      ],
+      "title": "ProvisionedService",
+      "type": "object"
+    },
+    "Resources": {
+      "additionalProperties": false,
+      "description": "Bound container CPU and memory consistently across deployment backends.",
+      "properties": {
+        "cpus": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 128,
+          "title": "Cpus",
+          "type": "number"
+        },
+        "memory": {
+          "default": "512Mi",
+          "pattern": "^[1-9][0-9]*(Mi|Gi)$",
+          "title": "Memory",
+          "type": "string"
+        }
+      },
+      "title": "Resources",
+      "type": "object"
+    },
+    "SecretReference": {
+      "additionalProperties": false,
+      "description": "Resolve a credential from the provisioner's environment only at apply time.",
+      "properties": {
+        "secret": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Secret",
+          "type": "string"
+        }
+      },
+      "required": [
+        "secret"
+      ],
+      "title": "SecretReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Select one explicit target and a dependency graph of agents and services.",
+  "properties": {
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9-]{0,39}$",
+      "title": "Name",
+      "type": "string"
+    },
+    "release": {
+      "anyOf": [
+        {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Release"
+    },
+    "backend": {
+      "default": "local",
+      "enum": [
+        "local",
+        "kubernetes"
+      ],
+      "title": "Backend",
+      "type": "string"
+    },
+    "context": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context"
+    },
+    "namespace": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9-]{0,39}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Namespace"
+    },
+    "services": {
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,39}$": {
+          "discriminator": {
+            "mapping": {
+              "connect": "#/$defs/ConnectedService",
+              "provision": "#/$defs/ProvisionedService"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ProvisionedService"
+            },
+            {
+              "$ref": "#/$defs/ConnectedService"
+            }
+          ]
+        }
+      },
+      "title": "Services",
+      "type": "object"
+    },
+    "agents": {
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,39}$": {
+          "$ref": "#/$defs/Agent"
+        }
+      },
+      "title": "Agents",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Deployment",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

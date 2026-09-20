@@ -588,11 +588,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
                 )
                 metadata_text = archive.read(metadata_path).decode("utf-8")
+                assistant = json.loads(archive.read("harnest_builder/_assistant/harnest-manifest.json"))
             self._assert_bundled_provider_imports(wheel)
 
         self.assertIn(f"Version: {snapshot_version}\n", metadata_text)
         self.assertIn("Classifier: Typing :: Typed\n", metadata_text)
         self.assertIn("harnest/py.typed", archived_paths)
+        self._assert_studio_bundle(archived_paths, assistant, snapshot_version, metadata_text)
         for package in ("harnest_postgres", "harnest_redis"):
             self.assertIn(f"{package}/__init__.py", archived_paths)
             self.assertIn(f"{package}/py.typed", archived_paths)
@@ -606,6 +608,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for path, source in extension_stubs.items():
             compile(source, path, "exec")
 
+    def _assert_studio_bundle(self, archived_paths, assistant, snapshot_version, metadata_text):
+        """Verify release assets, compiled version identity, and the assistant framework pin."""
+        self.assertIn("harnest_builder/__main__.py", archived_paths)
+        self.assertIn("harnest_builder/static/deployment.js", archived_paths)
+        self.assertIn("harnest_builder/_assistant/__main__.py", archived_paths)
+        self.assertNotIn("harnest_builder/assistant_source/agent.py", archived_paths)
+        self.assertEqual(assistant["harnestVersion"], snapshot_version)
+        studio_pin = Requirement(next(line.removeprefix("Requires-Dist: ") for line in metadata_text.splitlines()
+                                       if line.startswith("Requires-Dist: google-adk==") and "studio" in line))
+        self.assertEqual(str(studio_pin.specifier), "==" + assistant["framework"]["version"])
+        self.assertTrue(studio_pin.marker.evaluate({"extra": "studio"}))
+
     def _assert_bundled_provider_imports(self, wheel: Path) -> None:
         """Import providers from the built artifact, not editable source paths."""
 
@@ -617,7 +631,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             from harnest.cron import CronStore
             from harnest.task import TaskStore
             from harnest.playground import playground_available
-            assert not playground_available(), 'production wheel must not contain UI assets'
+            assert not playground_available(), 'production wheel must not contain the agent playground'
             for module in (harnest_postgres, harnest_redis):
                 assert module.__file__.startswith(sys.argv[1]), module.__file__
             postgres = harnest_postgres.PostgresStore('postgresql://not-connected')

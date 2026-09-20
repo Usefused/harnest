@@ -151,6 +151,15 @@ class ProjectServerConfigTests(unittest.TestCase):
         )
         project["server"] = {"http": {"port": "${PORT}"}, "live": True}
         validator.validate(project)
+        # Deployment limits are optional in agent source, but legacy values still validate.
+        project["spec"].pop("resources", None)
+        validator.validate(project)
+        project["spec"]["resources"] = {"timeoutSeconds": 300}
+        validator.validate(project)
+        project["spec"]["resources"]["cpu"] = "invalid"
+        self.assertFalse(validator.is_valid(project))
+        project["spec"]["resources"] = {"cpu": "500m", "memory": "512Mi"}
+        validator.validate(project)
         project["server"]["http"]["port"] = False
         self.assertFalse(validator.is_valid(project))
         project["server"]["http"]["port"] = "${PORT}"

@@ -14,6 +14,36 @@ import (
 	"testing"
 )
 
+// TestLoadBundleOptionalDeploymentResources covers omitted hints and preserves
+// validation of legacy values across the on-disk bundle loading boundary.
+func TestLoadBundleOptionalDeploymentResources(t *testing.T) {
+	for _, testCase := range []struct {
+		name, resources string
+		valid           bool
+	}{
+		{"omitted", "", true},
+		{"runtime-only", "  resources:\n    timeoutSeconds: 300\n", true},
+		{"legacy", "  resources:\n    cpu: 500m\n    memory: 512Mi\n", true},
+		{"invalid-cpu", "  resources:\n    cpu: invalid\n", false},
+		{"invalid-memory", "  resources:\n    memory: invalid\n", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			directory := writeAgent(t, t.TempDir(), "resources", true)
+			path := filepath.Join(directory, "config.yaml")
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.Replace(string(original), "  resources:\n    cpu: \"1\"\n    memory: 1Gi\n", testCase.resources, 1)
+			mustWrite(t, path, text)
+			_, err = LoadBundle(directory)
+			if (err == nil) != testCase.valid {
+				t.Fatalf("LoadBundle error = %v; want valid = %t", err, testCase.valid)
+			}
+		})
+	}
+}
+
 func TestDiscoverLoadsEnabledBundlesInStableOrder(t *testing.T) {
 	project := t.TempDir()
 	writeAgent(t, project, "zeta", true)

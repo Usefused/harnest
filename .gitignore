@@ -18,7 +18,7 @@ bin/
 /harnest
 /harnest_dev
 
-# Harnest Studio is a local-only experiment and is not part of the main product tree.
+# Retired Studio prototype; the released Studio is maintained in agent-builder/.
 /studio/
 /cmd/harnest/studio.go
 /cmd/harnest/studio_test.go

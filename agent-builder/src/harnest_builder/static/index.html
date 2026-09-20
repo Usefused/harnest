@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Harnest · Agent Builder</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="https://usefused.com" target="_blank" rel="noreferrer" aria-label="Harnest by Fused"><span class="brand-mark">h<span>·</span></span><strong>harnest</strong><span class="brand-by">by Fused</span></a>
+    <span class="header-divider"></span><span class="product-label">Agent builder <span class="tag">LOCAL</span></span>
+    <div class="top-spacer"></div><span class="connection"><i></i><span id="connection-label">Connecting</span></span>
+    <a class="docs-link" href="https://docs.usefused.com/harnest" target="_blank" rel="noreferrer">Documentation ↗</a>
+    <select id="mobile-project-select" disabled aria-label="Project on mobile"><option value="">No projects yet</option></select>
+  </header>
+  <div class="app-shell">
+    <aside class="library-panel">
+      <div class="project-area"><label class="eyebrow" for="project-select">WORKSPACE</label><div class="project-select-row"><select id="project-select" disabled aria-label="Active project"><option value="">Select a project</option></select><button id="new-project" disabled class="icon-button" title="Create project" aria-label="Create project">+</button></div><div class="workspace-actions"><button id="open-project" disabled class="quiet" title="Open an agent folder">Open folder</button><button id="extensions" class="quiet" disabled>Extensions</button></div><p id="workspace-name" class="muted small">Your local agent projects</p></div>
+      <div class="sidebar-tabs" role="tablist" aria-label="Library"><button class="active" id="components-tab" role="tab" aria-selected="true">Components</button><button id="files-tab" role="tab" aria-selected="false">Files <span id="file-count">0</span></button></div>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="library-search" placeholder="Find a component…" aria-label="Search components or files"></div>
+      <div id="library" class="library-scroll"></div>
+      <div class="library-foot"><span class="drag-hint">⠿</span><span>Drag onto the canvas<br><small>or click to add a component</small></span></div>
+    </aside>
+    <main class="workspace">
+      <section id="connection-panel" class="connection-panel" aria-label="Workspace connection">
+        <h2>Connect to your workspace</h2>
+        <p id="connection-message" role="status">Connecting to your local workspace…</p>
+        <form id="connection-form" hidden>
+          <label for="launch-url">Launch URL</label>
+          <input id="launch-url" type="password" autocomplete="off" placeholder="Paste the URL from the builder terminal">
+          <button type="submit" class="button primary">Connect</button>
+          <p class="small muted">Once connected, this browser remembers your session when you refresh. Leave the field empty to retry.</p>
+        </form>
+      </section>
+      <div class="workspace-toolbar"><div class="project-title"><span class="eyebrow">AGENT WORKSPACE</span><h1 id="project-title">Start with an idea.</h1></div><div class="toolbar-actions"><span id="framework-tag" class="tag" hidden></span><button id="refresh" disabled class="icon-button" title="Refresh from disk" aria-label="Refresh from disk">↻</button><button id="run-menu" class="button secondary" disabled>Run & test <span>⌄</span></button><button id="deployment" class="button secondary" disabled>Deploy</button><button id="compile" class="button primary" disabled>Build agent <span>↗</span></button></div></div>
+      <div class="viewbar"><div class="view-tabs" role="tablist" aria-label="Editor view"><button id="canvas-tab" class="active" role="tab" aria-selected="true">◈ <span>Canvas</span></button><button id="code-tab" role="tab" aria-selected="false">⌘ <span>Code</span></button></div><span id="project-description" class="small muted">Your agent. Your code. One workspace.</span><div class="viewbar-spacer"></div><select id="canvas-mode" aria-label="Canvas mode"><option value="architecture">Architecture</option><option value="workflow">Workflow</option></select><button id="create-workflow" class="quiet small" hidden>+ Workflow</button><button id="connect-nodes" class="quiet small" hidden>+ Connection</button><button id="new-file" class="quiet small" disabled>+ File</button><button id="deleted-capabilities" class="quiet small" disabled>Deleted capabilities</button></div>
+      <section id="canvas-pane" class="canvas-pane" aria-label="Agent canvas"><div id="canvas-host" class="canvas-host"></div>
+        <div id="welcome" class="welcome" hidden><span class="welcome-kicker"><i></i> THE NEXT THING YOU BUILD</span><div class="welcome-glyph" aria-hidden="true"><span>✧</span><div>h·</div><span>⌘</span></div><h2>From idea to<br><em>working agent.</em></h2><p>Compose capabilities. Connect your workflow.<br>Shape the code with a prompt.</p><button id="welcome-create" disabled class="button primary large">Create your first agent <span>↗</span></button><span class="welcome-note">Powered by the Harnest CLI. Built on your machine.</span><div class="welcome-features"><span>◈ Visual canvas</span><span>⌘ Real source code</span><span>✧ AI-assisted</span></div></div>
+        <div class="canvas-legend" id="canvas-legend" hidden><i></i><span>Click categories to expand</span></div><div class="canvas-controls" id="canvas-controls" hidden><button id="arrange-canvas" class="arrange-button" title="Arrange nodes automatically">Arrange</button><span></span><button id="zoom-out" aria-label="Zoom out">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="Zoom in">+</button><span></span><button id="fit-canvas" title="Fit canvas" aria-label="Fit canvas">⛶</button></div>
+      </section>
+      <section id="code-pane" class="code-pane" hidden><div class="code-header"><span id="file-path">Select a file</span><span id="dirty-label" class="tag" hidden>UNSAVED</span><div class="top-spacer"></div><button id="reload-file" class="quiet" disabled>Reload</button><button id="save-file" class="button primary compact" disabled>Save file <kbd>⌘ S</kbd></button></div><div class="editor-wrap"><pre id="line-numbers" aria-hidden="true">1</pre><textarea id="code-editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Source code editor" placeholder="Choose a file in the sidebar to edit its source." disabled></textarea></div><div class="code-footer"><span id="file-format">UTF-8</span><span>Changes are written directly to your project</span></div></section>
+      <section id="terminal" class="terminal" hidden><div class="terminal-header"><strong>Command output</strong><select id="job-select" aria-label="Command history"></select><span id="job-status" class="tag"></span><div class="top-spacer"></div><button id="copy-output" class="quiet" disabled>Copy all</button><button id="stop-job" class="quiet danger" hidden>Stop</button><button id="close-terminal" class="icon-button" aria-label="Hide command output">×</button></div><div id="job-output" tabindex="0" aria-label="Command output"></div></section>
+      <footer class="statusbar"><span id="status" role="status">Connecting to your workspace…</span><button id="show-terminal" class="quiet">⌁ Terminal <span id="running-count"></span></button></footer>
+    </main>
+    <aside class="assistant-panel"><div class="assistant-tabs" role="tablist" aria-label="Assistant and inspector"><button class="active" id="assistant-tab" role="tab" aria-selected="true">✧ Build with AI</button><button id="inspector-tab" role="tab" aria-selected="false">Inspector</button></div>
+      <section id="assistant-content" class="assistant-content"><div id="conversation" class="conversation"><div class="assistant-intro"><span class="assistant-spark">✧</span><h2>A little direction.<br>A lot of possibility.</h2><p>Describe what your agent should do. Review the proposed code, then make it yours.</p></div><div class="suggestions"><button data-prompt="Write clear, thorough instructions for a research assistant that cites sources and distinguishes facts from assumptions.">Build a research assistant <span>↗</span></button><button data-prompt="Add an offline Python tool that extracts and validates email addresses from text. Include focused unit tests.">Add a useful Python tool <span>↗</span></button><button data-prompt="Review the provided agent source and improve its instructions, error handling, and tests. Preserve its current framework and behavior.">Improve this agent <span>↗</span></button></div></div>
+      <form id="prompt-form" class="prompt-form"><details id="context-details"><summary>Source context <span id="context-count">0 files</span></summary><p class="small muted">Start with the selected files. Related source access lets the assistant read additional project files when needed. Hidden files and environment files are excluded.</p><div id="context-files"></div></details><label class="related-source"><input id="allow-related-source" type="checkbox" checked> Allow AI to read related project source</label><div class="prompt-box"><textarea id="prompt" rows="4" placeholder="Describe your agent or a change…" aria-label="Build with AI prompt" required maxlength="16000"></textarea><div class="prompt-tools"><span class="small muted">Changes are yours to review</span><button id="send-prompt" type="submit" class="send-button" aria-label="Generate code proposal" disabled>↑</button></div></div><label class="model-row"><span>MODEL</span><input id="model" placeholder="provider/model" aria-label="LiteLLM model identifier"></label><p class="provider-note">Powered by a Harnest agent · server-side provider credentials. <button type="button" id="provider-help" class="text-button">Configure</button></p></form></section>
+      <section id="inspector-content" class="inspector-content" hidden><div class="inspector-empty"><span>◈</span><h3>Every block has a source.</h3><p>Select a component to inspect it, or double-click to edit its code.</p></div></section>
+    </aside>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="toast" class="toast" role="alert" hidden></div>
+</body>
+</html>
