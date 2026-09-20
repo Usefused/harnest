@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
+## Unreleased
 
 ### Features
 
@@ -82,6 +82,25 @@
   from actual file contents, preserving review and revision checks instead of
   failing when a requested change needs an unselected file.
 
+### Fixes
+
+* Preserve Agent Builder browser connections across refreshes with an authenticated
+  session cookie, provide in-page reconnection, and block project creation until
+  the workspace loads to prevent null-path errors.
+
+* Initialize Agent Builder creation fields before opening the dialog and retain
+  submitted values independently of dialog changes while initialization runs.
+
+* Allow flat Python subagents during runtime dependency discovery, so agents
+  created with `harnest add subagent` can synchronize their environments.
+
+* Connect Studio to Fused with temporary OAuth client credentials, browser consent,
+  and PKCE. Configure the Engine URL without a per-user registration key.
+
+## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
+
+### Features
+
 * Enable Anthropic prompt caching by default for agents using `LiteLLMModel`:
   Harnest now marks the system instruction and final message with ephemeral
   cache breakpoints before each Anthropic request, without changing OpenAI or
@@ -106,12 +125,13 @@
 
 * Rework Studio's MCP connections tab to authenticate into Fused with OAuth
   instead of requiring a local `fused-cli` install. Connect a Fused workspace
-  by requesting a temporary client ID and secret, then authenticating with
-  browser login, consent, and PKCE. List deployed MCP servers, deploy a new one
+  by dynamically registering an ephemeral public (PKCE) OAuth client from a
+  per-user registration key, then list deployed MCP servers, deploy a new one
   from a pasted `kind: mcp` config, and mint a one-time execution token shown
   once in the Studio. The redirect URI is derived from the served origin;
-  configure only the Engine URL through the `HARNEST_FUSED_ENGINE_URL`
-  environment variable.
+  configure only the Engine URL and registration key through the
+  `HARNEST_FUSED_ENGINE_URL` and `HARNEST_FUSED_OAUTH_REGISTRATION_KEY`
+  environment variables.
 
 * Add `harnest init --template` to download a universal `harnest-template-*`
   wheel (by PyPI project, slug, or HTTPS URL) and materialize its inert
@@ -128,16 +148,6 @@
   services or runs template code.
 
 ### Fixes
-
-* Preserve Agent Builder browser connections across refreshes with an authenticated
-  session cookie, provide in-page reconnection, and block project creation until
-  the workspace loads to prevent null-path errors.
-
-* Initialize Agent Builder creation fields before opening the dialog and retain
-  submitted values independently of dialog changes while initialization runs.
-
-* Allow flat Python subagents during runtime dependency discovery, so agents
-  created with `harnest add subagent` can synchronize their environments.
 
 * Align Studio and Evals with the playground theme. Distinguish primary actions,
   secondary controls, navigation, and row utilities; add titled form sections,
