@@ -18,6 +18,10 @@ bin/
 /harnest
 /harnest_dev
 
+# Local assistant settings and generated Fused planning state.
+/.claude/settings.json
+/.fused/.state/
+
 # Retired Studio prototype; the released Studio is maintained in agent-builder/.
 /studio/
 /cmd/harnest/studio.go

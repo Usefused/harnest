@@ -117,7 +117,7 @@ class AgentBuilderTests(_BuilderFixture):
         """The independent catalogue includes code, runtime, testing, and provider capabilities."""
         catalog = self.client.get("/api/workspace").json()["catalog"]
         kinds = {item["kind"] for item in catalog}
-        self.assertTrue({"tool", "subagent", "node", "mcp", "skill", "plugin", "extension", "sandbox", "task", "cron", "context", "lifecycle", "storage", "model", "library", "test", "eval", "source"} <= kinds)
+        self.assertTrue({"tool", "subagent", "node", "mcp", "skill", "plugin", "extension", "sandbox", "channel", "task", "cron", "context", "lifecycle", "storage", "model", "library", "test", "eval", "source"} <= kinds)
 
     def test_revision_conflicts_and_invalid_source_preserve_original(self):
         """Invalid or stale browser edits cannot replace the user's current source."""
@@ -521,7 +521,16 @@ class AgentBuilderCLIIntegrationTests(_BuilderFixture):
             self.assertEqual(result["status"], "succeeded", result["output"])
 
 
-class BuilderProvisionerTests(_BuilderFixture):
+class _DeploymentBuilderFixture(_BuilderFixture):
+    """Enable deployment only for tests that exercise the optional feature."""
+
+    def setUp(self):
+        """Opt in before constructing the server and restore the process environment."""
+        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
+        super().setUp()
+
+
+class BuilderProvisionerTests(_DeploymentBuilderFixture):
     """Studio delegates provisioning through the fixed CLI operation boundary."""
 
     def test_provision_actions_and_manifest_editor(self):

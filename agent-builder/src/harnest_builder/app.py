@@ -19,9 +19,13 @@ from .files import Workspace, inventory, read
 from .jobs import Jobs
 from .prompting import Prompt, propose, settings
 from .assistant_server import AssistantServer
+from .features import deployment_enabled, require_deployment
+from .mcp_credentials import CredentialStore
+from .mcp_service import MCPService
+from . import mcp_routes
 
 STATIC = Path(__file__).parent / "static"
-ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js"}
+ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js"}
 SECURITY = {"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
 
@@ -64,10 +68,12 @@ class Conversion(BaseModel):
     revision: str
 
 
-def create_app(root: Path, cli: str, *, token: str | None = None, completion=None) -> FastAPI:
+def create_app(root: Path, cli: str, *, token: str | None = None, completion=None, connector=None, credentials=None) -> FastAPI:
     """Compose a standalone app with no dependency on Harnest's existing browser UIs."""
     workspace = Workspace(root)
-    jobs = Jobs(cli, workspace)
+    credentials = credentials or CredentialStore()
+    jobs = Jobs(cli, workspace, credentials)
+    mcp = MCPService(workspace, jobs, credentials, connector)
     assistant = AssistantServer()
     token = token or secrets.token_urlsafe(32)
 
@@ -83,12 +89,15 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.token, app.state.jobs = token, jobs
     app.state.assistant = assistant
+    app.state.mcp = mcp
 
     @app.middleware("http")
     async def boundary(request: Request, call_next):
         """Require loopback, same-origin requests, and a launch-specific bearer capability."""
         try:
             _authorize(request, token)
+            if request.url.path.startswith("/api/deployment/"):
+                require_deployment()
         except HTTPException as error:
             return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=SECURITY)
         response = await call_next(request)
@@ -117,6 +126,7 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
             raise HTTPException(404, "Asset not found.")
         return FileResponse(STATIC / filename)
 
+    mcp_routes.install_routes(app, mcp)
     folders.install_routes(app, workspace)
     extensions.install_routes(app, workspace)
     ownership.install_routes(app, workspace, jobs, _configuration)
@@ -128,9 +138,15 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     _install_commands(app, workspace, jobs)
 
     @app.post("/api/propose")
-    async def proposal(body: Prompt):
+    async def proposal(body: Prompt, request: Request):
         """Return provider-backed proposals for explicit review without writing or running them."""
-        return await propose(workspace, body, completion or assistant.completion)
+        browser = mcp_routes.session_id(request) or secrets.token_urlsafe(32)
+        with mcp_routes.translated():
+            result = await propose(workspace, body, completion or assistant.completion, mcp=mcp, session=browser)
+        response = JSONResponse(result)
+        if result.get("mcp_review") and not mcp_routes.session_id(request):
+            response.set_cookie(mcp_routes.cookie_name(request), browser, httponly=True, samesite="lax", path="/", max_age=86400)
+        return response
 
     return app
 
@@ -140,6 +156,10 @@ def _authorize(request: Request, token: str) -> None:
     local = {"localhost", "127.0.0.1", "::1"}
     if request.client is None or request.client.host not in local or request.url.hostname not in local:
         raise HTTPException(403, "The agent builder is available on loopback only.")
+    # Only this callback may arrive cross-site; one-time state, PKCE and the
+    # initiating browser cookie replace the normal launch capability here.
+    if (request.method, request.url.path) == ("GET", mcp_routes.CALLBACK):
+        return
     origin = request.headers.get("origin")
     if origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}":
         raise HTTPException(403, "Cross-origin requests are forbidden.")
@@ -173,7 +193,7 @@ def _install_reads(app, workspace, jobs) -> None:
     def workspace_info():
         """List projects alongside available capabilities and provider configuration."""
         with workspace.lock:
-            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "llm": settings()}
+            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "llm": settings(), "features": {"deployment": deployment_enabled()}}
 
     @app.get("/api/project")
     def project_info(project: str):

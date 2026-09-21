@@ -2,7 +2,7 @@ import {preference} from "./ui.js";
 
 const WIDTH = 220, HEIGHT = 78;
 const ROW = 112;
-const ICONS = {agent:"◈", instructions:"≡", config:"⚙", card:"▣", tool:"⌘", subagent:"◈", task:"↻", mcp:"⌁", skill:"✧", plugin:"⬡", extension:"▧", sandbox:"▤", cron:"◷", lifecycle:"↝", context:"◎", storage:"▱", model:"◇", library:"⌘", eval:"✓", test:"✓", smoke:"✓", dependencies:"⬡", node:"◈", source:"⌘"};
+const ICONS = {agent:"◈", instructions:"≡", config:"⚙", card:"▣", tool:"⌘", subagent:"◈", task:"↻", mcp:"⌁", skill:"✧", plugin:"⬡", extension:"▧", sandbox:"▤", cron:"◷", lifecycle:"↝", context:"◎", storage:"▱", model:"◇", library:"⌘", eval:"✓", test:"✓", smoke:"✓", channel:"↗", dependencies:"⬡", node:"◈", source:"⌘"};
 export {ICONS};
 
 /** Create SVG through attributes so the canvas works under a strict script policy. */
@@ -15,12 +15,12 @@ function svg(tag, attributes = {}, text = "") {
 /** Classify authored paths without pretending every folder defines execution order. */
 export function kindOf(path) {
   const core = {"agent.py":"agent", "instructions.md":"instructions", "config.yaml":"config", "agent-card.yaml":"card", "pyproject.toml":"dependencies"};
-  const groups = {tools:"tool", subagents:"subagent", tasks:"task", mcp:"mcp", skills:"skill", plugins:"plugin", extensions:"extension", sandbox:"sandbox", cron:"cron", lifecycle:"lifecycle", models:"model", lib:"library", evals:"eval", tests:"test"};
+  const groups = {tools:"tool", subagents:"subagent", tasks:"task", mcp:"mcp", skills:"skill", plugins:"plugin", extensions:"extension", sandbox:"sandbox", cron:"cron", lifecycle:"lifecycle", models:"model", lib:"library", evals:"eval", tests:"test", channels:"channel"};
   return core[path] || groups[path.split("/")[0]] || "source";
 }
 
 const INPUT_KINDS = new Set(["instructions", "config", "card", "dependencies"]);
-const CATEGORIES = {tool:"Tools",subagent:"Subagents",mcp:"MCP connections",extension:"Extensions",skill:"Skills",plugin:"Plugins",sandbox:"Sandboxes",task:"Tasks",cron:"Schedules",lifecycle:"Lifecycle",model:"Models",library:"Libraries",eval:"Evaluations",test:"Tests",source:"Other source"};
+const CATEGORIES = {tool:"Tools",subagent:"Subagents",mcp:"MCP connections",extension:"Extensions",skill:"Skills",plugin:"Plugins",channel:"Channels",sandbox:"Sandboxes",task:"Tasks",cron:"Schedules",lifecycle:"Lifecycle",model:"Models",library:"Libraries",eval:"Evaluations",test:"Tests",source:"Other source"};
 
 /** Filter inert guide files while leaving all authored files available in the file browser. */
 function visible(path) {

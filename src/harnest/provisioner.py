@@ -10,6 +10,7 @@ import subprocess
 from typing import Callable
 
 from .logging import get_logger
+from ._features import require_deployment
 from .provisioner_config import Deployment, ProvisionError, load_manifest
 from .provisioner_plan import OWNER_LABEL, Plan
 from .provisioner_history import RevisionStore
@@ -38,6 +39,7 @@ class Provisioner:
         """Bind operations to a trusted project and a bounded environment identifier."""
 
         import re
+        require_deployment()
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,19}", environment):
             raise ProvisionError("Invalid deployment environment name")
         self.root = root.resolve()
@@ -48,6 +50,7 @@ class Provisioner:
     def plan(self, revision: int | None = None) -> dict:
         """Preview current intent or a selected rollback without resolving credentials or images."""
 
+        require_deployment()
         if revision is None:
             return self._plan().summary()
         with self._locked():
@@ -64,6 +67,7 @@ class Provisioner:
     def _locked(self):
         """Serialize CLI and Studio operations across processes and reject linked state paths."""
 
+        require_deployment()
         parts = self.directory.relative_to(self.root).parts
         for index in range(1, len(parts) + 1):
             path = self.root.joinpath(*parts[:index])

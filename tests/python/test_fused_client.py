@@ -58,6 +58,17 @@ class FusedClientTests(unittest.TestCase):
             with self.subTest(operations=operations), self.assertRaises(ValueError):
                 OpenAPISpec("billing.yaml", operations=operations)
 
+    def test_webhook_attachment_is_declared_offline_and_defaults_to_absent(self):
+        with patch.dict(os.environ, {}, clear=True):
+            without = FusedMCPClient.from_openapi("crm.yaml", name="business")
+            attached = FusedMCPClient.from_openapi(
+                "crm.yaml", name="business", webhook_attachment="slack-channel",
+            )
+        self.assertIsNone(without.webhook_attachment)
+        self.assertEqual(attached.webhook_attachment, "slack-channel")
+        with self.assertRaises(ValueError):
+            FusedMCPClient.from_openapi("crm.yaml", name="business", webhook_attachment="  ")
+
     def test_auth_selectors_are_frozen_and_credentials_are_not_accepted(self):
         auth = {"type": "oauth", "name": "oauth2", "ref": "${bucket.auth.crm.oauth2}"}
         spec = OpenAPISpec("crm.yaml", auth=auth, scopes=["read:customers"])

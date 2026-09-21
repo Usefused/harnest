@@ -11,6 +11,7 @@ from typing import Any, Callable, Generic, Mapping, TypeVar, overload
 
 from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError
 from .task_store_memory import MemoryTaskStore
+from .task_store_postgres import PostgresTaskStore
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -339,6 +340,7 @@ def _validate_defer_options(
 __all__ = [
     "CompiledTask",
     "MemoryTaskStore",
+    "PostgresTaskStore",
     "TaskCallable",
     "TaskDefinition",
     "TaskHandle",

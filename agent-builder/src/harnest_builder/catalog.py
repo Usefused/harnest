@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from .files import name
 
 # CLI-owned scaffolds retain Harnest's framework, ownership, and collision rules.
-COMMANDS = {"tool", "subagent", "task", "lifecycle", "context", "mcp", "extension"}
+COMMANDS = {"tool", "subagent", "task", "lifecycle", "context", "mcp", "channel", "extension"}
 CATALOG = [
     ("agent", "Agent / graph", "Core", "Edit the root agent, model, instructions, or graph topology.", "agent.py"),
     ("instructions", "Instructions", "Core", "Give your agent its purpose, boundaries, and voice.", "instructions.md"),
@@ -25,6 +25,7 @@ CATALOG = [
     ("plugin", "Agent plugin", "Capabilities", "An Agent Plugins 1.0 package for skills and MCP connections.", ""),
     ("extension", "Harnest extension", "Capabilities", "Scaffold a reusable extension through the Harnest CLI.", ""),
     ("sandbox", "Sandbox", "Capabilities", "An isolated Docker provider; install docker and assign it to an Agent.", ""),
+    ("channel", "Channel", "Capabilities", "Bind a messaging platform to its transport extension.", ""),
     ("task", "Durable task", "Runtime", "Queue work with retries outside the model's tool loop.", ""),
     ("cron", "Cron schedule", "Runtime", "A five-field UTC schedule targeting a durable task.", ""),
     ("lifecycle", "Lifecycle hook", "Runtime", "Observe or customize agent execution.", ""),

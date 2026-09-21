@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 from .provisioner import Provisioner
+from ._features import require_deployment
 from .provisioner_config import ProvisionError
 
 
@@ -73,6 +74,7 @@ def initialize(root: Path) -> dict:
     """Create an editable starter without overwriting an existing declaration or starting services."""
 
     from .provisioner_config import MANIFEST
+    require_deployment()
     try:
         with (root / MANIFEST).open("x") as stream:
             stream.write(STARTER)

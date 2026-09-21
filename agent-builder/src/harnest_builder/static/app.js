@@ -1,9 +1,10 @@
+import {mcpPanel,reviewMCP} from "./mcp.js";
 import {$, el, on, error, status, button, field, select, modal, preference, sendDraft, renderDiff, renderCommandOutput, commandOutputText, copyCommandText} from "./ui.js";
-import {showDeployment} from "./deployment.js";
+import {deploymentEnabled,renderDeploymentControl} from "./features.js";
 import {Canvas, ICONS, kindOf} from "./canvas.js";
 
 const state = {workspace:null, project:null, document:null, dirty:false, library:"components", view:"canvas", context:new Set(), jobs:[], jobId:null, observed:new Set(), callbacks:new Map(), projectRequest:0, fileRequest:0, inspectorRequest:0, prompting:false};
-const CLI_KINDS = new Set(["tool","subagent","task","lifecycle","context","mcp","extension"]);
+const CLI_KINDS = new Set(["tool","subagent","task","lifecycle","context","mcp","channel","extension"]);
 const canvas = new Canvas($("canvas-host"), {drop:(kind,point)=>addComponent(kind,point).catch(error), open:path=>openFile(path).catch(error), select:node=>inspect(node).catch(error), connect:(source,target)=>editConnection({source,target}), edge:edge=>editConnection(edge), assign:(resource,owner)=>editOwnership(resource,owner).catch(error), reconnect:(edge,endpoint,target)=>reconnectEdge(edge,endpoint,target).catch(error), hint:status, zoom:value=>{$("zoom-label").textContent=value+"%";}});
 let token = "";
 let pollTimer;
@@ -96,6 +97,7 @@ async function start() {
 /** Refresh project discovery without resetting unsaved editor content or selected context. */
 async function refreshWorkspace() {
   state.workspace=await api("workspace");
+  renderDeploymentControl($("deployment"),state.workspace,state.project);
   $("workspace-name").textContent=state.workspace.name;
   const picker=$("project-select"), selected=state.project?.id || picker.value;
   picker.replaceChildren();
@@ -124,7 +126,8 @@ async function openProject(identity, force=false) {
   $("workspace-name").textContent=project.path;$("workspace-name").title=project.path;
   $("framework-tag").textContent=project.config.framework.toUpperCase(); $("framework-tag").hidden=false;
   $("project-description").textContent=`${project.config.framework} · ${project.config.mode} · ${project.files.length} files`;
-  for(const id of ["compile","run-menu","new-file","send-prompt","extensions","deployment","deleted-capabilities"]) $(id).disabled=false;
+  for(const id of ["compile","run-menu","new-file","send-prompt","extensions","mcp-connections","deleted-capabilities"]) $(id).disabled=false;
+  renderDeploymentControl($("deployment"),state.workspace,state.project);
   $("welcome").hidden=true; $("canvas-controls").hidden=false; $("canvas-legend").hidden=false;
   const workflowOption=$("canvas-mode").querySelector('option[value="workflow"]'); workflowOption.disabled=!project.graph.available;
   if(!project.graph.available) $("canvas-mode").value="architecture";
@@ -322,10 +325,10 @@ async function addComponent(kind,point) {
   if(kind==="source") {newFile();return;}
   if(kind==="node" && !state.project.graph.available) {convertWorkflow();return;}
   const identity=state.project.id;
-  let name,url,tokenEnv,task,schedule;
+  let name,url,tokenEnv,via,task,schedule;
   const form=modal(`Add ${item.title.toLowerCase()}`,item.description,"Add component",async()=>{
     if(CLI_KINDS.has(kind)) {
-      const job=await command({action:"add",project:identity,kind,name:name.value,url:url?.value||"",token_env:tokenEnv?.value||""});
+      const job=await command({action:"add",project:identity,kind,name:name.value,url:url?.value||"",token_env:tokenEnv?.value||"",via:via?.value||""});
       state.callbacks.set(job.id,async()=>{placeComponent(identity,kind,name.value,point);if(state.project?.id===identity)await refreshProject();});
     } else {
       await api("component","POST",{project:identity,kind,name:name.value,options:{...(task?{task:task.value,schedule:schedule.value}:{})}});
@@ -333,8 +336,9 @@ async function addComponent(kind,point) {
       await refreshProject();status(`Created ${item.title.toLowerCase()}. Edit its source to customize it.`);
     }
   });
-  name=field(form,"Name","",{required:true,pattern:"[a-z][a-z0-9_-]{0,62}",maxLength:63,placeholder:kind==="tool"?"search":"my_"+kind});
+  name=field(form,"Name","",{required:true,pattern:"[a-z][a-z0-9_-]{0,62}",maxLength:63,placeholder:kind==="channel"?"slack":kind==="tool"?"search":"my_"+kind});
   if(kind==="mcp") {url=field(form,"MCP server URL","",{type:"url",required:true,placeholder:"https://your-server.example/mcp"});tokenEnv=field(form,"Token environment variable (optional)","",{placeholder:"MCP_API_TOKEN",hint:"Stores only the environment variable reference, never the secret."});}
+  if(kind==="channel") via=field(form,"Transport extension","fused",{required:true,hint:"The installed extension owns the platform transport and credentials."});
   if(kind==="cron") {
     const tasks=state.project.files.filter(p=>/^tasks\/[^_][^/]*\.py$/.test(p)).map(p=>[p.slice(6,-3),p.slice(6,-3)]);
     task=select(form,"Durable task",tasks.length?tasks:[["","Add a durable task first"]]);task.required=true;
@@ -347,7 +351,7 @@ async function addComponent(kind,point) {
 /** Remember drop coordinates only for the created component's visual source identity. */
 function placeComponent(project,kind,name,point) {
   if(!point) return;
-  const directory={tool:"tools",subagent:"subagents",task:"tasks",lifecycle:"lifecycle",context:"lifecycle",mcp:"mcp",node:"subagents",library:"lib",model:"models",storage:"lifecycle",sandbox:"sandbox",cron:"cron"}[kind];
+  const directory={tool:"tools",subagent:"subagents",task:"tasks",lifecycle:"lifecycle",context:"lifecycle",mcp:"mcp",channel:"channels",node:"subagents",library:"lib",model:"models",storage:"lifecycle",sandbox:"sandbox",cron:"cron"}[kind];
   const mode=$("canvas-mode").value;
   const path=kind==="node"&&mode==="workflow"?name.replaceAll("-","_"):directory?`${directory}/${name.replaceAll("-","_")}.py`:null;
   if(!path) return;
@@ -615,6 +619,8 @@ function runMenu() {
 
 /** Open the guided review, deployment progress, and agent access screen. */
 async function deploymentMenu() {
+  if(!deploymentEnabled(state.workspace) || !state.project)return;
+  const {showDeployment}=await import("./deployment.js");
   const project=state.project.id;
   const inspection=await api("deployment/inspect?project="+encodeURIComponent(project));
   if(!inspection.existing) {configureDeployment(inspection);return;}
@@ -712,7 +718,7 @@ async function sendPrompt(event) {
   preference("model",model);message(prompt,"user");
   const pending=message("Harnest builder agent is reading source and preparing a code proposal…");pending.classList.add("pending");
   try {
-    const proposal=await sendDraft($("prompt"),submitted=>api("propose","POST",{project,prompt:submitted,model,paths:[...state.context],allow_related_source:$("allow-related-source").checked}),()=>state.project?.id===project);
+    const proposal=await sendDraft($("prompt"),submitted=>api("propose","POST",{project,prompt:submitted,model,paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked}),()=>state.project?.id===project);
     pending.remove();proposalCard(project,proposal);
   } catch(problem) {pending.classList.remove("pending");pending.classList.add("error");pending.textContent=problem.message;}
   finally {state.prompting=false;$("send-prompt").disabled=!state.project;}
@@ -724,8 +730,11 @@ function proposalCard(project,proposal) {
   card.append(el("h3",`✧ ${proposal.files.length} proposed file changes`),el("p",proposal.summary),el("p",`Project: ${project}`));
   if(proposal.context_paths) card.append(el("p",`Source read: ${proposal.context_paths.join(", ")}`));
   for(const file of proposal.files) card.append(el("div",(file.revision?"~ ":"+ ")+file.path,"proposal-path"));
-  const review=button("Review changes ↗",()=>reviewProposal(project,proposal,review),"button primary");card.append(review);$("conversation").append(card);card.scrollIntoView({block:"nearest"});
+  const review=button("Review changes ↗",()=>{if(proposal.mcp_review){requireSavedForMCP();return reviewMCP(api,proposal,async()=>{review.disabled=true;review.textContent="Applied ✓";if(state.project?.id===project)await refreshProject();});}return reviewProposal(project,proposal,review);},"button primary");card.append(review);$("conversation").append(card);card.scrollIntoView({block:"nearest"});
 }
+
+/** Keep source buffers from being silently invalidated by an MCP configuration review. */
+function requireSavedForMCP(){if(state.dirty)throw new Error("Save your source edits before configuring MCP connections.");}
 
 /** Review every proposed file against its exact original text before one conflict-checked apply. */
 function reviewProposal(project,proposal,reviewButton) {
@@ -734,7 +743,7 @@ function reviewProposal(project,proposal,reviewButton) {
     await api("files","PUT",{project,files:proposal.files.map(({path,text,revision})=>({path,text,revision}))});
     reviewButton.textContent="Applied to project ✓";reviewButton.disabled=true;
     if(state.project?.id===project) {await refreshProject();if(state.document) await openFile(state.document.path,true);}
-    status("Changes applied. Preview the deployment plan or build and test the agent to validate them.");
+    status("Changes applied. Build and test the agent to validate them.");
   },true);
   const tabs=el("div","","review-tabs"),preview=el("div","","review-diff");form.append(tabs,preview);
   const choose=file=>{renderDiff(preview,file);for(const tab of tabs.children)tab.classList.toggle("active",tab.textContent===file.path);};
@@ -755,6 +764,7 @@ function bind() {
   on($("new-project"),"click",()=>createProject());on($("welcome-create"),"click",()=>createProject());
   on($("open-project"),"click",openFolder);on($("extensions"),"click",extensionPanel);
   on($("deployment"),"click",deploymentMenu);
+  on($("mcp-connections"),"click",()=>{requireSavedForMCP();return mcpPanel(api,state.project,refreshProject);});
   on($("compile"),"click",()=>command({action:"compile"}));on($("run-menu"),"click",runMenu);
   on($("deleted-capabilities"),"click",deletedCapabilities);
   on($("new-file"),"click",newFile);on($("refresh"),"click",refreshProject);

@@ -39,8 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harnest")
     subparsers = parser.add_subparsers(dest="command", required=True)
     from .mcp_cli import add_mcp_parser, run_mcp_command
+    from .channel_cli import add_channels_parser, run_channels_command
 
     add_mcp_parser(subparsers)
+    add_channels_parser(subparsers)
     plan_parser = subparsers.add_parser("plan", help="export a Python orchestrator as JSON")
     plan_parser.add_argument("orchestrator", type=Path)
     compile_parser = subparsers.add_parser(
@@ -122,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "mcp":
             return run_mcp_command(args)
+        if args.command == "channels":
+            return run_channels_command(args)
         if args.command == "compile":
             manifest = compile_artifact(
                 args.agent,

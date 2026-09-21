@@ -1,0 +1,3 @@
+name: Slack channel acceptance
+version: 0.1.0
+description: Tests a Fused-connected Slack mention and threaded response through Harnest.

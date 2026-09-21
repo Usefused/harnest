@@ -5,7 +5,7 @@ import unittest
 
 import yaml
 
-from test_agent_builder import _BuilderFixture
+from test_agent_builder import _DeploymentBuilderFixture as _BuilderFixture
 from harnest.provisioner_config import parse_manifest, ProvisionError
 from harnest.provisioner_plan import Plan
 from harnest_builder.prompting import _context

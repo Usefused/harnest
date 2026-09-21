@@ -572,6 +572,12 @@ register it from `lifecycle/`. `@task` does not install a queue backend.
 Queued execution requires an explicit provider; there is no database fallback.
 Cron requires the same instance under `@lifecycle.storage.cron`. See
 https://docs.usefused.com/harnest/runtime/task-storage for setup and migration.
+For explicitly in-memory local development, import `MemoryTaskStore` from
+`harnest.task` and return one shared instance from a synchronous
+`@lifecycle.storage.tasks` factory (also `@lifecycle.storage.cron` when needed).
+This is separate from `harnest.store.MemoryStore`, which owns sessions and
+checkpoints. In-memory queued jobs and results are lost on process restart;
+use PostgreSQL, Redis, or a durable custom provider when persistence is required.
 `max_retries` is queue retry policy, independent from agent checkpoint replay.
 Task execution reconstructs scoped agent identity and declared resources but
 never serializes credentials or a suspended Python frame. Keep payloads small,

@@ -28,6 +28,7 @@ class Provider(BaseHTTPRequestHandler):
     requests = []
     failure_status = None
     unknown_tool = False
+    requested_tools = []
 
     def do_POST(self):
         """Return an inert source proposal and retain the model request for grounding assertions."""
@@ -45,7 +46,10 @@ class Provider(BaseHTTPRequestHandler):
                   "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
         if self.unknown_tool and (len(self.requests) == 1 or self.unknown_tool == "always"):
             result["choices"] = [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": None,
-                "tool_calls": [{"id": "missing-tool", "type": "function", "function": {"name": "read_files", "arguments": '{"paths":["lifecycle/storage.py"]}'}}]}}]
+                "tool_calls": [{"id": "missing-tool", "type": "function", "function": {"name": "invented_tool", "arguments": '{"paths":["lifecycle/storage.py"]}'}}]}}]
+        if len(self.requests) <= len(self.requested_tools):
+            result["choices"] = [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": None,
+                "tool_calls": [{"id": f"skill-{len(self.requests)}", "type": "function", "function": self.requested_tools[len(self.requests) - 1]}]}}]
         body = json.dumps(result).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -72,6 +76,7 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         Provider.requests = []
         Provider.failure_status = None
         Provider.unknown_tool = False
+        Provider.requested_tools = []
         self.provider = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
         self.thread = threading.Thread(target=self.provider.serve_forever, daemon=True)
         self.thread.start()
@@ -197,8 +202,50 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("instructions.md", response.choices[0].message.content)
         self.assertEqual(len(Provider.requests), 2)
         feedback = [message for message in Provider.requests[-1]["messages"] if message.get("role") == "tool"]
-        self.assertIn("NOT a callable tool", json.dumps(feedback))
+        self.assertIn("Call read_files", json.dumps(feedback))
         self.assertEqual((await self.server.client.get("/sessions")).json()["sessions"], [])
+
+    async def test_source_tool_request_takes_precedence_over_guessed_model_edits(self):
+        """Native read requests reach authorization even if the final model text guesses edits."""
+        Provider.requested_tools = [{"name": "read_files", "arguments": json.dumps({"paths": ["mcp/fused.py"]})}]
+        response = await self.server.completion(model="openai/test", messages=[
+            {"role": "user", "content": "{}"}, {"role": "user", "content": "Diagnose MCP"}])
+        self.assertEqual(json.loads(response.choices[0].message.content), {"read_files": ["mcp/fused.py"]})
+        self.assertEqual(len(Provider.requests), 2)
+        self.assertEqual((await self.server.client.get("/sessions")).json()["sessions"], [])
+
+    async def test_native_fused_tools_return_host_requests_without_remote_mutations(self):
+        """The compiled tools route discovery and review envelopes back to the trusted host."""
+        operations = [
+            ("fused_discover", {"action": "services"}, "fused_discover"),
+            ("plan_fused_mcp", {"plan_json": json.dumps({"kind": "existing", "resource": "fused", "name": "chosen", "version": "1.0.0"})}, "mcp_plan"),
+        ]
+        for name, arguments, expected in operations:
+            Provider.requests = []
+            Provider.requested_tools = [{"name": name, "arguments": json.dumps(arguments)}]
+            response = await self.server.completion(model="openai/test", messages=[
+                {"role": "user", "content": "{}"}, {"role": "user", "content": "Prepare an MCP review"}])
+            self.assertIn(expected, json.loads(response.choices[0].message.content))
+            self.assertEqual(len(Provider.requests), 2)
+        self.assertEqual((await self.server.client.get("/sessions")).json()["sessions"], [])
+
+    async def test_native_source_tool_cannot_bypass_studio_read_permissions(self):
+        """A real tool call still cannot read unselected source or paths outside inventory."""
+        root = Path(self.temp.name) / "source-permissions"
+        project = root / "sample"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "config.yaml").write_text("metadata:\n  name: sample\n")
+        (project / "instructions.md").write_text("private-unselected-content")
+        app = create_app(root, "/missing/harnest", token="test-studio")
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)), base_url="http://127.0.0.1", headers={"Authorization": "Bearer test-studio"}) as client:
+                for path, allowed in (("instructions.md", False), ("../outside.md", True)):
+                    Provider.requests = []
+                    Provider.requested_tools = [{"name": "read_files", "arguments": json.dumps({"paths": [path]})}]
+                    response = await client.post("/api/propose", json={"project": "sample", "prompt": "Inspect source", "model": "openai/test", "paths": [], "allow_related_source": allowed})
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual(len(Provider.requests), 2)
+                    self.assertNotIn("private-unselected-content", json.dumps(Provider.requests))
 
     async def test_repeated_unknown_tools_stop_after_two_corrections(self):
         """A provider that ignores corrective feedback cannot create an unbounded tool loop."""
@@ -208,6 +255,62 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "user", "content": "{}"}, {"role": "user", "content": "Switch storage"}])
         self.assertIn("Reference:", caught.exception.detail)
         self.assertEqual(len(Provider.requests), 3)
+        self.assertIsNone(self.server.process)
+
+    async def test_missing_skill_reference_recovers_and_loads_real_guidance(self):
+        """A missing reference must return feedback before the model loads a real bundled API."""
+        Provider.requested_tools = [
+            {"name": "load_skill_resource", "arguments": json.dumps({"name": "harnest-authoring", "path": "references/nonexistent-tasks.md"})},
+            {"name": "load_skill", "arguments": json.dumps({"name": "harnest-authoring"})},
+            {"name": "load_skill_resource", "arguments": json.dumps({"name": "harnest-authoring", "path": "references/python-api.md"})},
+        ]
+        response = await self.server.completion(model="openai/test", messages=[
+            {"role": "user", "content": "{}"}, {"role": "user", "content": "Repair task storage"}])
+        self.assertIn("instructions.md", response.choices[0].message.content)
+        self.assertEqual(len(Provider.requests), 4)
+        feedback = [item for item in Provider.requests[-1]["messages"] if item.get("role") == "tool"]
+        self.assertIn("does not exist", json.dumps(feedback))
+        self.assertIn("MemoryTaskStore", json.dumps(feedback))
+        self.assertEqual((await self.server.client.get("/sessions")).json()["sessions"], [])
+
+    async def test_fused_management_skills_are_discoverable_and_loadable(self):
+        """Exercise bundled Admin/Auth guidance through the compiled agent's native skill tools."""
+        Provider.requested_tools = [{"name": "list_skills", "arguments": "{}"}]
+        for name in ("fused-admin", "fused-auth"):
+            Provider.requested_tools.extend([
+                {"name": "load_skill", "arguments": json.dumps({"name": name})},
+                {"name": "load_skill_resource", "arguments": json.dumps({"name": name, "path": "references/client.md"})},
+            ])
+        response = await self.server.completion(model="openai/test", messages=[
+            {"role": "user", "content": "{}"},
+            {"role": "user", "content": "Describe a Fused MCP creation integration with developer login"},
+        ])
+        self.assertIn("instructions.md", response.choices[0].message.content)
+        self.assertEqual(len(Provider.requests), 6)
+        feedback = json.dumps([item for item in Provider.requests[-1]["messages"] if item.get("role") == "tool"])
+        for contract in ("fused-admin", "fused-auth", "deploy_server", "fused.fused_admin", "fused.fused_auth", "code_verifier", "execution token"):
+            self.assertIn(contract, feedback)
+        self.assertNotIn("does not exist", feedback)
+        self.assertEqual((await self.server.client.get("/sessions")).json()["sessions"], [])
+
+    async def test_repeated_missing_references_are_bounded(self):
+        """Repeated skill hallucinations share the same two-correction budget as missing tools."""
+        Provider.requested_tools = [{"name": "load_skill_resource", "arguments": json.dumps({
+            "name": "harnest-authoring", "path": "references/nonexistent-tasks.md"})}] * 4
+        with self.assertRaises(Exception):
+            await self.server.completion(model="openai/test", messages=[
+                {"role": "user", "content": "{}"}, {"role": "user", "content": "Repair task storage"}])
+        self.assertEqual(len(Provider.requests), 3)
+        self.assertIsNone(self.server.process)
+
+    async def test_skill_path_validation_is_not_converted_to_lookup_feedback(self):
+        """Resource traversal remains a hard failure rather than a recoverable missing file."""
+        Provider.requested_tools = [{"name": "load_skill_resource", "arguments": json.dumps({
+            "name": "harnest-authoring", "path": "../../outside.md"})}]
+        with self.assertRaises(Exception):
+            await self.server.completion(model="openai/test", messages=[
+                {"role": "user", "content": "{}"}, {"role": "user", "content": "Repair task storage"}])
+        self.assertEqual(len(Provider.requests), 1)
         self.assertIsNone(self.server.process)
 
     async def test_transient_transport_retry_uses_fresh_server_and_is_bounded(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -24,6 +25,7 @@ class Prompt(BaseModel):
     model: str = Field(default="", max_length=200)
     paths: list[str] = Field(default_factory=list, max_length=24)
     allow_related_source: bool = False
+    allow_fused_discovery: bool = False
 
 
 def settings() -> dict:
@@ -31,7 +33,7 @@ def settings() -> dict:
     return {"model": os.getenv("HARNEST_BUILDER_MODEL", ""), "configured": bool(os.getenv("HARNEST_BUILDER_MODEL"))}
 
 
-async def propose(workspace, body: Prompt, completion=None) -> dict:
+async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session="") -> dict:
     """Ask the configured provider for source changes and validate them before review."""
     model = body.model.strip() or settings()["model"]
     if not model:
@@ -40,22 +42,57 @@ async def propose(workspace, body: Prompt, completion=None) -> dict:
     with workspace.lock:
         documents = [read(root, p) for p in dict.fromkeys(body.paths)]
         known = inventory(root)
-    for attempt in range(3):
-        context = _context(documents, known, body.allow_related_source)
+    fused = {"available": bool(mcp), "connected": bool(mcp and mcp.connector.connected(session)),
+             "discovery_allowed": body.allow_fused_discovery, "results": []}
+    source_rounds = 0
+    for attempt in range(9):
+        context = _context(documents, known, body.allow_related_source, fused)
         content = await _complete(model, body.prompt, context, completion)
+        payload = _payload(content)
+        handled = await _fused_reply(payload, mcp, session, body, fused)
+        if handled is not None:
+            if handled:
+                return handled
+            continue
         missing = _requested_source(content, documents, known)
         if not missing:
             result = _proposal(root, content, documents, known)
             return {**result, "context_paths": [doc["path"] for doc in documents]}
-        _expand_source(workspace, root, documents, missing, body.allow_related_source, attempt)
+        _expand_source(workspace, root, documents, missing, body.allow_related_source, source_rounds)
+        source_rounds += 1
     raise HTTPException(422, "The model needs too many source-reading rounds. Select the relevant files and retry.")
 
 
-def _context(documents: list[dict], known: list[str], allow_related_source: bool) -> str:
+async def _fused_reply(payload, service, session, body, fused):
+    """Fulfil read-only native tool requests or retain a proposal for explicit browser review."""
+    from .mcp_plans import MCPPlan
+    from pydantic import ValidationError
+
+    if "fused_discover" in payload:
+        if not service or not body.allow_fused_discovery:
+            raise HTTPException(422, "Enable Fused discovery to share service and operation metadata with the model.")
+        result = await asyncio.to_thread(service.discover, session, payload["fused_discover"])
+        fused["results"].append({"query": payload["fused_discover"], "result": result})
+        return {}
+    if "mcp_plan" not in payload:
+        return None
+    if not service or not isinstance(payload["mcp_plan"], dict):
+        raise HTTPException(422, "MCP planning is unavailable.")
+    proposed = payload["mcp_plan"]
+    if "bearer" in proposed or "project" in proposed:
+        raise HTTPException(422, "Model MCP plans cannot include credentials or choose another project.")
+    try:
+        plan = MCPPlan.model_validate({**proposed, "project": body.project})
+    except ValidationError:
+        raise HTTPException(422, "The model returned an invalid MCP plan. Choose a resource, owner and explicit operation scope.") from None
+    return await asyncio.to_thread(service.prepare, session, plan)
+
+
+def _context(documents: list[dict], known: list[str], allow_related_source: bool, fused=None) -> str:
     """Apply the same total context limit before every provider call, including expanded reads."""
     context = json.dumps({"files": documents, "project_files": known, "capabilities": catalog(),
                           "allow_related_source": allow_related_source,
-                          "deployment_schema": Deployment.model_json_schema()})
+                          "deployment_schema": Deployment.model_json_schema(), "fused": fused})
     if len(context.encode()) > 160000:
         raise HTTPException(413, "Select fewer source files; prompt context is limited to 160 KiB.")
     return context

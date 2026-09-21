@@ -72,6 +72,19 @@ class FusedSetupTests(unittest.TestCase):
         self.assertEqual(result.client.headers["Authorization"], "Bearer ${HARNEST_FUSED_BUSINESS_TOKEN}")
         self.assertNotIn("workspace", [call[0] for call in self.calls()])
 
+    def test_webhook_attachment_flows_into_the_deployed_mcp_config(self):
+        client = FusedMCPClient.from_openapi(
+            "crm.yaml", name="business", webhook_attachment="slack-channel",
+        )
+        result = self.setup_client(client)
+        config = json.loads(result.config_path.read_text())
+        self.assertEqual(config["webhook_attachment"], "slack-channel")
+
+    def test_webhook_attachment_defaults_to_absent(self):
+        result = self.setup_client()
+        config = json.loads(result.config_path.read_text())
+        self.assertNotIn("webhook_attachment", config)
+
     def test_generated_file_is_discovered_without_fused_package_or_cli(self):
         result = self.setup_client()
         target = result.write_client(self.project / "mcp/business.py")

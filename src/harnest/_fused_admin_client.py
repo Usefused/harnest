@@ -104,6 +104,40 @@ class AppToken:
     created_at: str
 
 
+@dataclass
+class WebhookServiceSelection:
+    """One service's inbound event selection within a `kind: webhook` registration.
+
+    Mirrors ``fused-cli init --webhook``: either name explicit ``events`` or set
+    ``select_all``, never both. ``secret`` is a bucket secret reference such as
+    ``${bucket.<name>.secret.<key>}``, never a raw signing value.
+    """
+
+    events: Optional[List[str]] = None
+    select_all: bool = False
+    secret: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if bool(self.events) == bool(self.select_all):
+            raise ValueError("WebhookServiceSelection requires exactly one of events or select_all")
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Project this selection into the Engine's `kind: webhook` service shape."""
+        body: Dict[str, Any] = {"webhooks_select_all": True} if self.select_all else {"webhooks": list(self.events or [])}
+        if self.secret:
+            body["secret"] = self.secret
+        return body
+
+
+@dataclass
+class WebhookConfig:
+    """A durably applied `kind: webhook` registration spanning one or more services."""
+
+    name: str
+    services: List[str]
+    raw: Dict[str, Any]
+
+
 # The minimal, stable MCPServer selection shared by list and deploy.
 # execution_token is intentionally omitted: it is a credential, and selecting
 # it marks the query as a sensitive read, whose audit preflight fails closed
@@ -244,6 +278,28 @@ class FusedAdminClient:
         """
         data = self._graphql(query, {"config": config, "ownerTeam": owner_team})
         return _server_from_dict(data["deployMcpServer"])
+
+    def apply_webhook_config(
+        self, name: str, services: Dict[str, WebhookServiceSelection],
+        owner_team: Optional[str] = None,
+    ) -> WebhookConfig:
+        """Registers inbound event delivery for one or more services (`kind: webhook`).
+
+        Mirrors ``fused-cli init --webhook`` plus ``fused-cli webhook apply``: this
+        durably registers Fused to receive inbound events for the named services.
+        Attach the result to an MCP server's ``webhook_attachment`` field so
+        subscribing to that server's resources also surfaces these events.
+        """
+        if not name or not services:
+            raise ValueError("apply_webhook_config requires a name and at least one service")
+        body: Dict[str, Any] = {
+            "apiVersion": "fused/v1", "kind": "webhook", "name": name,
+            "services": {service: selection.as_dict() for service, selection in services.items()},
+        }
+        if owner_team is not None:
+            body["owner_team"] = owner_team
+        data = self._request("POST", "/webhook-config/apply", body)
+        return WebhookConfig(name=name, services=sorted(services), raw=data)
 
     def resolve_mcp_family_reference(self, reference: str) -> str:
         """Resolves an MCP server name (or id) to its app family id."""

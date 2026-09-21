@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -23,6 +24,7 @@ class ProvisionerRevisionTests(unittest.TestCase):
 
     def setUp(self):
         """Use private storage and a fake backend with mutable image tags."""
+        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
 
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (self.root / MANIFEST).write_text(CONFIG)

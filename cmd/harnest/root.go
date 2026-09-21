@@ -145,6 +145,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newInitCommand(),
 		app.newAddCommand(),
 		app.newMCPCommand(),
+		app.newChannelsCommand(),
 		app.newCompileCommand(),
 		app.newProvisionCommand(),
 		app.newTestCommand(),

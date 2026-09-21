@@ -4,6 +4,28 @@
 
 ### Features
 
+* Add reviewed MCP connections and Fused orchestration to Agent Builder Studio,
+  sharing the playground's OAuth and Admin backend. Visual controls and Build
+  with AI use the same discovery and provisioning plans, with browser-bound
+  OAuth, explicit operation selection, revision checks, and private project
+  execution credentials. Keep credentials out of model context and source;
+  never replay uncertain remote mutations.
+
+* Disable deployment by default behind `HARNEST_ENABLE_DEPLOYMENT=true`. Hide
+  Studio's deployment controls and provision CLI help until explicitly enabled;
+  enforce the flag for Studio APIs, provisioning, and Go deployment execution.
+
+* Bundle Fused Admin and Fused Auth skills with Studio's compiled builder agent,
+  covering real MCP provisioning APIs, service discovery, OAuth/PKCE, and separate
+  management and execution credentials instead of invented server packages.
+
+* Connect generated Fused webhook receivers to durable Harnest channel workers.
+  Persist admission before acknowledging delivery, isolate agent/actor sessions,
+  and queue threaded Slack replies through SDK-scoped Engine execution. Recheck
+  allowlists before processing and sending; retain ambiguous execution/delivery
+  failures without automatically replaying effects. Include an authenticated
+  Slack acceptance agent and PostgreSQL restart/concurrency coverage.
+
 * Bundle Harnest Studio's web server, browser assets, and compiled assistant in
   release CLI artifacts. Start it with `harnest studio`; use the current folder
   by default or select another with `--workspace`. Cache Studio's isolated,
@@ -17,6 +39,10 @@
   requests, and discard failed private runtimes to clear retained sessions. Include
   existing deployment configuration in initial AI context and keep storage changes
   consistent with deployment dependencies.
+  Recover missing skill-reference lookups with bounded corrective feedback, and
+  document separate in-memory task storage in the bundled authoring guidance.
+  Expose source requests as a native builder tool while retaining Studio's source
+  permissions, read limits, and revision-checked proposal review.
 
 * Stop generating CPU and memory limits in agent config.yaml. Configure them in
   harnest-deployment.yaml instead; the core loader and schema accept omitted

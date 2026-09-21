@@ -115,6 +115,25 @@
     "install_authentication",
     "principal_for"
   ],
+  "harnest.channels": [
+    "ChannelAdapter",
+    "ChannelAdapterConflictError",
+    "ChannelAdapterFactory",
+    "ChannelAdapterNotFoundError",
+    "ChannelBinding",
+    "ChannelError",
+    "ChannelEvent",
+    "ChannelHTTPInvoker",
+    "ChannelReply",
+    "ChannelStore",
+    "ChannelStoreConflictError",
+    "ChannelWorker",
+    "MemoryChannelStore",
+    "create_channel_adapter",
+    "discover_channel_bindings",
+    "register_channel_adapter",
+    "registered_channel_adapters"
+  ],
   "harnest.checkpoint": [
     "A2ATaskConflictError",
     "A2ATaskCursorError",
@@ -453,6 +472,7 @@
   "harnest.task": [
     "CompiledTask",
     "MemoryTaskStore",
+    "PostgresTaskStore",
     "TaskCallable",
     "TaskDefinition",
     "TaskHandle",
@@ -474,6 +494,7 @@
   ],
   "harnest.testing": [
     "AgentTestError",
+    "ChannelStoreConformanceMixin",
     "MemoryStoreConformanceMixin",
     "SmokeClient",
     "TaskStoreConformanceMixin",
@@ -516,8 +537,14 @@
   ],
   "harnest_fused": [
     "FusedCLIError",
+    "FusedChannelAdapter",
+    "FusedChannelConfig",
+    "FusedChannelReceiver",
+    "FusedEventMapping",
     "FusedMCPClient",
     "FusedSetupResult",
-    "OpenAPISpec"
+    "FusedSlackReplySender",
+    "OpenAPISpec",
+    "slack_mention"
   ]
 }

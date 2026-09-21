@@ -31,12 +31,16 @@ class Command(BaseModel):
     profile: str = "minimal"
     url: str = Field(default="", max_length=8192)
     token_env: str = Field(default="", max_length=128)
+    via: str = ""
     port: int = Field(default=1907, ge=1024, le=65535)
     input: str = Field(default="", max_length=32000)
 
 
 def arguments(workspace, command: Command) -> tuple[list[str], str]:
     """Resolve registered projects or an explicitly selected initialization destination."""
+    if command.action == "provision":
+        from .features import require_deployment
+        require_deployment()
     if command.action == "init":
         return _initialize(workspace, command)
     project = workspace.project(command.project)
@@ -96,6 +100,8 @@ def _add(root: str, command: Command) -> list[str]:
         args.extend(["--url", command.url])
         if command.token_env:
             args.extend(["--token-env", command.token_env])
+    if command.kind == "channel":
+        args.extend(["--via", name(command.via)])
     return args
 
 

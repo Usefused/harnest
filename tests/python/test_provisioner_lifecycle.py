@@ -64,6 +64,7 @@ class ProvisionerLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         """Give each deployment private journal and fake backend state."""
+        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
 
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.root = Path(directory)
@@ -207,7 +208,7 @@ class ProvisionerLifecycleTests(unittest.TestCase):
             code = main(["plan", "--project", str(self.root)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue())["components"][0]["name"], "cache")
-        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(io.StringIO()):
+        with patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}, clear=True), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["plan", "--project", str(self.root), "--environment", "missing"]), 1)
 
     def test_local_ownership_conflict_cannot_adopt_existing_containers(self):

@@ -13,12 +13,14 @@ import (
 	"syscall"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/features"
 )
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+// run gates the deployment pipeline before importing orchestrator code or writing artifacts.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var orchestratorPath string
 	var planPath string
@@ -42,6 +44,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if err := features.RequireDeployment(); err != nil {
+		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		return 1
+	}
 	reader, closer, err := planReader(orchestratorPath, planPath, python, stdin, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "harnest-runtime:", err)

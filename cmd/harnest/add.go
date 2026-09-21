@@ -62,6 +62,7 @@ dedicated extensions, plugins, and skills commands for packaged resources.`,
 		command.AddCommand(a.newAddResourceCommand(scaffold))
 	}
 	command.AddCommand(a.newAddMCPCommand())
+	command.AddCommand(a.newAddChannelCommand())
 	return command
 }
 

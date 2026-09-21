@@ -156,7 +156,7 @@ class ServiceTests(unittest.TestCase):
     def test_authorize_then_complete_binds_session(self):
         """Carry temporary credentials through the one-time callback."""
         service = _configured_service()
-        with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
+        with patch("harnest.fused_connectors.FusedAuthClient", FakeAuthClient), \
              patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             url = service.authorize_url("http://localhost:8000/_harnest/connectors/oauth/callback")
             self.assertIn("/oauth/authorize?", url)
@@ -168,7 +168,7 @@ class ServiceTests(unittest.TestCase):
     def test_replayed_state_fails_closed(self):
         """Consume the temporary pair with its state so callback replay fails."""
         service = _configured_service()
-        with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
+        with patch("harnest.fused_connectors.FusedAuthClient", FakeAuthClient), \
              patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             service.authorize_url("http://localhost:8000/_harnest/connectors/oauth/callback")
             state = next(iter(service._flows))
@@ -180,7 +180,7 @@ class ServiceTests(unittest.TestCase):
         service = _configured_service()
         service._sessions["sess1"] = _session()
         FakeAdminClient.servers = [_Server("support-agent", "1.0.0")]
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             result = service.servers("sess1")
         self.assertEqual(result["total"], 1)
         item = result["items"][0]
@@ -191,7 +191,7 @@ class ServiceTests(unittest.TestCase):
         service = _configured_service()
         service._sessions["sess1"] = _session()
         FakeAdminClient.servers = [_Server("support-agent", "1.0.0")]
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             result = service.add_existing("sess1", name="support-agent", version="1.0.0")
         self.assertEqual(result.url, "https://engine.test/mcp/pinned")
         self.assertEqual(result.token_env, "HARNEST_MCP_SUPPORT_AGENT_TOKEN")
@@ -201,14 +201,14 @@ class ServiceTests(unittest.TestCase):
         service = _configured_service()
         service._sessions["sess1"] = _session()
         FakeAdminClient.servers = [_Server("support-agent", "1.0.0", active=False)]
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             with self.assertRaises(ConnectorError):
                 service.add_existing("sess1", name="support-agent", version="1.0.0")
 
     def test_create_builds_config_from_structured_fields(self):
         service = _configured_service()
         service._sessions["sess1"] = _session()
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             result = service.create(
                 "sess1",
                 name="studio-mcp",
@@ -233,7 +233,7 @@ class ServiceTests(unittest.TestCase):
         # back to the server name before deploying.
         service = _configured_service()
         service._sessions["sess1"] = _session()
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             service.create(
                 "sess1",
                 name="studio-mcp",
@@ -245,7 +245,7 @@ class ServiceTests(unittest.TestCase):
     def test_create_narrows_service_to_operations(self):
         service = _configured_service()
         service._sessions["sess1"] = _session()
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             service.create(
                 "sess1",
                 name="studio-mcp",
@@ -260,7 +260,7 @@ class ServiceTests(unittest.TestCase):
     def test_operations_lists_service_operations(self):
         service = _configured_service()
         service._sessions["sess1"] = _session()
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             result = service.operations("sess1", "svc-a", "svc-a-v1")
         self.assertEqual(result["items"][0]["name"], "addPet")
 
@@ -275,7 +275,7 @@ class ServiceTests(unittest.TestCase):
     def test_services_lists_workspace_services(self):
         service = _configured_service()
         service._sessions["sess1"] = _session()
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             result = service.services("sess1")
         self.assertEqual(result["items"][0]["slug"], "verify-service-a")
 
@@ -287,7 +287,7 @@ class ServiceTests(unittest.TestCase):
         service = _configured_service()
         captured = {}
 
-        def fake_urlopen(request):
+        def fake_urlopen(request, timeout=None):
             """Capture the registration request without making a network call."""
             captured["url"] = request.full_url
             captured["headers"] = request.headers
@@ -324,7 +324,7 @@ class RouteTests(unittest.TestCase):
         """Exercise browser routes with a freshly registered client pair."""
         service = _configured_service()
         client = self.client(service)
-        with patch("harnest.playground_connectors.FusedAuthClient", FakeAuthClient), \
+        with patch("harnest.fused_connectors.FusedAuthClient", FakeAuthClient), \
              patch.object(service, "_register_client", return_value=("foc_dynamic", "fos_temporary")):
             start = client.post("/_harnest/connectors/oauth/start")
             self.assertEqual(start.status_code, 200)
@@ -356,7 +356,7 @@ class RouteTests(unittest.TestCase):
         service._sessions["sess1"] = _session()
         FakeAdminClient.servers = [_Server("support-agent", "1.0.0")]
         client = self.client(service)
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             response = client.get(
                 "/_harnest/connectors/servers",
                 cookies={"_harnest_fused_session": "sess1"},
@@ -392,7 +392,7 @@ class RouteTests(unittest.TestCase):
         service = _configured_service()
         service._sessions["sess1"] = _session()
         client = self.client(service)
-        with patch("harnest.playground_connectors.FusedAdminClient", FakeAdminClient):
+        with patch("harnest.fused_connectors.FusedAdminClient", FakeAdminClient):
             response = client.post(
                 "/_harnest/connectors/create",
                 json={

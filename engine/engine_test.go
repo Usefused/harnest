@@ -149,6 +149,7 @@ signatures:
 }
 
 func TestDeployAllCallsDeployerForEachAgent(t *testing.T) {
+	t.Setenv("HARNEST_ENABLE_DEPLOYMENT", "true")
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)
 	writeAgent(t, project, "beta", true)
@@ -357,6 +358,7 @@ func TestBundleDigestExcludesDevelopmentProfileLocks(t *testing.T) {
 }
 
 func TestDeployAllValidatesPlanBeforeStartingWorkers(t *testing.T) {
+	t.Setenv("HARNEST_ENABLE_DEPLOYMENT", "true")
 	plan := testPlan(t.TempDir())
 	plan.Parallelism = 0
 	err := DeployAll(context.Background(), plan, &recordingDeployer{})
@@ -366,6 +368,7 @@ func TestDeployAllValidatesPlanBeforeStartingWorkers(t *testing.T) {
 }
 
 func TestDeployAllHonorsCanceledContext(t *testing.T) {
+	t.Setenv("HARNEST_ENABLE_DEPLOYMENT", "true")
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)
 	deployer := &recordingDeployer{}
@@ -384,6 +387,7 @@ func TestDeployAllHonorsCanceledContext(t *testing.T) {
 }
 
 func TestDeployAllFailFastStopsPendingAgents(t *testing.T) {
+	t.Setenv("HARNEST_ENABLE_DEPLOYMENT", "true")
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)
 	writeAgent(t, project, "beta", true)
@@ -405,6 +409,7 @@ func TestDeployAllFailFastStopsPendingAgents(t *testing.T) {
 }
 
 func TestCompileAndDeployAllAttachesCompiledArtifact(t *testing.T) {
+	t.Setenv("HARNEST_ENABLE_DEPLOYMENT", "true")
 	project := t.TempDir()
 	writeAgent(t, project, "alpha", true)
 	compiler := &recordingCompiler{}

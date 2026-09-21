@@ -76,7 +76,7 @@ def setup(
     runner.run("identity check", ["whoami"])
     imports = [_plan_import(runner, spec, source, directory)
                for spec, source in zip(client.specs, sources)]
-    configuration = _configuration(client.name, description, bucket, version, imports)
+    configuration = _configuration(client.name, description, bucket, version, imports, client.webhook_attachment)
     config_path = directory / "mcp.json"
     config_path.write_text(json.dumps(configuration, indent=2) + "\n", encoding="utf-8")
     for item in imports:
@@ -151,12 +151,15 @@ def _apply_import(runner: CLI, item: _Import) -> None:
 
 
 def _configuration(name: str, description: str, bucket: str, version: str,
-                   imports: list[_Import]) -> dict[str, Any]:
+                   imports: list[_Import], webhook_attachment: str | None) -> dict[str, Any]:
     """Keep operation selection per service while producing one MCP config."""
 
-    return {"apiVersion": "fused/v1", "kind": "mcp", "name": name,
-            "version": version, "description": description, "bucket": bucket,
-            "services": {item.spec.name: item.spec.selection(item.version) for item in imports}}
+    configuration = {"apiVersion": "fused/v1", "kind": "mcp", "name": name,
+                     "version": version, "description": description, "bucket": bucket,
+                     "services": {item.spec.name: item.spec.selection(item.version) for item in imports}}
+    if webhook_attachment is not None:
+        configuration["webhook_attachment"] = webhook_attachment
+    return configuration
 
 
 def _plan_mcp(runner: CLI, configuration: Path, receipt: Path) -> None:

@@ -40,9 +40,33 @@ def free_port() -> int:
         return listener.getsockname()[1]
 
 
+def source_reply(events: list[dict]) -> str | None:
+    """Forward only the declared source tool's output to Studio's authorization boundary."""
+    source_requests = [item for item in events if item.get("type") == "tool_result" and item.get("name") == "read_files"]
+    if source_requests:
+        # Preserve all requests from parallel tool calls. The proposal boundary
+        # validates inventory membership, permission, count, and total bytes.
+        paths = [path for item in source_requests for path in item["output"]["read_files"]]
+        return json.dumps({"read_files": paths})
+    return None
+
+
 def final_reply(result: dict) -> str:
-    """Join the final model turn, excluding prior skill narration and tool result text."""
+    """Prefer native source requests, otherwise keep only the final model turn's text."""
     events = result.get("output", [])
+    requested = source_reply(events)
+    if requested is not None:
+        return requested
+    managed = [item for item in events if item.get("type") == "tool_result" and item.get("name") in {"fused_discover", "plan_fused_mcp"}]
+    if managed:
+        if len(managed) != 1:
+            raise ValueError("Request one Fused operation per turn")
+        return json.dumps(managed[0]["output"])
+    return final_model_text(result, events)
+
+
+def final_model_text(result: dict, events: list[dict]) -> str:
+    """Exclude skill narration and tool content while retaining final message chunks."""
     boundary = max((index + 1 for index, item in enumerate(events) if item.get("type") == "tool_result"), default=0)
     messages = [item for item in events[boundary:]
                 if item.get("type") == "message" and item.get("role") == "assistant"]

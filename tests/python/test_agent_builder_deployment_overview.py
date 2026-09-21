@@ -10,7 +10,7 @@ import yaml
 from harnest.provisioner import Provisioner
 from harnest.provisioner_config import parse_manifest
 from harnest.provisioner_plan import Plan
-from test_agent_builder import _BuilderFixture
+from test_agent_builder import _DeploymentBuilderFixture as _BuilderFixture
 from test_provisioner import MANIFEST
 from test_provisioner_lifecycle import FakeBackend
 
@@ -75,7 +75,7 @@ class DeploymentOverviewTests(_BuilderFixture):
     def test_overview_exposes_missing_variable_names_without_values_or_backend_calls(self):
         """Reading a dashboard cannot deploy images or leak configured service credentials."""
         self.manifest()
-        with patch.dict(os.environ, {"DATABASE_URL": "postgres://private-value"}, clear=True):
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://private-value", "HARNEST_ENABLE_DEPLOYMENT": "true"}, clear=True):
             response = self.client.get("/api/deployment/overview", params={"project": "sample"})
         self.assertEqual(response.status_code, 200, response.text)
         value = response.json()
@@ -84,7 +84,7 @@ class DeploymentOverviewTests(_BuilderFixture):
         self.assertNotIn("private-value", response.text)
         self.assertEqual(value["recorded"]["status"], "not-deployed")
         self.assertTrue(value["manifest_revision"])
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}, clear=True):
             value = self.client.get("/api/deployment/overview", params={"project": "sample"}).json()
         self.assertEqual(value["missing_variables"], ["DATABASE_URL"])
         self.assertIn("DATABASE_URL", value["blockers"][0])

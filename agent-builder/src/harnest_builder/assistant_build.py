@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 PACKAGE = Path(__file__).parent
-SKILL_NAMES = ("harnest-authoring", "harnest-authentication")
+SKILL_NAMES = ("harnest-authoring", "harnest-authentication", "fused-admin", "fused-auth")
 
 
 def skill_sources() -> Path:

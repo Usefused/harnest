@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import os
 import subprocess
 from threading import RLock, Thread
 import time
@@ -16,8 +17,9 @@ from .processes import terminate_tree
 class Jobs:
     """Track CLI output, serialize mutations, and terminate child process groups on shutdown."""
 
-    def __init__(self, cli: str, workspace):
+    def __init__(self, cli: str, workspace, credentials=None):
         """Bind the executable and workspace outside the HTTP command surface."""
+        self.credentials = credentials
         self.cli = cli
         self.workspace = workspace
         self.lock = RLock()
@@ -69,9 +71,10 @@ class Jobs:
         with self.lock:
             if job["status"] != "running":
                 return
-            process = subprocess.Popen(job["argv"], cwd=self.workspace.root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            bindings = self._bindings(job)
+            process = subprocess.Popen(job["argv"], env={**os.environ, **bindings}, cwd=self.workspace.root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             self.processes[job["id"]] = process
-        reader = Thread(target=self._output, args=(job, process), daemon=True)
+        reader = Thread(target=self._output, args=(job, process, [value for key, value in bindings.items() if key.endswith("_TOKEN")]), daemon=True)
         reader.start()
         try:
             code = process.wait(timeout=None if job["serving"] else 900)
@@ -86,14 +89,40 @@ class Jobs:
                 job["status"] = "succeeded" if code == 0 else "failed"
             job["exit_code"] = code
 
-    def _output(self, job: dict, process: subprocess.Popen) -> None:
+    def _output(self, job: dict, process: subprocess.Popen, secrets=()) -> None:
         """Keep the last 128 KiB without waiting for newline-terminated progress output."""
         chunks = deque(maxlen=128)
         with process.stdout as stream:
             while data := stream.read1(1024):
                 chunks.append(data)
                 with self.lock:
-                    job["output"] = b"".join(chunks).decode("utf-8", errors="replace")
+                    job["output"] = self._safe_output(chunks, secrets, pending=True)
+        with self.lock:
+            job["output"] = self._safe_output(chunks, secrets, pending=False)
+
+    def _bindings(self, job):
+        """Lend execution credentials only to CLI jobs for their exact registered project."""
+        if self.credentials is None or not job.get("project"):
+            return {}
+        try:
+            project = self.workspace.project(job["project"], existing=False)
+            return self.credentials.read(project)
+        except (ValueError, HTTPException):
+            raise OSError("Unable to load project runtime bindings") from None
+
+    @staticmethod
+    def _safe_output(chunks, secrets, *, pending):
+        """Redact tokens even across pipe chunks; withhold unfinished trailing token prefixes."""
+        text = b"".join(chunks).decode("utf-8", errors="replace")
+        for secret in secrets:
+            text = text.replace(secret, "[redacted]")
+        if secrets and len(chunks) == getattr(chunks, "maxlen", None):
+            # A rolling window may start inside a token whose first bytes were
+            # discarded. Remove that unmatched prefix after full-token redaction.
+            text = text[max(len(value) for value in secrets):]
+        if pending and secrets:
+            text = text[:-max(len(value) for value in secrets)]
+        return text
 
     def stop(self, identity: str) -> dict:
         """Cancel queued starts too; terminate the entire group so reload children do not leak."""

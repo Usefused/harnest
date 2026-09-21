@@ -4,11 +4,12 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"harnest.dev/harnest/internal/features"
 )
 
 // newProvisionCommand exposes the shared Python provisioner without importing agent code.
 func (a *application) newProvisionCommand() *cobra.Command {
-	command := &cobra.Command{Use: "provision", Short: "Deploy agent images and services locally or to Kubernetes"}
+	command := &cobra.Command{Use: "provision", Short: "Deploy agent images and services locally or to Kubernetes", Hidden: !features.DeploymentEnabled()}
 	for _, operation := range []string{"init", "plan", "apply", "status", "stop", "remove", "history", "rollback"} {
 		command.AddCommand(a.newProvisionOperation(operation))
 	}
@@ -22,6 +23,9 @@ func (a *application) newProvisionOperation(operation string) *cobra.Command {
 	command := &cobra.Command{
 		Use: operation, Short: operation + " the configured agent and service deployment", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if err := features.RequireDeployment(); err != nil {
+				return err
+			}
 			python, err := a.resolvePython()
 			if err != nil {
 				return err

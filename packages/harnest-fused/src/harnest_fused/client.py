@@ -123,11 +123,13 @@ class FusedMCPClient(MCPClient):
     name: str = "fused"
     url_env: str = "HARNEST_FUSED_URL"
     token_env: str = "HARNEST_FUSED_TOKEN"
+    webhook_attachment: str | None = None
 
     @classmethod
     def from_openapi(
         cls, *specs: OpenAPISpec | str | Path, name: str,
         url_env: str | None = None, token_env: str | None = None,
+        webhook_attachment: str | None = None,
         **client_options: Any,
     ) -> FusedMCPClient:
         """Declare one MCP connection spanning all specs without provisioning it.
@@ -135,6 +137,10 @@ class FusedMCPClient(MCPClient):
         Strings are shorthand for ``OpenAPISpec`` with all operations selected.
         ``client_options`` are the standard ``MCPClient.streamable_http`` options.
         Authorization always uses an execution-token environment reference.
+        ``webhook_attachment`` names a `kind: webhook` registration (see
+        ``FusedAdminClient.apply_webhook_config``) whose inbound events this
+        server's resources should also surface, letting any connected service
+        become a channel's event source alongside its outbound tool calls.
         """
 
         from dataclasses import replace
@@ -146,12 +152,15 @@ class FusedMCPClient(MCPClient):
         token_env = _environment_name(token_env if token_env is not None else f"{base}_TOKEN")
         if url_env == token_env:
             raise ValueError("URL and token must use different environment variables")
+        if webhook_attachment is not None and not webhook_attachment.strip():
+            raise ValueError("webhook_attachment must be non-empty when given")
         headers = dict(client_options.pop("headers", {}))
         if any(key.lower() == "authorization" for key in headers):
             raise ValueError("use token_env instead of an Authorization header")
         headers["Authorization"] = f"Bearer ${{{token_env}}}"
         client = cls.streamable_http(f"${{{url_env}}}", headers=headers, **client_options)
-        return replace(client, specs=declarations, name=name, url_env=url_env, token_env=token_env)
+        return replace(client, specs=declarations, name=name, url_env=url_env,
+                       token_env=token_env, webhook_attachment=webhook_attachment)
 
     def setup(
         self, *, description: str, bucket: str, version: str = "1.0.0",

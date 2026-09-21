@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"harnest.dev/harnest/internal/features"
 )
 
 // Deployer is the narrow adapter your Go engine client implements.
@@ -52,7 +54,11 @@ func CompileAndDeployAll(ctx context.Context, plan DeploymentPlan, compiler Comp
 	return deployAll(ctx, plan, compiler, deployer)
 }
 
+// deployAll checks the process opt-in before discovering, compiling, or deploying bundles.
 func deployAll(ctx context.Context, plan DeploymentPlan, compiler Compiler, deployer Deployer) error {
+	if err := features.RequireDeployment(); err != nil {
+		return err
+	}
 	if ctx == nil {
 		return fmt.Errorf("deployment context is nil")
 	}
@@ -170,7 +176,11 @@ type CommandDeployer struct {
 	Stderr  io.Writer
 }
 
+// Deploy requires the opt-in even when called directly outside a deployment run.
 func (d CommandDeployer) Deploy(ctx context.Context, bundle Bundle) error {
+	if err := features.RequireDeployment(); err != nil {
+		return err
+	}
 	if ctx == nil {
 		return fmt.Errorf("deployment context is nil")
 	}
