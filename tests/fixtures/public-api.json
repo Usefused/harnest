@@ -331,6 +331,7 @@
     "output_policy",
     "registrations_for",
     "resource",
+    "session",
     "skills",
     "storage",
     "telemetry_exporter",

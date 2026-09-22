@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "harnest-threadify"
+version = "0.1.0"
+description = "Optional business-focused Threadify telemetry for Harnest"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Fused" }]
+dependencies = ["harnest>=0.23,<0.24", "threadify-sdk==0.2.10"]
+
+[project.urls]
+Documentation = "https://docs.usefused.com/harnest/runtime/telemetry/threadify"
+Repository = "https://github.com/Usefused/harnest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harnest_threadify"]

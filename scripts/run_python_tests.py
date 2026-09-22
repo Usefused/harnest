@@ -258,7 +258,8 @@ def _install_import_paths() -> None:
     """Keep this checkout authoritative in this runner and child processes."""
 
     paths = [str(_TEST_ROOT), str(_ROOT / "src"),
-             str(_ROOT / "packages" / "harnest-fused" / "src"), str(_ROOT)]
+             str(_ROOT / "packages" / "harnest-fused" / "src"),
+             str(_ROOT / "packages" / "harnest-threadify" / "src"), str(_ROOT)]
     sys.path[:0] = paths
     inherited = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = os.pathsep.join(

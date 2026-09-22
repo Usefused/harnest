@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+* Add the optional `harnest-threadify` package for session-linked business
+  telemetry, native Threadify access, and filtered OTLP/HTTP Protobuf export.
+  Keep ADK/LangGraph plumbing, payloads, exception text, and unselected tool
+  activity out of this destination. Add committed-session observers and HTTP
+  request scopes that unwind after streaming or cancellation.
+
 ### Fixes
 
 * Preserve ordinary tool JSON with list- or object-valued `type` fields, including

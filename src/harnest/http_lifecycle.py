@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 import inspect
 from typing import Any
@@ -11,7 +12,7 @@ from .lifecycle import LifecycleListener
 from .lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
 
 
-_PHASES = frozenset({"before_http", "after_http", "on_http_error"})
+_PHASES = frozenset({"http_scope", "before_http", "after_http", "on_http_error"})
 _ASGIApp = Callable[[Mapping[str, Any], Any, Any], Awaitable[None]]
 
 
@@ -83,8 +84,18 @@ class HTTPLifecycleMiddleware:
             return
         context = _context(scope)
         request = HTTPCallRequest(context.method, context.path)
+        # A scope owns the entire streamed response, including cancellation;
+        # after_http only owns its head and cannot safely release such resources.
+        async with AsyncExitStack() as stack:
+            for listener in self._phase("http_scope"):
+                await stack.enter_async_context(listener.callback(context, request))
+            await self._dispatch(context, request, scope, receive, send)
+
+    async def _dispatch(self, context, request, scope, receive, send) -> None:
+        """Run the existing transitions within all entered request scopes."""
         try:
             transformed, finished = await self._before(context, request)
+            # Explicit short circuits still unwind every entered request scope.
             if finished is not None:
                 await _send_finished(finished, scope, receive, send)
                 return

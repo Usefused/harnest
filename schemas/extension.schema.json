@@ -93,6 +93,7 @@
           "lifecycle.tool",
           "lifecycle.mcp",
           "lifecycle.http",
+          "lifecycle.session",
           "lifecycle.skills",
           "context.resources",
           "context.credentials",

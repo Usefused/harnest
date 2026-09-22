@@ -41,7 +41,7 @@ var extensionCapabilities = map[string]struct{}{
 	"context.mcp": {}, "context.resources": {}, "context.session": {},
 	"context.skills": {}, "context.storage": {}, "content.mcp": {},
 	"content.skills": {}, "content.subagents": {}, "content.tools": {},
-	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {},
+	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.session": {},
 	"lifecycle.mcp": {}, "lifecycle.model": {}, "lifecycle.skills": {},
 	"lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
 	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {},

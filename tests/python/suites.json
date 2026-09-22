@@ -157,7 +157,8 @@
       "test_channel_http",
       "test_decision_frameworks",
       "test_jev_example",
-      "test_skill_selection_backends"
+      "test_skill_selection_backends",
+      "test_threadify"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

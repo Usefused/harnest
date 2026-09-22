@@ -396,37 +396,43 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         return resources
 
     async def create_session(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        state: Mapping[str, Any],
+        self, *, session_id: str, user_id: str, state: Mapping[str, Any]
     ) -> SessionRecord:
+        """Notify observers only after the backend commits a new session."""
         await self._start_resources()
-        return await self._driver.create_session(
+        record = await self._driver.create_session(
             session_id=session_id, user_id=user_id, state=state
         )
+        await self._session_created(record)
+        return record
 
     async def create_session_with_plugins(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        state: Mapping[str, Any],
+        self, *, session_id: str, user_id: str, state: Mapping[str, Any],
         plugins: Sequence[Mapping[str, Any]],
     ) -> SessionRecord:
-        """Start application resources before accepting session plugins."""
-
+        """Observe plugin-bearing sessions at the same committed boundary."""
         await self._start_resources()
         from .dynamic_agent_plugins import forward_session_plugins
 
-        return await forward_session_plugins(
-            self._driver,
-            session_id=session_id,
-            user_id=user_id,
-            state=state,
-            plugins=plugins,
+        record = await forward_session_plugins(
+            self._driver, session_id=session_id, user_id=user_id,
+            state=state, plugins=plugins,
         )
+        await self._session_created(record)
+        return record
+
+    async def _session_created(self, record: SessionRecord) -> None:
+        """Keep observer failures from making a committed creation look retryable."""
+        for listener in self._listeners("session_created"):
+            try:
+                await _resolve(listener.callback(self.info, record))
+            except Exception:
+                # Persistence already succeeded. Observers must not encourage
+                # clients to retry a mutation or disclose arbitrary error text.
+                import logging
+                logging.getLogger("harnest.lifecycle").warning(
+                    "session_created observer failed"
+                )
 
     async def get_session(
         self, *, session_id: str, user_id: str

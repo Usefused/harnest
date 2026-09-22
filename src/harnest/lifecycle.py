@@ -27,6 +27,8 @@ _PHASES = frozenset(
         "before_tool",
         "after_tool",
         "on_tool_error",
+        "http_scope",
+        "session_created",
         "before_http",
         "after_http",
         "on_http_error",
@@ -77,6 +79,8 @@ _DECORATOR_PATHS = {
     "before_tool": "tool.before",
     "after_tool": "tool.after",
     "on_tool_error": "tool.on_error",
+    "http_scope": "http.scope",
+    "session_created": "session.created",
     "before_http": "http.before",
     "after_http": "http.after",
     "on_http_error": "http.on_error",
@@ -247,9 +251,16 @@ class _AgentDecorators:
     on_error = _PhaseDecorator("on_error")
 
 
+class _SessionDecorators:
+    """Observe committed sessions without participating in persistence."""
+
+    created = _PhaseDecorator("session_created")
+
+
 class _HTTPDecorators:
     """Group server middleware hooks under the HTTP lifecycle boundary."""
 
+    scope = _PhaseDecorator("http_scope")
     before = _PhaseDecorator("before_http")
     after = _PhaseDecorator("after_http")
     on_error = _PhaseDecorator("on_http_error")
@@ -282,6 +293,7 @@ tool = _ToolDecorators()
 model = _ModelDecorators()
 agent = _AgentDecorators()
 http = _HTTPDecorators()
+session = _SessionDecorators()
 mcp = _MCPDecorators()
 skills = _SkillDecorators()
 
@@ -411,6 +423,7 @@ __all__ = [
     "coverage",
     "credential_provider",
     "http",
+    "session",
     "http_routes",
     "langgraph_middleware",
     "mcp",

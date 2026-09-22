@@ -40,6 +40,7 @@ EXTENSION_CAPABILITIES = frozenset(
         "http.routes",
         "lifecycle.agent",
         "lifecycle.http",
+        "lifecycle.session",
         "lifecycle.mcp",
         "lifecycle.model",
         "lifecycle.skills",

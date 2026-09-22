@@ -90,5 +90,5 @@ select = ["F"]
 "**/orchestrator.py" = ["F821"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "packages/harnest-fused/src"]
+pythonpath = ["src", "packages/harnest-fused/src", "packages/harnest-threadify/src"]
 testpaths = ["tests/python"]

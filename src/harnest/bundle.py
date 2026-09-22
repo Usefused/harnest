@@ -123,6 +123,8 @@ _EXTENSION_PHASE_CAPABILITIES = {
     "before_tool": "lifecycle.tool",
     "after_tool": "lifecycle.tool",
     "on_tool_error": "lifecycle.tool",
+    "http_scope": "lifecycle.http",
+    "session_created": "lifecycle.session",
     "before_http": "lifecycle.http",
     "after_http": "lifecycle.http",
     "on_http_error": "lifecycle.http",
