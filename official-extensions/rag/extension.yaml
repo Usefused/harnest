@@ -2,6 +2,6 @@ apiVersion: harnest.dev/v1alpha1
 kind: Extension
 metadata:
   name: rag
-  version: 0.1.1
+  version: 0.1.2
 runtime:
   entrypoint: extension:extension

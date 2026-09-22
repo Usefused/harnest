@@ -128,6 +128,9 @@
 
 ### Fixes
 
+* Release Docker 0.4.1, Hatchet 0.2.1, and RAG 0.1.2 extension packages with
+  Harnest `>=0.21.3,<0.24` compatibility, including the 0.23 series.
+
 * Pass LangGraph agent-node replies and structured results to downstream graph
   nodes instead of leaving the predecessor's input as their output.
 
