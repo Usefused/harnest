@@ -74,7 +74,7 @@ jobs:
         run: sh -n install.sh
 
   studio-release:
-    name: Bundled Studio (${{ matrix.os }})
+    name: Native release smoke tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -98,12 +98,19 @@ jobs:
       - name: Test Studio frontend
         shell: bash
         run: node --test agent-builder/tests/*.test.mjs
+      - name: Test executable storage and native process behavior
+        run: go test ./internal/agentpack ./cmd/harnest-agent
+      - name: Test compiler executable packaging
+        run: go test ./cmd/harnest -run "Test(NativeExecutable|WindowsConsole|WindowsNative|ExecutableOptions|SharedRuntime|RuntimePack|RuntimeBuild|PortableConsole)"
       - name: Build release-equivalent CLI with bundled Studio
         shell: bash
         run: |
           version=$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          python scripts/prepare_agent_launchers.py
           python scripts/prepare_uv_assets.py --target "$(go env GOOS)-$(go env GOARCH)"
           python scripts/build_runtime_wheel.py --version "$version" --outdir internal/runtimewheel/assets --no-isolation
           go build -tags harnest_release -ldflags "-X main.version=$version" -o .cache/studio-release/harnest.exe ./cmd/harnest
       - name: Launch bundled Studio outside the checkout
         run: python scripts/smoke_studio_release.py --cli .cache/studio-release/harnest.exe
+      - name: Build and run attached and embedded agents outside the checkout
+        run: python scripts/smoke_agent_executable.py --cli .cache/studio-release/harnest.exe

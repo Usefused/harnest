@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 _IGNORED_DIRECTORIES = {
+    # Runtime and resolver caches contain third-party skills, not repository entrypoints.
+    ".cache",
     ".git",
     ".harnest",
     ".venv",

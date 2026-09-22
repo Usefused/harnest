@@ -512,12 +512,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
             repository, revision = action.split("@", 1)
             self.assertEqual(revision, expected_actions[repository])
 
+    def test_native_executables_run_on_windows_in_release_ci(self):
+        """Keep native execution coverage alongside cross-compilation of release assets."""
+        job = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
+        self.assertEqual(set(job["strategy"]["matrix"]["os"]),
+                         {"ubuntu-latest", "macos-latest", "windows-latest"})
+        scripts = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("scripts/prepare_agent_launchers.py", scripts)
+        self.assertIn("go test ./internal/agentpack ./cmd/harnest-agent", scripts)
+        self.assertIn("scripts/smoke_agent_executable.py --cli", scripts)
+
     def test_goreleaser_embeds_the_versioned_wheel_before_go_build(self):
+        """Release builds carry the resolver, native agent launcher, and matching wheel."""
         config = load_yaml(".goreleaser.yaml")
         uv_hook = config["before"]["hooks"][1]
-        wheel_hook = config["before"]["hooks"][2]
+        launcher_hook = config["before"]["hooks"][2]
+        wheel_hook = config["before"]["hooks"][3]
 
         self.assertEqual(uv_hook, "python3 scripts/prepare_uv_assets.py")
+        self.assertEqual(launcher_hook, "python3 scripts/prepare_agent_launchers.py")
         self.assertEqual(
             wheel_hook,
             "python3 scripts/build_runtime_wheel.py --version {{ .Version }} "

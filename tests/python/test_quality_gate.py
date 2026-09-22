@@ -139,6 +139,14 @@ class SkillQualityGateTests(unittest.TestCase):
 
         self.assertEqual(_skill_violations([Path(directory.name)], 400), [])
 
+    def test_ignores_cached_runtime_dependency_skills(self):
+        """Shared runtimes must not apply this repository's word ceiling to dependencies."""
+        with tempfile.TemporaryDirectory() as directory:
+            skill = Path(directory) / ".cache" / "runtime" / "dependency" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("word " * 401)
+            self.assertEqual(_skill_violations([Path(directory)], 400), [])
+
     def test_ignores_installed_node_package_skills(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

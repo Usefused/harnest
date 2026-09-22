@@ -29,3 +29,5 @@ bin/
 /src/harnest/_studio/
 /src/harnest/studio_*.py
 /tests/python/test_studio_*.py
+
+internal/agentlauncher/assets/agent_*
