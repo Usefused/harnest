@@ -58,6 +58,8 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
             "type": "agent_activity",
             **_public_activity_fields(event),
         }
+    if event_type == "decision_result":
+        return {"type": "decision_result", **_public_event_agent(event), "value": event.get("value")}
     if event_type == "agent_metadata":
         return {
             "type": "agent_metadata",

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 BUILDER_SOURCE = Path(__file__).resolve().parents[2] / "agent-builder" / "src"
@@ -236,6 +237,89 @@ class AgentBuilderTests(_BuilderFixture):
 
 class AgentBuilderFolderTests(_BuilderFixture):
     """Verify explicitly selected locations retain independent source authority."""
+
+    def make_project(self, relative):
+        """Create a nested project without importing or executing its agent source."""
+        root = self.root / relative
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "config.yaml").write_text((self.project / "config.yaml").read_text())
+        (root / "instructions.md").write_text(relative)
+        return root
+
+    def project_listing(self):
+        """Exercise the same rediscovery endpoint used by the desktop and mobile pickers."""
+        response = self.client.get("/api/workspace")
+        self.assertEqual(response.status_code, 200, response.text)
+        return {item["label"]: item for item in response.json()["projects"]}
+
+    def test_recursive_discovery_refresh_and_same_named_agents(self):
+        """Nested IDs survive refresh and source edits target the selected same-named agent."""
+        first = self.make_project("channels/sample")
+        second = self.make_project("self-serve/agents/sample")
+        listing = self.project_listing()
+        self.assertEqual(set(listing), {"sample", "channels/sample", "self-serve/agents/sample"})
+        identities = {label: item["id"] for label, item in listing.items()}
+        self.assertEqual(len(set(identities.values())), 3)
+        identity = identities["channels/sample"]
+        doc = self.client.get("/api/file", params={"project": identity, "path": "instructions.md"}).json()
+        saved = self.client.put("/api/files", json={"project": identity, "files": [{**doc, "text": "Updated nested agent"}]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(first.joinpath("instructions.md").read_text(), "Updated nested agent")
+        self.assertEqual(second.joinpath("instructions.md").read_text(), "self-serve/agents/sample")
+        self.make_project("New Examples/another")
+        refreshed = self.project_listing()
+        self.assertIn("New Examples/another", refreshed)
+        self.assertEqual({label: refreshed[label]["id"] for label in identities}, identities)
+        reopened = self.client.post("/api/project/open", json={"path": str(first)}).json()["project"]
+        self.assertEqual(reopened, identity)
+        self.assertEqual(len(self.project_listing()), 4)
+        restarted = Workspace(self.root).projects()
+        self.assertEqual(next(p["id"] for p in restarted if p["label"] == "channels/sample"), identity)
+
+    def test_discovery_prunes_generated_environments_links_and_agent_contents(self):
+        """Ignore dependency trees and nested fixtures instead of treating them as agents."""
+        for relative in (".hidden/agent", "node_modules/agent", "build/agent", "dist/agent", "venv/agent", "__pycache__/agent", "sample/fixtures/agent", "custom-env/agent"):
+            self.make_project(relative)
+        (self.root / "custom-env/pyvenv.cfg").write_text("home = /python\n")
+        (self.root / "linked").symlink_to(self.project, target_is_directory=True)
+        bad = self.root / "linked-config"
+        bad.mkdir()
+        (bad / "config.yaml").symlink_to(self.project / "config.yaml")
+        self.assertEqual(set(self.project_listing()), {"sample"})
+        workspace = Workspace(self.project)
+        self.assertEqual([(p["id"], p["label"]) for p in workspace.projects()], [(".", "sample")])
+
+    def test_refresh_removes_projects_below_new_agent_boundary(self):
+        """Previously discovered descendants do not become implicitly registered projects."""
+        self.make_project("group/child")
+        self.assertIn("group/child", self.project_listing())
+        self.make_project("group")
+        self.assertEqual(set(self.project_listing()), {"sample", "group"})
+        (self.root / "group/config.yaml").unlink()
+        self.assertIn("group/child", self.project_listing())
+
+    def test_nested_project_rejects_replaced_symlink_ancestor(self):
+        """A cached discovery ID cannot authorize a different tree after a parent is replaced."""
+        self.make_project("group/child")
+        identity = self.project_listing()["group/child"]["id"]
+        (self.root / "group").rename(self.root / "moved")
+        (self.root / "group").symlink_to(self.root / "moved", target_is_directory=True)
+        response = self.client.get("/api/file", params={"project": identity, "path": "instructions.md"})
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn("group/child", self.project_listing())
+
+    def test_discovery_limit_preserves_last_complete_snapshot(self):
+        """Oversized scans fail explicitly while already selected project IDs remain usable."""
+        nested = self.make_project("group/child")
+        workspace = Workspace(self.root)
+        identity = next(p["id"] for p in workspace.projects() if p["label"] == "group/child")
+        with patch("harnest_builder.files.PROJECT_SCAN_LIMIT", 1):
+            response = self.client.get("/api/workspace")
+            self.assertEqual(response.status_code, 413)
+            with self.assertRaises(HTTPException) as caught:
+                workspace.projects()
+            self.assertEqual(caught.exception.status_code, 413)
+        self.assertEqual(workspace.project(identity), nested.resolve())
 
     def test_folder_browse_and_open_external_same_named_projects(self):
         """Folder navigation lists directories only and opening never aliases same-named agents."""

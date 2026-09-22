@@ -9,8 +9,11 @@ import re
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 
+from .decision_output import DecisionOutput
+
 if TYPE_CHECKING:
     from .context_memory import MemoryContext
+    from .decision_runtime import DecisionContext
 
 
 _CONTEXT_ATTRIBUTE = "__harnest_context_registration__"
@@ -79,6 +82,7 @@ class AgentContext:
     _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
     _extension_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
+    _decision_output: DecisionOutput = field(default_factory=DecisionOutput, repr=False, compare=False)
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
         """Return one named capability without exposing the whole registry."""
@@ -218,6 +222,13 @@ class _ContextAccess:
         """Return explicit cross-session memory bound to this invocation's owner."""
         from .context_memory import MemoryContext
         return MemoryContext(self.current())
+
+    @property
+    def decisions(self) -> "DecisionContext":
+        """Evaluate explicitly registered decisions within the active invocation."""
+        from .decision_runtime import DecisionContext
+
+        return DecisionContext(self.current())
 
     @property
     def mcp(self) -> Any:
@@ -389,6 +400,8 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _skill_pins=active._skill_pins,
         _extension_bindings=active._extension_bindings,
         _lifetime=active._lifetime,
+        # Child decisions belong to the same invocation output, with their own attribution.
+        _decision_output=active._decision_output,
     )
 
 
@@ -504,6 +517,7 @@ _ACCESS_MEMBERS = frozenset(
         "assets",
         "credentials",
         "depth",
+        "decisions",
         "extensions",
         "framework",
         "invocation_id",

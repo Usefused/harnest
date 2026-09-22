@@ -20,6 +20,7 @@ __all__ = [
     "continuation",
     "credentials",
     "cron",
+    "decisions",
     "durable",
     "evaluation",
     "extensions",

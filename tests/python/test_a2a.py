@@ -321,6 +321,10 @@ class A2AServerTests(unittest.TestCase):
                         "_raw_provider_metadata": True,
                     },
                     {
+                        "type": "decision_result", "agent": "planner",
+                        "value": {"decision": "triage", "outcome": {"action": "review", "route": None}},
+                    },
+                    {
                         "type": "message",
                         "role": "assistant",
                         "agent": "planner",
@@ -357,6 +361,9 @@ class A2AServerTests(unittest.TestCase):
         activity = _harnest_status_update(events, "agent_activity")
         thinking = _harnest_status_update(events, "thinking")
         metadata = _harnest_status_update(events, "agent_metadata")
+        decision = _harnest_status_update(events, "decision_result")
+        self.assertEqual(decision["metadata"]["harnest"]["value"]["decision"], "triage")
+
         artifact = next(
             item["artifactUpdate"] for item in events if "artifactUpdate" in item
         )

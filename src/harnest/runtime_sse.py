@@ -76,6 +76,11 @@ def stream_frame(
             "type": "response.agent_activity",
             **_public_activity_fields(event),
         }
+    if event_type == "decision_result":
+        return "response.decision_result", {
+            **common, **_public_event_agent(event),
+            "type": "response.decision_result", "value": event.get("value"),
+        }
     if event_type == "agent_metadata":
         return "response.agent_metadata", {
             **common,

@@ -38,6 +38,7 @@ def build_runtime_pipeline(
         driver,
         extensions,
         context_values=capabilities.context_values,
+        output_policy=capabilities.output_policy,
         asset_stores=capabilities.asset_stores,
         custom_stores=capabilities.custom_stores,
         memory_store=capabilities.memory_store,

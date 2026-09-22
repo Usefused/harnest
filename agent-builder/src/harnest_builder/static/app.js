@@ -102,7 +102,7 @@ async function refreshWorkspace() {
   const picker=$("project-select"), selected=state.project?.id || picker.value;
   picker.replaceChildren();
   if(!state.workspace.projects.length) { const option=el("option","No projects yet"); option.value=""; picker.append(option); }
-  for(const project of state.workspace.projects) { const option=el("option",project.name); option.value=project.id; picker.append(option); }
+  for(const project of state.workspace.projects) { const option=el("option",project.label || project.name); option.value=project.id; option.title=project.path; picker.append(option); }
   picker.value=selected;
   $("mobile-project-select").replaceChildren(...[...picker.options].map(option=>option.cloneNode(true)));
   $("mobile-project-select").value=selected;

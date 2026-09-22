@@ -226,18 +226,19 @@ def _aggregate_token_usage(events: Sequence[Mapping[str, Any]]) -> TokenUsage | 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OutputPolicy:
-    """Control narration, tool activity, reasoning, and metadata in public output."""
+    """Control narration, tool activity, decisions, reasoning, and public metadata."""
 
     subagent_messages: bool = False
     tool_activity: bool = True
     thinking: bool = False
+    decision_results: bool = False
     agent_metadata: AgentMetadataMode = AgentMetadataMode.NORMALIZED
     persist_raw_agent_metadata: bool = False
 
     def __post_init__(self) -> None:
         """Reject untyped policy values before the application can start."""
 
-        for field_name in ("subagent_messages", "tool_activity", "thinking"):
+        for field_name in ("subagent_messages", "tool_activity", "thinking", "decision_results"):
             if not isinstance(getattr(self, field_name), bool):
                 raise TypeError(f"{field_name} must be a boolean")
         if not isinstance(self.agent_metadata, AgentMetadataMode):
@@ -264,6 +265,8 @@ class OutputPolicy:
 
         if event_type in {"tool_call", "tool_result"}:
             return self.tool_activity
+        if event_type == "decision_result":
+            return self.decision_results
         if event_type == "thinking":
             return self.thinking
         if event_type == "agent_metadata":

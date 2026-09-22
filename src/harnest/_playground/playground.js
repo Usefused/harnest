@@ -492,6 +492,19 @@ function appendResult(value) {
   scrollConversation();
 }
 
+/** Display opted-in decision results separately from the assistant reply. */
+function appendDecisionResult(item) {
+  const panel = document.createElement("details");
+  panel.className = "result-event";
+  const title = document.createElement("summary");
+  title.textContent = `Decision: ${item.value?.decision || "result"}`;
+  const contents = document.createElement("pre");
+  contents.textContent = pretty(item.value);
+  panel.append(title, contents);
+  ui.conversation.append(panel);
+  scrollConversation();
+}
+
 function scrollConversation() {
   ui.conversation.scrollTop = ui.conversation.scrollHeight;
 }
@@ -517,6 +530,7 @@ function renderOutputItem(item) {
   }
   if (item.type === "agent_activity") appendAgentActivity(item);
   if (item.type === "agent_metadata") appendAgentMetadata(item);
+  if (item.type === "decision_result") appendDecisionResult(item);
   if (item.type === "tool_call") {
     closeThinkingBoundary();
     appendToolCall(item.name, item.arguments, item.id);
@@ -1518,6 +1532,7 @@ function handleStreamFrame(frame) {
   if (frame.type === "response.thinking.delta") appendThinking(frame.delta || "", frame.agent);
   if (frame.type === "response.agent_activity") appendAgentActivity(frame);
   if (frame.type === "response.agent_metadata") appendAgentMetadata(frame);
+  if (frame.type === "response.decision_result") appendDecisionResult(frame);
   if (frame.type === "response.text.delta") appendStreamingText(frame.delta || "");
   if (frame.type === "response.tool_call") {
     beginToolBoundary();

@@ -956,7 +956,7 @@ async def _publish_runtime_event(
                 metadata=_a2a_activity_metadata(event),
             )
         return
-    if event_type in {"agent_activity", "agent_metadata"}:
+    if event_type in {"agent_activity", "agent_metadata", "decision_result"}:
         await published.updater.update_status(
             TaskState.TASK_STATE_WORKING,
             metadata=_a2a_activity_metadata(event),
@@ -989,6 +989,8 @@ def _a2a_activity_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
                 **_agent_metadata_from_runtime_event(event).as_dict(),
             }
         }
+    if event.get("type") == "decision_result":
+        return {"harnest": {"type": "decision_result", **_a2a_agent(event), "value": event.get("value")}}
     activity: dict[str, Any] = {"type": event.get("type")}
     for key in ("agent", "activity", "target", "code"):
         value = event.get(key)

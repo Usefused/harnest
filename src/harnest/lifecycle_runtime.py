@@ -9,6 +9,8 @@ from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 from ._exception_notes import add_exception_note
+from .decision_output import DecisionOutput
+from .output import OutputPolicy
 from .agent_principal import (
     activate_agent_principal,
     create_agent_principal_binding,
@@ -276,6 +278,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         extensions: Sequence[LifecycleListener],
         *,
         context_values: Sequence[ContextValue] = (),
+        output_policy: OutputPolicy = OutputPolicy(),
         asset_stores: Mapping[str, Any] | None = None,
         custom_stores: Mapping[str, Any] | None = None,
         memory_store: Any = None,
@@ -294,6 +297,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         _validate_runtime_owners(
             credential_provider, manage_credential_provider, extension_bindings
         )
+        self._output_policy = output_policy
         self._driver = driver
         self._extensions = normalized
         self._extensions_by_phase = _extensions_by_phase(normalized)
@@ -496,6 +500,8 @@ class LifecycleRuntimeDriver(RuntimeDriver):
     async def _event(
         self, context: LifecycleContext, event: RuntimeEvent
     ) -> RuntimeEvent | object:
+        """Transform events and enforce decision disclosure at the public boundary."""
+
         current = event
         for listener in self._listeners("on_event"):
             hook = listener.callback
@@ -510,6 +516,8 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                     "event, DROP_EVENT, or None"
                 )
             current = replacement
+        if current.get("type") == "decision_result" and not self._output_policy.decision_results:
+            return DROP_EVENT
         return current
 
     async def _after(
@@ -603,26 +611,30 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                 raise ExtensionTransformError(
                     "wrapped runtime driver returned a non-InvocationResult value"
                 )
-            event_listeners = self._listeners("on_event")
-            if event_listeners:
-                events: list[RuntimeEvent] = []
-                for event in result.events:
-                    transformed_event = await self._event(lifecycle_context, event)
-                    if transformed_event is not DROP_EVENT:
-                        events.append(transformed_event)
-            else:
-                # Canonicalization remains part of the wrapper contract even
-                # when no event policy needs per-event asynchronous dispatch.
-                events = list(result.events)
+            events = await self._invocation_events(
+                lifecycle_context, agent_context._decision_output.drain() + list(result.events)
+            )
             current = _result_with_events(result, events)
             return await self._after(lifecycle_context, current)
         except Exception as error:
             await self._notify_error(lifecycle_context, error)
             raise
 
+    async def _invocation_events(
+        self, context: LifecycleContext, events: Sequence[RuntimeEvent],
+    ) -> list[RuntimeEvent]:
+        """Apply the same hooks and disclosure boundary to buffered invocation output."""
+        output = []
+        for event in events:
+            transformed = await self._event(context, event)
+            if transformed is not DROP_EVENT:
+                output.append(transformed)
+        return output
+
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[RuntimeEvent]:
+        """Merge opted-in decisions into native events without exposing scoped capabilities."""
         self._validate_agent_principal(request)
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
@@ -652,7 +664,9 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                         ):
                             yield event
                         return
-                    iterator = self._driver.stream(transformed_request).__aiter__()
+                    iterator = agent_context._decision_output.stream(
+                        self._driver.stream(transformed_request).__aiter__()
+                    )
                     while True:
                         transformed_event = await self._next_stream_event(
                             iterator,
@@ -700,7 +714,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
     def _agent_context(self, request: InvocationRequest) -> AgentContext:
         """Give each invocation an isolated view over shared application values."""
 
-        return create_agent_context(
+        active = create_agent_context(
             framework=self.info.framework or "",
             # The display name is transport metadata, not an execution identity.
             agent_name=self.info.id,
@@ -719,6 +733,8 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                 None if self._extension_bindings is None else self._extension_bindings()
             ),
         )
+
+        return replace(active, _decision_output=DecisionOutput(enabled=self._output_policy.decision_results))
 
     @asynccontextmanager
     async def native_invocation_context(
@@ -829,7 +845,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
     ) -> AsyncIterator[RuntimeEvent]:
         """Project a lifecycle-finished response through normal stream policy."""
 
-        for event in result.events:
+        for event in agent_context._decision_output.drain() + list(result.events):
             with (
                 activate_context(agent_context),
                 activate_agent_principal(principal_binding),

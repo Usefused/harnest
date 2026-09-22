@@ -12,6 +12,46 @@ LANGGRAPH_AVAILABLE = importlib.util.find_spec("langgraph") is not None
 
 @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
 class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_output_reaches_successor_nodes(self):
+        """Text, content blocks, and typed replies replace the predecessor's graph value."""
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+        from pydantic import BaseModel
+        from harnest.backends.langgraph import build_graph
+
+        class Answer(BaseModel):
+            text: str
+
+        structured = Answer(text="typed reply")
+        cases = [
+            ({"messages": [AIMessage(content="model reply")]}, "model reply"),
+            ({"messages": [AIMessage(content=[{"type": "text", "text": "block reply"}])]}, "block reply"),
+            ({"structured_response": structured, "messages": []}, structured),
+        ]
+        for native_output, expected in cases:
+            with self.subTest(expected=expected):
+                graph = Graph(name="reply_flow", nodes={
+                    "prepare": lambda value: "predecessor input",
+                    "reply": Agent(name="reply", model="openai:test", instruction="Reply.", history="turn"),
+                    "finish": lambda value: {"received": value},
+                }, edges=(Edge(START, "prepare"), Edge("prepare", "reply"), Edge("reply", "finish")))
+                with patch("langchain.agents.create_agent", return_value=RunnableLambda(lambda state: native_output)):
+                    target = build_graph(graph)
+                result = await target.ainvoke({"value": "ticket", "messages": []})
+                self.assertEqual(result["value"], {"received": expected})
+
+    async def test_incomplete_agent_messages_do_not_become_graph_answers(self):
+        """Preserve incomplete state without promoting user input or tool calls to replies."""
+        from langchain_core.messages import AIMessage, HumanMessage
+        from harnest.backends.langgraph import _graph_agent_output
+
+        cases = [
+            {}, {"messages": []}, {"messages": [HumanMessage(content="ticket")]},
+            {"messages": [AIMessage(content="", tool_calls=[{"id": "call", "name": "lookup", "args": {}}])]},
+        ]
+        for state in cases:
+            self.assertIs(_graph_agent_output(state), state)
+
     async def test_managed_callable_rejects_unknown_arguments_before_filtering(self):
         from langchain_core.messages import ToolMessage
 

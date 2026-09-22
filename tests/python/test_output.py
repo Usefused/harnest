@@ -12,6 +12,8 @@ class OutputPolicyTests(unittest.TestCase):
     def test_default_suppresses_thinking_and_messages_attached_to_tool_calls(self):
         policy = OutputPolicy()
 
+        self.assertFalse(policy.decision_results)
+        self.assertFalse(policy.includes_event("decision_result"))
         self.assertFalse(policy.thinking)
         self.assertTrue(policy.tool_activity)
         self.assertIs(policy.agent_metadata, AgentMetadataMode.NORMALIZED)
@@ -75,6 +77,12 @@ class OutputPolicyTests(unittest.TestCase):
         ):
             with self.subTest(event_type=event_type):
                 self.assertFalse(policy.includes_event(event_type))
+
+    def test_decision_disclosure_is_strictly_opt_in(self):
+        self.assertTrue(OutputPolicy(decision_results=True).includes_event("decision_result"))
+        for value in (1, "include", None):
+            with self.assertRaisesRegex(TypeError, "decision_results"):
+                OutputPolicy(decision_results=value)
 
     def test_policy_is_keyword_only(self):
         with self.assertRaises(TypeError):

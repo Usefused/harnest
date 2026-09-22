@@ -4,6 +4,22 @@
 
 ### Features
 
+* Add provider-neutral typed decisions with custom asynchronous providers,
+  versioned questions, validated choice/score/probability results, explicit
+  routing and threshold policies, bounded evaluation, offline fixtures, and
+  privacy-safe telemetry. Publish decision registries through lifecycle/context
+  resources and evaluate them with invocation-scoped `context.decisions` in ADK
+  and LangGraph. Provider integrations remain optional. Include a runnable Jev
+  support-triage example with a pinned SDK/model, explicit offline fixtures,
+  and manual-review outcomes for uncertain or failed decisions. Follow Jev
+  classification with a configurable LLM reply while preserving the validated
+  routing fields internally; offline mode replaces both provider calls with fixtures.
+  Keep decision results private by default; opt in with
+  `OutputPolicy(decision_results=True)` for separate decision events across
+  public output and streaming transports. The Jev example exposes only its reply
+  by default. Keep synthetic graph-to-model inputs out of restored conversation
+  transcripts in ADK and LangGraph.
+
 * Add reviewed MCP connections and Fused orchestration to Agent Builder Studio,
   sharing the playground's OAuth and Admin backend. Visual controls and Build
   with AI use the same discovery and provisioning plans, with browser-bound
@@ -30,7 +46,9 @@
   release CLI artifacts. Start it with `harnest studio`; use the current folder
   by default or select another with `--workspace`. Cache Studio's isolated,
   release-matched runtime and verify packaged launches in CI on Linux, macOS,
-  and Windows.
+  and Windows. Discover nested agent projects recursively from the workspace,
+  show relative folder paths in project selectors, and pick up added agents on
+  refresh while excluding generated folders, environments, and symbolic links.
 
 * Recover Studio AI proposals from transient model/connection failures with one
   bounded retry. Report specific credential-safe failure categories and a log
@@ -109,6 +127,9 @@
   failing when a requested change needs an unselected file.
 
 ### Fixes
+
+* Pass LangGraph agent-node replies and structured results to downstream graph
+  nodes instead of leaving the predecessor's input as their output.
 
 * Preserve Agent Builder browser connections across refreshes with an authenticated
   session cookie, provide in-page reconnection, and block project creation until

@@ -77,7 +77,9 @@
       "test_fused_admin_client",
       "test_fused_channel",
       "test_provisioner",
-      "test_channel_worker"
+      "test_channel_worker",
+      "test_decisions",
+      "test_decision_output"
     ],
     "integration": [
       "test_a2a",
@@ -151,7 +153,9 @@
       "test_token_policy_backends",
       "test_tool_adk",
       "test_agent_builder_deployment_overview",
-      "test_channel_http"
+      "test_channel_http",
+      "test_decision_frameworks",
+      "test_jev_example"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

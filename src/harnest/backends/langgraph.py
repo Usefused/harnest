@@ -459,7 +459,7 @@ def _apply_history_projection(
     graph_node: bool,
     consume_value: bool,
 ) -> Any:
-    """Apply portable history semantics before the native agent sees state."""
+    """Apply portable history and graph-value semantics around the native agent."""
 
     if definition.history == "session" and not graph_node:
         return target
@@ -485,11 +485,26 @@ def _apply_history_projection(
             retain_history=definition.history == "session",
         )
 
-    return RunnableSequence(
-        RunnableLambda(projection),
-        target,
-        name=definition.name,
-    )
+    steps = [RunnableLambda(projection), target]
+    if graph_node:
+        steps.append(RunnableLambda(_graph_agent_output))
+    return RunnableSequence(*steps, name=definition.name)
+
+
+def _graph_agent_output(state: Any) -> Any:
+    """Pass the agent's result to successor nodes without replacing its message updates."""
+    if not isinstance(state, Mapping):
+        return state
+    if state.get("structured_response") is not None:
+        return {**state, "value": state["structured_response"], "route": None}
+    messages = state.get("messages", ())
+    if not messages:
+        return state
+    message = messages[-1]
+    # Tool calls and predecessor messages are not a completed agent answer.
+    if getattr(message, "type", None) != "ai" or getattr(message, "tool_calls", None):
+        return state
+    return {**state, "value": message.text, "route": None}
 
 
 def _session_input(state: Any) -> Any:
@@ -523,7 +538,7 @@ def _append_node_input(
     consume_value: bool,
     retain_history: bool,
 ) -> Any:
-    """Promote a predecessor's portable output to the agent's user input."""
+    """Mark a predecessor value as private model input, separate from customer turns."""
 
     if not consume_value or not isinstance(projected, Mapping):
         return projected
@@ -538,7 +553,10 @@ def _append_node_input(
     history = projected.get("messages", ()) if retain_history else ()
     if not isinstance(history, (list, tuple)):
         history = ()
-    value = HumanMessage(content=_model_input_text(state["value"]))
+    value = HumanMessage(
+        content=_model_input_text(state["value"]),
+        additional_kwargs={"_harnest_graph_input": True},
+    )
     return {**projected, "messages": [*history, value]}
 
 

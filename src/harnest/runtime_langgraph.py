@@ -2610,6 +2610,9 @@ async def _reference_safe_message(
     for key in ("tool_calls", "tool_call_id", "name"):
         if native.get(key) is not None:
             safe[key] = native[key]
+    if _private_graph_input(native):
+        # Preserve only Harnest's provenance marker, never arbitrary provider metadata.
+        safe["additional_kwargs"] = {"_harnest_graph_input": True}
     return safe
 
 
@@ -2787,7 +2790,7 @@ def _langgraph_session_messages(record: SessionRecord) -> list[SessionMessage]:
     messages: list[SessionMessage] = []
     for index, message in enumerate(native_messages):
         native = json_value(message)
-        if not isinstance(native, Mapping):
+        if not isinstance(native, Mapping) or _private_graph_input(native):
             continue
         role = _langgraph_message_role(native)
         messages.append(
@@ -2802,6 +2805,12 @@ def _langgraph_session_messages(record: SessionRecord) -> list[SessionMessage]:
             )
         )
     return messages
+
+
+def _private_graph_input(message: Mapping[str, Any]) -> bool:
+    """Keep predecessor values available to models without publishing fake user turns."""
+    extra = message.get("additional_kwargs")
+    return isinstance(extra, Mapping) and extra.get("_harnest_graph_input") is True
 
 
 def _langgraph_message_role(message: Mapping[str, Any]) -> str:

@@ -23,6 +23,7 @@ LIMIT = 1024 * 1024
 SUFFIXES = {".py", ".yaml", ".yml", ".json", ".md", ".mdx", ".toml", ".txt", ".lock", ".csv", ".j2", ".html", ".css", ".js"}
 SKIP = {"node_modules", "__pycache__", "dist", "build", "venv"}
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,62}\Z")
+PROJECT_SCAN_LIMIT = 10000
 
 
 def name(value: str) -> str:
@@ -137,6 +138,36 @@ def editable_file(path: Path) -> bool:
     return not path.name.startswith(".") and path.suffix in SUFFIXES and not path.is_symlink()
 
 
+def project_root(path: Path) -> bool:
+    """Reject linked projects and linked ancestors, including replacements after discovery."""
+    config = path / "config.yaml"
+    return path.resolve() == path and config.is_file() and not config.is_symlink()
+
+
+def discovery_error(error: OSError) -> None:
+    """Surface incomplete discovery instead of presenting a silently partial workspace."""
+    raise HTTPException(422, "Cannot read the workspace tree. Check folder permissions.") from error
+
+
+def discover_projects(root: Path) -> list[Path]:
+    """Find agent boundaries in a bounded walk without traversing generated or linked trees."""
+    result = []
+    for count, (directory, folders, _) in enumerate(os.walk(root, followlinks=False, onerror=discovery_error)):
+        if count >= PROJECT_SCAN_LIMIT:
+            raise HTTPException(413, "Workspace discovery exceeds 10,000 folders. Choose a more specific workspace.")
+        path = Path(directory)
+        # Virtual environments can have arbitrary names; their marker is authoritative.
+        if (path / "pyvenv.cfg").is_file():
+            folders[:] = []
+        elif project_root(path):
+            result.append(path)
+            # An agent owns its descendants: fixtures and subagents are not projects.
+            folders[:] = []
+        else:
+            folders[:] = sorted(p for p in folders if not p.startswith(".") and p not in SKIP and not (path / p).is_symlink())
+    return result
+
+
 class Workspace:
     """Own the launch workspace and explicitly opened project roots; serialize mutations."""
 
@@ -145,16 +176,18 @@ class Workspace:
         self.root = root.resolve()
         self.lock = RLock()
         self.registered = {}
+        self.discovered = {}
 
     def project(self, identity: str, *, existing: bool = True) -> Path:
         """Resolve a stable project identity and reject replaced or linked project roots."""
-        if identity in self.registered:
-            path = self.registered[identity]
+        selected = self.registered.get(identity, self.discovered.get(identity))
+        if selected is not None:
+            path = selected
             if path.is_symlink() or path.resolve() != path:
                 raise HTTPException(422, "The selected project location changed. Open it again.")
         else:
             path = self.root if identity == "." else self.root / name(identity)
-        if path.is_symlink() or (identity not in self.registered and not path.resolve().is_relative_to(self.root)):
+        if path.is_symlink() or (selected is None and not path.resolve().is_relative_to(self.root)):
             raise HTTPException(422, "Linked projects are excluded.")
         if existing and not source_path(path, "config.yaml").is_file():
             raise HTTPException(404, "Choose a Harnest project containing config.yaml.")
@@ -162,19 +195,33 @@ class Workspace:
 
     def register(self, root: Path) -> str:
         """Keep stable identities so open jobs and proposals cannot target a different folder."""
+        identity = self._identity(root)
+        if identity.startswith("@"):
+            self.registered[identity] = root
+        return identity
+
+    def _identity(self, root: Path) -> str:
+        """Preserve existing root/child IDs and give nested or external paths stable IDs."""
         if root == self.root:
             return "."
         if root.parent == self.root and NAME.fullmatch(root.name):
             return root.name
-        identity = "@" + hashlib.sha256(str(root).encode()).hexdigest()[:24]
-        self.registered[identity] = root
-        return identity
+        return "@" + hashlib.sha256(str(root).encode()).hexdigest()[:24]
 
     def projects(self) -> list[dict]:
-        """List immediate launch projects and individually selected external project roots."""
-        candidates = [(".", self.root)] + [(p.name, p) for p in sorted(self.root.iterdir()) if NAME.fullmatch(p.name)]
-        candidates.extend(self.registered.items())
-        return [{"id": key, "name": p.name, "path": str(p)} for key, p in candidates if not p.is_symlink() and (p / "config.yaml").is_file() and not (p / "config.yaml").is_symlink()]
+        """Refresh recursive discovery while retaining only explicitly opened extra projects."""
+        discovered = {self._identity(p): p for p in discover_projects(self.root)}
+        # Publish only a completed scan; failed refreshes leave active project IDs intact.
+        self.discovered = discovered
+        candidates = discovered | self.registered
+        return [self._description(key, path) for key, path in sorted(candidates.items(), key=lambda item: str(item[1])) if project_root(path)]
+
+    def _description(self, identity: str, path: Path) -> dict:
+        """Keep project names compatible while exposing unambiguous picker labels."""
+        label = str(path)
+        if path.is_relative_to(self.root):
+            label = path.relative_to(self.root).as_posix() if path != self.root else path.name
+        return {"id": identity, "name": path.name, "label": label, "path": str(path)}
 
     def apply(self, identity: str, changes: list[dict]) -> list[dict]:
         """Preflight the complete change set and restore prior text if an I/O write fails."""

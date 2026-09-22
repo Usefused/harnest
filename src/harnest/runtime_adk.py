@@ -1306,13 +1306,13 @@ def _session_record(session: Any) -> SessionRecord:
 
 
 def _adk_session_messages(session: Any) -> list[SessionMessage]:
-    """Project content-bearing ADK events while retaining each native event."""
+    """Project actual conversation turns while excluding private workflow inputs."""
 
     messages: list[SessionMessage] = []
     for index, event in enumerate(getattr(session, "events", ()) or ()):
         record = json_value(event)
         content = record.get("content") if isinstance(record, Mapping) else None
-        if not isinstance(content, Mapping):
+        if not isinstance(content, Mapping) or _adk_workflow_input(record):
             continue
         role = _adk_message_role(record, content)
         messages.append(
@@ -1325,6 +1325,13 @@ def _adk_session_messages(session: Any) -> list[SessionMessage]:
             )
         )
     return messages
+
+
+def _adk_workflow_input(event: Mapping[str, Any]) -> bool:
+    """Recognize ADK's synthetic user event used to pass values between graph nodes."""
+    # The runner stamps real user turns with an invocation ID. ADK's single-turn
+    # workflow wrapper appends private node input directly with the empty default.
+    return event.get("author") == "user" and event.get("invocationId") == ""
 
 
 def _adk_message_role(
