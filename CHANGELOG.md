@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.23.0](https://github.com/Usefused/harnest/compare/v0.22.0...v0.23.0) (2026-09-22)
 
 ### Features
 
@@ -163,6 +163,19 @@
 
 * Connect Studio to Fused with temporary OAuth client credentials, browser consent,
   and PKCE. Configure the Engine URL without a per-user registration key.
+
+### Features
+
+* add decision-based skill selection and streamline Playground ([b76167c](https://github.com/Usefused/harnest/commit/b76167c5447a37caf081fa82c88f94c6d3992d2a))
+* add Studio Fused orchestration and durable channels ([6e54093](https://github.com/Usefused/harnest/commit/6e54093e33aaff9b11d77f1680e4fa14bbc87f7c))
+* add typed decisions and Jev workflows ([8a39f8e](https://github.com/Usefused/harnest/commit/8a39f8e69a1c3ab2ed3046a265b1609028ba59a3))
+* **studio:** bundle visual workspace and agent provisioning ([13bc447](https://github.com/Usefused/harnest/commit/13bc447d7ce86c67a7f4bdf3180cce9735e2482a))
+
+
+### Fixes
+
+* **extensions:** release packages compatible with Harnest 0.23 ([509eb41](https://github.com/Usefused/harnest/commit/509eb414402fa70b70c86e5324a95cd4ab14adec))
+* **oauth:** connect Studio with temporary client credentials ([e2a8db6](https://github.com/Usefused/harnest/commit/e2a8db6d02b1eac8721bf1ed6789f639ced0fa06))
 
 ## [0.22.0](https://github.com/Usefused/harnest/compare/v0.21.3...v0.22.0) (2026-09-18)
 
