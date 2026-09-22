@@ -4,6 +4,14 @@
 
 ### Features
 
+* Build native agent executables with attached or explicitly embedded Python
+  runtime packs. Resolve shared agent dependencies together and deduplicate
+  identical dependency files across packs and launch caches. Verify runtime
+  identity and platform before execution; launch without installed Harnest,
+  Python, or startup dependency downloads. Support Linux, macOS, and Windows
+  `.exe` builds, including relocatable dependency console tools, shared Windows
+  hardlinks, and child-process cleanup on launcher termination.
+
 * Add the optional `harnest-threadify` package for session-linked business
   telemetry, native Threadify access, and filtered OTLP/HTTP Protobuf export.
   Keep ADK/LangGraph plumbing, payloads, exception text, and unselected tool

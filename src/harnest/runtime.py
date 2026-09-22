@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import importlib.util
 import inspect
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -1170,6 +1171,7 @@ def _runtime_parser() -> argparse.ArgumentParser:
         help="allow a non-loopback bind; this server has no built-in authentication",
     )
     run = commands.add_parser("run", help="invoke the compiled agent in this process")
+    run.add_argument("message", nargs="?", help="message to invoke (otherwise read stdin)")
     run.add_argument("--session", default=None)
     run.add_argument("--output", choices=("text", "json", "ndjson"), default="text")
     return parser
@@ -1374,7 +1376,7 @@ async def _run_local_application(application: Any, args: Any, message: str) -> N
 
 
 def _run_command(args: Any) -> int:
-    """Invoke a compiled artifact and map cancellation to the shell convention."""
+    """Invoke a positional or stdin message and preserve shell cancellation semantics."""
 
     try:
         if not _compiled_cli_enabled(args.artifact):
@@ -1382,7 +1384,10 @@ def _run_command(args: Any) -> int:
                 "CLI invocation is disabled; set spec.interfaces.cli: true "
                 "before compiling the agent"
             )
-        message = _read_local_message(sys.stdin)
+        # A positional message must not block on stdin; both forms share size validation.
+        positional = getattr(args, "message", None)
+        source = StringIO(positional) if positional is not None else sys.stdin
+        message = _read_local_message(source)
         asyncio.run(_run_local_artifact(args, message))
     except KeyboardInterrupt:
         return 130

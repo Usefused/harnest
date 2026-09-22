@@ -15,16 +15,24 @@ import (
 	"harnest.dev/harnest/engine"
 )
 
+// newCompileCommand selects a source artifact or a native executable with an explicit dependency attachment.
 func (a *application) newCompileCommand() *cobra.Command {
 	var output string
 	var entrypoint string
+	var executable executableOptions
 	command := &cobra.Command{
-		Use:   "compile AGENT_DIR --output DIRECTORY",
+		Use:   "compile AGENT_DIR --output PATH",
 		Short: "Compile and validate an agent as a standalone artifact",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if strings.TrimSpace(output) == "" {
 				return fmt.Errorf("--output is required")
+			}
+			if err := executable.validate(); err != nil {
+				return err
+			}
+			if executable.enabled() {
+				return a.compileExecutable(command, arguments[0], output, entrypoint, executable)
 			}
 			bundle, err := loadAgentBundle(arguments[0])
 			if err != nil {
@@ -57,13 +65,16 @@ func (a *application) newCompileCommand() *cobra.Command {
 			)
 		},
 	}
-	command.Flags().StringVarP(&output, "output", "o", "", "compiled artifact directory")
+	command.Flags().StringVarP(&output, "output", "o", "", "compiled artifact directory or executable file")
 	command.Flags().StringVar(
 		&entrypoint,
 		"entrypoint",
 		"",
 		"source module:symbol (default: spec.entrypoint from config.yaml)",
 	)
+	command.Flags().StringVar(&executable.runtime, "runtime", "", "attach a runtime pack without copying it into the executable")
+	command.Flags().BoolVar(&executable.embed, "embed-runtime", false, "embed the runtime pack into the executable")
+	command.Flags().StringVar(&executable.format, "format", "", "output format: directory (default) or executable")
 	return command
 }
 

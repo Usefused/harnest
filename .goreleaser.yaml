@@ -11,6 +11,7 @@ before:
   hooks:
     - python3 -c "import pathlib; [item.unlink() for item in pathlib.Path('internal/runtimewheel/assets').glob('*.whl')]"
     - python3 scripts/prepare_uv_assets.py
+    - python3 scripts/prepare_agent_launchers.py
     - >-
       python3 scripts/build_runtime_wheel.py --version {{ .Version }}
       {{ if .IsSnapshot }}--allow-version-override{{ end }}

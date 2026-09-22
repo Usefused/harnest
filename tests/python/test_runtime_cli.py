@@ -13,6 +13,7 @@ from harnest.runtime import (
     _compiled_cli_enabled,
     _read_local_message,
     _run_command,
+    _runtime_parser,
 )
 from harnest.runtime_cli import run_local_cli
 
@@ -143,6 +144,23 @@ class RuntimeCLITests(unittest.TestCase):
                     manifest.write_text(contents)
                     with self.assertRaisesRegex(RuntimeError, "compiled manifest"):
                         _compiled_cli_enabled(artifact)
+
+    def test_positional_message_runs_without_reading_stdin(self):
+        """A native executable can accept a prompt while preserving authored whitespace."""
+        args = _runtime_parser().parse_args(["--artifact", "/unused", "run", "  hello  "])
+        seen = []
+
+        async def invoke(_args, message):
+            """Capture the validated message without constructing a provider runtime."""
+            seen.append(message)
+
+        with (
+            patch("harnest.runtime._compiled_cli_enabled", return_value=True),
+            patch("harnest.runtime._run_local_artifact", side_effect=invoke),
+            patch("harnest.runtime.sys.stdin", None),
+        ):
+            self.assertEqual(_run_command(args), 0)
+        self.assertEqual(seen, ["  hello  "])
 
     def test_run_rejects_disabled_cli_before_reading_prompt(self):
         args = SimpleNamespace(artifact=Path("/unused"))

@@ -41,12 +41,13 @@ var bootstrapPythonCandidates = []string{
 	"python",
 }
 
+// newRuntimeCommand separates CLI bootstrap installation from portable agent runtime builds.
 func (a *application) newRuntimeCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "runtime",
-		Short: "Manage the Python runtime embedded in the Harnest CLI",
+		Short: "Manage Python environments and portable agent runtime packs",
 	}
-	command.AddCommand(a.newRuntimeInstallCommand())
+	command.AddCommand(a.newRuntimeInstallCommand(), a.newRuntimeBuildCommand())
 	return command
 }
 
