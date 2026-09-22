@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.23.0](https://github.com/Usefused/harnest/compare/v0.22.0...v0.23.0) (2026-09-22)
 
 ### Features
 
@@ -163,9 +163,6 @@
 
 * Connect Studio to Fused with temporary OAuth client credentials, browser consent,
   and PKCE. Configure the Engine URL without a per-user registration key.
-
-## [0.23.0](https://github.com/Usefused/harnest/compare/v0.22.0...v0.23.0) (2026-09-22)
-
 
 ### Features
 
