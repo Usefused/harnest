@@ -118,7 +118,7 @@ class PlaygroundStudioTests(unittest.TestCase):
         for path in ("/_harnest/studio", "/_harnest/authoring", "/_harnest/studio/source?path=agent.py"):
             self.assertEqual(client.get(path).status_code, 401)
             self.assertEqual(client.get(path, headers={"x-test-user": "alice"}).status_code, 200)
-        for path in ("/_harnest/studio.js", "/_harnest/studio.css", "/_harnest/builder.js", "/_harnest/builder.css", "/_harnest/selects.js", "/_harnest/selects.css"):
+        for path in ("/_harnest/builder.js", "/_harnest/builder.css", "/_harnest/selects.js", "/_harnest/selects.css"):
             self.assertEqual(client.get(path).status_code, 200)
 
     def test_disabled_playground_and_missing_assets_expose_no_studio(self):
@@ -166,7 +166,14 @@ class PlaygroundStudioTests(unittest.TestCase):
                     self.assertTrue(any(block["name"] == "root_agent" for block in response.json()["blocks"]))
                     source = client.get("/_harnest/studio/source", params={"path": "instructions.md"})
                     self.assertEqual(source.json()["text"], "Compiled instructions")
-                    self.assertIn('data-workspace="studio"', client.get("/").text)
+                    page = client.get("/").text
+                    self.assertNotIn('data-workspace="studio"', page)
+                    self.assertNotIn('id="studio-workspace"', page)
+                    self.assertNotIn('/_harnest/studio.js', page)
+                    self.assertIn('data-workspace="chat"', page)
+                    self.assertIn('data-workspace="evals"', page)
+                    for path in ("/_harnest/studio.js", "/_harnest/studio.css"):
+                        self.assertEqual(client.get(path).status_code, 404)
                     self.assertFalse(client.get("/_harnest/authoring").json()["available"])
                 self.assert_authoring_boundary(authored, artifact)
 
@@ -187,10 +194,10 @@ class PlaygroundStudioTests(unittest.TestCase):
             self.assertEqual((authored / "instructions.md").read_text(), "Edited locally")
             self.assertEqual(client.get("/_harnest/studio/source?path=instructions.md").json()["text"], "Compiled instructions")
 
-    def test_browser_studio_behavior(self):
+    def test_browser_workspace_behavior(self):
         """Run behavior tests for production browser rendering and view switching."""
 
-        script = Path(__file__).resolve().parents[1] / "javascript/playground_studio.cjs"
+        script = Path(__file__).resolve().parents[1] / "javascript/playground_workspaces.cjs"
         subprocess.run(["node", "--test", str(script)], check=True, capture_output=True, text=True)
 
 

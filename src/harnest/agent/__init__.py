@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from ..mcp_lifecycle import propagate_mcp_lifecycles
 from ..model import ModelInput, resolve_model
 from ..tokens import TokenPolicy
+from ..skill_selection import DecisionSkillSelector
 from ..model_lifecycle import propagate_litellm_lifecycles
 from ..durable import adk_durable_tool, is_durable_tool
 from ..sandbox import Sandbox
@@ -88,6 +89,7 @@ class AgentDefinition:
     generate_content_config: Mapping[str, Any] | Any | None = None
     history: Literal["session", "turn"] = "session"
     token_policy: TokenPolicy | None = field(default=None, kw_only=True)
+    skill_selection: DecisionSkillSelector | None = field(default=None, kw_only=True)
     sandboxes: Sequence[str] = field(default_factory=tuple)
     _sandbox_bindings: Mapping[str, Sandbox] = field(default_factory=dict, repr=False)
 
@@ -119,6 +121,8 @@ class AgentDefinition:
         self._validate_history()
         if self.token_policy is not None and not isinstance(self.token_policy, TokenPolicy):
             raise TypeError("token_policy must be TokenPolicy or None")
+        if self.skill_selection is not None and not isinstance(self.skill_selection, DecisionSkillSelector):
+            raise TypeError("skill_selection must be DecisionSkillSelector or None")
         self._validate_resources()
         self._validate_sandboxes()
         validate_output_schema(self.input_schema, field_name="agent input_schema")
@@ -238,6 +242,9 @@ class AgentDefinition:
             if self.history == "session"
             else "none",
         }
+        if self.skill_selection is not None:
+            from ..skill_selection_adapters import adk_selection_callback
+            kwargs["before_model_callback"] = adk_selection_callback(self.skill_selection)
         if self.output_key is not None:
             kwargs["output_key"] = self.output_key
         kwargs.update(self._schema_kwargs())

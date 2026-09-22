@@ -22,15 +22,21 @@ func withoutPlaygroundArgument(t *testing.T, call string) string {
 	return strings.Join(append(args[:index], args[index+2:]...), "\t")
 }
 
+// TestPlaygroundAssetsAreCLIOwnedAndEphemeral keeps eval assets but excludes the retired Studio UI.
 func TestPlaygroundAssetsAreCLIOwnedAndEphemeral(t *testing.T) {
 	directory, cleanup, err := stagePlayground()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	for _, name := range []string{"index.html", "playground.css", "playground.js", "selects.js", "selects.css", "markdown.js", "markdown-it.min.js"} {
+	for _, name := range []string{"index.html", "playground.css", "playground.js", "builder.js", "builder.css", "selects.js", "selects.css", "markdown.js", "markdown-it.min.js"} {
 		if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"studio.js", "studio.css"} {
+		if _, err := os.Stat(filepath.Join(directory, name)); !os.IsNotExist(err) {
+			t.Fatalf("retired Studio asset was staged: %s (%v)", name, err)
 		}
 	}
 	args := (serveOptions{playgroundAssets: directory}).arguments("agent")

@@ -222,6 +222,17 @@ register them once with `@lifecycle.skills.source("name")`. Filesystem and
 dynamic sources share `context.skills` plus the model's progressive list, load,
 and resource tools. Sources must filter by `SkillContext` identity and paginate
 before returning descriptors; never fetch remote catalogs during construction.
+For automatic selection, set `Agent(skill_selection=DecisionSkillSelector(...))`
+using `harnest.skills`. Register a `Decisions` resource named `decisions`; the
+selector builds batched select/skip questions from authorized skill metadata.
+Its optional `input` callback receives the existing `SkillContext`, with current
+`task` and read-only `state` available during selection, and returns precisely
+the JSON mapping sent as decision `state["input"]`. The default sends only the
+task. Choose a registered `provider` when there are multiple providers; configure
+`instructions`, `max_skills`, `max_candidates`, and `timeout_seconds` as needed.
+Use `DecisionSkillSelector.DISCOVERY` or `.ERROR` for `fallback`, never strings.
+Selected bodies use the existing scoped loader and version pins; selection can
+return several skills or none. Ordinary skill tools remain available.
 Inspect `application.lifecycle_coverage.report()` or `/agent` diagnostics before
 relying on native internals, especially in advanced mode.
 

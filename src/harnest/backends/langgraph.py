@@ -338,6 +338,7 @@ def _build_ready_agent(
         ) from exc
 
     from ..token_langgraph import token_middleware
+    from ..skill_selection_adapters import selection_middleware
 
     model = _resolve_langchain_model(definition.model)
     kwargs = {
@@ -347,6 +348,7 @@ def _build_ready_agent(
         "name": definition.name,
         "middleware": [
             _langgraph_agent_scope_middleware(definition.name),
+            *selection_middleware(definition.skill_selection),
             *(
                 bind_model_extension(item, agent_name=definition.name)
                 for item in middleware

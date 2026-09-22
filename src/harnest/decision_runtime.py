@@ -13,7 +13,7 @@ from opentelemetry.trace import StatusCode
 
 from .decision_policy import DecisionBinding, DecisionOutcome
 from .decision_types import (
-    DecisionCapabilities, DecisionError, DecisionProvider, DecisionProviderError,
+    DecisionCapabilities, DecisionDefinition, DecisionError, DecisionProvider, DecisionProviderError,
     DecisionRequest, DecisionResponse, DecisionTimeoutError, DecisionValidationError,
     finite, identifier,
 )
@@ -65,6 +65,22 @@ class Decisions:
         binding = self._bindings.get(name)
         if binding is None:
             raise KeyError("decision is not registered")
+        return await self._evaluate_binding(binding, state)
+
+    async def evaluate_definition(
+        self, definition: DecisionDefinition, state: Mapping[str, Any], *, provider: str | None = None,
+    ) -> DecisionEvaluation:
+        """Evaluate a runtime-built definition without mutating registered decisions."""
+        if provider is None:
+            if len(self._providers) != 1:
+                raise ValueError("choose a provider when the registry does not contain exactly one")
+            provider = next(iter(self._providers))
+        binding = DecisionBinding(definition, provider)
+        _bindings((binding,), self._providers)
+        return await self._evaluate_binding(binding, state)
+
+    async def _evaluate_binding(self, binding: DecisionBinding, state: Mapping[str, Any]) -> DecisionEvaluation:
+        """Share validation, bounded execution and telemetry for static and dynamic definitions."""
         request = DecisionRequest(binding.definition, state)
         provider = self._providers[binding.provider]
         # Automatic exception recording would serialize provider errors containing

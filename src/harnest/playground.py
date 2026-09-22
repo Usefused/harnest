@@ -112,8 +112,6 @@ def create_playground_router(
     @router.get("/_harnest/selects.js", include_in_schema=False)
     @router.get("/_harnest/builder.js", include_in_schema=False)
     @router.get("/_harnest/builder.css", include_in_schema=False)
-    @router.get("/_harnest/studio.js", include_in_schema=False)
-    @router.get("/_harnest/studio.css", include_in_schema=False)
     @router.get("/_harnest/markdown.js", include_in_schema=False)
     @router.get("/_harnest/markdown-it.min.js", include_in_schema=False)
     async def playground_markdown(request: Request) -> Any:

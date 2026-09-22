@@ -220,6 +220,21 @@ class SkillContext:
     _active: Any = field(repr=False)
 
     @property
+    def task(self) -> str:
+        """Return current task text during automatic selection, never prior conversation turns."""
+        from .skill_selection import selection_input
+
+        return selection_input(self._active)[0]
+
+    @property
+    def state(self) -> Mapping[str, Any]:
+        """Snapshot JSON application state only when the selection callback requests it."""
+        from .decision_types import _freeze_state
+        from .skill_selection import selection_input
+
+        return _freeze_state(selection_input(self._active)[1])
+
+    @property
     def framework(self) -> str:
         """Return the framework active for this invocation."""
 
@@ -1299,7 +1314,13 @@ def _optional_text(value: Any, label: str, *, maximum: int) -> None:
         _require_text(value, label, maximum=maximum)
 
 
+from .skill_selection import DecisionSkillSelector, SkillSelectionError, SkillSelectionFallback
+
+
 __all__ = [
+    "DecisionSkillSelector",
+    "SkillSelectionError",
+    "SkillSelectionFallback",
     "CatalogSkill",
     "FilesystemSkillSource",
     "SkillAccess",

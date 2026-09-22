@@ -523,9 +523,9 @@ body.eval-mode .topbar { grid-template-columns: minmax(180px, 1fr) auto; }
 .eval-header .secondary-button { flex-shrink: 0; }
 .eval-content { display: grid; gap: 18px; max-width: 1080px; margin: 0 auto; }
 .eval-runner { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(190px, 0.55fr) auto; align-items: end; gap: 12px; padding: 16px; background: var(--panel-glass); border: 1px solid var(--line); border-radius: 16px; }
-.eval-runner label, .studio-search { display: grid; min-width: 0; gap: 7px; color: var(--muted); font: 700 10px/1.4 var(--font-body); letter-spacing: .08em; text-transform: uppercase; }
-.eval-runner :is(input, select), .studio-search input { min-width: 0; width: 100%; height: var(--control-height); padding: 0 11px; border-radius: var(--control-radius); font: 400 12px/1.4 var(--font-body); letter-spacing: normal; text-transform: none; }
-.eval-runner input::placeholder, .studio-search input::placeholder { color: var(--muted); opacity: 1; }
+.eval-runner label { display: grid; min-width: 0; gap: 7px; color: var(--muted); font: 700 10px/1.4 var(--font-body); letter-spacing: .08em; text-transform: uppercase; }
+.eval-runner :is(input, select) { min-width: 0; width: 100%; height: var(--control-height); padding: 0 11px; border-radius: var(--control-radius); font: 400 12px/1.4 var(--font-body); letter-spacing: normal; text-transform: none; }
+.eval-runner input::placeholder { color: var(--muted); opacity: 1; }
 .mcp-query { max-width: 1080px; margin: 0 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .eval-run-button, .mcp-query > .primary-button { justify-self: end; min-width: 112px; }
 .eval-catalog-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }

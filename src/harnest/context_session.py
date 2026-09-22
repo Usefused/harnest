@@ -338,3 +338,19 @@ __all__ = [
     "invocation_session_context",
     "session",
 ]
+
+
+def _selection_state(native: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read leased public state when native agent schemas omit custom session fields."""
+    try:
+        bound = session.current()
+    except ContextUnavailableError:
+        stored = {}
+    else:
+        stored = bound._binding.lease.record.state
+    # Managed graphs nest public state; history and private checkpoint channels
+    # must not become accidental input to a developer's state projection.
+    public = stored.get("_harnest_state", stored)
+    value = {**public, **native.get("_harnest_state", native)}
+    return {key: item for key, item in value.items()
+            if key != "messages" and not key.startswith("_harnest")}

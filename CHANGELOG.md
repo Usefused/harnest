@@ -4,6 +4,18 @@
 
 ### Features
 
+* Add opt-in `Agent(skill_selection=DecisionSkillSelector(...))` for ADK and
+  LangGraph. Build batched decisions from visible skill metadata, use the
+  existing `SkillContext` for task/state input callbacks, and load only selected
+  pinned versions. Support multiple or no selections, typed discovery/error
+  fallbacks, bounded requests, and invocation-scoped reuse without sending
+  conversation history or skill bodies to the decision provider by default.
+
+* Remove the embedded Studio tab and its browser assets from Playground. Keep
+  conversation testing and evaluation editing in Playground; use the standalone
+  `harnest studio` for agent authoring and MCP setup. Existing Studio view URLs
+  return to the conversation while preserving the selected session.
+
 * Add provider-neutral typed decisions with custom asynchronous providers,
   versioned questions, validated choice/score/probability results, explicit
   routing and threshold policies, bounded evaluation, offline fixtures, and
@@ -133,6 +145,11 @@
 
 * Pass LangGraph agent-node replies and structured results to downstream graph
   nodes instead of leaving the predecessor's input as their output.
+
+* Clarify sensitive-data handling in authentication and incident-triage skills:
+  use synthetic credentials for authoring tests, restrict runtime credential
+  use to trusted destinations, and omit supplied secrets and personal details
+  from triage outputs, tool calls, and specialist handoffs.
 
 * Preserve Agent Builder browser connections across refreshes with an authenticated
   session cookie, provide in-page reconnection, and block project creation until

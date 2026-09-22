@@ -435,6 +435,7 @@
   ],
   "harnest.skills": [
     "CatalogSkill",
+    "DecisionSkillSelector",
     "FilesystemSkillSource",
     "SkillAccess",
     "SkillCatalogPage",
@@ -448,6 +449,8 @@
     "SkillResource",
     "SkillResourceNotSupported",
     "SkillScope",
+    "SkillSelectionError",
+    "SkillSelectionFallback",
     "SkillSource",
     "SkillSourceExecutionError",
     "SkillValidationError"

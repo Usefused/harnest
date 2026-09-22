@@ -79,7 +79,8 @@
       "test_provisioner",
       "test_channel_worker",
       "test_decisions",
-      "test_decision_output"
+      "test_decision_output",
+      "test_skill_selection"
     ],
     "integration": [
       "test_a2a",
@@ -155,7 +156,8 @@
       "test_agent_builder_deployment_overview",
       "test_channel_http",
       "test_decision_frameworks",
-      "test_jev_example"
+      "test_jev_example",
+      "test_skill_selection_backends"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

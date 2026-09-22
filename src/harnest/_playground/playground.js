@@ -70,7 +70,7 @@ const ui = {
 const themeStorageKey = "harnest.playground.theme";
 const sessionQueryKey = "session";
 const workspaceQueryKey = "view";
-const workspaceNames = new Set(["chat", "studio", "evals"]);
+const workspaceNames = new Set(["chat", "evals"]);
 const supportedThemes = new Set(["dark", "light", "system"]);
 const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
@@ -572,6 +572,7 @@ function configureLiveTransport(agent) {
 
 /** Switch developer views without discarding the conversation or retrieved context. */
 async function selectWorkspace(name, { push = false } = {}) {
+  name = workspaceNames.has(name) ? name : "chat";
   runtime.workspace = name;
   syncWorkspaceUrl(name, { push });
   const evaluating = name === "evals";
@@ -579,7 +580,6 @@ async function selectWorkspace(name, { push = false } = {}) {
   ui.chatWorkspace.hidden = name !== "chat";
   ui.evalWorkspace.hidden = !evaluating;
 
-  document.querySelector("#studio-workspace").hidden = name !== "studio";
   ui.workspaceEyebrow.textContent = evaluating ? "Evaluation" : "Playground";
   ui.workspaceTitle.textContent = evaluating ? "Evals" : "Conversation";
   ui.inspector.classList.remove("open");
@@ -592,11 +592,6 @@ async function selectWorkspace(name, { push = false } = {}) {
   if (evaluating) {
     if (!runtime.evalCatalog) await loadEvals();
     if (typeof harnestBuilder !== "undefined") await harnestBuilder.openEvals(api, runtime.evalCatalog);
-  }
-  if (name === "studio") {
-    ui.workspaceEyebrow.textContent = "Studio";
-    ui.workspaceTitle.textContent = "Agent architecture";
-    await harnestStudio.open(api);
   }
 }
 
@@ -1019,6 +1014,8 @@ function workspaceFromLocation() {
 /** Keep the active workspace shareable so browser back/forward follows tab changes. */
 function syncWorkspaceUrl(name, { push = false } = {}) {
   const url = new URL(window.location.href);
+  // Retired embedded Studio bookmarks return to Chat without losing the session.
+  url.searchParams.delete("studioView");
   if (name && name !== "chat") url.searchParams.set(workspaceQueryKey, name);
   else url.searchParams.delete(workspaceQueryKey);
   window.history[push ? "pushState" : "replaceState"](window.history.state, "", url);
@@ -1902,6 +1899,7 @@ function setActiveSession(sessionId, clearConversation = true) {
   if (changed && clearConversation) resetConversation();
 }
 
+/** Restore session and normalize retired workspace links even when chat loading fails. */
 async function initialize() {
   selectTheme(storedTheme(), false);
   bindEvents();
@@ -1917,8 +1915,7 @@ async function initialize() {
   }
   // A failed chat-only load must not strand a deep link on the wrong workspace.
   try {
-    const requestedWorkspace = workspaceFromLocation();
-    if (requestedWorkspace !== "chat") await selectWorkspace(requestedWorkspace);
+    await selectWorkspace(workspaceFromLocation());
   } catch (error) {
     showError(error);
   }

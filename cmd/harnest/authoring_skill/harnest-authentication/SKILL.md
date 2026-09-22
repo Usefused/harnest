@@ -11,6 +11,16 @@ without making credentials agent state.
 Read [references/contract.md](references/contract.md) before changing an auth or
 credential flow.
 
+## Sensitive data handling
+
+Use placeholders, environment-variable names, and synthetic credentials when
+authoring code or testing; do not request or read real secret values. If supplied
+in conversation, omit them from generated files, replies, and tool arguments.
+Generated runtime code may validate incoming tokens or exchange them with the
+configured identity provider, and send credentials only to the authorized
+downstream audience. Keep them opaque until that trusted request boundary;
+never persist or expose their raw values to the model.
+
 ## Required decisions
 
 1. Treat `@lifecycle.authenticate` as the only raw connection boundary. Validate
@@ -35,6 +45,7 @@ credential flow.
 
 Test invalid authentication, principal propagation, redacted representations,
 provider policy, root/subagent inheritance, revocation, and managed/native
-paths that changed. Finish with a real local HTTP request proving that an
-incoming header reaches the provider only as the explicitly promoted opaque
-credential. Run the repository quality gate for Harnest source changes.
+paths that changed. Finish with a local HTTP request using a synthetic token,
+proving that an incoming header reaches the provider only as the explicitly
+promoted opaque credential. Run the repository quality gate for Harnest source
+changes.

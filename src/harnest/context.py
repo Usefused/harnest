@@ -83,6 +83,7 @@ class AgentContext:
     _extension_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
     _decision_output: DecisionOutput = field(default_factory=DecisionOutput, repr=False, compare=False)
+    _skill_selection_cache: dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
         """Return one named capability without exposing the whole registry."""
@@ -398,6 +399,7 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _skill_registry=active._skill_registry,
         _sandbox_registry=active._sandbox_registry,
         _skill_pins=active._skill_pins,
+        _skill_selection_cache=active._skill_selection_cache,
         _extension_bindings=active._extension_bindings,
         _lifetime=active._lifetime,
         # Child decisions belong to the same invocation output, with their own attribution.
