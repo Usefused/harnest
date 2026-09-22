@@ -18,6 +18,7 @@ from harnest.client_tool import (
 from harnest.content import Image, ImageConstraints
 from harnest.agent import tool
 from harnest.agent import client_tool
+from harnest.stored_media import stored_media_reference, stored_media_references
 from harnest.transient_media import (
     TransientMediaAccess,
     TransientMediaLeaseStore,
@@ -25,6 +26,9 @@ from harnest.transient_media import (
     sanitize_transient_media,
     stage_transient_media,
     stage_transient_media_batch,
+    is_transient_media_placeholder,
+    transient_media_lease_id,
+    transient_media_placeholders,
 )
 
 
@@ -48,6 +52,27 @@ class _CaptureResult(BaseModel):
 
 
 class TransientMediaTests(unittest.TestCase):
+    def test_non_string_types_are_tool_data_not_media(self):
+        """Schema unions and structured type values must not fail recursive detection."""
+        for kind in (["string", "null"], {"name": "image"}, ["image"], None, 1):
+            with self.subTest(kind=kind):
+                value = {"type": kind, "mediaType": "image/png", "content": "attached"}
+                self.assertFalse(is_transient_media_placeholder(value))
+                self.assertEqual(transient_media_placeholders({"nested": [value]}), ())
+                legacy = {**value, "harnestTransient": {"leaseId": "transient_media_test"}}
+                self.assertIsNone(transient_media_lease_id(legacy))
+                self.assertEqual(sanitize_transient_media(legacy), (legacy, ()))
+                stored = {**value, "store": "media", "assetId": "asset-test",
+                          "harnestStored": {"expiresIn": 60}}
+                self.assertIsNone(stored_media_reference(stored))
+                self.assertEqual(stored_media_references({"nested": [stored]}), ())
+
+    def test_schema_values_do_not_hide_nested_valid_attachments(self):
+        """Skipping a non-media parent must still discover real child attachments."""
+        media = {"type": "image", "mediaType": "image/png", "content": "attached"}
+        value = {"type": ["object", "null"], "nested": [{"type": {"schema": True}}, media]}
+        self.assertEqual(transient_media_placeholders(value), (("image", "image/png"),))
+
     def setUp(self) -> None:
         self.scope = TransientMediaScope("user-a", "session-a", "call-a")
         self.store = TransientMediaLeaseStore(max_total_bytes=1_000)

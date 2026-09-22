@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+* Preserve ordinary tool JSON with list- or object-valued `type` fields, including
+  JSON Schema unions, when inspecting media. Prevent the asset-content callback
+  from failing with `unhashable type` while retaining real attachment detection.
+
 ## [0.23.0](https://github.com/Usefused/harnest/compare/v0.22.0...v0.23.0) (2026-09-22)
 
 ### Features

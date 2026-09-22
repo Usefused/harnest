@@ -172,7 +172,7 @@ def _validate_inline_media(
 
 
 def stored_media_reference(value: Any) -> StoredMediaReference | None:
-    """Parse only the private reference shape emitted by this module."""
+    """Parse private media references without interpreting non-string JSON types."""
 
     if not isinstance(value, Mapping):
         return None
@@ -182,7 +182,7 @@ def stored_media_reference(value: Any) -> StoredMediaReference | None:
     kind = value.get("type")
     store = value.get("store")
     asset_id = value.get("assetId") or value.get("asset_id")
-    if kind not in {"image", "audio", "video", "file"}:
+    if not isinstance(kind, str) or kind not in {"image", "audio", "video", "file"}:
         return None
     if not isinstance(store, str) or not store:
         return None

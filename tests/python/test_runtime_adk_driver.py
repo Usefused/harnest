@@ -592,6 +592,40 @@ def _request(session_id: str, *, invocation_id: str = "invocation-1"):
 
 
 class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_schema_union_survives_asset_callbacks_in_a_complete_turn(self):
+        """Ordinary structured tool data must reach the next model call unchanged."""
+        payload = {"schema": {"type": ["string", "null"]}, "items": [{"type": {"name": "record"}}]}
+        observed = []
+
+        def schema() -> dict[str, Any]:
+            """Return JSON data with non-media type values from a real tool."""
+            return payload
+
+        class SchemaToolLlm(BaseLlm):
+            async def generate_content_async(self, llm_request, stream=False):
+                """Request the tool, then record what survives the runtime callbacks."""
+                responses = [part.function_response for content in llm_request.contents
+                             for part in content.parts if part.function_response is not None]
+                if responses:
+                    observed.append(dict(responses[-1].response))
+                    part = types.Part(text="schema received")
+                else:
+                    part = types.Part(function_call=types.FunctionCall(name="schema", args={}))
+                yield LlmResponse(content=types.Content(role="model", parts=[part]))
+
+        target = Agent(name="schema_reader", instruction="Read the schema tool.",
+                       model=SchemaToolLlm(model="test"), tools=[schema]).build()
+        application = CompiledApplication(name="schema_reader", framework="adk", mode="managed",
+                                          target=target, native_app=App(name="schema_reader", root_agent=target))
+        driver = ADKRuntimeDriver(application)
+        try:
+            await driver.create_session(session_id="schema", user_id="test-user", state={})
+            result = await driver.invoke(_request("schema"))
+            self.assertEqual(result.text, "schema received")
+            self.assertEqual(observed, [payload])
+        finally:
+            await driver.close()
+
     async def asyncSetUp(self):
         self.driver = ADKRuntimeDriver(
             _application(),

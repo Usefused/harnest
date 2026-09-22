@@ -331,7 +331,7 @@ def is_transient_media_marker(value: Any) -> bool:
 
 
 def transient_media_lease_id(value: Any) -> str | None:
-    """Return a syntactically valid private lease identifier from one marker."""
+    """Return a valid private lease ID, ignoring ordinary JSON discriminator values."""
 
     if not isinstance(value, Mapping):
         return None
@@ -343,7 +343,7 @@ def transient_media_lease_id(value: Any) -> str | None:
         return None
     kind = value.get("type")
     media_type = value.get("mediaType")
-    if kind not in {"image", "audio", "video", "file"}:
+    if not isinstance(kind, str) or kind not in {"image", "audio", "video", "file"}:
         return None
     return lease_id if isinstance(media_type, str) else None
 
@@ -379,10 +379,12 @@ def transient_media_placeholder(kind: str, media_type: str) -> dict[str, str]:
 
 
 def is_transient_media_placeholder(value: Any) -> bool:
-    """Recognize a persistence-safe transient attachment placeholder."""
+    """Recognize an attachment without assuming arbitrary tool JSON has string types."""
 
     return (
         isinstance(value, Mapping)
+        # JSON Schema legitimately uses lists here; it is tool data, not media.
+        and isinstance(value.get("type"), str)
         and value.get("type") in {"image", "audio", "video", "file"}
         and isinstance(value.get("mediaType"), str)
         and value.get("content") == _ATTACHED

@@ -190,6 +190,8 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["screenshot"]["content"], "attached")
 
     async def test_adk_tool_binding_survives_callback_context_handoff(self):
+        """Bind real media even when adjacent tool metadata contains a schema union."""
+        payload = {"schema": {"type": ["string", "null"]}, "screenshot": self.marker}
         callback = python_types.SimpleNamespace(
             user_id=self.scope.user_id,
             session=python_types.SimpleNamespace(id=self.scope.session_id),
@@ -205,7 +207,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
                     function_response=types.FunctionResponse(
                         id="tool-a",
                         name="capture",
-                        response={"screenshot": self.marker},
+                        response=payload,
                     )
                 )
             ],
@@ -218,7 +220,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
                 tool=python_types.SimpleNamespace(name="capture"),
                 tool_args={},
                 tool_context=callback,
-                result={"screenshot": self.marker},
+                result=payload,
             )
 
         request = python_types.SimpleNamespace(contents=[original])
@@ -231,6 +233,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
             request.contents[0].parts[-1].inline_data.data,
             b"private-screenshot",
         )
+        self.assertEqual(request.contents[0].parts[0].function_response.response, payload)
         self.assertNotIn(self.lease.lease_id, repr(original))
         await plugin.after_model_callback(
             callback_context=callback,
