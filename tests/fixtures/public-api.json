@@ -5,6 +5,7 @@
     "application",
     "assets",
     "auth",
+    "authoring",
     "bundle",
     "checkpoint",
     "compatibility",
@@ -105,6 +106,19 @@
     "DEFAULT_MAX_TOTAL_ASSET_BYTES",
     "MemoryAssetStore",
     "Stored"
+  ],
+  "harnest.authoring": [
+    "ChangeKind",
+    "ChangePlan",
+    "ProjectCLI",
+    "ProjectChange",
+    "ProjectContext",
+    "ProjectError",
+    "ProjectPack",
+    "ProjectPlan",
+    "ProjectPlanner",
+    "WritePolicy",
+    "apply_project_plan"
   ],
   "harnest.auth": [
     "ANONYMOUS_USER_ID",

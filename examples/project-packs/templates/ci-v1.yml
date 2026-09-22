@@ -1,0 +1,8 @@
+name: Agent checks
+on: [push, pull_request]
+jobs:
+  agent:
+    runs-on: [self-hosted, acme-agent]
+    steps:
+      - uses: actions/checkout@v4
+      - run: harnest test .

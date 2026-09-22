@@ -1,0 +1,9 @@
+name: Agent checks
+on: [push, pull_request]
+jobs:
+  agent:
+    runs-on: [self-hosted, acme-agent]
+    steps:
+      - uses: actions/checkout@v4
+      # The company runner supplies its approved Harnest executable.
+      - run: harnest test . --smoke

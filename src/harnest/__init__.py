@@ -12,6 +12,7 @@ __all__ = [
     "application",
     "assets",
     "auth",
+    "authoring",
     "bundle",
     "checkpoint",
     "compatibility",

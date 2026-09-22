@@ -4,6 +4,10 @@
 
 ### Features
 
+* Add opt-in project packs and an embeddable company CLI for typed init options,
+  staged core/pack upgrade plans, versioned migrations, generated-file ownership,
+  conflict detection, stale-plan rejection, and backed-up application with rollback.
+
 * Add the optional `harnest-threadify` package for session-linked business
   telemetry, native Threadify access, and filtered OTLP/HTTP Protobuf export.
   Keep ADK/LangGraph plumbing, payloads, exception text, and unselected tool

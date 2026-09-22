@@ -43,6 +43,7 @@
       "test_output",
       "test_extension_runtime_manager",
       "test_project_server_config",
+      "test_project_pack_contracts",
       "test_public_imports",
       "test_quality_gate",
       "test_release_changelog",
@@ -83,6 +84,7 @@
       "test_skill_selection"
     ],
     "integration": [
+      "test_project_packs",
       "test_a2a",
       "test_agent_builder",
       "test_agent_builder_release_support",
