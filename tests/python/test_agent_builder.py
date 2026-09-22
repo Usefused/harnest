@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from _test_context import enter_context
 
 BUILDER_SOURCE = Path(__file__).resolve().parents[2] / "agent-builder" / "src"
 sys.path.insert(0, str(BUILDER_SOURCE))
@@ -48,7 +49,7 @@ class _BuilderFixture(unittest.TestCase):
         (self.project / "agent.py").write_text(GRAPH)
         (self.project / "instructions.md").write_text("Be useful.\n")
         self.app = create_app(self.root, "/missing/harnest", token="test-token")
-        self.client = self.enterContext(TestClient(self.app, base_url="http://127.0.0.1", client=("127.0.0.1", 1234)))
+        self.client = enter_context(self, TestClient(self.app, base_url="http://127.0.0.1", client=("127.0.0.1", 1234)))
         self.client.headers["Authorization"] = "Bearer test-token"
 
     def document(self, path):
@@ -610,7 +611,7 @@ class _DeploymentBuilderFixture(_BuilderFixture):
 
     def setUp(self):
         """Opt in before constructing the server and restore the process environment."""
-        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
+        enter_context(self, patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
         super().setUp()
 
 

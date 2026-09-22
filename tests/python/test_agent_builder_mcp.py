@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import httpx
 from fastapi.testclient import TestClient
+from _test_context import enter_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'agent-builder/src'))
 from harnest_builder.app import create_app
@@ -61,7 +62,7 @@ class StudioMCPTests(unittest.TestCase):
         self.client = TestClient(self.app, base_url='http://127.0.0.1:1940', client=('127.0.0.1', 1234), headers={'Authorization': 'Bearer launch'})
         self.client.cookies.set('harnest-studio-fused-1940', 'browser')
         self.addCleanup(self.client.close)
-        self.enterContext(patch('harnest.fused_connectors.FusedAdminClient', ManagementClient))
+        enter_context(self, patch('harnest.fused_connectors.FusedAdminClient', ManagementClient))
         ManagementClient.deployments = ManagementClient.tokens = 0
         ManagementClient.fail_token = False
         ManagementClient.servers = [_Server('existing', '1.0.0')]

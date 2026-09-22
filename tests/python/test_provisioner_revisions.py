@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from _test_context import enter_context
 
 import yaml
 
@@ -24,9 +25,9 @@ class ProvisionerRevisionTests(unittest.TestCase):
 
     def setUp(self):
         """Use private storage and a fake backend with mutable image tags."""
-        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
+        enter_context(self, patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
 
-        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root = Path(enter_context(self, tempfile.TemporaryDirectory()))
         (self.root / MANIFEST).write_text(CONFIG)
         self.backend = FakeBackend()
         self.service = Provisioner(self.root, runner=self.backend)

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from _test_context import enter_context
 
 from harnest.provisioner import Provisioner, run_process
 from harnest.provisioner_cli import initialize, main
@@ -64,9 +65,9 @@ class ProvisionerLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         """Give each deployment private journal and fake backend state."""
-        self.enterContext(patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
+        enter_context(self, patch.dict(os.environ, {"HARNEST_ENABLE_DEPLOYMENT": "true"}))
 
-        directory = self.enterContext(tempfile.TemporaryDirectory())
+        directory = enter_context(self, tempfile.TemporaryDirectory())
         self.root = Path(directory)
         (self.root / MANIFEST).write_text(CONFIG)
         self.backend = FakeBackend()

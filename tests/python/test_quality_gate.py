@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import tempfile
 from pathlib import Path
 import unittest
@@ -7,6 +8,60 @@ import unittest
 from scripts.check_python_complexity import _violations
 from scripts.check_skill_quality import _violations as _skill_violations
 from scripts.run_python_tests import TestSuiteManifestError, load_manifest, validate_manifest
+from _test_context import enter_context
+
+
+class FixtureContextTests(unittest.TestCase):
+    """Keep setup resources owned correctly on Python 3.10 and newer runners."""
+
+    def test_failed_setup_releases_contexts_in_cleanup_order(self):
+        """Fixture failure still unwinds contexts in order with ordinary callbacks."""
+        events = []
+        value = object()
+
+        @contextmanager
+        def resource(name):
+            """Record release independently from the test body's success."""
+            try:
+                yield value
+            finally:
+                events.append(name)
+
+        class FailingSetup(unittest.TestCase):
+            def setUp(self):
+                """Acquire interleaved resources before simulating later setup failure."""
+                self.assertIs(enter_context(self, resource("first")), value)
+                self.addCleanup(events.append, "callback")
+                enter_context(self, resource("second"))
+                raise RuntimeError("setup failed")
+
+            def runTest(self):
+                """The failed setup must prevent the body from running."""
+                events.append("body")
+
+        result = unittest.TestResult()
+        FailingSetup().run(result)
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(events, ["second", "callback", "first"])
+
+    def test_failed_entry_does_not_register_an_exit(self):
+        """Only successfully entered resources are released during test cleanup."""
+        events = []
+
+        class FailingResource:
+            def __enter__(self):
+                """Simulate startup failing before the resource has been acquired."""
+                raise RuntimeError("entry failed")
+
+            def __exit__(self, *args):
+                """Record an invalid release if the fixture calls this on failed entry."""
+                events.append("exit")
+
+        owner = unittest.TestCase()
+        with self.assertRaisesRegex(RuntimeError, "entry failed"):
+            enter_context(owner, FailingResource())
+        owner.doCleanups()
+        self.assertEqual(events, [])
 
 
 class PythonComplexityGateTests(unittest.TestCase):

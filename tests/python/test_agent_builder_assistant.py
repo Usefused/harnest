@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch, AsyncMock
 
 import httpx
+from _test_context import enter_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agent-builder" / "src"))
 from harnest_builder.app import create_app
@@ -82,7 +83,7 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.thread.start()
         self.addCleanup(self.provider.server_close)
         self.addCleanup(self.provider.shutdown)
-        self.enterContext(patch.dict(os.environ, {
+        enter_context(self, patch.dict(os.environ, {
             "HARNEST_BUILDER_API_BASE": f"http://127.0.0.1:{self.provider.server_port}/v1",
             "HARNEST_BUILDER_API_KEY": "test-only-key",
             "HARNEST_BUILDER_ARTIFACT": str(self.artifact),

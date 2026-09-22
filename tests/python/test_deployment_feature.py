@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from _test_context import enter_context
 
 from harnest._features import DEPLOYMENT_DISABLED, DEPLOYMENT_FLAG, deployment_enabled
 from harnest.provisioner import Provisioner
@@ -78,7 +79,7 @@ class StudioDeploymentFlagTests(_BuilderFixture):
 
     def setUp(self):
         """Start Studio with the default regardless of the test runner's environment."""
-        self.enterContext(patch.dict(os.environ))
+        enter_context(self, patch.dict(os.environ))
         os.environ.pop(DEPLOYMENT_FLAG, None)
         super().setUp()
 
