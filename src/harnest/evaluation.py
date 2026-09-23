@@ -10,6 +10,7 @@ from types import ModuleType
 from typing import Any, Callable, Iterator
 import uuid
 
+from .eval_metrics import MetricContext, MetricScore, metric
 from .bundle import EvalSuite
 from .model import LiteLLMModel
 from .model_transport import attach_model_transport_binding
@@ -295,6 +296,9 @@ def supported_metric_names() -> tuple[str, ...]:
 __all__ = [
     "EVAL_TRAJECTORIES",
     "EvaluationError",
+    "MetricContext",
+    "MetricScore",
+    "metric",
     "adk_eval_agent_module",
     "eval_config",
     "eval_dependencies",

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `harnest.evaluation.metric`, `MetricContext`, and `MetricScore` for sync
+  or async custom scoring services, with per-turn or conversation scoring and
+  retained evidence. Native ADK metrics continue to work in the same eval pipeline.
 - Prevent release preparation from failing on empty pull-request output when
   Release Please has no proposal to return.
 - Point runtime API and task-storage help links to the current documentation site.

@@ -81,7 +81,8 @@
       "test_channel_worker",
       "test_decisions",
       "test_decision_output",
-      "test_skill_selection"
+      "test_skill_selection",
+      "test_eval_metrics"
     ],
     "integration": [
       "test_project_packs",
@@ -162,7 +163,8 @@
       "test_decision_frameworks",
       "test_jev_example",
       "test_skill_selection_backends",
-      "test_threadify"
+      "test_threadify",
+      "test_eval_custom_service"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

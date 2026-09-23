@@ -281,9 +281,12 @@
   "harnest.evaluation": [
     "EVAL_TRAJECTORIES",
     "EvaluationError",
+    "MetricContext",
+    "MetricScore",
     "adk_eval_agent_module",
     "eval_config",
     "eval_dependencies",
+    "metric",
     "require_eval_trajectory",
     "supported_metric_names"
   ],
