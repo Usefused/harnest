@@ -322,7 +322,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 )
                 readme = (root / "README.md").read_text("utf-8")
                 documentation = (
-                    f"https://docs.usefused.com/harnest/build/extensions/official/{slug}"
+                    f"https://usefused.com/docs/harnest/build/extensions/official/{slug}"
                 )
 
                 self.assertEqual(extension["project"]["readme"], "README.md")
