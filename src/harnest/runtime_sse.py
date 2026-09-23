@@ -1,10 +1,10 @@
-"""SSE framing and approval continuation adapters for the neutral runtime."""
+"""Shared response streaming with pluggable wire encoding and SSE adapters."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Callable, Mapping
 
 from starlette.exceptions import HTTPException
 
@@ -88,29 +88,66 @@ def stream_frame(
             "type": "response.agent_metadata",
             **_agent_metadata_from_runtime_event(event).as_dict(),
         }
-    if event_type == "tool_call":
-        return "response.tool_call", {
-            **common,
-            **_public_event_agent(event),
-            "type": "response.tool_call",
-            "id": event.get("id"),
-            "name": event.get("name"),
-            "arguments": event.get("arguments"),
-        }
-    if event_type == "tool_result":
-        return "response.tool_result", {
-            **common,
-            **_public_event_agent(event),
-            "type": "response.tool_result",
-            "callId": event.get("id", event.get("callId")),
-            "name": event.get("name"),
-            "output": event.get("result", event.get("output")),
-        }
+    # Tool and state frames share one shallow shape, so their builders are
+    # looked up rather than adding another branch to this dispatch.
+    builder = _SIMPLE_FRAME_BUILDERS.get(event_type)
+    if builder is not None:
+        return builder(event, common)
     # Terminal graph/output events belong in the completed response rather
     # than a transport-specific incremental frame.
     if event_type in {"graph_output", "output"}:
         return None
     raise ValueError(f"unsupported runtime event type: {event_type!r}")
+
+
+def _tool_call_frame(
+    event: RuntimeEvent, common: Mapping[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Build the incremental frame for one completed tool call."""
+
+    return "response.tool_call", {
+        **common,
+        **_public_event_agent(event),
+        "type": "response.tool_call",
+        "id": event.get("id"),
+        "name": event.get("name"),
+        "arguments": event.get("arguments"),
+    }
+
+
+def _tool_result_frame(
+    event: RuntimeEvent, common: Mapping[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Build the incremental frame for one tool result."""
+
+    return "response.tool_result", {
+        **common,
+        **_public_event_agent(event),
+        "type": "response.tool_result",
+        "callId": event.get("id", event.get("callId")),
+        "name": event.get("name"),
+        "output": event.get("result", event.get("output")),
+    }
+
+
+def _state_delta_frame(
+    event: RuntimeEvent, common: Mapping[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Build the incremental frame for one authored state patch."""
+
+    return "response.state_delta", {
+        **common,
+        **_public_event_agent(event),
+        "type": "response.state_delta",
+        "delta": event.get("delta"),
+    }
+
+
+_SIMPLE_FRAME_BUILDERS = {
+    "tool_call": _tool_call_frame,
+    "tool_result": _tool_result_frame,
+    "state_delta": _state_delta_frame,
+}
 
 
 def approval_payload(
@@ -198,7 +235,7 @@ def resumed_action_payload(
     return payload
 
 
-async def sse_approval_run(
+async def stream_response(
     *,
     store: InMemoryApprovalStore,
     client_tools: InMemoryClientToolStore,
@@ -211,11 +248,13 @@ async def sse_approval_run(
     metadata: Mapping[str, Any],
     response_statuses: InMemoryResponseStatusStore | None = None,
     external_continuations: Any | None = None,
+    encoder: Callable[[str, Mapping[str, Any]], str] | None = None,
 ) -> AsyncIterator[str]:
-    """Stream one invocation through shared approval and client-tool state."""
+    """Run the common response lifecycle, encoding only at the transport boundary."""
 
+    encode = encoder or sse
     sequence = 0
-    yield sse(
+    yield encode(
         "response.created",
         {
             "type": "response.created",
@@ -247,6 +286,7 @@ async def sse_approval_run(
                 metadata=metadata,
                 user_id=request.user_id,
                 response_statuses=response_statuses,
+                encode=encode,
             ):
                 yield frame
     except asyncio.CancelledError:
@@ -269,8 +309,8 @@ async def sse_approval_run(
         )
         raise
     except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            store.cancel_run(run)
+        # Encoder failures must stop driver work just like execution failures.
+        store.cancel_run(run)
         failed = {
             "type": "response.completed",
             "sequence": sequence,
@@ -289,7 +329,7 @@ async def sse_approval_run(
             user_id=request.user_id,
             session_id=session_id,
         )
-        yield sse(
+        yield encode(
             "error",
             {
                 "type": "error",
@@ -315,6 +355,7 @@ async def _sse_run_frames(
     metadata: Mapping[str, Any],
     user_id: str,
     response_statuses: InMemoryResponseStatusStore | None,
+    encode: Callable[[str, Mapping[str, Any]], str],
 ) -> AsyncIterator[str]:
     """Yield incremental frames until the run completes or suspends."""
 
@@ -334,7 +375,7 @@ async def _sse_run_frames(
                 session_id=session_id,
             )
             if frame is not None:
-                yield sse(*frame)
+                yield encode(*frame)
                 sequence += 1
             continue
         if kind == "approval":
@@ -351,7 +392,7 @@ async def _sse_run_frames(
                 user_id=user_id,
                 session_id=session_id,
             )
-            yield sse(
+            yield encode(
                 "approval.requested",
                 approval_payload(
                     value,
@@ -360,7 +401,7 @@ async def _sse_run_frames(
                     sequence=sequence,
                 ),
             )
-            yield sse(
+            yield encode(
                 "response.completed",
                 status,
             )
@@ -379,7 +420,7 @@ async def _sse_run_frames(
                 user_id=user_id,
                 session_id=session_id,
             )
-            yield sse(
+            yield encode(
                 "client_tool.requested",
                 client_tool_payload(
                     value,
@@ -388,7 +429,7 @@ async def _sse_run_frames(
                     sequence=sequence,
                 ),
             )
-            yield sse(
+            yield encode(
                 "response.completed",
                 status,
             )
@@ -407,7 +448,7 @@ async def _sse_run_frames(
                 user_id=user_id,
                 session_id=session_id,
             )
-            yield sse(
+            yield encode(
                 "response.in_progress",
                 status,
             )
@@ -433,7 +474,7 @@ async def _sse_run_frames(
             user_id=user_id,
             session_id=session_id,
         )
-        yield sse(
+        yield encode(
             "response.completed",
             status,
         )
@@ -512,6 +553,10 @@ def sse(event_name: str, payload: Mapping[str, Any]) -> str:
     """Encode one named event using the neutral SSE wire format."""
 
     return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+# Preserve existing SSE imports while other transports use the shared runner.
+sse_approval_run = stream_response
 
 
 __all__ = [

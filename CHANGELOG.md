@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Route AG-UI through the existing response-stream runner so request limits,
+  cancellation, timeouts, and response-status tracking match `/responses`.
+
 ## [1.0.0](https://github.com/Usefused/harnest/compare/v0.23.0...v1.0.0) (2026-09-23)
 
 ### Breaking changes

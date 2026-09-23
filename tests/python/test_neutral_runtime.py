@@ -1701,6 +1701,32 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(projected, [{"type": "agent_metadata", "framework": "adk"}])
 
+    def test_state_delta_frame_and_output_item_share_the_central_shape(self):
+        event = {
+            "type": "state_delta",
+            "delta": {"count": 2},
+            "agent": "planner",
+        }
+        event_name, frame = stream_frame(
+            event, sequence=1, response_id="response-1", session_id="session-1"
+        )
+        self.assertEqual(event_name, "response.state_delta")
+        self.assertEqual(
+            frame,
+            {
+                "type": "response.state_delta",
+                "sequence": 1,
+                "responseId": "response-1",
+                "sessionId": "session-1",
+                "agent": "planner",
+                "delta": {"count": 2},
+            },
+        )
+        self.assertEqual(
+            public_output([event]),
+            [{"type": "state_delta", "delta": {"count": 2}, "agent": "planner"}],
+        )
+
     def test_completed_response_aggregates_each_reported_model_call(self):
         events = [
             {

@@ -97,7 +97,6 @@ from .runtime_sse import (
     parse_approval_decision as _parse_approval_decision,
     resume_approval_run as _resume_approval_run,
     resumed_action_payload as _resumed_action_payload,
-    sse_approval_run as _sse_approval_run,
 )
 
 
@@ -206,6 +205,7 @@ def create_neutral_router(
     max_concurrency: int = 8,
     max_request_bytes: int = MAX_REQUEST_BYTES,
     live_enabled: bool = True,
+    agui_enabled: bool = True,
     agent_principal_required: bool = False,
     approval_store: InMemoryApprovalStore | None = None,
     client_tool_store: InMemoryClientToolStore | None = None,
@@ -214,7 +214,7 @@ def create_neutral_router(
     a2a_task_store: Any | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
 ) -> Any:
-    """Create shared routes and advertise live transport only when enabled."""
+    """Create shared routes, mounting live and AG-UI transports only when enabled."""
 
     # Embedders must make the same explicit boolean choice as the server config.
     if not isinstance(live_enabled, bool):
@@ -383,6 +383,7 @@ def create_neutral_router(
                 "assets": "/sessions/{sessionId}/assets",
                 "asset": "/sessions/{sessionId}/assets/{assetId}",
                 "live": "/live",
+                "agui": "/agui",
                 "approvals": "/approvals/{approvalId}",
                 "clientTools": "/client-tools/{requestId}",
                 **dict(info.extra_endpoints),
@@ -396,6 +397,8 @@ def create_neutral_router(
         # Discovery must agree with route availability, including custom driver metadata.
         if not live_enabled:
             value["endpoints"].pop("live", None)
+        if not agui_enabled:
+            value["endpoints"].pop("agui", None)
         if info.framework is not None:
             value["framework"] = info.framework
         if info.mode is not None:
@@ -671,21 +674,8 @@ def create_neutral_router(
         if not stream:
             return await coordinator.invoke_json(run)
 
-        coordinator.begin_response(run)
         return StreamingResponse(
-            _sse_approval_run(
-                store=approvals,
-                client_tools=client_tools,
-                driver=driver,
-                request=run,
-                semaphore=semaphore,
-                request_timeout=request_timeout,
-                response_id=run.invocation_id,
-                session_id=run.session_id,
-                metadata=metadata,
-                response_statuses=coordinator.response_statuses,
-                external_continuations=external_continuations,
-            ),
+            coordinator.stream_response(run),
             media_type="text/event-stream",
         )
 
@@ -919,7 +909,20 @@ def create_neutral_router(
         coordinator=coordinator,
         task_store=a2a_task_store,
     )
+    _mount_agui_if_enabled(router, agui_enabled, coordinator)
     return router
+
+
+def _mount_agui_if_enabled(
+    router: Any, agui_enabled: bool, coordinator: InvocationCoordinator
+) -> None:
+    """Mount the AG-UI bridge only when this router's embedder opted in."""
+
+    if not agui_enabled:
+        return
+    from .runtime_agui import mount_agui_routes
+
+    mount_agui_routes(router, coordinator=coordinator)
 
 
 def _validate_agent_principal_required(value: Any) -> None:
@@ -938,6 +941,7 @@ def create_neutral_app(
     playground_enabled: bool = True,
     openapi_enabled: bool = True,
     live_enabled: bool = True,
+    agui_enabled: bool = True,
     agent_principal_required: bool = False,
     authenticator: Authenticator | None = None,
     approval_store: InMemoryApprovalStore | None = None,
@@ -1011,6 +1015,7 @@ def create_neutral_app(
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
             live_enabled=live_enabled,
+            agui_enabled=agui_enabled,
             agent_principal_required=agent_principal_required,
             approval_store=approval_store,
             client_tool_store=client_tool_store,

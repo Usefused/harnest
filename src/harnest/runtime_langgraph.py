@@ -115,6 +115,9 @@ class _StreamState:
     active_agents: set[str] = field(default_factory=set)
     active_task_counts: dict[str, int] = field(default_factory=dict)
     metadata: set[tuple[Any, ...]] = field(default_factory=set)
+    # Seeded from the pre-turn session state so the first "values" snapshot
+    # reports only what this turn actually changed, not the whole session.
+    state_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 class LangGraphRuntimeDriver(RuntimeDriver):
@@ -381,7 +384,9 @@ class LangGraphRuntimeDriver(RuntimeDriver):
                 # portable session state remains the committed public history.
                 turn_start = _message_count(session.record.state)
                 graph_input = _resume_command(native_resume, config)
-            state = _StreamState()
+            # Seed the delta baseline from the committed pre-turn state so a
+            # resumed native checkpoint still reports an accurate first delta.
+            state = _StreamState(state_snapshot=dict(session.record.state))
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
                 with self._mcp_invocation_scope():
@@ -1398,6 +1403,9 @@ async def _target_stream(
         async for item in stream:
             mode, value = _stream_item(item)
             if mode == "values":
+                delta_event = _langgraph_state_delta(value, state)
+                if delta_event is not None:
+                    yield delta_event
                 state.final_state = value
                 continue
             if mode == "tasks":
@@ -1409,6 +1417,33 @@ async def _target_stream(
                 value, state, output_policy
             ):
                 yield event
+
+
+def _langgraph_state_delta(value: Any, state: _StreamState) -> dict[str, Any] | None:
+    """Diff the authored `_harnest_state` channel between consecutive snapshots.
+
+    LangGraph's "values" stream mode yields the fully merged state after each
+    super-step rather than the incremental update a node returned, so the
+    delta an author wrote via `Event.state_delta` is not directly observable.
+    `_SESSION_STATE_KEY` is merged with a shallow `dict.update`
+    (`_merge_state` in the compiler backend), so a shallow key comparison
+    against the last observed snapshot recovers exactly that patch.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    current = value.get(_SESSION_STATE_KEY)
+    if not isinstance(current, Mapping):
+        return None
+    changed = {
+        key: item
+        for key, item in current.items()
+        if key not in state.state_snapshot or state.state_snapshot[key] != item
+    }
+    if not changed:
+        return None
+    state.state_snapshot = dict(current)
+    return {"type": "state_delta", "delta": changed}
 
 
 def _langgraph_stream_message_events(

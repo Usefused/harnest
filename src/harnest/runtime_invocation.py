@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -233,6 +233,34 @@ class InvocationCoordinator:
             metadata=metadata,
             transport=transport,
             agent_principal=agent_principal,
+        )
+
+    def stream_response(
+        self,
+        request: InvocationRequest,
+        *,
+        encoder: Callable[[str, Mapping[str, Any]], str] | None = None,
+    ) -> AsyncIterator[str]:
+        """Reserve a response and share execution policy across wire formats."""
+
+        from .runtime_sse import stream_response
+
+        # Reserve before returning the iterator so capacity errors remain HTTP
+        # errors rather than failures after streaming headers have been sent.
+        self.begin_response(request)
+        return stream_response(
+            store=self.approvals,
+            client_tools=self.client_tools,
+            driver=self.driver,
+            request=request,
+            semaphore=self.semaphore,
+            request_timeout=self.request_timeout,
+            response_id=request.invocation_id,
+            session_id=request.session_id,
+            metadata=request.metadata,
+            response_statuses=self.response_statuses,
+            external_continuations=self.external_continuations,
+            encoder=encoder,
         )
 
     async def invoke_json(self, request: InvocationRequest) -> dict[str, Any]:

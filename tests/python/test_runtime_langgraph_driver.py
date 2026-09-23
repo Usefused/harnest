@@ -33,7 +33,10 @@ from harnest.runtime_continuation import completed_payload
 from harnest.runtime_langgraph import (
     LangGraphRuntimeDriver,
     _MODEL_ASSET_SCOPE,
+    _SESSION_STATE_KEY,
+    _StreamState,
     _langgraph_asset_middleware,
+    _langgraph_state_delta,
     _message_thinking,
     _message_tool_events,
 )
@@ -975,6 +978,41 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             target.inputs[0]["_harnest_state"], {"count": 2, "tenant": "one"}
         )
         await driver.close()
+
+    async def test_stream_emits_a_state_delta_between_consecutive_values_snapshots(
+        self,
+    ):
+        class GraphStateStreamTarget(_Target):
+            async def astream(
+                self, graph_input, *, config, stream_mode, durability=None
+            ):
+                self.inputs.append(graph_input)
+                assert stream_mode == ["messages", "tasks", "values"]
+                state = dict(graph_input[_SESSION_STATE_KEY])
+                state["count"] = state.get("count", 0) + 1
+                yield "values", {
+                    **graph_input,
+                    _SESSION_STATE_KEY: state,
+                    "value": f"count:{state['count']}",
+                }
+
+        target = GraphStateStreamTarget()
+        driver = LangGraphRuntimeDriver(_application(target, kind="graph"))
+        await driver.create_session(
+            session_id="graph-session", user_id="user-1", state={"tenant": "one"}
+        )
+
+        events = [
+            event async for event in driver.stream(_request("graph-session"))
+        ]
+        await driver.close()
+
+        # Only the key this turn actually changed is reported; the unchanged
+        # "tenant" key from the pre-turn snapshot must not be re-sent.
+        self.assertEqual(
+            [event for event in events if event["type"] == "state_delta"],
+            [{"type": "state_delta", "delta": {"count": 1}}],
+        )
 
     async def test_content_input_stays_reference_only_in_graph_and_history(self):
         class EchoTarget(_Target):
@@ -2111,6 +2149,33 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "answer-5")
         self.assertEqual(stored.state["counter"], 5)
         self.assertFalse(store.closed)
+
+
+class LangGraphStateDeltaTests(unittest.TestCase):
+    """Unit-test the shallow-diff helper independent of a real graph run."""
+
+    def test_only_new_or_changed_keys_are_reported(self):
+        state = _StreamState(state_snapshot={"tenant": "one", "count": 1})
+        event = _langgraph_state_delta(
+            {_SESSION_STATE_KEY: {"tenant": "one", "count": 2, "flag": True}},
+            state,
+        )
+        self.assertEqual(
+            event, {"type": "state_delta", "delta": {"count": 2, "flag": True}}
+        )
+        self.assertEqual(
+            state.state_snapshot, {"tenant": "one", "count": 2, "flag": True}
+        )
+
+    def test_an_unchanged_snapshot_reports_no_delta(self):
+        state = _StreamState(state_snapshot={"tenant": "one"})
+        event = _langgraph_state_delta({_SESSION_STATE_KEY: {"tenant": "one"}}, state)
+        self.assertIsNone(event)
+
+    def test_a_non_mapping_values_item_is_ignored(self):
+        state = _StreamState(state_snapshot={"tenant": "one"})
+        self.assertIsNone(_langgraph_state_delta("not-a-mapping", state))
+        self.assertIsNone(_langgraph_state_delta({}, state))
 
 
 if __name__ == "__main__":

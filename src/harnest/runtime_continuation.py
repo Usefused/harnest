@@ -67,27 +67,57 @@ def public_output_item(event: RuntimeEvent) -> dict[str, Any]:
             **_public_event_agent(event),
             **_agent_metadata_from_runtime_event(event).as_dict(),
         }
-    if event_type == "tool_call":
-        return {
-            "type": "tool_call",
-            "id": event.get("id"),
-            "name": event.get("name"),
-            "arguments": event.get("arguments"),
-            **_public_event_agent(event),
-        }
-    if event_type == "tool_result":
-        return {
-            "type": "tool_result",
-            "callId": event.get("id", event.get("callId")),
-            "name": event.get("name"),
-            "output": event.get("result", event.get("output")),
-            **_public_event_agent(event),
-        }
+    # Tool and state items share one shallow shape, so their builders are
+    # looked up rather than adding another branch to this dispatch.
+    builder = _SIMPLE_OUTPUT_ITEM_BUILDERS.get(event_type)
+    if builder is not None:
+        return builder(event)
     if event_type == "graph_output":
         return {"type": "output", "value": event.get("output")}
     if event_type == "output":
         return {"type": "output", "value": event.get("value")}
     raise ValueError(f"unsupported runtime event type: {event_type!r}")
+
+
+def _tool_call_output_item(event: RuntimeEvent) -> dict[str, Any]:
+    """Project one completed tool call for the final output list."""
+
+    return {
+        "type": "tool_call",
+        "id": event.get("id"),
+        "name": event.get("name"),
+        "arguments": event.get("arguments"),
+        **_public_event_agent(event),
+    }
+
+
+def _tool_result_output_item(event: RuntimeEvent) -> dict[str, Any]:
+    """Project one tool result for the final output list."""
+
+    return {
+        "type": "tool_result",
+        "callId": event.get("id", event.get("callId")),
+        "name": event.get("name"),
+        "output": event.get("result", event.get("output")),
+        **_public_event_agent(event),
+    }
+
+
+def _state_delta_output_item(event: RuntimeEvent) -> dict[str, Any]:
+    """Project one authored state patch for the final output list."""
+
+    return {
+        "type": "state_delta",
+        "delta": event.get("delta"),
+        **_public_event_agent(event),
+    }
+
+
+_SIMPLE_OUTPUT_ITEM_BUILDERS = {
+    "tool_call": _tool_call_output_item,
+    "tool_result": _tool_result_output_item,
+    "state_delta": _state_delta_output_item,
+}
 
 
 def _public_event_agent(event: Mapping[str, Any]) -> dict[str, str]:
