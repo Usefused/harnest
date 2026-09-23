@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Bump the official Docker, Hatchet, and RAG extensions to 0.4.2, 0.2.2,
-  and 0.1.3 respectively.
+- Require Harnest `>=1.0.0,<2` for the official Docker, Hatchet, and RAG
+  extensions (versions 0.4.2, 0.2.2, and 0.1.3 respectively).
 - Route AG-UI through the existing response-stream runner so request limits,
   cancellation, timeouts, and response-status tracking match `/responses`.
 

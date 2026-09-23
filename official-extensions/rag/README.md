@@ -68,7 +68,7 @@ document corpus.
 
 ## Install
 
-Requires Harnest `>=0.21.3,<0.24`.
+Requires Harnest `>=1.0.0,<2`.
 
 Install the published extension into an agent project, then synchronize its
 Python environment:

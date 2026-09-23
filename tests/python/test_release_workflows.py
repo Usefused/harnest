@@ -212,14 +212,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
             },
         }
         expected_requirements = {
-            "docker": {"docker": "<8,>=7.1", "harnest": "<0.24,>=0.21.3"},
+            "docker": {"docker": "<8,>=7.1", "harnest": "<2,>=1.0.0"},
             "hatchet": {
-                "harnest": "<0.24,>=0.21.3",
+                "harnest": "<2,>=1.0.0",
                 "hatchet-sdk": "<2,>=1.38",
             },
             "rag": {
                 "asyncpg": "<1,>=0.30",
-                "harnest": "<0.24,>=0.21.3",
+                "harnest": "<2,>=1.0.0",
             },
         }
         for slug in ("docker", "hatchet", "rag"):
@@ -297,12 +297,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 )
 
     def test_official_extension_harnest_version_bounds(self):
-        """Accept Harnest 0.21.3 through 0.23.x without admitting older or 0.24 hosts."""
+        """Accept Harnest 1.x while excluding pre-1.0 and the next major release."""
         for slug in ("docker", "hatchet", "rag"):
             project = tomllib.loads((ROOT / "official-extensions" / slug / "pyproject.toml").read_text())
             requirements = [Requirement(value) for value in project["project"]["dependencies"]]
             bounds = next(item.specifier for item in requirements if item.name == "harnest")
-            for version, allowed in (("0.21.2", False), ("0.21.3", True), ("0.22.0", True), ("0.23.99", True), ("0.24.0", False), ("24.0.0", False)):
+            for version, allowed in (("0.23.0", False), ("0.99.99", False), ("1.0.0", True), ("1.0.1", True), ("1.1.0", True), ("1.99.99", True), ("2.0.0", False), ("24.0.0", False)):
                 with self.subTest(extension=slug, version=version):
                     self.assertEqual(bounds.contains(version), allowed)
 
