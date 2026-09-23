@@ -7,7 +7,7 @@ from dataclasses import replace
 import uuid
 from typing import Any
 
-from .cron_storage import CronRecord, CronStoreConflictError
+from ._cron_storage import CronRecord, CronStoreConflictError
 from .task_storage import TaskRecord, TaskStoreConflictError
 
 

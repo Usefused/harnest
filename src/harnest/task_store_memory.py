@@ -8,7 +8,7 @@ from dataclasses import fields, replace
 from typing import Any
 import uuid
 
-from .cron_storage import CronRecord, CronStoreConflictError, cron_fingerprint
+from ._cron_storage import CronRecord, CronStoreConflictError, cron_fingerprint
 from .task_storage import TaskRecord, TaskStoreConflictError, task_fingerprint
 
 

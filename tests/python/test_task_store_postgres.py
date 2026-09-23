@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from harnest.cron_storage import CronRecord, CronStoreConflictError
+from harnest.cron import CronRecord, CronStoreConflictError
 from harnest.task_storage import TaskRecord, TaskStoreConflictError
 from harnest.task_store_postgres import PostgresTaskStore
 from harnest.testing import TaskStoreConformanceMixin

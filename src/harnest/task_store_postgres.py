@@ -10,7 +10,7 @@ import math
 from typing import Any
 import uuid
 
-from .cron_storage import CronRecord, CronStore, CronStoreConflictError, cron_fingerprint
+from ._cron_storage import CronRecord, CronStore, CronStoreConflictError, cron_fingerprint
 from .logging import get_logger
 from .store_postgres import _create_pool
 from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError, task_fingerprint

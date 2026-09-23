@@ -12,7 +12,7 @@ from .cron import (
     CronConflictError, CronJob, CronNotFoundError, CronRuntimeError, CronUnavailableError,
     _UNSET, _validate_schedule, _validate_task_call,
 )
-from .cron_storage import CronRecord, CronStoreConflictError
+from ._cron_storage import CronRecord, CronStoreConflictError
 from .logging import get_logger
 from .task import safe_task_arguments
 

@@ -4,6 +4,7 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import pickle
 import re
 import subprocess
 import sys
@@ -69,6 +70,10 @@ CONTRACTS = {
     },
     "assets": {"asset_policy": ["Stored"]},
     "store": {"storage_registry": ["CustomStorage", "StorageRegistry"]},
+    "cron": {
+        "_cron_storage": ["CronRecord", "CronStore", "CronStoreConflictError"],
+        "cron_storage": ["CronRecord", "CronStore", "CronStoreConflictError"],
+    },
 }
 
 
@@ -192,6 +197,43 @@ def _object_ide_gaps(owner: str, value: object) -> tuple[list[str], list[str]]:
 
 
 class PublicImportTests(unittest.TestCase):
+    def test_cron_storage_legacy_pickles_and_helper_keep_working(self):
+        """Existing serialized records and helper imports survive the private move."""
+
+        from harnest import _cron_storage, cron, cron_storage
+
+        record = cron.CronRecord(
+            schedule_id="cron_test", application_id="agent", user_id="user",
+            key="daily", expression="0 9 * * *", task_name="report",
+            arguments={}, next_run_at=100.0,
+        )
+        current = pickle.dumps(record, protocol=0)
+        legacy = current.replace(b"harnest._cron_storage\n", b"harnest.cron_storage\n")
+        self.assertNotEqual(current, legacy)
+        self.assertEqual(pickle.loads(legacy), record)
+        self.assertIs(cron_storage.cron_fingerprint, _cron_storage.cron_fingerprint)
+        self.assertEqual(cron_storage.__all__, _cron_storage.__all__)
+
+    def test_cron_storage_import_orders_do_not_create_cycles(self):
+        """Task providers load private contracts without depending on the legacy shim."""
+
+        code = '''
+import importlib
+import sys
+importlib.import_module(sys.argv[1])
+from harnest.cron import CronStore
+from harnest.task import MemoryTaskStore
+assert isinstance(MemoryTaskStore(), CronStore)
+assert ('harnest.cron_storage' in sys.modules) == (sys.argv[1] == 'harnest.cron_storage')
+'''
+        for first in ("harnest.task", "harnest.cron", "harnest.cron_storage"):
+            with self.subTest(first=first):
+                result = subprocess.run(
+                    [sys.executable, "-c", code, first],
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_public_exports_match_reviewed_snapshot(self):
         """Require every public export addition, removal, or rename to be reviewed."""
 

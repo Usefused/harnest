@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Mark cron storage implementation private while preserving public `harnest.cron`
+  contracts and compatibility with existing `harnest.cron_storage` imports.
+
 ## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
 
 - Add `harnest add eval NAME` with an interactive `--i` picker, built-in metric

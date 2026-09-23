@@ -7,7 +7,7 @@ import unittest
 import uuid
 
 from harnest import context
-from harnest.cron_storage import CronRecord
+from harnest.cron import CronRecord
 from harnest.runtime_task_store import ProviderTaskRuntimeManager
 from harnest.session import InMemorySessionStore
 from harnest.task import MemoryTaskStore

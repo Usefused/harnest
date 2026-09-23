@@ -21,7 +21,7 @@ from .session import SessionStore
 from .skills import SkillRegistry
 from .storage_registry import CustomStorage, StorageRegistry
 from .task_storage import TaskStore
-from .cron_storage import CronStore
+from ._cron_storage import CronStore
 from .memory import MemoryStore
 from .structured import PydanticModel, validate_output_schema
 
