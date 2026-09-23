@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
 
 - Prevent release preparation from failing on empty pull-request output when
   Release Please has no proposal to return.
@@ -9,9 +9,6 @@
   extensions (versions 0.4.2, 0.2.2, and 0.1.3 respectively).
 - Route AG-UI through the existing response-stream runner so request limits,
   cancellation, timeouts, and response-status tracking match `/responses`.
-
-## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
-
 
 ### Features
 
