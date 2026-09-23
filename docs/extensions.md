@@ -109,7 +109,7 @@ streamed writes, bounded reads, retention, and deletion. A storage used to send
 durable media to a model also implements `AssetURLStorage`, generating a fresh
 signed URL only at the model-call boundary. ADK and LangGraph checkpoints
 retain the scoped reference, not the URL or bytes. See
-[Store and retrieve media](https://docs.usefused.com/harnest/build/models-and-libraries/store-and-retrieve-media).
+[Store and retrieve media](https://usefused.com/docs/harnest/build/models-and-libraries/store-and-retrieve-media).
 
 Agent code reads a stored reference through the scoped capability rather than
 the raw backend:

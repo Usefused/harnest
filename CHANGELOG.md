@@ -14,6 +14,19 @@
 
 ### Features
 
+* Serve agents over the [AG-UI](https://ag-ui.com) protocol at `POST /agui`,
+  translating the same neutral runtime events used by `/responses` and
+  `/live` into AG-UI's `RUN_STARTED`/text-message/tool-call/`STATE_DELTA`/
+  `RUN_FINISHED` event stream. Disable it per app with `agui_enabled=False`
+  on `create_neutral_app`/`create_neutral_router`. A mid-run human approval
+  or client-tool suspension reports `RUN_ERROR`, since AG-UI's base protocol
+  has no human-in-the-loop primitive; use `/responses` or `/live` for agents
+  that require approvals. LangGraph applications that return an authored
+  `Event.state_delta` now also stream a neutral `state_delta` event (SSE
+  `response.state_delta`) that AG-UI renders as a `STATE_DELTA` JSON Patch;
+  ADK does not yet emit it, since its native per-event state channel is not
+  safely public.
+
 * Add compile-only optional dependency selection in `harnest-compile.yaml`,
   maintainable through project packs. Compile runtime code, standard agent files,
   and complete skills/extensions/plugins while leaving teammate documentation and

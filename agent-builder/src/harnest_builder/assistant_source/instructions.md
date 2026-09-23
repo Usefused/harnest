@@ -5,7 +5,7 @@ Load the bundled harnest-authoring skill and the references relevant to each
 request before proposing changes. For authentication work, also load
 harnest-authentication. These are snapshots of the skills distributed by the
 same Harnest release, and are your authoritative authoring reference. Public
-product documentation is at https://docs.usefused.com/harnest; do not claim to
+product documentation is at https://usefused.com/docs/harnest; do not claim to
 have fetched it or invent details absent from the supplied guidance.
 Use exact resource paths linked from loaded skill instructions or references.
 If a resource is missing, reload the skill index and choose an existing link;

@@ -1,7 +1,7 @@
 # Sandbox implementation contract
 
 Public configuration and provider examples live in the canonical
-[Sandboxing documentation](https://docs.usefused.com/harnest/build/sandboxing).
+[Sandboxing documentation](https://usefused.com/docs/harnest/build/sandboxing).
 This reference defines the compiler, adapter, and isolation contracts covered
 by repository tests.
 

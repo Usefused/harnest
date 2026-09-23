@@ -1,7 +1,7 @@
 # Company CLI fixture
 
 This runnable example exercises the project-pack contract. The public guide is
-[Company project packs](https://docs.usefused.com/harnest/build/project-packs).
+[Company project packs](https://usefused.com/docs/harnest/build/project-packs).
 
 From a Harnest authoring environment, with the matching `harnest` executable on
 PATH, initialise using the old example pack and then upgrade using the current

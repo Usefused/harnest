@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://docs.usefused.com/harnest/build/extensions/official/rag"
+Documentation = "https://usefused.com/docs/harnest/build/extensions/official/rag"
 Repository = "https://github.com/Usefused/harnest"
 
 [project.entry-points."harnest.extensions"]

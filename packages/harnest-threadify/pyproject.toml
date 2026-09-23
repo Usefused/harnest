@@ -13,7 +13,7 @@ authors = [{ name = "Fused" }]
 dependencies = ["harnest>=0.23,<0.24", "threadify-sdk==0.2.10"]
 
 [project.urls]
-Documentation = "https://docs.usefused.com/harnest/runtime/telemetry/threadify"
+Documentation = "https://usefused.com/docs/harnest/runtime/telemetry/threadify"
 Repository = "https://github.com/Usefused/harnest"
 
 [tool.hatch.build.targets.wheel]

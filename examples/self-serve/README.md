@@ -67,7 +67,7 @@ prefix, commonly `/v1`. Set `OPENAI_API_KEY` only if your endpoint needs
 a key. Update the same non-secret values in `config.yaml` for
 `harnest test`, `run`, and `serve`, because `spec.environment` overrides matching
 shell values. See the canonical
-[model configuration guide](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model).
+[model configuration guide](https://usefused.com/docs/harnest/build/models-and-libraries/configure-a-model).
 
 Run `make example-test` for the offline unit suite. It uses the
 injected `agent` and read-only `tools` fixtures to check filesystem composition
@@ -226,7 +226,7 @@ or LangGraph package.
 - `plugins/<folder>/plugin.json` declares an Agent Plugins 1.0 package.
   Optional `mcp.json` supplies standard MCP servers; optional `skills/` supplies
   progressive instructions. Neither component requires the other. See the
-  [Agent Plugins guide](https://docs.usefused.com/harnest/build/agent-plugins).
+  [Agent Plugins guide](https://usefused.com/docs/harnest/build/agent-plugins).
 - `lifecycle/*.py` declares lifecycle hooks and resource factories.
 - `extensions/<name>/extension.yaml` declares a Harnest Extension whose
   `extension.py` exports the singleton `extension`.

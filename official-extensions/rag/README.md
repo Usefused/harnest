@@ -32,7 +32,7 @@ code under Harnest lifecycle management.
 - [Validation and safety bounds](#validation-and-safety-bounds)
 
 Read the detailed public guide at
-[docs.usefused.com/harnest/build/extensions/official/rag](https://docs.usefused.com/harnest/build/extensions/official/rag).
+[usefused.com/docs/harnest/build/extensions/official/rag](https://usefused.com/docs/harnest/build/extensions/official/rag).
 
 ## What the extension provides
 

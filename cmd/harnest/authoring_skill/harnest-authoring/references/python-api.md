@@ -103,8 +103,8 @@ becomes framework-visible; the durable value carries scoped `assetId` and
 model-call boundary. Agent code can use `context.assets.stat/get/open/delete`
 and `context.assets.url` within the active user-and-session scope. Existing
 clients may still upload to `POST /sessions/{sessionId}/assets` and send a
-reference. See the [multimodal data guide](https://docs.usefused.com/harnest/build/models-and-libraries/typed-multimodal-contracts)
-and [media storage guide](https://docs.usefused.com/harnest/build/models-and-libraries/store-and-retrieve-media)
+reference. See the [multimodal data guide](https://usefused.com/docs/harnest/build/models-and-libraries/typed-multimodal-contracts)
+and [media storage guide](https://usefused.com/docs/harnest/build/models-and-libraries/store-and-retrieve-media)
 for the complete two-policy lifecycle.
 
 `Graph` nodes may be `Agent` definitions, typed callables, nested `Graph`
@@ -561,7 +561,7 @@ empty page. Use `expected_revision=record.revision` for conditional writes or
 deletion; catch `MemoryConflictError`. Optional `expires_at` is a future UTC
 epoch timestamp. Expiry hides records but is not a physical-erasure deadline.
 Treat recalled content as untrusted data, and do not retain invocation handles.
-See https://docs.usefused.com/harnest/runtime/long-term-memory for setup and
+See https://usefused.com/docs/harnest/runtime/long-term-memory for setup and
 the custom-provider `MemoryStoreConformanceMixin` from `harnest.testing`.
 
 ## Queued application tasks
@@ -582,7 +582,7 @@ in a shared `lib/` factory, read credentials from the runtime environment, and
 register it from `lifecycle/`. `@task` does not install a queue backend.
 Queued execution requires an explicit provider; there is no database fallback.
 Cron requires the same instance under `@lifecycle.storage.cron`. See
-https://docs.usefused.com/harnest/runtime/task-storage for setup and migration.
+https://usefused.com/docs/harnest/runtime/task-storage for setup and migration.
 For explicitly in-memory local development, import `MemoryTaskStore` from
 `harnest.task` and return one shared instance from a synchronous
 `@lifecycle.storage.tasks` factory (also `@lifecycle.storage.cron` when needed).
@@ -674,7 +674,7 @@ duplicate and Harnest-owned paths. Subagents cannot own routes. Set
 `server.agentPrincipal: required` when every custom invocation must pass an
 application-authorized `agent_principal=`; an omission then fails before
 session creation. See
-`https://docs.usefused.com/harnest/runtime/custom-http-endpoints` for the public
+`https://usefused.com/docs/harnest/runtime/custom-http-endpoints` for the public
 contract and example. Keep domain-specific session queries, such as filtering
 by a site's origin, in an authenticated custom route backed by an
 application-owned index. Do not fetch one neutral `/sessions` page and filter

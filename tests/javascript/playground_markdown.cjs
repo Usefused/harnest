@@ -79,7 +79,7 @@ test("raw HTML, executable URLs, and images cannot create active content", () =>
     assert.doesNotMatch(html, /<(script|img|svg|iframe)\b/i, source);
     assert.doesNotMatch(html, /href="(?:javascript|vbscript|data|file|\/)/i, source);
   }
-  const html = run('harnestMarkdown.render("[Docs](https://docs.usefused.com/harnest)")');
+  const html = run('harnestMarkdown.render("[Docs](https://usefused.com/docs/harnest)")');
   assert.match(html, /target="_blank"/);
   assert.match(html, /rel="noopener noreferrer"/);
 });

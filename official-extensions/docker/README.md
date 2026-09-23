@@ -19,7 +19,7 @@ capability.
 - [Security and limitations](#security-and-limitations)
 
 Read the detailed public guide at
-[docs.usefused.com/harnest/build/extensions/official/docker](https://docs.usefused.com/harnest/build/extensions/official/docker).
+[usefused.com/docs/harnest/build/extensions/official/docker](https://usefused.com/docs/harnest/build/extensions/official/docker).
 
 ## Install
 

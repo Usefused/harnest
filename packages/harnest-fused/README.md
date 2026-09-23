@@ -10,5 +10,5 @@ Install this source package with `pip install ./packages/harnest-fused` from the
 Harnest checkout. Provisioning requires a separately installed and configured
 `fused-cli`; importing and running an already provisioned client does not.
 
-See the [Fused MCP guide](https://docs.usefused.com/harnest/build/fused-mcp)
+See the [Fused MCP guide](https://usefused.com/docs/harnest/build/fused-mcp)
 for authoring, explicit provisioning, and credential setup.

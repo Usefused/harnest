@@ -18,7 +18,7 @@ verification requirements.
   README heading linked to `https://usefused.com`.
 - Canonical public Harnest documentation lives in the `Usefused/mintlify-docs`
   repository under `harnest/` and is authored as `.mdx`.
-- Link readers to `https://docs.usefused.com/harnest` and its deployed child
+- Link readers to `https://usefused.com/docs/harnest` and its deployed child
   routes. Do not use GitHub source-file URLs as public documentation links.
 - Make every public product-documentation update in that directory and keep its
   Harnest tab in `docs.json` current. Do not add new end-user guides under this

@@ -648,6 +648,7 @@ surface is deliberately transport- and provider-neutral:
 | `DELETE /sessions/{id}` | Delete a session and return 204. |
 | `POST /responses` | Run `input` against an optional `sessionId`; return neutral JSON, or named SSE when `stream` is true. |
 | `WS /live` | Direct multi-turn WebSocket transport using neutral connect, request, and response event frames. |
+| `POST /agui` | Run the newest user message from a `RunAgentInput` body against an optional `threadId`; stream the [AG-UI](https://ag-ui.com) event protocol. Enabled by default; `agui_enabled=False` on `create_neutral_app`/`create_neutral_router` disables it. |
 
 Session `state` remains the portable application-owned view. `metadata.adk`
 preserves ADK session fields and events, while `metadata.langgraph` preserves
@@ -677,11 +678,13 @@ exist. Its output-item forms are:
 
 Streaming emits
 `response.created`, zero or more `response.text.delta`, `response.tool_call`,
-and `response.tool_result` events, then `response.completed`; each carries an
-increasing `sequence`, `responseId`, and `sessionId`. Text events carry `delta`,
-tool calls carry `id`/`name`/`arguments`, tool results carry
-`callId`/`name`/`output`, and completion carries the same final output fields as
-the JSON response. The SSE `event:` name matches the data object's `type`. A
+`response.tool_result`, and `response.state_delta` events, then
+`response.completed`; each carries an increasing `sequence`, `responseId`, and
+`sessionId`. Text events carry `delta`, tool calls carry `id`/`name`/`arguments`,
+tool results carry `callId`/`name`/`output`, `response.state_delta` carries the
+shallow `delta` an authored `Event.state_delta` set, and completion carries the
+same final output fields as the JSON response. The SSE `event:` name matches
+the data object's `type`. A
 post-header failure is a terminal named `error` event whose data carries
 `type`, `sequence`, response/session IDs, and an `error` string.
 Because SSE is server-to-client only, its cancellation signal is closing or
@@ -707,6 +710,23 @@ The ADK and LangGraph adapters both emit assistant message/output-text items and
 neutral tool calls/results. Provider/model identifiers, reasoning details, and
 framework bookkeeping are intentionally omitted. Pre-stream HTTP errors retain
 FastAPI's `{"detail":"..."}` shape and normal 4xx/5xx status semantics.
+
+`/agui` (`runtime_agui.py`) is a thin translator, not a second execution path:
+it drives the same `InvocationCoordinator` and `ApprovalRun` machinery as
+`/responses` and `/live`, mapping neutral runtime events onto AG-UI's
+`RUN_STARTED`, `TEXT_MESSAGE_*`, `TOOL_CALL_*`, `STATE_DELTA`, and
+`RUN_FINISHED`/`RUN_ERROR` events. `state_delta` events render as a
+`STATE_DELTA` RFC 6902 JSON Patch using `"add"` for every key, which is
+spec-safe whether or not the client already has that key. AG-UI's base
+protocol has no human-in-the-loop primitive, so a mid-run approval or
+client-tool suspension reports `RUN_ERROR` instead of hanging; agents that
+require approvals should be served over `/responses` or `/live`.
+`state_delta` is currently only emitted for LangGraph applications, whose
+`_harnest_state` channel is written exclusively by an authored
+`Event.state_delta`. ADK reuses its native `EventActions.state_delta` for
+framework bookkeeping as well as authored state, so it is not forwarded to
+any public transport; surfacing it there would need session-state diffing
+instead of reading the native event field.
 
 Every mode retains FastAPI's generated `/openapi.json`, `/docs`, and `/redoc`
 surface. Managed ADK exposes only the neutral Harnest routes in that schema.

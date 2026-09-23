@@ -19,7 +19,7 @@ same-process `harnest.extensions.hatchet` API.
 - [Security and limitations](#security-and-limitations)
 
 Read the detailed public guide at
-[docs.usefused.com/harnest/build/extensions/official/hatchet](https://docs.usefused.com/harnest/build/extensions/official/hatchet).
+[usefused.com/docs/harnest/build/extensions/official/hatchet](https://usefused.com/docs/harnest/build/extensions/official/hatchet).
 
 ## Install
 

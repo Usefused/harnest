@@ -13,7 +13,7 @@ authors = [{ name = "Fused" }]
 dependencies = ["harnest>=0.21.3,<0.24"]
 
 [project.urls]
-Documentation = "https://docs.usefused.com/harnest/build/fused-mcp"
+Documentation = "https://usefused.com/docs/harnest/build/fused-mcp"
 Repository = "https://github.com/Usefused/harnest"
 
 [tool.hatch.build.targets.wheel]
