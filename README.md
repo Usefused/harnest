@@ -1,295 +1,67 @@
 # Harnest by [Fused](https://usefused.com)
 
-Harnest is an agent harness for teams moving beyond “the model responded” to
-“this needs to work in production.”
+**Ship your next agent. Set the standard for every one after it.**
 
-It handles the day-two work around ADK and LangGraph agents: repeatable builds
-and tests, serving, authentication, approvals, persistent sessions, durable
-background tasks, and telemetry. You own the agent’s behavior; Harnest provides
-the structure and runtime around it.
+Harnest is a production harness for Google ADK and LangGraph agents. It gives you a shared structure for building, testing, packaging, and serving agents. Focus on the workflows your agent needs to deliver.
 
-Every Harnest agent is compiled from the capabilities you add. Tools, subagents,
-MCP connections, agent skills, Agent Plugins, Harnest Extensions, sandboxes, and
-lifecycle hooks are left out unless you use them.
+**[Explore an interactive Harnest project →](https://docs.usefused.com/harnest/overview#explore-a-harnest-project)**
 
-| Mode | Harnest manages | You control |
-| --- | --- | --- |
-| Managed | Discovery, wiring, framework adapters, tests, and runtime services | Portable agent behavior |
-| Advanced | Packaging, tests, serving, sessions, auth, and telemetry | The underlying framework directly |
+Click through the project’s files, see real code, and discover where tools, skills, MCP connections, and runtime capabilities fit.
 
-Harnest builds on the work of [Google ADK](https://google.github.io/adk-docs/)
-and [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview). Start
-in managed mode for the fastest path, or use advanced mode when you need direct
-framework control. Existing agents can start in advanced mode and move
-capabilities into the managed structure at their own pace.
+- **For teams:** turn company defaults into reusable project packs. Give every team a consistent starting point, your own CLI, and versioned project upgrades.
+- **For individual developers:** start with a small agent, connect your tools and model, and use the same workflow to test, build, and serve it.
+
+[Build your first agent](https://docs.usefused.com/harnest/get-started/install) · [Create your company standard](https://docs.usefused.com/harnest/build/project-packs)
 
 ## Install
 
-Install the latest macOS or Linux release:
+Install the CLI on macOS or Linux. It does not require a preinstalled Python.
 
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/Usefused/harnest/main/install.sh |
   sh
-```
-
-The release contains the native CLI, its matching Python runtime package, and
-the `uv` bootstrapper. It does not require a preinstalled Python. The installer
-shows the selected version and paths before asking for confirmation.
-
-The runtime includes the `harnest_postgres` and `harnest_redis` storage packages;
-no separate provider-package installation is required.
-
-Verify the installation:
-
-```bash
-harnest --version
 harnest doctor
 ```
 
-See [Installation and releases](https://docs.usefused.com/harnest/reference/installation-and-releases)
-for version pinning, non-interactive installation, upgrades, checksums, and
-private forks.
+See [installation options](https://docs.usefused.com/harnest/reference/installation-and-releases) for version pinning and CI.
 
-## Initialize a project
-
-Create an ADK or LangGraph agent:
+## Build your first agent
 
 ```bash
 harnest init support-agent --framework adk
-# or
-harnest init support-agent --framework langgraph
-```
-
-New agents use the OpenAI-compatible API specification, not a default provider
-or GPT model. Replace `OPENAI_MODEL` and `OPENAI_BASE_URL` placeholders in
-`config.yaml` with your server's model ID and API URL. Set `OPENAI_API_KEY` in
-your runtime environment only if that server requires authentication. See
-[Configure a model](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model).
-
-The default scaffold creates this agent folder. Files beginning with `_` are
-ignored guides; replace only the ones for capabilities you need.
-
-```text
-support-agent/
-├── agent.py
-├── instructions.md
-├── config.yaml
-├── agent-card.yaml
-├── pyproject.toml
-├── harnest.lock
-├── .gitignore
-├── lifecycle/
-│   ├── storage.py
-│   └── _README.md
-├── lib/
-│   └── _README.md
-├── models/
-│   └── _README.md
-├── tools/
-│   └── _README.md
-├── tasks/
-│   └── _README.md
-├── cron/
-│   └── _README.md
-├── subagents/
-│   └── _README.md
-├── mcp/
-│   └── _README.md
-├── extensions/
-│   └── _README.md
-├── plugins/
-│   └── _README.md
-├── sandbox/
-│   └── _README.md
-├── skills/
-│   └── _README.md
-├── evals/
-│   └── _README.md
-└── tests/
-    ├── unit/_README.md
-    └── smoke/_README.md
-```
-
-Choose a scaffold profile:
-
-| Profile | Result |
-| --- | --- |
-| Default | Runnable managed agent plus ignored guides for optional capabilities |
-| `--minimal` | Only the files required to compile and run |
-| `--example` | Default scaffold plus ignored, opt-in examples |
-| `--template` | Download a Harnest template wheel and materialize its agent tree |
-
-Templates are published as universal `harnest-template-*` wheels. `harnest init`
-downloads and unpacks the wheel's `template/` tree without installing, importing,
-or executing anything from it:
-
-```bash
-harnest init support-agent --template support
-harnest init custom-agent --template https://example.com/custom-agent.whl --template-sha256 <digest>
-```
-
-The template's `config.yaml` supplies the framework and mode, and placeholders
-such as `{{ .Name }}` are filled from the target directory name. Package an
-existing agent into a template wheel with:
-
-```bash
-harnest template package support-agent
-```
-
-This writes `dist/harnest_template_support_agent-0.1.0-py3-none-any.whl`,
-excluding `.harnest/`, `.venv/`, caches, and build output without executing the
-agent code. Publish the wheel to PyPI (or serve it over HTTPS) and reference it
-with `harnest init --template`.
-
-A template may also declare the backing services its agent needs under a
-`services:` list in `harnest-template.yaml`. `harnest init --template` renders
-those declarations into `docker-compose.yml` (localhost-only, digest-pinned
-images) and injects each service's `provides` URLs into `config.yaml`
-`spec.environment`. Harnest only writes the compose file — it never starts the
-services or runs template code.
-
-Start with only the runnable core, then add capabilities as needed:
-
-```bash
-harnest init minimal-agent --framework adk --minimal
-cd minimal-agent
-harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN
-harnest add tool customer-lookup
-harnest add subagent researcher
-```
-
-`harnest add` also scaffolds `task`, `lifecycle`, and `context` resources without
-overwriting existing files. MCP scaffolds keep token values out of source: use
-`--token-header` and `--token-prefix` when the server does not use
-`Authorization: Bearer`. When running outside the agent folder, pass
-`--project <agent-root>`.
-
-Synchronize the isolated project environment and run its offline tests:
-
-```bash
 cd support-agent
-harnest env sync .
-harnest env sync . --profile development
-harnest test .
 ```
 
-`compile` alone selects the lean production runtime profile. `serve`, `run`,
-and ordinary `test` share the development profile; `test --evals` selects the
-eval profile. Each command synchronizes its environment automatically.
-The explicit `env sync` command also maintains an IDE-detectable `.venv` link
-unless that path already belongs to the user.
-Add only agent-owned provider, tool, and library packages to the generated
-`pyproject.toml`; Harnest owns the selected framework dependency.
+Prefer LangGraph? Use `--framework langgraph` instead.
 
-## Migrate a project
+Set `OPENAI_MODEL` and `OPENAI_BASE_URL` in `config.yaml` to your OpenAI-compatible model and endpoint. Supply `OPENAI_API_KEY` through the runtime environment if your provider requires it. See [Configure a model](https://docs.usefused.com/harnest/build/models-and-libraries/configure-a-model).
 
-### Bring an existing agent into Harnest
-
-Choose managed mode for portable agent behavior. If the agent depends on native
-plugins, middleware, state, or framework APIs, start in advanced mode so it
-keeps direct framework control.
-
-```bash
-harnest init migrated-agent --framework adk
-# or preserve native control while adopting the harness
-harnest init migrated-agent --framework adk --mode advanced
-```
-
-Move the agent into the new project, then run `harnest test` and `harnest
-serve`. Advanced mode keeps Harnest's packaging, testing, server, sessions,
-authentication, storage, telemetry, and playground. Move compatible
-capabilities into the managed structure when useful.
-
-### Upgrade an older Harnest project
-
-Preview the repository migration first. This command is read-only:
-
-```bash
-cd existing-agent
-harnest upgrade .
-```
-
-After reviewing the plan and preserving the current work, apply it:
-
-```bash
-harnest upgrade . --apply
-harnest test .
-```
-
-Harnest verifies the planned source hashes and backs up affected files under
-`.harnest/upgrade-backups/` before changing them. It reports
-ambiguous business logic as a manual blocker instead of guessing.
-
-### Switch between ADK and LangGraph
-
-For a managed agent, change `spec.framework.name` in `config.yaml`:
-
-```yaml
-spec:
-  framework:
-    name: langgraph # or adk
-    mode: managed
-```
-
-Then validate the target framework:
+Write the agent’s instructions in `instructions.md` and add the capabilities your use case needs. Harnest discovers and wires managed tools, skills, and MCP connections from the project structure.
 
 ```bash
 harnest test .
-harnest serve .
-```
-
-Before switching, review native extensions, ADK eval sets, sandboxes, custom
-nodes, and framework-owned checkpoint state. Advanced projects use framework
-APIs directly and require a semantic migration rather than only a config edit.
-Follow the [framework migration checklist](https://docs.usefused.com/harnest/runtime/adk-and-langgraph#switch-frameworks).
-
-## Serve a project
-
-Start the bundled visual workspace from the folder you want to work in:
-
-```bash
-harnest studio
-# Or select another existing folder:
-harnest studio --workspace /path/to/agents
-```
-
-Studio prints its private local URL (port 1940 by default). The first launch
-prepares its managed runtime; subsequent launches reuse it. See
-[Studio and source review](https://docs.usefused.com/harnest/build/testing-and-compilation#review-changes-in-agent-builder).
-
-From the agent folder, compile and start the standalone development server:
-
-```bash
-harnest serve .
-```
-
-During development, recompile and replace the local process after source changes:
-
-```bash
 harnest serve . --reload
 ```
 
-Reload uses fresh immutable artifacts and never mutates a running ADK or LangGraph graph. It is restricted to loopback development serving.
+Open the [local playground](http://127.0.0.1:1907/) to try your agent. These commands prepare the project environment automatically.
 
-Open [http://127.0.0.1:1907/](http://127.0.0.1:1907/) for the built-in test UI.
-The same playground works with managed or advanced ADK and LangGraph agents.
-The neutral API is documented at
-[http://127.0.0.1:1907/docs](http://127.0.0.1:1907/docs).
+Prefer a visual workspace? Run `harnest studio --workspace /path/to/agents` to build and edit agents in Harnest Studio.
 
-Configure the local bind, request limits, concurrency, timeout, and playground
-in the optional `server:` section of `config.yaml`. Omit it to use the defaults. Set `server.live: true` to enable WebSockets on the same host and port. See [Serving agents](https://docs.usefused.com/harnest/runtime/serving)
-for the HTTP, SSE, WebSocket, approval, authentication, storage, and production
-boundaries.
+## Bring your existing agents
 
-Portable image, audio, video, file, and typed custom-data fields are declared
-in Pydantic models with reusable `Annotated` constraints. See [Typed
-multimodal contracts](https://docs.usefused.com/harnest/build/models-and-libraries/typed-multimodal-contracts).
+Use **managed mode** for portable agent behavior, or **advanced mode** to keep direct control of ADK or LangGraph while adopting Harnest’s packaging, tests, and serving.
 
-## Documentation
+```bash
+harnest init migrated-agent --framework adk --mode advanced
+```
 
-Browse the [Harnest documentation](https://docs.usefused.com/harnest)
-for Agent Skills, MCP Client, SubAgents, Agent Tools, Lifecycle, authentication
-and credentials, telemetry, frameworks, testing, serving, and architecture.
+Follow the [migration guide](https://docs.usefused.com/harnest/get-started/migrate) to move your code. For an existing Harnest project, preview changes with `harnest upgrade .` before applying them with `harnest upgrade . --apply`. See the [framework migration checklist](https://docs.usefused.com/harnest/runtime/adk-and-langgraph#switch-frameworks) when changing frameworks.
 
-Harnest is licensed under the [Apache License 2.0](LICENSE).
+## Take it to production
+
+Keep the same agent code as you add persistent storage, authentication, approvals, and telemetry. Harnest provides the runtime interfaces; you configure the services and deployment your application needs.
+
+[Prepare for production](https://docs.usefused.com/harnest/runtime/serving/production) · [Read the documentation](https://docs.usefused.com/harnest)
+
+Built and maintained by [Fused](https://usefused.com). Licensed under [Apache 2.0](LICENSE).
