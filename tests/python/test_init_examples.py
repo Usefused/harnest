@@ -46,6 +46,52 @@ class InitExampleTests(unittest.TestCase):
         )
         return root
 
+    def test_added_eval_presets_validate_with_native_adk(self):
+        """Real CLI output must satisfy both Harnest discovery and ADK's metric contracts."""
+        from google.adk.evaluation.eval_metrics import PrebuiltMetrics
+        from harnest.evaluation import eval_config
+
+        catalog = json.loads((_ROOT / "cmd/harnest/eval_scaffolds.json").read_text())
+        builtins = {item["id"] for item in catalog if item["id"] != "custom"}
+        self.assertLessEqual(builtins, {item.value for item in PrebuiltMetrics})
+        for framework in ("adk", "langgraph"):
+            for choice in catalog:
+                with self.subTest(framework=framework, metric=choice["id"]):
+                    root = self._scaffold(framework)
+                    subprocess.run(
+                        [str(self.binary), "add", "eval", "company-quality",
+                         "--project", str(root), "--metric", choice["id"]],
+                        check=True, capture_output=True, timeout=30,
+                    )
+                    if choice["id"] == "custom":
+                        self._check_custom_eval_stub(root)
+                        continue
+                    suite = discover_evals(root / "agent.py")
+                    self.assertEqual(len(suite.eval_sets), 1)
+                    with patch.dict(os.environ, OPENAI_MODEL="openai/test-judge", OPENAI_BASE_URL="https://models.example.invalid/v1"):
+                        config = eval_config(suite, "business")
+                    self.assertIn(choice["id"], config.criteria)
+                    payload = json.loads(suite.eval_sets[0].read_text())
+                    case = payload["eval_cases"][0]
+                    if choice.get("scenario"):
+                        self.assertIn("conversationScenario", case)
+                        self.assertEqual(config.user_simulator_config.max_allowed_invocations, 4)
+                    elif choice.get("multiTurn"):
+                        self.assertEqual(len(case["conversation"]), 2)
+
+    def _check_custom_eval_stub(self, root):
+        """A custom scaffold is importable but cannot silently pass an unimplemented score."""
+        from harnest.evaluation import MetricContext, MetricScore
+
+        path = root / "lib" / "company_quality.py"
+        exported = runpy.run_path(str(path))
+        self.assertIs(exported["MetricContext"], MetricContext)
+        self.assertIs(exported["MetricScore"], MetricScore)
+        with self.assertRaises(NotImplementedError):
+            asyncio.run(exported["company_quality"](None, [], None, None))
+        self.assertEqual(discover_evals(root / "agent.py").eval_sets, ())
+        self.assertFalse((root / "evals" / "test_config.json").exists())
+
     def _compile_scaffold(self, root, framework):
         """Apply generated non-secret settings as the CLI does before compiling."""
         config = yaml.safe_load((root / "config.yaml").read_text())

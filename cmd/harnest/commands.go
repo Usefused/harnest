@@ -105,11 +105,14 @@ func (a *application) newTestCommand() *cobra.Command {
 			if includeEvals {
 				profile = evalEnvironmentProfile
 			}
+			progress := startEvalProgress(command, includeEvals && !noOutput, a.system.getenv("TERM"))
+			defer progress.close()
 			python, err := a.agentPython(command, bundle, profile)
 			if err != nil {
 				return err
 			}
 			defer python.releaseLease()
+			progress.phase("Running Python tests and evaluations")
 			pythonArguments := []string{"test", bundle.Directory}
 			pythonArguments = append(
 				pythonArguments,

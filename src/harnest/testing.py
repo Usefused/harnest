@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
@@ -541,8 +542,9 @@ def _run_adk_evals(
     print_results: bool = True,
     result_output: Path | None = None,
 ) -> int:
-    """Run validated eval sets through ADK's official evaluator."""
+    """Run validated ADK eval sets with visible setup and suite milestones."""
 
+    _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
     AgentEvaluator, EvalSet = _eval_dependencies()
     config = _eval_config(suite, trajectory)
     module_name = f"{artifact.name}.agent"
@@ -630,8 +632,9 @@ def _run_langgraph_evals(
     print_results: bool = True,
     result_output: Path | None = None,
 ) -> int:
-    """Run LangGraph through the same ADK metric registry and eval-set runner."""
+    """Run LangGraph through the shared evaluator with visible setup milestones."""
 
+    _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
     AgentEvaluator, EvalSet = _eval_dependencies()
     config = _eval_config(suite, trajectory)
     collector = _EvalResultCollector(framework="langgraph", trajectory=trajectory)
@@ -713,10 +716,10 @@ async def _evaluate_eval_sets(
     print_results: bool = True,
     result_collector: _EvalResultCollector | None = None,
 ) -> None:
-    """Evaluate every validated suite with consistent output and audit events."""
+    """Evaluate every suite with flushed progress, timings, and audit events."""
 
     scored_failures: list[str] = []
-    for path in suite.eval_sets:
+    for index, path in enumerate(suite.eval_sets, start=1):
         eval_set = eval_set_class.model_validate_json(path.read_text(encoding="utf-8"))
         if result_collector is not None:
             # ADK skips its persistence callback for an empty EvalSet, so
@@ -725,20 +728,21 @@ async def _evaluate_eval_sets(
                 app_name=_EVAL_APP_NAME,
                 eval_set_id=eval_set.eval_set_id,
             )
-        print(f"harnest eval [{trajectory}]: {path.name}")
+        print(f"harnest eval [{trajectory}]: {path.name}", flush=True)
         _EVAL_AUDIT.info(
             "eval.started", trigger="user", outcome="started", suite=path.name
         )
         try:
-            await evaluator.evaluate_eval_set(
-                agent_module=module_name,
-                eval_set=eval_set,
-                eval_config=config,
-                num_runs=1,
-                print_detailed_results=print_results,
-                app_name=_EVAL_APP_NAME if result_collector is not None else None,
-                eval_set_results_manager=result_collector,
-            )
+            with _eval_suite_progress(index, len(suite.eval_sets), enabled=print_results):
+                await evaluator.evaluate_eval_set(
+                    agent_module=module_name,
+                    eval_set=eval_set,
+                    eval_config=config,
+                    num_runs=1,
+                    print_detailed_results=print_results,
+                    app_name=_EVAL_APP_NAME if result_collector is not None else None,
+                    eval_set_results_manager=result_collector,
+                )
         except AssertionError as exc:
             _EVAL_AUDIT.info(
                 "eval.finished",
@@ -765,6 +769,33 @@ async def _evaluate_eval_sets(
         raise AssertionError("\n\n".join(scored_failures))
 
 
+def _eval_progress(message: str, *, enabled: bool) -> None:
+    """Flush human progress to stderr without mixing it into structured results."""
+
+    if enabled:
+        print(f"harnest eval: {message}", file=sys.stderr, flush=True)
+
+
+@contextmanager
+def _eval_suite_progress(index: int, total: int, *, enabled: bool) -> Iterator[None]:
+    """Time the native inference/scoring boundary without claiming case completion."""
+
+    label = f"Suite {index}/{total}"
+    _eval_progress(f"{label}: running agent and scoring responses", enabled=enabled)
+    started = time.monotonic()
+    outcome = "stopped"
+    try:
+        yield
+        outcome = "completed"
+    except AssertionError:
+        outcome = "failed"
+        raise
+    finally:
+        _eval_progress(
+            f"{label} {outcome} ({time.monotonic() - started:.1f}s)", enabled=enabled,
+        )
+
+
 def run_agent_tests(
     source: str | Path,
     *,
@@ -777,13 +808,14 @@ def run_agent_tests(
     mode: str = "managed",
     cli_enabled: bool = False,
 ) -> int:
-    """Test authored source independently of standalone compile bundle selections."""
+    """Test authored source with eval preparation progress and optional quiet output."""
 
     _require_eval_trajectory(eval_trajectory)
     # Reject a dead output target before compiling so direct Python callers get
     # the same contract as the public Go command.
     if eval_output is not None and not include_evals:
         raise AgentTestError("--eval-output requires --evals")
+    show_progress = include_evals and not no_output
     source_directory = Path(source)
     if source_directory.is_file():
         source_directory = source_directory.parent
@@ -791,6 +823,7 @@ def run_agent_tests(
 
     with tempfile.TemporaryDirectory(prefix="harnest-test-") as temp_directory:
         artifact = Path(temp_directory) / "compiled_agent"
+        _eval_progress("Compiling agent", enabled=show_progress)
         compile_artifact(
             source_directory,
             artifact,
@@ -800,10 +833,12 @@ def run_agent_tests(
             bundle_selection=False,
         )
         try:
+            _eval_progress("Loading agent and Python tests", enabled=show_progress)
             selected = _selected_test_directories(artifact, include_smoke)
             authored = _authored_test_directories(selected)
             plugin = _HarnestPytestPlugin(artifact, include_smoke=include_smoke)
             with _test_output(suppressed=no_output):
+                _eval_progress("Running Python tests", enabled=show_progress)
                 test_status = _run_pytest(plugin, authored)
             if test_status != 0 or not include_evals:
                 return test_status

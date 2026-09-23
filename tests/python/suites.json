@@ -110,6 +110,7 @@
       "test_eval_adk_context",
       "test_eval_adk_context_edges",
       "test_eval_model_transport",
+      "test_eval_progress",
       "test_eval_transport_entrypoints",
       "test_eval_transport_http",
       "test_extension_adk_live",

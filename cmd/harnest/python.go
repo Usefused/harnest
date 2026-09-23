@@ -115,6 +115,7 @@ func loadAgentBundle(value string) (engine.Bundle, error) {
 	return bundle, nil
 }
 
+// runPythonCLI preserves command failures and streams test output without buffering.
 func runPythonCLI(
 	ctx context.Context,
 	app *application,
@@ -125,6 +126,11 @@ func runPythonCLI(
 	stdout, stderr io.Writer,
 ) error {
 	commandArguments := append([]string{"-m", "harnest.cli"}, arguments...)
+	// Progress must reach the parent while an eval is waiting on model calls,
+	// even when the spinner wraps stdout/stderr in subprocess pipes.
+	if len(arguments) > 0 && arguments[0] == "test" {
+		commandArguments = append([]string{"-u"}, commandArguments...)
+	}
 	command := app.system.commandContext(ctx, python.Executable, commandArguments...)
 	if environment != nil {
 		command.Env = environment

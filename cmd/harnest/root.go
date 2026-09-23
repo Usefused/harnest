@@ -61,6 +61,7 @@ Typical workflow:
   harnest template package support-agent
   harnest env sync my-agent
   harnest env sync my-agent --profile development
+  harnest add eval answer-quality --project my-agent --i
   harnest mode advanced my-agent --check
   harnest upgrade my-agent
   harnest upgrade my-agent --apply

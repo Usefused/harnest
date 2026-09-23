@@ -2,6 +2,8 @@
 
 ## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
 
+- Show elapsed-time activity during eval setup and execution, with flushed stage
+  messages, suite progress and timings, plain-text CI heartbeats, and quiet-mode support.
 - Add `harnest.evaluation.metric`, `MetricContext`, and `MetricScore` for sync
   or async custom scoring services, with per-turn or conversation scoring and
   retained evidence. Native ADK metrics continue to work in the same eval pipeline.
