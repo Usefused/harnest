@@ -41,7 +41,7 @@ class ProviderTaskRuntimeManager(TaskExecutionRuntime):
             raise TaskRuntimeError(
                 "queued tasks require an explicit storage provider; register "
                 "@lifecycle.storage.tasks in lifecycle/ using PostgreSQL, Redis, "
-                "or a custom TaskStore. See https://docs.usefused.com/harnest/runtime/task-storage"
+                "or a custom TaskStore. See https://usefused.com/docs/harnest/runtime/task-storage"
             )
         self._manage_storage = manage_storage
         self._dynamic_cron = StoredCronRuntime(

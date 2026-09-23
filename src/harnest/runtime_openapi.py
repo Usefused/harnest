@@ -65,7 +65,7 @@ or pending work. Authentication is deployment-specific; use the credentials
 provided by the agent owner.
 
 Discover routes at `/agent` and download this schema at `/openapi.json`.
-[Curl examples and API guide](https://docs.usefused.com/harnest/runtime/serving/neutral-api).
+[Curl examples and API guide](https://usefused.com/docs/harnest/runtime/serving/neutral-api).
 """
 
 
