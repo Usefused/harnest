@@ -10,6 +10,21 @@
 - Route AG-UI through the existing response-stream runner so request limits,
   cancellation, timeouts, and response-status tracking match `/responses`.
 
+## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
+
+
+### Features
+
+* share response execution across AG-UI and native transports ([3284c66](https://github.com/Usefused/harnest/commit/3284c66056b51db6c56055d8e6a4a1e5a8784390))
+
+
+### Fixes
+
+* align extension release checks and bump patch versions ([3765da5](https://github.com/Usefused/harnest/commit/3765da5eb359ce66e74c927a4d0209bb37388def))
+* handle empty release-please pull request output ([a86eedd](https://github.com/Usefused/harnest/commit/a86eeddbdad7d6e20f0e6fddaade9a7b63627400))
+* require Harnest 1.x in official extensions ([997f51c](https://github.com/Usefused/harnest/commit/997f51c20cf19d89a62a7212bfa94ab57095431c))
+* update documentation links to usefused.com ([eb1caf0](https://github.com/Usefused/harnest/commit/eb1caf0bf2b02a2975f559743c3e504465fcf846))
+
 ## [1.0.0](https://github.com/Usefused/harnest/compare/v0.23.0...v1.0.0) (2026-09-23)
 
 ### Breaking changes
