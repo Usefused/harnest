@@ -1,6 +1,6 @@
 # Harnest by [Fused](https://usefused.com)
 
-**Ship your next agent. Set the standard for every one after it.**
+**Build agents for production.**
 
 Harnest is a production harness for Google ADK and LangGraph agents. It gives you a shared structure for building, testing, packaging, and serving agents. Focus on the workflows your agent needs to deliver.
 
@@ -8,10 +8,9 @@ Harnest is a production harness for Google ADK and LangGraph agents. It gives yo
 
 Click through the project’s files, see real code, and discover where tools, skills, MCP connections, and runtime capabilities fit.
 
-- **For teams:** turn company defaults into reusable project packs. Give every team a consistent starting point, your own CLI, and versioned project upgrades.
-- **For individual developers:** start with a small agent, connect your tools and model, and use the same workflow to test, build, and serve it.
+Start with a small agent, connect your tools and model, and use the same workflow to test, build, and serve it.
 
-[Build your first agent](https://usefused.com/docs/harnest/get-started/install) · [Create your company standard](https://usefused.com/docs/harnest/build/project-packs)
+[Build your first agent](https://usefused.com/docs/harnest/get-started/install)
 
 ## Install
 
