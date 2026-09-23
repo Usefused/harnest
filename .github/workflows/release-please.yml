@@ -47,18 +47,20 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Release Please leaves pr unset when it has no proposal; expressions
+      # must remain valid even when the guarded steps will be skipped.
       - name: Check out release proposal
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # releases/v6
         with:
-          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          ref: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           fetch-depth: 0
 
       - name: Mark authored changelog notes with the proposed release
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
-          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
         shell: bash
         run: |
           python3 scripts/finalize_release_changelog.py

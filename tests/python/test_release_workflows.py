@@ -380,6 +380,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("--evals", command)
 
     def test_release_please_runs_after_successful_main_ci(self):
+        """Keep release follow-up steps guarded and safe when PR output is absent."""
         workflow = load_yaml(".github/workflows/release-please.yml")
         events = workflow_events(workflow)
         release_job = workflow["jobs"]["release-please"]
@@ -425,12 +426,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             checkout_step["with"]["ref"],
-            "${{ fromJSON(steps.release.outputs.pr).headBranchName }}",
+            "${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}",
         )
         self.assertEqual(
             checkout_step["with"]["token"],
             "${{ secrets.RELEASE_PLEASE_TOKEN }}",
         )
+        self.assertEqual(
+            finalize_step["env"]["RELEASE_BRANCH"], checkout_step["with"]["ref"]
+        )
+        for step in (checkout_step, finalize_step):
+            self.assertEqual(step["if"], "${{ steps.release.outputs.prs_created == 'true' }}")
         self.assertIn("scripts/finalize_release_changelog.py", finalize_step["run"])
         self.assertIn('git push origin "HEAD:${RELEASE_BRANCH}"', finalize_step["run"])
         self.assertEqual(tuple(workflow["jobs"]), ("release-please",))
