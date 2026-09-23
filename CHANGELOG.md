@@ -2,6 +2,8 @@
 
 ## [1.1.0](https://github.com/Usefused/harnest/compare/v1.0.0...v1.1.0) (2026-09-23)
 
+- Add `harnest add eval NAME` with an interactive `--i` picker, built-in metric
+  presets, and bare custom scoring stubs; existing evaluation settings are preserved.
 - Show elapsed-time activity during eval setup and execution, with flushed stage
   messages, suite progress and timings, plain-text CI heartbeats, and quiet-mode support.
 - Add `harnest.evaluation.metric`, `MetricContext`, and `MetricScore` for sync
