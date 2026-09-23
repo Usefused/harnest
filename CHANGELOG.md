@@ -23,7 +23,9 @@
 * Scaffold a company project pack with `harnest pack init NAME`, generating a
   runnable Python CLI, editable `harnest-compile.yaml`, and sample team documentation.
   Copy documentation and binary assets unchanged with `context.files.from_file`,
-  retaining pack ownership and managed migration checks.
+  retaining pack ownership and managed migration checks. Let pack CLIs and planners
+  initialize from a Harnest template with an optional SHA-256 pin before applying
+  pack customizations, preserving staged previews and template-owned settings.
 
 * Add opt-in project packs and an embeddable company CLI for typed init options,
   staged core/pack upgrade plans, versioned migrations, generated-file ownership,

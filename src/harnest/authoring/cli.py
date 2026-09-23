@@ -73,11 +73,14 @@ class ProjectCLI:
             self._command_flags(command, parser)
 
     def _command_flags(self, command: str, parser: argparse.ArgumentParser) -> None:
-        """Keep init immediately useful while preserving explicit upgrade application."""
+        """Expose scaffold and template choices without overriding template-owned settings."""
         if command == 'init':
             parser.add_argument('--dry-run', action='store_true')
-            parser.add_argument('--framework', choices=('adk', 'langgraph'), default='adk')
+            # None distinguishes an omitted framework from an explicit conflicting flag.
+            parser.add_argument('--framework', choices=('adk', 'langgraph'), help='scaffold framework (default: adk)')
             parser.add_argument('--minimal', action='store_true')
+            parser.add_argument('--template', help='Harnest template project, slug, or HTTPS wheel URL')
+            parser.add_argument('--template-sha256', help='expected SHA-256 of an HTTPS template wheel')
         else:
             parser.add_argument('--apply', action='store_true')
 
@@ -101,10 +104,11 @@ class ProjectCLI:
             return 1
 
     def _run_project(self, args: argparse.Namespace, output: TextIO) -> int:
-        """Print exactly the reviewed plan before applying any source changes."""
+        """Forward initialization choices and print the combined plan before applying it."""
         if args.command == 'init':
             plan = self.planner.plan_init(args.directory, options=_options(args),
-                                          framework=args.framework, minimal=args.minimal)
+                                          framework=args.framework, minimal=args.minimal,
+                                          template=args.template, template_sha256=args.template_sha256)
             applying = not args.dry_run
         else:
             plan = self.planner.plan_upgrade(args.directory, options=_options(args))

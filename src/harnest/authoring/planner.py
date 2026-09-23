@@ -54,11 +54,36 @@ def _changes(before: Mapping[str, _File], after: Mapping[str, _File], owners: di
                  for path in sorted(set(before) | set(after)) if before.get(path) != after.get(path))
 
 
-def _run_core_init(stage: Path, command: Sequence[str], framework: str, minimal: bool) -> dict[str, _File]:
-    """Use the shipped CLI scaffold as the single source of Harnest init behavior."""
-    arguments = [*command, 'init', str(stage), '--framework', framework]
+def _init_arguments(framework: str | None, minimal: bool, template: str | None,
+                    template_sha256: str | None) -> list[str]:
+    """Keep explicit scaffold choices separate from template-owned framework and mode."""
+    if template is not None:
+        return _template_arguments(template, template_sha256, framework, minimal)
+    if template_sha256 is not None:
+        raise ProjectError('template_sha256 requires a template (--template)')
+    arguments = ['--framework', framework if framework is not None else 'adk']
     if minimal:
         arguments.append('--minimal')
+    return arguments
+
+
+def _template_arguments(template: str, sha256: str | None, framework: str | None, minimal: bool) -> list[str]:
+    """Forward template identity and pin while leaving download validation to Harnest."""
+    if not template.strip():
+        raise ProjectError('template must not be empty')
+    if framework is not None or minimal:
+        raise ProjectError('--template cannot be combined with --framework or --minimal')
+    arguments = ['--template', template]
+    if sha256 is not None:
+        if not sha256.strip():
+            raise ProjectError('template_sha256 must not be empty')
+        arguments.extend(['--template-sha256', sha256])
+    return arguments
+
+
+def _run_core_init(stage: Path, command: Sequence[str], init_arguments: Sequence[str]) -> dict[str, _File]:
+    """Use the shipped CLI for scaffolds and templates before composing pack changes."""
+    arguments = [*command, 'init', str(stage), *init_arguments]
     result = subprocess.run(arguments, capture_output=True, text=True, check=False)
     if result.returncode:
         raise ProjectError(f"Harnest init failed (exit {result.returncode}): {result.stderr.strip()}")
@@ -166,12 +191,14 @@ class ProjectPlanner:
         self.harnest_command = tuple(harnest_command)
 
     def plan_init(self, directory: str | Path, *, options: Mapping[str, Mapping[str, Any]] | None = None,
-                  framework: str = 'adk', minimal: bool = False) -> ProjectPlan:
-        """Scaffold and customise a disposable project; leave the requested target untouched."""
+                  framework: str | None = None, minimal: bool = False,
+                  template: str | None = None, template_sha256: str | None = None) -> ProjectPlan:
+        """Prepare a scaffold or template, then apply pack hooks in a disposable project."""
+        arguments = _init_arguments(framework, minimal, template, template_sha256)
         root = project_root(directory)
         if root.exists() and any(root.iterdir()):
             raise ProjectError("init requires an absent or empty directory")
-        return self._plan(root, options or {}, initializing=True, framework=framework, minimal=minimal)
+        return self._plan(root, options or {}, initializing=True, init_arguments=arguments)
 
     def plan_upgrade(self, directory: str | Path, *, options: Mapping[str, Mapping[str, Any]] | None = None) -> ProjectPlan:
         """Compose core migration and pack migration proposals without live writes."""
@@ -181,14 +208,14 @@ class ProjectPlanner:
         return self._plan(root, options or {}, initializing=False)
 
     def _plan(self, root: Path, options: Mapping[str, Mapping[str, Any]], *, initializing: bool,
-              framework: str = 'adk', minimal: bool = False) -> ProjectPlan:
+              init_arguments: Sequence[str] = ()) -> ProjectPlan:
         """Capture immutable before/after snapshots and make all failures apply blockers."""
         before = snapshot(root)
         existed = root.exists()
         with tempfile.TemporaryDirectory(prefix='harnest-project-plan-') as temporary:
             stage = Path(temporary) / root.name
             if initializing:
-                after, blockers = _run_core_init(stage, self.harnest_command, framework, minimal), []
+                after, blockers = _run_core_init(stage, self.harnest_command, init_arguments), []
             else:
                 after, blockers = _run_core_upgrade(stage, before)
         engine = OperationEngine(after, read_lock(before))

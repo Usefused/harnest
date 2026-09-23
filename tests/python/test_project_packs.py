@@ -24,6 +24,129 @@ example = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(example)
 
 
+_TEMPLATE_CLI = '''"""Stand in for the existing native template downloader at the process boundary."""
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument('command', choices=['init'])
+parser.add_argument('directory', type=Path)
+parser.add_argument('--template', required=True)
+parser.add_argument('--template-sha256')
+args = parser.parse_args()
+args.directory.mkdir(parents=True)
+(args.directory / 'instructions.md').write_text('Template-owned instructions.')
+if args.template == 'failed-template':
+    parser.exit(7, 'template download failed\\n')
+(args.directory / 'config.yaml').write_text('spec:\\n  framework:\\n    name: langgraph\\n    mode: managed\\n')
+skill = args.directory / 'skills' / 'support'
+skill.mkdir(parents=True)
+(skill / 'SKILL.md').write_text('Template-owned skill.')
+(args.directory / 'forwarded.json').write_text(json.dumps({
+    'template': args.template, 'sha256': args.template_sha256, 'stage': str(args.directory),
+}))
+'''
+
+
+class ProjectPackTemplateTests(unittest.TestCase):
+    """Exercise forwarding and staged pack composition through an actual CLI subprocess."""
+
+    def setUp(self):
+        """Use a controlled scaffold process; native template wheel validation has Go coverage."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        workspace = Path(temporary.name)
+        self.root = workspace / 'team agent'
+        fixture = workspace / 'template cli.py'
+        fixture.write_text(_TEMPLATE_CLI)
+        self.command = (sys.executable, str(fixture))
+        self.pack = ProjectPack('team', 1)
+        self.seen = []
+
+        @self.pack.initialize
+        def initialize(context):
+            """Observe template content before proposing project-only team documentation."""
+            self.seen.append(context.files.read_text('instructions.md'))
+            return ChangePlan(context.files.write_text('docs/team-guide.md', 'Team setup guide.'))
+
+    def test_planner_composes_template_before_pack_and_applies_snapshot(self):
+        """A pinned URL is forwarded unchanged; one combined plan retains template settings."""
+        reference = 'https://example.test/sales.whl?signature=a&version=1'
+        planner = ProjectPlanner([self.pack], harnest_command=self.command)
+        plan = planner.plan_init(self.root, template=reference, template_sha256='a' * 64)
+        self.assertFalse(plan.blockers)
+        self.assertFalse(self.root.exists())
+        self.assertEqual(self.seen, ['Template-owned instructions.'])
+        apply_project_plan(plan)
+        receipt = json.loads((self.root / 'forwarded.json').read_text())
+        self.assertEqual(receipt['template'], reference)
+        self.assertEqual(receipt['sha256'], 'a' * 64)
+        self.assertFalse(Path(receipt['stage']).exists())
+        self.assertEqual((self.root / 'docs/team-guide.md').read_text(), 'Team setup guide.')
+        self.assertEqual((self.root / 'skills/support/SKILL.md').read_text(), 'Template-owned skill.')
+        self.assertEqual(yaml.safe_load((self.root / 'config.yaml').read_text())['spec']['framework']['name'], 'langgraph')
+
+    def test_cli_template_preview_and_apply(self):
+        """The embedded CLI exposes template flags without sending its default framework."""
+        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
+        flags = ['init', str(self.root), '--template', 'sales', '--template-sha256', 'b' * 64]
+        output = io.StringIO()
+        self.assertEqual(cli.run([*flags, '--dry-run', '--json'], stdout=output), 0)
+        self.assertFalse(self.root.exists())
+        self.assertIn('docs/team-guide.md', output.getvalue())
+        self.assertEqual(cli.run(flags, stdout=io.StringIO()), 0)
+        receipt = json.loads((self.root / 'forwarded.json').read_text())
+        self.assertEqual(receipt['template'], 'sales')
+        self.assertEqual(receipt['sha256'], 'b' * 64)
+        self.assertEqual(json.loads((self.root / 'harnest-packs.lock').read_text())['packs'], {'team': 1})
+
+    def test_template_pin_is_optional(self):
+        """Named templates and URLs retain the native CLI's optional-pin behavior."""
+        plan = ProjectPlanner([self.pack], harnest_command=self.command).plan_init(self.root, template='sales')
+        apply_project_plan(plan)
+        self.assertIsNone(json.loads((self.root / 'forwarded.json').read_text())['sha256'])
+
+    def test_planner_rejects_conflicts_before_core_or_pack_execution(self):
+        """Explicit choices cannot silently override a template or discard a checksum."""
+        cases = (
+            {'template': 'sales', 'framework': 'adk'},
+            {'template': 'sales', 'framework': 'langgraph'},
+            {'template': 'sales', 'minimal': True},
+            {'template_sha256': 'a' * 64},
+            {'template': ''},
+            {'template': 'sales', 'template_sha256': ''},
+        )
+        planner = ProjectPlanner([self.pack], harnest_command=self.command)
+        for options in cases:
+            with self.subTest(options=options), patch('harnest.authoring.planner.subprocess.run') as core:
+                with self.assertRaises(ProjectError):
+                    planner.plan_init(self.root, **options)
+                core.assert_not_called()
+        self.assertEqual(self.seen, [])
+        self.assertFalse(self.root.exists())
+
+    def test_cli_rejects_template_conflicts(self):
+        """CLI defaults are omitted but an explicitly supplied framework remains a conflict."""
+        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
+        for flags in (['--template', 'sales', '--framework', 'adk'], ['--template', 'sales', '--minimal'], ['--template-sha256', 'a' * 64]):
+            with self.subTest(flags=flags), patch('harnest.authoring.planner.subprocess.run') as core:
+                errors = io.StringIO()
+                self.assertEqual(cli.run(['init', str(self.root), *flags], stderr=errors), 1)
+                self.assertIn('template', errors.getvalue())
+                core.assert_not_called()
+        self.assertFalse(self.root.exists())
+
+    def test_core_failure_leaves_target_untouched_and_skips_packs(self):
+        """Partially downloaded or rendered templates cannot leak into the live destination."""
+        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
+        errors = io.StringIO()
+        self.assertEqual(cli.run(['init', str(self.root), '--template', 'failed-template'], stderr=errors), 1)
+        self.assertIn('exit 7', errors.getvalue())
+        self.assertEqual(self.seen, [])
+        self.assertFalse(self.root.exists())
+
+
 class ProjectPackIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
