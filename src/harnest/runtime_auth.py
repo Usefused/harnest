@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from threading import Lock
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol, runtime_checkable
 
@@ -85,6 +86,83 @@ class _PrincipalBinding:
 _ACTIVE_PRINCIPAL: ContextVar[_PrincipalBinding | None] = ContextVar(
     "harnest_authenticated_principal", default=None
 )
+
+
+@dataclass(slots=True)
+class _PrincipalHandoff:
+    """Coordinate accepted resumptions without extending request authority."""
+
+    user_id: str
+    _bindings: list[_PrincipalBinding] = field(default_factory=list, repr=False)
+    _requires_authentication: bool = False
+    _closed: bool = False
+    _lock: Any = field(default_factory=Lock, repr=False)
+
+    def validate(self) -> _PrincipalBinding | None:
+        """Check the submitting request without changing the running invocation."""
+
+        if self._closed:
+            raise PermissionError("continuation has ended")
+        binding = _ACTIVE_PRINCIPAL.get()
+        if binding is not None:
+            if not binding.lifetime.active or binding.principal.user_id != self.user_id:
+                raise PermissionError("continuation principal does not match its invocation")
+        elif self._requires_authentication:
+            raise PermissionError("continuation requires authentication")
+        return binding
+
+    def refresh(self) -> None:
+        """Attach authority only at the successful continuation commit boundary."""
+
+        with self._lock:
+            binding = self.validate()
+            self._prune()
+            if binding is not None:
+                self._requires_authentication = True
+                self._bindings = [item for item in self._bindings if item is not binding]
+                self._bindings.append(binding)
+
+    def current(self) -> _PrincipalBinding | None:
+        """Prefer the latest accepted, still-active request for this invocation."""
+
+        # Sync tools can read from worker threads while async resumptions commit.
+        # Serialize pruning so a reader cannot overwrite a newly accepted binding.
+        with self._lock:
+            self._prune()
+            # Parallel requests can end in either order; retain every live one.
+            return self._bindings[-1] if self._bindings else None
+
+    def _prune(self) -> None:
+        """Discard revoked bindings instead of retaining expired credentials."""
+
+        self._bindings = [item for item in self._bindings if item.lifetime.active]
+
+    def close(self) -> None:
+        """Permanently revoke the channel, including all copied child contexts."""
+
+        with self._lock:
+            self._closed = True
+            self._bindings.clear()
+
+
+_ACTIVE_HANDOFF: ContextVar[_PrincipalHandoff | None] = ContextVar(
+    "harnest_principal_handoff", default=None
+)
+
+
+@contextmanager
+def _principal_handoff(user_id: str) -> Iterator[_PrincipalHandoff]:
+    """Let client continuations renew authority without extending HTTP lifetimes."""
+
+    handoff = _PrincipalHandoff(user_id)
+    handoff.refresh()
+    token = _ACTIVE_HANDOFF.set(handoff)
+    try:
+        yield handoff
+    finally:
+        # Child tasks retain the shared channel, so seal it on terminal exit.
+        handoff.close()
+        _ACTIVE_HANDOFF.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +283,8 @@ def _activate_authenticated_principal(
 def _active_authenticated_principal() -> AuthPrincipal | None:
     """Return the verified request principal without manufacturing a fallback."""
 
-    binding = _ACTIVE_PRINCIPAL.get()
+    handoff = _ACTIVE_HANDOFF.get()
+    binding = handoff.current() if handoff is not None else _ACTIVE_PRINCIPAL.get()
     if binding is None or not binding.lifetime.active:
         return None
     return binding.principal

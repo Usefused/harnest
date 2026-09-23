@@ -57,7 +57,7 @@ an additive scaffold command.
 | Add authorized live coverage | Root `tests/smoke/test_*.py` | Keep external calls behind the smoke lane. |
 | Add ADK evaluations | Root `evals/` | Keep executable evals at root; expected responses contain visible output only. |
 | Change public identity or advertised capability | Root `agent-card.yaml` | Do not use the card as runtime wiring. |
-| Change resources, environment, framework, mode, or entrypoint | Root `config.yaml` | Treat framework/mode changes as migrations, not incidental edits. |
+| Change environment, framework, mode, or entrypoint | Root `config.yaml` | Treat framework/mode changes as migrations, not incidental edits. |
 | Change standalone host, request limits, concurrency, timeout, or playground | Root `config.yaml` → `server` | Omit unchanged defaults. Use exact `${NAME}` for startup environment values; keep auth, storage, TLS, secrets, and deployment scaling outside this section. Move legacy `server.yaml` settings here and remove that file before using inline settings. |
 
 ## Wire managed resources correctly

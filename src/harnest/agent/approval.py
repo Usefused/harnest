@@ -16,9 +16,12 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Iterator, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Iterator, Literal, TypeVar
 
 from ..logging import get_logger
+
+if TYPE_CHECKING:
+    from ..runtime_auth import _PrincipalHandoff
 
 F = TypeVar("F", bound=Callable[..., Any])
 Decision = Literal["approve", "deny"]
@@ -157,6 +160,19 @@ class ApprovalRun:
     notifications: asyncio.Queue[tuple[str, Any]] = field(default_factory=asyncio.Queue)
     activation: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    _authority: _PrincipalHandoff | None = field(default=None, repr=False)
+
+    def _validate_resume_authority(self) -> None:
+        """Reject invalid callers before async preparation can perform work."""
+
+        if self._authority is not None:
+            self._authority.validate()
+
+    def _accept_resume_authority(self) -> None:
+        """Share accepted request authority across tool and approval resumptions."""
+
+        if self._authority is not None:
+            self._authority.refresh()
 
 
 @dataclass(slots=True)
@@ -297,6 +313,8 @@ class InMemoryApprovalStore:
     def _decide_locked(
         self, approval_id: str, *, user_id: str, decision: Decision
     ) -> tuple[PendingApproval, _ApprovalWaiter | None, bool]:
+        """Validate ownership and state before atomically accepting authority."""
+
         pending = self._items.get(approval_id)
         if pending is None or pending.user_id != user_id:
             raise KeyError("approval not found")
@@ -306,6 +324,11 @@ class InMemoryApprovalStore:
             return pending, waiter, True
         if pending.status != "pending":
             raise ApprovalEnforcementError(f"approval is already {pending.status}")
+        if waiter is not None:
+            try:
+                waiter.run._accept_resume_authority()
+            except PermissionError as exc:
+                raise ApprovalEnforcementError(str(exc)) from exc
         pending.status = "approved" if decision == "approve" else "denied"
         if decision == "deny":
             pending.finished_at = self._clock()
@@ -359,6 +382,10 @@ class InMemoryApprovalStore:
     def cancel_run(self, run: ApprovalRun) -> None:
         """Cancel all unresolved challenges and work for one invocation."""
 
+        # Revoke immediately even if cancellation cleanup suppresses or delays
+        # the task's CancelledError; terminal closure cannot be refreshed.
+        if run._authority is not None:
+            run._authority.close()
         cancelled: list[_ApprovalWaiter] = []
         with self._lock:
             for approval_id, waiter in tuple(self._waiters.items()):

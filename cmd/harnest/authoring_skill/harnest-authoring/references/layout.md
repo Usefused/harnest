@@ -8,7 +8,7 @@ file is the path and ownership contract it relies on.
 
 | Path | Purpose |
 | --- | --- |
-| `config.yaml` | Deployment resources, runtime environment, entrypoint, framework, mode, and optional root `server` overrides. Omitted server settings use defaults. |
+| `config.yaml` | Runtime environment, entrypoint, framework, mode, and optional root `server` overrides. Legacy `spec.resources` and `spec.scaling` are ignored and not generated; deployment policy belongs in `harnest-deployment.yaml`. |
 | `agent-card.yaml` | Public agent identity, interfaces, capabilities, and advertised A2A skills. |
 | `agent.py` | Exports a managed `Agent`/portable `Graph`, or an `Agent` created with `Agent.advanced(...)`. |
 | `instructions.md` | Non-empty root instructions. Managed `Agent` definitions may omit `instruction`; the compiler supplies this file. |

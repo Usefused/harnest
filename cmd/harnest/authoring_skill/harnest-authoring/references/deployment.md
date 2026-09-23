@@ -15,9 +15,15 @@ preserve a database if another component still needs it.
 Kubernetes manifest. Raw Kubernetes Deployment/Service streams, including `---`
 separators, belong in a separate file such as `deploy/kubernetes.yaml`.
 
-CPU and memory limits belong under each workload's `resources` in this deployment
-file. Do not generate `spec.resources.cpu` or `spec.resources.memory` in the
-agent's `config.yaml`; those fields remain accepted only for older projects.
+Do not generate `spec.resources` or `spec.scaling` blocks in the agent's
+`config.yaml`. CPU and memory limits belong under each workload's `resources`
+in this deployment file; replicas use the workload's `replicas` setting.
+For explicit HTTP timeout or concurrency overrides use the root `server.http`
+settings (`requestTimeoutSeconds` and `maxConcurrentRequests`); omit unchanged
+defaults. Existing `spec.resources` and `spec.scaling` values are silently
+ignored, including empty, null, or invalid hints. Do not generate these blocks
+or treat them as runtime or deployment settings. Preserve existing source unless
+the user asks to clean it up.
 
 Use this shape, adapting names, images and bindings to known user inputs:
 

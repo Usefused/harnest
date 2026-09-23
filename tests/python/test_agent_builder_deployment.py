@@ -49,6 +49,21 @@ class BuilderDeploymentTests(_BuilderFixture):
         self.assertNotIn("private-test-value", result.text)
         self.assertIn("Localhost", " ".join(data["warnings"]))
 
+    def test_deployment_discovery_ignores_retired_agent_settings(self):
+        """Studio cannot reuse removed config fields as implicit deployment defaults."""
+
+        path = self.project / "config.yaml"
+        config = yaml.safe_load(path.read_text())
+        for name in ("resources", "scaling"):
+            with self.subTest(name=name):
+                config["spec"][name] = {"cpu": "100", "memory": "999Gi", "unused": "${IGNORED_VARIABLE}"}
+                path.write_text(yaml.safe_dump(config))
+                result = self.client.get("/api/deployment/inspect", params={"project": "sample"})
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()["resources"], {})
+                self.assertNotIn("IGNORED_VARIABLE", result.json()["variables"])
+                del config["spec"][name]
+
     def test_local_proposal_then_save_and_plan(self):
         """A complete proposal preserves external services and writes only after explicit review."""
         self.discover_source()

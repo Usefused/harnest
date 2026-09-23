@@ -14,33 +14,80 @@ import (
 	"testing"
 )
 
-// TestLoadBundleOptionalDeploymentResources covers omitted hints and preserves
-// validation of legacy values across the on-disk bundle loading boundary.
-func TestLoadBundleOptionalDeploymentResources(t *testing.T) {
+// TestLoadBundleIgnoresDeploymentSections drops retired fields without retaining policy.
+func TestLoadBundleIgnoresDeploymentSections(t *testing.T) {
 	for _, testCase := range []struct {
-		name, resources string
-		valid           bool
+		name, fields string
 	}{
-		{"omitted", "", true},
-		{"runtime-only", "  resources:\n    timeoutSeconds: 300\n", true},
-		{"legacy", "  resources:\n    cpu: 500m\n    memory: 512Mi\n", true},
-		{"invalid-cpu", "  resources:\n    cpu: invalid\n", false},
-		{"invalid-memory", "  resources:\n    memory: invalid\n", false},
+		{"resources-null", "  resources: null\n"},
+		{"resources-empty", "  resources: {}\n"},
+		{"resources-limits", "  resources:\n    cpu: 500m\n    memory: 512Mi\n"},
+		{"resources-runtime", "  resources:\n    timeoutSeconds: 300\n"},
+		{"resources-invalid", "  resources: {cpu: invalid, memory: -1}\n"},
+		{"resources-list", "  resources: [ignored]\n"},
+		{"scaling-null", "  scaling: null\n"},
+		{"scaling-empty", "  scaling: {}\n"},
+		{"scaling-invalid", "  scaling: ignored\n"},
+		{"scaling-replicas", "  scaling:\n    minReplicas: 0\n    maxReplicas: 1\n"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			directory := writeAgent(t, t.TempDir(), "resources", true)
+			directory := writeAgent(t, t.TempDir(), "removed-fields", true)
 			path := filepath.Join(directory, "config.yaml")
 			original, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			text := strings.Replace(string(original), "  resources:\n    cpu: \"1\"\n    memory: 1Gi\n", testCase.resources, 1)
-			mustWrite(t, path, text)
-			_, err = LoadBundle(directory)
-			if (err == nil) != testCase.valid {
-				t.Fatalf("LoadBundle error = %v; want valid = %t", err, testCase.valid)
+			mustWrite(t, path, string(original)+testCase.fields)
+			bundle, err := LoadBundle(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(bundle.Config.Spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "resources") || strings.Contains(string(data), "scaling") {
+				t.Fatalf("retired settings retained in effective config: %s", data)
 			}
 		})
+	}
+}
+
+// TestIgnoredDeploymentFieldsDoNotRelaxStrictYAML preserves active config validation.
+func TestIgnoredDeploymentFieldsDoNotRelaxStrictYAML(t *testing.T) {
+	for _, fields := range []string{
+		"  resources: {}\n  typo: true\n",
+		"  resources: {}\n  resources: {}\n",
+		"  scaling: {}\n  interfaces: {cli: true, typo: true}\n",
+	} {
+		directory := writeAgent(t, t.TempDir(), "strict", true)
+		path := filepath.Join(directory, "config.yaml")
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, path, string(original)+fields)
+		if _, err := LoadBundle(directory); err == nil {
+			t.Fatalf("expected strict validation for %q", fields)
+		}
+	}
+}
+
+// TestIgnoredDeploymentFieldsPreserveEnvironment keeps authored scalar spelling intact.
+func TestIgnoredDeploymentFieldsPreserveEnvironment(t *testing.T) {
+	directory := writeAgent(t, t.TempDir(), "preserved", true)
+	path := filepath.Join(directory, "config.yaml")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, string(original)+"  <<: {resources: [ignored], scaling: null}\n  environment:\n    DECIMAL: 1.00\n    EXPONENT: 1e3\n")
+	bundle, err := LoadBundle(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Config.Spec.Environment["DECIMAL"] != "1.00" || bundle.Config.Spec.Environment["EXPONENT"] != "1e3" {
+		t.Fatalf("authored environment changed: %#v", bundle.Config.Spec.Environment)
 	}
 }
 
@@ -1002,9 +1049,6 @@ spec:
   runtime:
     version: "3.12"
     dependencyFile: pyproject.toml
-  resources:
-    cpu: "1"
-    memory: 1Gi
 `, name, enabled))
 	mustWrite(t, filepath.Join(directory, "agent-card.yaml"), fmt.Sprintf(`name: %s
 description: Test agent.

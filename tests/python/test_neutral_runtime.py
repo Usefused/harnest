@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shutil
 import subprocess
@@ -500,6 +501,75 @@ class ClientToolDriver(FakeDriver):
         result = await self.invoke(request)
         for event in result.events:
             yield dict(event)
+
+
+class CredentialHeaderAuthenticator(HeaderAuthenticator):
+    async def authenticate(self, connection):
+        """Promote only a synthetic credential for the verified test identity."""
+
+        from harnest.credentials import Credential
+
+        principal = await super().authenticate(connection)
+        return AuthPrincipal(principal.user_id, credentials={
+            "browser": Credential(connection.headers.get("x-test-credential", "")),
+        })
+
+
+class CredentialClientToolDriver(ClientToolDriver):
+    def __init__(self):
+        """Record synthetic provider observations outside all public output."""
+
+        super().__init__()
+        self.seen = []
+
+    async def invoke(self, request):
+        """Resolve in root and child contexts after two independent handoffs."""
+
+        from harnest.context import activate_context, create_agent_context
+        from harnest.credentials import CredentialProvider, _activate_credential_provider, credentials
+
+        seen = self.seen
+
+        class Provider(CredentialProvider):
+            async def resolve(self, credential_request):
+                """Read opaque credentials exclusively from the verified principal."""
+
+                credential = credential_request.principal.credentials.get("browser")
+                seen.append((credential_request.principal.user_id, credential.reveal()))
+                return credential
+
+        async def resolve_for(agent_name):
+            """Exercise provider identity through the normal scoped facade."""
+
+            active = create_agent_context(
+                framework="fake", agent_name=agent_name,
+                user_id=request.user_id, session_id=request.session_id,
+                invocation_id=request.invocation_id, metadata={}, resources={},
+            )
+            with activate_context(active):
+                await credentials.resolve("test-engine", ["read"])
+
+        with _activate_credential_provider(Provider()):
+            await self._pause("first")
+            await resolve_for("root")
+            await asyncio.create_task(resolve_for("child"))
+            await self._pause("second")
+            await resolve_for("root")
+        return InvocationResult(text="authenticated", events=({
+            "type": "message", "role": "assistant", "text": "authenticated",
+        },), result={}, session_id=request.session_id, metadata={})
+
+    async def _pause(self, value):
+        """Suspend on a client result before reading private credentials."""
+
+        await _browser_open(value)
+
+
+class CredentialApprovalDriver(CredentialClientToolDriver):
+    async def _pause(self, value):
+        """Exercise the same credential facade after an approval decision."""
+
+        await _protected_send(value)
 
 
 class ApprovedClientToolDriver(FakeDriver):
@@ -2357,6 +2427,300 @@ class ApprovalTransportTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
+class ClientToolCredentialTransportTests(unittest.TestCase):
+    def test_http_handoffs_refresh_identity_without_exposing_credentials(self):
+        """Both initial transports must survive root and child credential queries."""
+
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                self._round_trip(stream)
+
+    def _round_trip(self, stream):
+        """Reject cross-user and invalid submissions before allowing fresh tokens."""
+
+        driver = CredentialClientToolDriver()
+        app = create_neutral_app(driver, authenticator=CredentialHeaderAuthenticator())
+        with TestClient(app) as client:
+            headers = {"x-test-user": "alice", "x-test-credential": "synthetic-old"}
+            client.post("/sessions", headers=headers, json={"id": "handoff"})
+            response = client.post("/responses", headers=headers, json={
+                "input": "read", "sessionId": "handoff", "stream": stream,
+            })
+            required = self._completion(response, stream)
+            endpoint = f"/client-tools/{required['requiredAction']['id']}"
+            self.assertEqual(client.post(endpoint, json={"output": {"title": "x"}}).status_code, 401)
+            self.assertEqual(client.post(endpoint, headers={"x-test-user": "bob"},
+                json={"output": {"title": "x"}}).status_code, 404)
+            headers["x-test-credential"] = "synthetic-fresh"
+            self.assertEqual(client.post(endpoint, headers=headers,
+                json={"output": {"title": "x"}, "unexpected": True}).status_code, 400)
+            resumed = client.post(endpoint, headers=headers, json={"output": {"title": "x"}})
+            self.assertEqual(resumed.status_code, 200)
+            self.assertEqual(resumed.json()["status"], "requires_action")
+            headers["x-test-credential"] = "synthetic-latest"
+            endpoint = f"/client-tools/{resumed.json()['requiredAction']['id']}"
+            completed = client.post(endpoint, headers=headers, json={"output": {"title": "y"}})
+            self.assertEqual(completed.status_code, 200)
+            self.assertEqual(completed.json()["outputText"], "authenticated")
+            self.assertEqual(driver.seen, [("alice", "synthetic-fresh"),
+                ("alice", "synthetic-fresh"), ("alice", "synthetic-latest")])
+            for item in (response, resumed, completed):
+                self.assertNotIn("synthetic-", item.text)
+            self.assertEqual(client.post(endpoint, headers=headers,
+                json={"output": {"title": "again"}}).status_code, 404)
+
+    def test_approval_handoffs_refresh_identity_for_json_and_sse(self):
+        """Approval decisions share the same private authority path as tool results."""
+
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                self._approval_round_trip(stream)
+
+    def _approval_round_trip(self, stream):
+        """Renew two expired request contexts without publishing their credentials."""
+
+        driver = CredentialApprovalDriver()
+        app = create_neutral_app(driver, authenticator=CredentialHeaderAuthenticator())
+        with TestClient(app) as client:
+            headers = {"x-test-user": "alice", "x-test-credential": "synthetic-old"}
+            client.post("/sessions", headers=headers, json={"id": "approval-auth"})
+            response = client.post("/responses", headers=headers, json={
+                "input": "read", "sessionId": "approval-auth", "stream": stream,
+            })
+            required = self._completion(response, stream)
+            endpoint = f"/approvals/{required['requiredAction']['id']}"
+            self.assertEqual(client.post(endpoint, json={"decision": "approve"}).status_code, 401)
+            self.assertEqual(client.post(endpoint, headers={"x-test-user": "bob"},
+                json={"decision": "approve"}).status_code, 404)
+            self.assertEqual(client.post(endpoint, headers=headers,
+                json={"decision": "invalid"}).status_code, 400)
+            headers["x-test-credential"] = "synthetic-fresh"
+            resumed = client.post(endpoint, headers=headers, json={"decision": "approve"})
+            self.assertEqual(resumed.status_code, 200)
+            self.assertEqual(resumed.json()["status"], "requires_action")
+            headers["x-test-credential"] = "synthetic-latest"
+            endpoint = f"/approvals/{resumed.json()['requiredAction']['id']}"
+            completed = client.post(endpoint, headers=headers, json={"decision": "approve"})
+            self.assertEqual(completed.status_code, 200)
+            self.assertEqual(completed.json()["outputText"], "authenticated")
+            self.assertEqual(driver.seen, [("alice", "synthetic-fresh"),
+                ("alice", "synthetic-fresh"), ("alice", "synthetic-latest")])
+            for item in (response, resumed, completed):
+                self.assertNotIn("synthetic-", item.text)
+            self.assertEqual(client.post(endpoint, headers=headers,
+                json={"decision": "approve"}).status_code, 409)
+
+    @staticmethod
+    def _completion(response, stream):
+        """Read the shared completion envelope from JSON or SSE."""
+
+        if not stream:
+            return response.json()
+        frames = [json.loads(line[6:]) for line in response.text.splitlines()
+                  if line.startswith("data: ")]
+        return next(frame for frame in frames if frame["type"] == "response.completed")
+
+
+class ContinuationAuthorityTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        """Run parallel real store suspensions under one expired request context."""
+
+        import contextvars
+        from types import SimpleNamespace
+        from harnest.runtime_auth import _activate_authenticated_principal
+        from harnest.runtime_continuation import start_approval_run
+
+        self.approvals = InMemoryApprovalStore()
+        self.tools = InMemoryClientToolStore()
+        self.release = asyncio.Event()
+        self.ready = asyncio.Event()
+
+        async def invoke(request):
+            """Keep the invocation alive for assertions after both tools resume."""
+
+            self.owned = contextvars.copy_context()
+            await asyncio.gather(*(self.tools.suspend(
+                self.run, name=f"tool-{index}", arguments={},
+                output_schema=None, timeout_seconds=30,
+            ) for index in range(2)))
+            self.ready.set()
+            await self.release.wait()
+            return InvocationResult(text="done", events=(), result=None,
+                session_id=request.session_id, metadata={})
+
+        request = InvocationRequest(input="read", user_id="alice", session_id="auth",
+            invocation_id="auth-run", metadata={}, state_delta={}, transport="json")
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            self.run = start_approval_run(self.approvals, self.tools,
+                SimpleNamespace(invoke=invoke), request, stream=False)
+            self.run.activation.set()
+            self.pending = [(await self.run.notifications.get())[1] for _ in range(2)]
+        self.addAsyncCleanup(self._cleanup)
+
+    async def _cleanup(self):
+        """Stop suspended tasks even when an assertion aborts the test."""
+
+        self.approvals.cancel_run(self.run)
+        await self.run.task
+
+    def _principal(self):
+        """Read authentication from the original invocation's copied context."""
+
+        from harnest.runtime_auth import _active_authenticated_principal
+        return self.owned.run(_active_authenticated_principal)
+
+    async def _submit(self, index):
+        """Submit through the store's actual preparation and commit boundaries."""
+
+        return await self.tools.submit(self.pending[index].id, user_id="alice", output={})
+
+    async def test_parallel_tool_results_keep_remaining_request_authority(self):
+        """Completing B leaves A available, and both expiring revokes the run."""
+
+        from harnest.runtime_auth import _activate_authenticated_principal
+
+        first = AuthPrincipal("alice", claims={"request": "a"})
+        second = AuthPrincipal("alice", claims={"request": "b"})
+        accepted = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def submit_first():
+            with _activate_authenticated_principal(first):
+                await self._submit(0)
+                accepted.set()
+                await finish.wait()
+
+        task = asyncio.create_task(submit_first())
+        try:
+            await asyncio.wait_for(accepted.wait(), 2)
+            with _activate_authenticated_principal(second):
+                await self._submit(1)
+                await asyncio.wait_for(self.ready.wait(), 2)
+                self.assertIs(self._principal(), second)
+                self.assertIs(await asyncio.to_thread(self._principal), second)
+            self.assertIs(self._principal(), first)
+        finally:
+            finish.set()
+            await task
+        self.assertIsNone(self._principal())
+
+    async def test_invalid_output_does_not_replace_accepted_authority(self):
+        """A schema/storage rejection cannot change the principal of parallel work."""
+
+        from pydantic import BaseModel
+        from harnest.client_tool import ClientToolError
+        from harnest.runtime_auth import _activate_authenticated_principal
+
+        class Result(BaseModel):
+            title: str
+
+        self.pending[1].output_schema = Result
+        first = AuthPrincipal("alice", claims={"request": "accepted"})
+        with _activate_authenticated_principal(first):
+            await self._submit(0)
+            with _activate_authenticated_principal(AuthPrincipal("alice")):
+                with self.assertRaisesRegex(ClientToolError, "does not match Result"):
+                    await self._submit(1)
+            self.assertIs(self._principal(), first)
+            self.assertFalse(self.pending[1].submitting)
+            await self.tools.submit(self.pending[1].id, user_id="alice", output={"title": "valid"})
+
+    async def test_cancellation_during_preparation_rolls_back_and_never_reopens(self):
+        """Cancellation seals the channel before a staged result can commit."""
+
+        from unittest.mock import AsyncMock, patch
+        from harnest.client_tool import ClientToolError, _PreparedClientToolResult
+        from harnest.runtime_auth import _activate_authenticated_principal
+
+        rollback = AsyncMock()
+        from types import SimpleNamespace
+
+        async def prepare(pending, output):
+            self.approvals.cancel_run(self.run)
+            self.assertIsNone(self._principal())
+            return _PreparedClientToolResult({}, SimpleNamespace(rollback=rollback))
+
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            with patch.object(self.tools, "_prepared_output", prepare):
+                with self.assertRaises(ClientToolError):
+                    await self._submit(0)
+            with self.assertRaisesRegex(PermissionError, "ended"):
+                self.run._accept_resume_authority()
+            self.assertIsNone(self._principal())
+        rollback.assert_awaited_once()
+        self.assertFalse(self.pending[0].submitting)
+
+    async def test_expired_authority_after_preparation_rolls_back(self):
+        """An inherited request may end while its child stages output."""
+
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from harnest.client_tool import (
+            ClientToolError, _PreparedClientToolResult, _StagedClientToolResult,
+        )
+        from harnest.assets import AssetMediaMetadata
+        from harnest.transient_media import TransientMediaScope
+        from harnest.runtime_auth import _activate_authenticated_principal
+
+        preparing = asyncio.Event()
+        resume = asyncio.Event()
+        rollback = AsyncMock()
+        scope = TransientMediaScope("alice", "auth", "auth-run")
+        leases = [self.tools.transient_media.stage(
+            scope=scope, kind="file", media_type="text/plain", data=b"test",
+            metadata=AssetMediaMetadata(),
+        ) for _ in range(2)]
+
+        async def prepare(pending, output):
+            preparing.set()
+            await resume.wait()
+            return _PreparedClientToolResult(
+                _StagedClientToolResult({}, (leases[0].lease_id,)),
+                SimpleNamespace(rollback=rollback),
+            )
+
+        with patch.object(self.tools, "_prepared_output", prepare):
+            with _activate_authenticated_principal(AuthPrincipal("alice")):
+                task = asyncio.create_task(self._submit(0))
+                await asyncio.wait_for(preparing.wait(), 2)
+            resume.set()
+            with self.assertRaisesRegex(ClientToolError, "principal does not match"):
+                await task
+        self.assertIsNone(self._principal())
+        self.assertFalse(self.pending[0].future.done())
+        self.assertFalse(self.pending[0].submitting)
+        rollback.assert_awaited_once()
+        self.assertEqual(self.tools.transient_media.pending(scope=scope), (leases[1],))
+
+    async def test_cancelled_submission_does_not_attach_authority(self):
+        """Cancelling validation releases the reservation for a clean retry."""
+
+        from unittest.mock import patch
+        from harnest.runtime_auth import _activate_authenticated_principal
+
+        preparing = asyncio.Event()
+
+        async def prepare(pending, output):
+            preparing.set()
+            await asyncio.Event().wait()
+
+        async def submit():
+            with _activate_authenticated_principal(AuthPrincipal("alice")):
+                await self._submit(0)
+
+        with patch.object(self.tools, "_prepared_output", prepare):
+            task = asyncio.create_task(submit())
+            await asyncio.wait_for(preparing.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertIsNone(self._principal())
+        self.assertFalse(self.pending[0].submitting)
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            await self._submit(0)
 
 
 class SSECancellationTests(unittest.IsolatedAsyncioTestCase):

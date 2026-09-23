@@ -14,7 +14,7 @@ COMMANDS = {"tool", "subagent", "task", "lifecycle", "context", "mcp", "channel"
 CATALOG = [
     ("agent", "Agent / graph", "Core", "Edit the root agent, model, instructions, or graph topology.", "agent.py"),
     ("instructions", "Instructions", "Core", "Give your agent its purpose, boundaries, and voice.", "instructions.md"),
-    ("config", "Project configuration", "Core", "Framework, model environment, scaling, server, and deployment.", "config.yaml"),
+    ("config", "Project configuration", "Core", "Framework, model environment, entrypoint, and server settings.", "config.yaml"),
     ("card", "Agent card", "Core", "Public identity, A2A discovery, interfaces, and capabilities.", "agent-card.yaml"),
     ("dependencies", "Dependencies", "Core", "Manage Python dependencies, then sync the environment.", "pyproject.toml"),
     ("tool", "Agent tool", "Capabilities", "A discovered Python function the model can call.", ""),

@@ -280,17 +280,16 @@ func TestInitSupportsLangGraphAndAdvancedMode(t *testing.T) {
 	assertAdvancedLangGraphScaffold(t, advanced)
 }
 
-// TestInitProfilesUseCompatibleAPI keeps scaffolds free of vendor defaults.
 // TestInitProfilesUseCompatibleAPI keeps every scaffold on the current model
-// contract and leaves CPU/memory ownership to deployment configuration.
+// contract without resource or scaling boilerplate.
 func TestInitProfilesUseCompatibleAPI(t *testing.T) {
 	for _, framework := range []string{"adk", "langgraph"} {
 		for _, mode := range []string{"managed", "advanced"} {
 			for _, profile := range []scaffoldProfile{scaffoldGuidedProfile, scaffoldMinimalProfile, scaffoldExampleProfile} {
 				t.Run(framework+"/"+mode+"/"+string(profile), func(t *testing.T) {
 					files := scaffoldFilesForProfile("compatible-agent", framework, mode, profile)
-					if strings.Contains(files["config.yaml"], "    cpu:") || strings.Contains(files["config.yaml"], "    memory:") {
-						t.Fatal("agent scaffold must not generate deployment CPU or memory limits")
+					if strings.Contains(files["config.yaml"], "  resources:") || strings.Contains(files["config.yaml"], "  scaling:") {
+						t.Fatal("agent scaffold must not generate resources or scaling blocks")
 					}
 					assertContainsAll(t, "root model", files["agent.py"], []string{
 						"from harnest.model import LiteLLMModel", "LiteLLMModel.from_openai_environment()",

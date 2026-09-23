@@ -79,7 +79,7 @@ def inspect_project(root: Path) -> dict:
     total = 0
     for path in inventory(root):
         if _runtime_python(path):
-            text = read(root, path)["text"]
+            text = _discovery_source(root, path, config)
             total += len(text.encode())
             _check_scan_limit(total)
             keys, commands = _python_inputs(text)
@@ -101,8 +101,13 @@ def inspect_project(root: Path) -> dict:
     return {"name": config.get("metadata", {}).get("name", root.name), "variables": sorted(variables),
             "services": services, "programs": sorted(programs), "sources": sources, "warnings": warnings,
             "services_yaml": yaml.safe_dump(_connections(services), sort_keys=False),
-            "resources": config.get("spec", {}).get("resources", {}),
+            "resources": {},
             "existing": bool(read(root, "harnest-deployment.yaml")["revision"])}
+
+
+def _discovery_source(root: Path, path: str, config: dict) -> str:
+    """Keep ignored hints out of inferred environment variables and service requirements."""
+    return yaml.safe_dump(config) if path == "config.yaml" else read(root, path)["text"]
 
 
 def _check_scan_limit(total: int) -> None:
@@ -122,7 +127,10 @@ def _configuration(root: Path) -> dict:
         config = yaml.safe_load(read(root, "config.yaml")["text"])
         if not isinstance(config, dict) or not isinstance(config.get("spec", {}), dict):
             raise ValueError("mapping required")
-        for section in (config.get("metadata", {}), config.get("spec", {}).get("environment", {}), config.get("spec", {}).get("resources", {})):
+        # Retired hints must not seed limits or environment-variable discovery.
+        config.get("spec", {}).pop("resources", None)
+        config.get("spec", {}).pop("scaling", None)
+        for section in (config.get("metadata", {}), config.get("spec", {}).get("environment", {})):
             if not isinstance(section, dict):
                 raise ValueError("mapping required")
         return config

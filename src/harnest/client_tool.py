@@ -163,9 +163,12 @@ class InMemoryClientToolStore:
 
         pending = self._reserve_submission(request_id, user_id)
         try:
+            pending.run._validate_resume_authority()
             prepared = await self._prepared_output(pending, output)
+            await self._commit_output(pending, prepared)
         except (
             ValueError,
+            PermissionError,
             AssetStoreError,
             StoredMediaError,
             TransientMediaError,
@@ -175,20 +178,6 @@ class InMemoryClientToolStore:
         except BaseException:
             self._release_submission(pending)
             raise
-        with self._lock:
-            if pending.future.done():
-                pending.submitting = False
-                committed = False
-            else:
-                pending.future.set_result(prepared.value)
-                committed = True
-            pending.submitting = False
-        if not committed:
-            if prepared.durable is not None:
-                await prepared.durable.rollback(
-                    scope=AssetScope(pending.user_id, pending.session_id)
-                )
-            raise ClientToolError("client tool result was already submitted")
         _audit(
             pending.name,
             "result_submitted",
@@ -196,6 +185,35 @@ class InMemoryClientToolStore:
             outcome="committed",
         )
         return pending
+
+    async def _commit_output(
+        self, pending: PendingClientTool, prepared: _PreparedClientToolResult
+    ) -> None:
+        """Commit validated output and authority together, rolling back on rejection."""
+
+        try:
+            with self._lock:
+                if pending.future.done():
+                    raise ClientToolError("client tool result was already submitted")
+                if self._clock() >= pending.expires_at:
+                    raise ClientToolError("client tool request is expired")
+                # Preparation can yield. Recheck authority only after output is
+                # valid, with no await between accepting it and waking the run.
+                pending.run._accept_resume_authority()
+                pending.future.set_result(prepared.value)
+                pending.submitting = False
+        except BaseException:
+            # Remove only this rejected submission's leases; parallel accepted
+            # results may still need other media owned by the same run.
+            if isinstance(prepared.value, _StagedClientToolResult):
+                self._transient_media.commit(
+                    scope=_transient_scope(pending), lease_ids=prepared.value.lease_ids
+                )
+            if prepared.durable is not None:
+                await prepared.durable.rollback(
+                    scope=AssetScope(pending.user_id, pending.session_id)
+                )
+            raise
 
     def _reserve_submission(
         self, request_id: str, user_id: str

@@ -55,10 +55,35 @@ func TestArtifactForVersionRejectsCLIMismatch(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSourceBuildHasNoReleaseWheel(t *testing.T) {
-	_, err := Embedded("dev")
-	if err == nil || !strings.Contains(err.Error(), "found 0") {
-		t.Fatalf("got error %v, want source-build diagnostic", err)
+// TestDevelopmentBuildDiagnostics covers both source and release-prepared assets.
+func TestDevelopmentBuildDiagnostics(t *testing.T) {
+	// Release tooling may leave an ignored wheel in the checkout. Use explicit
+	// asset fixtures so building a release cannot change the unit-test contract.
+	tests := []struct {
+		name  string
+		files fstest.MapFS
+		want  string
+	}{
+		{
+			name:  "source checkout",
+			files: fstest.MapFS{"assets/README.txt": {}},
+			want:  "release binary must contain exactly one Harnest wheel; found 0",
+		},
+		{
+			name: "release prepared checkout",
+			files: fstest.MapFS{
+				"assets/harnest-0.1.2-py3-none-any.whl": {Data: testWheel(t, "0.1.2")},
+			},
+			want: "embedded Harnest wheel version 0.1.2 does not match CLI version dev",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := artifactForVersion(test.files, "dev")
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("got error %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

@@ -12,15 +12,6 @@ spec:
   runtime:
     version: "3.12"
     dependencyFile: pyproject.toml
-  resources:
-    cpu: "1"
-    memory: 1Gi
-    ephemeralStorage: 1Gi
-    timeoutSeconds: 300
-    maxConcurrentRequests: 4
-  scaling:
-    minReplicas: 0
-    maxReplicas: 1
   environment:
     OPENAI_MODEL: your-model
     OPENAI_BASE_URL: https://models.example.invalid/v1

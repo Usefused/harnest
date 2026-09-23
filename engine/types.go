@@ -69,8 +69,6 @@ type AgentConfigSpec struct {
 	Framework   AgentFramework    `yaml:"framework" json:"framework"`
 	Interfaces  AgentInterfaces   `yaml:"interfaces,omitempty" json:"interfaces,omitempty"`
 	Runtime     PythonRuntime     `yaml:"runtime" json:"runtime"`
-	Resources   AgentResources    `yaml:"resources,omitempty" json:"resources,omitempty"`
-	Scaling     Scaling           `yaml:"scaling,omitempty" json:"scaling,omitempty"`
 	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
 	Secrets     []SecretBinding   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	Permissions Permissions       `yaml:"permissions,omitempty" json:"permissions,omitempty"`
@@ -98,20 +96,6 @@ func (s AgentConfigSpec) IsEnabled() bool { return s.Enabled == nil || *s.Enable
 type PythonRuntime struct {
 	Version        string `yaml:"version" json:"version"`
 	DependencyFile string `yaml:"dependencyFile,omitempty" json:"dependencyFile,omitempty"`
-}
-
-type AgentResources struct {
-	// CPU and Memory are optional legacy hints; new projects put limits in harnest-deployment.yaml.
-	CPU                   string `yaml:"cpu,omitempty" json:"cpu,omitempty"`
-	Memory                string `yaml:"memory,omitempty" json:"memory,omitempty"`
-	EphemeralStorage      string `yaml:"ephemeralStorage,omitempty" json:"ephemeralStorage,omitempty"`
-	TimeoutSeconds        int    `yaml:"timeoutSeconds,omitempty" json:"timeoutSeconds,omitempty"`
-	MaxConcurrentRequests int    `yaml:"maxConcurrentRequests,omitempty" json:"maxConcurrentRequests,omitempty"`
-}
-
-type Scaling struct {
-	MinReplicas int `yaml:"minReplicas,omitempty" json:"minReplicas,omitempty"`
-	MaxReplicas int `yaml:"maxReplicas,omitempty" json:"maxReplicas,omitempty"`
 }
 
 type SecretBinding struct {

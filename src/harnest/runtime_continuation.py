@@ -14,6 +14,7 @@ from .agent.approval import (
     PendingApproval,
     approval_execution,
 )
+from .runtime_auth import _principal_handoff
 from .client_tool import (
     ClientToolExecution,
     InMemoryClientToolStore,
@@ -311,7 +312,10 @@ def start_approval_run(
                 if external_continuations is None
                 else external_continuations.execution(run, request)
             )
-            with continuation_scope, client_tool_execution(execution):
+            # The run owns the shared channel; each HTTP request still owns
+            # and revokes the authentication binding carried through it.
+            with continuation_scope, client_tool_execution(execution), _principal_handoff(request.user_id) as authority:
+                run._authority = authority
                 with approval_execution(
                     ApprovalExecution(
                         user_id=request.user_id,

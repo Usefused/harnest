@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +19,6 @@ import (
 var (
 	agentNamePattern                = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	adkAgentNamePattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	cpuPattern                      = regexp.MustCompile(`^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\.[0-9]+)?)$`)
-	memoryPattern                   = regexp.MustCompile(`^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$`)
 	pythonPattern                   = regexp.MustCompile(`^3\.(?:10|11|12|13|14)$`)
 	entrypointPattern               = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):([A-Za-z_][A-Za-z0-9_]*)$`)
 	environmentNamePattern          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -213,7 +212,7 @@ func decodeYAMLFile(path string, target any) error {
 	defer file.Close()
 	decoder := yaml.NewDecoder(file)
 	decoder.KnownFields(true)
-	if err := decoder.Decode(target); err != nil {
+	if err := decodeBundleYAMLValue(decoder, target); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	var trailing any
@@ -226,6 +225,40 @@ func decodeYAMLFile(path string, target any) error {
 	return nil
 }
 
+// decodeBundleYAMLValue drops retired agent hints while keeping other YAML strict.
+func decodeBundleYAMLValue(decoder *yaml.Decoder, target any) error {
+	config, ok := target.(*AgentConfig)
+	if !ok {
+		return decoder.Decode(target)
+	}
+	var document map[string]yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return err
+	}
+	if node, ok := document["spec"]; ok && (node.Kind == yaml.MappingNode || node.Kind == yaml.AliasNode) {
+		var spec map[string]yaml.Node
+		if err := node.Decode(&spec); err != nil {
+			return err
+		}
+		delete(spec, "resources")
+		delete(spec, "scaling")
+		if err := node.Encode(spec); err != nil {
+			return err
+		}
+		document["spec"] = node
+	}
+	// Decode the remaining document strictly, so ignoring these two retired
+	// fields cannot hide misspellings in active settings or nested objects.
+	// Keep YAML nodes so numeric-looking environment strings retain their spelling.
+	contents, err := yaml.Marshal(document)
+	if err != nil {
+		return err
+	}
+	filtered := yaml.NewDecoder(bytes.NewReader(contents))
+	filtered.KnownFields(true)
+	return filtered.Decode(config)
+}
+
 func validateBundle(directory string, config AgentConfig, card AgentCard) error {
 	if err := validateAgentConfig(directory, config); err != nil {
 		return err
@@ -233,11 +266,12 @@ func validateBundle(directory string, config AgentConfig, card AgentCard) error 
 	return validateAgentCard(directory, card)
 }
 
+// validateAgentConfig validates supported agent settings without deployment policy.
 func validateAgentConfig(directory string, config AgentConfig) error {
 	if err := validateConfigIdentity(directory, config); err != nil {
 		return err
 	}
-	if err := validateFrameworkAndResources(directory, config); err != nil {
+	if err := validateFrameworkRuntime(directory, config); err != nil {
 		return err
 	}
 	if err := validateDependencyProject(directory, config); err != nil {
@@ -283,16 +317,6 @@ func validateDependencyProject(directory string, config AgentConfig) error {
 	return nil
 }
 
-func validateFrameworkAndResources(directory string, config AgentConfig) error {
-	if err := validateFrameworkRuntime(directory, config); err != nil {
-		return err
-	}
-	if err := validateResourceQuantities(directory, config.Spec.Resources); err != nil {
-		return err
-	}
-	return validateScaling(directory, config.Spec.Scaling)
-}
-
 func validateFrameworkRuntime(directory string, config AgentConfig) error {
 	framework := config.Spec.Framework
 	if framework.Name != "adk" && framework.Name != "langgraph" {
@@ -303,34 +327,6 @@ func validateFrameworkRuntime(directory string, config AgentConfig) error {
 	}
 	if !pythonPattern.MatchString(config.Spec.Runtime.Version) {
 		return fmt.Errorf("%s/config.yaml: unsupported Python version %q", directory, config.Spec.Runtime.Version)
-	}
-	return nil
-}
-
-// validateResourceQuantities keeps legacy deployment hints valid when supplied,
-// while allowing CPU and memory to be owned exclusively by deployment configuration.
-func validateResourceQuantities(directory string, resources AgentResources) error {
-	if resources.CPU != "" && !cpuPattern.MatchString(resources.CPU) {
-		return fmt.Errorf("%s/config.yaml: invalid CPU quantity %q", directory, resources.CPU)
-	}
-	if resources.Memory != "" && !memoryPattern.MatchString(resources.Memory) {
-		return fmt.Errorf("%s/config.yaml: invalid memory quantity %q", directory, resources.Memory)
-	}
-	if resources.EphemeralStorage != "" && !memoryPattern.MatchString(resources.EphemeralStorage) {
-		return fmt.Errorf("%s/config.yaml: invalid ephemeral storage quantity %q", directory, resources.EphemeralStorage)
-	}
-	if resources.TimeoutSeconds < 0 || resources.MaxConcurrentRequests < 0 {
-		return fmt.Errorf("%s/config.yaml: resource limits cannot be negative", directory)
-	}
-	return nil
-}
-
-func validateScaling(directory string, scaling Scaling) error {
-	if scaling.MinReplicas < 0 || scaling.MaxReplicas < 0 {
-		return fmt.Errorf("%s/config.yaml: replica counts cannot be negative", directory)
-	}
-	if scaling.MaxReplicas > 0 && scaling.MinReplicas > scaling.MaxReplicas {
-		return fmt.Errorf("%s/config.yaml: minReplicas cannot exceed maxReplicas", directory)
 	}
 	return nil
 }

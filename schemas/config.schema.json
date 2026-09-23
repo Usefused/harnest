@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://harnest.dev/schemas/config.schema.json",
   "title": "Harnest agent configuration",
-  "description": "Deployment contract consumed by the Harnest Go runtime. Agent behavior stays in the Python entrypoint.",
+  "description": "Agent framework, runtime environment, and server configuration. Workload resource limits and replicas belong in harnest-deployment.yaml.",
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
@@ -26,6 +26,9 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
+      "patternProperties": {
+        "^(resources|scaling)$": { "description": "Ignored legacy settings; omitted from new projects." }
+      },
       "required": ["entrypoint", "framework", "runtime"],
       "properties": {
         "enabled": { "type": "boolean", "default": true },
@@ -62,25 +65,6 @@
               "const": "pyproject.toml",
               "description": "Agent dependency project synchronized into its isolated environment."
             }
-          }
-        },
-        "resources": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "cpu": { "type": "string", "pattern": "^(?:[1-9][0-9]*m|[1-9][0-9]*(?:\\.[0-9]+)?)$", "description": "Optional legacy hint. Configure CPU limits in harnest-deployment.yaml." },
-            "memory": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$", "description": "Optional legacy hint. Configure memory limits in harnest-deployment.yaml." },
-            "ephemeralStorage": { "type": "string", "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$" },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
-            "maxConcurrentRequests": { "type": "integer", "minimum": 1 }
-          }
-        },
-        "scaling": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "minReplicas": { "type": "integer", "minimum": 0 },
-            "maxReplicas": { "type": "integer", "minimum": 1 }
           }
         },
         "environment": {

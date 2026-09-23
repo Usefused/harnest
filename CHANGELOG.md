@@ -24,6 +24,14 @@
 
 ### Fixes
 
+* Keep long Studio workspace paths truncated with a hover tooltip instead of
+  displaying a horizontal scrollbar.
+
+* Renew private authentication only for accepted client-tool results and approval
+  decisions. Concurrent resumptions retain each active request's authority;
+  failed validation and cancellation cannot revive expired credentials or expose
+  them in continuation data.
+
 * Preserve ordinary tool JSON with list- or object-valued `type` fields, including
   JSON Schema unions, when inspecting media. Prevent the asset-content callback
   from failing with `unhashable type` while retaining real attachment detection.
@@ -102,9 +110,11 @@
   Expose source requests as a native builder tool while retaining Studio's source
   permissions, read limits, and revision-checked proposal review.
 
-* Stop generating CPU and memory limits in agent config.yaml. Configure them in
-  harnest-deployment.yaml instead; the core loader and schema accept omitted
-  resource hints while continuing to validate values in older projects.
+* Stop generating resources and scaling blocks in agent config.yaml and remove
+  them from the runtime configuration model. Silently ignore existing values,
+  including empty, null, or invalid legacy hints, without applying them to server
+  settings or Studio deployment discovery. Use harnest-deployment.yaml for
+  workload limits and replicas, and server.http for explicit HTTP limits.
 
 * Generate reviewable Studio deployment configuration from agent environment and
   service usage, with editable images, memory/CPU, services, and network settings.

@@ -136,6 +136,23 @@ class ProjectServerConfigTests(unittest.TestCase):
                 compile_application.assert_not_called()
             self.assertEqual(sentinel.read_text(), "prior artifact")
 
+    def test_retired_sections_do_not_override_server_policy_or_block_upgrade(self):
+        """Legacy hints are ignored regardless of their value or shape."""
+
+        for name in ("resources", "scaling"):
+            for value in (None, {}, "ignored", [1], {"timeoutSeconds": 1, "maxConcurrentRequests": -1}):
+                with self.subTest(name=name, value=value), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source = yaml.safe_dump({"spec": {name: value}, "server": {"http": {"maxConcurrentRequests": 3}}})
+                    (root / "config.yaml").write_text(source)
+                    effective = yaml.safe_load(project_server_config_yaml(root))
+                    self.assertEqual(effective["http"]["maxConcurrentRequests"], 3)
+                    self.assertEqual(effective["http"]["requestTimeoutSeconds"], 300)
+                    blockers = []
+                    _plan_server(root, blockers)
+                    self.assertEqual(blockers, [])
+                    self.assertEqual((root / "config.yaml").read_text(), source)
+
     def test_schema_shares_partial_settings_with_strict_runtime_document(self):
         """Editor validation accepts partial overrides but keeps runtime files strict."""
         from jsonschema import Draft202012Validator
@@ -151,15 +168,12 @@ class ProjectServerConfigTests(unittest.TestCase):
         )
         project["server"] = {"http": {"port": "${PORT}"}, "live": True}
         validator.validate(project)
-        # Deployment limits are optional in agent source, but legacy values still validate.
-        project["spec"].pop("resources", None)
-        validator.validate(project)
-        project["spec"]["resources"] = {"timeoutSeconds": 300}
-        validator.validate(project)
-        project["spec"]["resources"]["cpu"] = "invalid"
-        self.assertFalse(validator.is_valid(project))
-        project["spec"]["resources"] = {"cpu": "500m", "memory": "512Mi"}
-        validator.validate(project)
+        for name in ("resources", "scaling"):
+            for value in (None, {}, {"cpu": "500m"}, {"maxReplicas": 1}):
+                with self.subTest(name=name, value=value):
+                    project["spec"][name] = value
+                    validator.validate(project)
+            del project["spec"][name]
         project["server"]["http"]["port"] = False
         self.assertFalse(validator.is_valid(project))
         project["server"]["http"]["port"] = "${PORT}"

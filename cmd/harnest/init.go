@@ -393,6 +393,7 @@ func scaffoldFilesForMode(
 }
 
 // scaffoldFilesForProfile selects required files, guides, or opt-in examples.
+// Resource and scaling policy is opt-in rather than boilerplate agent config.
 func scaffoldFilesForProfile(
 	name, framework, mode string,
 	profile scaffoldProfile,
@@ -423,13 +424,6 @@ spec:
   runtime:
     version: "3.12"
     dependencyFile: pyproject.toml
-  resources:
-    ephemeralStorage: 1Gi
-    timeoutSeconds: 300
-    maxConcurrentRequests: 8
-  scaling:
-    minReplicas: 0
-    maxReplicas: 1
   # Set your OpenAI-compatible endpoint and model before making live calls.
   environment:
     OPENAI_MODEL: your-model

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import traceback
 import unittest
 
@@ -21,6 +22,9 @@ from harnest.credentials import (
 from harnest.runtime_auth import (
     AuthPrincipal,
     _activate_authenticated_principal,
+    _active_authenticated_principal,
+    _principal_handoff,
+    _ACTIVE_HANDOFF,
 )
 
 
@@ -224,6 +228,77 @@ class CredentialContractTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             with self.assertRaises(CredentialUnavailableError):
                 await late
+
+
+class PrincipalHandoffTests(unittest.TestCase):
+    def test_refresh_uses_current_request_and_revokes_copied_contexts(self):
+        """A suspended run and its children share only the current HTTP lifetime."""
+
+        original = AuthPrincipal("alice", credentials={"browser": Credential("old")})
+        fresh = AuthPrincipal("alice", credentials={"browser": Credential("fresh")})
+        with _activate_authenticated_principal(original):
+            owned = contextvars.copy_context()
+            scope = _principal_handoff("alice")
+            owned.run(scope.__enter__)
+            child = owned.copy()
+            handoff = owned.run(_ACTIVE_HANDOFF.get)
+            self.assertIs(child.run(_active_authenticated_principal), original)
+        self.assertIsNone(owned.run(_active_authenticated_principal))
+        with self.assertRaises(PermissionError):
+            handoff.refresh()
+        with _activate_authenticated_principal(AuthPrincipal("bob")):
+            with self.assertRaises(PermissionError):
+                handoff.refresh()
+        with _activate_authenticated_principal(fresh):
+            handoff.refresh()
+            self.assertIs(owned.run(_active_authenticated_principal), fresh)
+            self.assertIs(child.run(_active_authenticated_principal), fresh)
+            owned.run(scope.__exit__, None, None, None)
+            self.assertIsNone(child.run(_active_authenticated_principal))
+        self.assertIsNone(child.run(_active_authenticated_principal))
+
+    def test_resuming_request_expiry_revokes_a_still_suspended_run(self):
+        """Refreshing a handoff never upgrades request authority to task authority."""
+
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            owned = contextvars.copy_context()
+            scope = _principal_handoff("alice")
+            owned.run(scope.__enter__)
+            handoff = owned.run(_ACTIVE_HANDOFF.get)
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            handoff.refresh()
+            self.assertIsNotNone(owned.run(_active_authenticated_principal))
+        self.assertIsNone(owned.run(_active_authenticated_principal))
+        owned.run(scope.__exit__, None, None, None)
+
+    def test_overlapping_requests_keep_independent_revocation_and_seal_on_close(self):
+        """A shorter request cannot revoke a longer accepted request or reopen a run."""
+
+        with _activate_authenticated_principal(AuthPrincipal("alice")):
+            owned = contextvars.copy_context()
+            scope = _principal_handoff("alice")
+            handoff = owned.run(scope.__enter__)
+        first = AuthPrincipal("alice", claims={"request": "first"})
+        second = AuthPrincipal("alice", claims={"request": "second"})
+        with _activate_authenticated_principal(first):
+            handoff.refresh()
+            with _activate_authenticated_principal(second):
+                handoff.refresh()
+                self.assertIs(owned.run(_active_authenticated_principal), second)
+            self.assertIs(owned.run(_active_authenticated_principal), first)
+            owned.run(scope.__exit__, None, None, None)
+            with self.assertRaisesRegex(PermissionError, "ended"):
+                handoff.refresh()
+            self.assertIsNone(owned.run(_active_authenticated_principal))
+
+    def test_anonymous_resume_cannot_downgrade_an_authenticated_run(self):
+        """Authentication remains required after every accepted binding expires."""
+
+        with _principal_handoff("alice") as handoff:
+            with _activate_authenticated_principal(AuthPrincipal("alice")):
+                handoff.refresh()
+            with self.assertRaisesRegex(PermissionError, "requires authentication"):
+                handoff.refresh()
 
 
 if __name__ == "__main__":
