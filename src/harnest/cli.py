@@ -49,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         "compile",
         help="compile and validate a filesystem agent",
     )
+    compile_parser.add_argument("--source-run", action="store_true", help=argparse.SUPPRESS)
     compile_parser.add_argument("agent", type=Path)
     compile_parser.add_argument("--output", type=Path, required=True)
     compile_parser.add_argument(
@@ -134,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                 framework=args.framework,
                 mode=args.mode,
                 cli_enabled=args.enable_cli,
+                bundle_selection=not args.source_run,
             )
             print(json.dumps(manifest, sort_keys=True))
             return 0

@@ -40,9 +40,10 @@ def create_pack(version: int = 2) -> ProjectPack:
 
     @pack.initialize
     def initialize(context: ProjectContext) -> ChangePlan:
-        """Add company configuration and a tracked workflow to the standard scaffold."""
+        """Add company configuration, compile selections, and a tracked workflow."""
         key = 'owner' if version == 1 else 'team'
         return ChangePlan(
+            context.yaml.set('harnest-compile.yaml', key=('version',), value=1),
             context.yaml.set('acme-agent.yaml', key=(key,), value=context.options.team),
             context.yaml.set('acme-agent.yaml', key=('environment',), value=context.options.environment.value),
             context.files.from_template('.github/workflows/agent.yml', template=f'ci-v{version}.yml'),

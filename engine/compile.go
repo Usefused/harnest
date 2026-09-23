@@ -647,17 +647,30 @@ func validateCompiledCheckpoint(manifest CompiledManifest) error {
 	)
 }
 
+// validateCompiledSource binds retained files to the source snapshot without requiring project-only content.
 func validateCompiledSource(directory string, source Bundle, manifest CompiledManifest) error {
-	compiledSource, err := existingDirectory(filepath.Join(directory, filepath.FromSlash(manifest.SourceDirectory)))
+	_, err := existingDirectory(filepath.Join(directory, filepath.FromSlash(manifest.SourceDirectory)))
 	if err != nil {
 		return fmt.Errorf("resolve compiled source directory: %w", err)
 	}
-	compiledSourceDigest, err := digestDirectory(compiledSource)
+	currentDigest, err := digestDirectory(source.Directory)
 	if err != nil {
-		return fmt.Errorf("digest compiled source directory: %w", err)
+		return fmt.Errorf("digest source bundle: %w", err)
 	}
-	if compiledSourceDigest != source.Digest {
-		return fmt.Errorf("compiled source digest %q does not match source bundle %q", compiledSourceDigest, source.Digest)
+	if currentDigest != source.Digest {
+		return fmt.Errorf("source bundle changed during compilation: %q does not match %q", currentDigest, source.Digest)
+	}
+	// Python owns content selection. Go verifies every retained byte against the
+	// original source; validateCompiledFiles separately verifies the artifact copy.
+	for _, record := range manifest.Files {
+		relative, retained := strings.CutPrefix(record.Path, manifest.SourceDirectory+"/")
+		if !retained {
+			continue
+		}
+		record.Path = relative
+		if err := validateCompiledRecordFile(source.Directory, record); err != nil {
+			return fmt.Errorf("compiled source differs from authored source: %w", err)
+		}
 	}
 	return nil
 }

@@ -20,6 +20,7 @@ import zipfile
 AGENT = '''from pathlib import Path
 import os
 import subprocess
+import colorama
 from google.adk.models import BaseLlm, LlmResponse
 from google.genai import types
 from harnest.agent import Agent
@@ -27,6 +28,7 @@ from harnest.agent import Agent
 class LocalModel(BaseLlm):
     async def generate_content_async(self, request, stream=False):
         """Exercise packaged resources and a real Python console entrypoint offline."""
+        assert colorama.__version__ == "0.4.6"
         tool = subprocess.check_output(["uvicorn", "--version"], text=True)
         assert "uvicorn" in tool.lower(), tool
         resource = Path(__file__).with_name("instructions.md").read_text()
@@ -70,9 +72,13 @@ skills:
 """, encoding="utf-8")
     (directory / "agent.py").write_text(AGENT.format(name=name), encoding="utf-8")
     (directory / "instructions.md").write_text("bundled-resource", encoding="utf-8")
+    (directory / "team-guide.md").write_text("Only for teammates.", encoding="utf-8")
     (directory / "pyproject.toml").write_text(
         f'[project]\nname="{name}"\nversion="0.1.0"\n'
         f'requires-python=">=3.12,<3.13"\ndependencies=["{dependency}"]\n', encoding="utf-8")
+    with (directory / "pyproject.toml").open("a", encoding="utf-8") as project:
+        project.write('[project.optional-dependencies]\nportable=["colorama==0.4.6"]\nunused=["harnest-never-install-unused==1"]\n')
+    (directory / "harnest-compile.yaml").write_text("version: 1\nextras: [portable]\n", encoding="utf-8")
     (directory / "config.yaml").write_text(f'''apiVersion: harnest.dev/v1alpha1
 kind: Agent
 metadata:
@@ -133,6 +139,7 @@ def build_artifacts(cli: Path, root: Path, wheel: Path | None) -> Path:
     ]:
         args = [cli, "compile", source, "--runtime", dist / pack, "--output", dist / f"{name}.exe"]
         invoke(args + (["--embed-runtime"] if embed else []), cwd=root, environment=environment)
+    check_build_reports(dist)
     shutil.rmtree(root / "build cache")
     # No execution may depend on the authored source or the CLI working directory.
     shutil.rmtree(sales)
@@ -140,6 +147,19 @@ def build_artifacts(cli: Path, root: Path, wheel: Path | None) -> Path:
     moved = root / "moved deployment café"
     dist.rename(moved)
     return moved
+
+
+def check_build_reports(dist: Path) -> None:
+    """Verify selected dependencies and runtime files survive without teammate documentation."""
+    report = json.loads((dist / "sales.exe.build-report.json").read_text(encoding="utf-8"))
+    packages = {item["name"].lower(): item for item in report["runtime"]["packages"]}
+    assert packages["colorama"]["version"] == "0.4.6", packages
+    assert "harnest-never-install-unused" not in packages, packages
+    assert report["agent"]["selection"]["extras"] == ["portable"]
+    paths = {item["path"] for item in report["agent"]["files"]}
+    assert "source/team-guide.md" not in paths
+    assert "source/instructions.md" in paths
+    assert report["runtime"]["uniqueObjectBytes"] <= report["runtime"]["logicalBytes"]
 
 
 def manifest(pack: Path) -> dict:

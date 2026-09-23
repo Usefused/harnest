@@ -99,6 +99,7 @@
       "test_chrome_sandbox_example",
       "test_compatibility",
       "test_compiler_daemon",
+      "test_compile_selection",
       "test_context_adk",
       "test_context_frameworks",
       "test_credentials_adk",

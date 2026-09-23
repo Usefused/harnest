@@ -278,20 +278,21 @@ func publishRuntimePack(output, store, staging string, payload packPayload, plan
 	}
 	lock.Path = "requirements.lock"
 	m.Files = append(m.Files, lock)
+	if err = storeRuntimeBuildReport(staging, store, plan, &m); err != nil {
+		return m, err
+	}
 	m.Seal()
 	pack := filepath.Join(staging, "pack")
 	if err = os.MkdirAll(pack, 0700); err != nil {
 		return m, err
 	}
-	for _, f := range m.Files {
-		if f.Object == "" {
-			continue
-		}
-		if err = agentpack.LinkObject(filepath.Join(store, f.Object), filepath.Join(pack, "objects", f.Object), f); err != nil {
-			return m, err
-		}
+	if err = linkPackObjects(store, pack, m.Files); err != nil {
+		return m, err
 	}
 	if err = agentpack.WriteManifest(pack, m); err != nil {
+		return m, err
+	}
+	if err = copyRuntimeBuildReport(staging, pack); err != nil {
 		return m, err
 	}
 	return m, os.Rename(pack, output)

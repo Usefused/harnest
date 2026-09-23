@@ -14,12 +14,13 @@ import (
 )
 
 type runtimePackPlan struct {
-	Owners       []engine.Bundle
-	Python       string
-	Requirements []string
-	Pins         []string
-	Projects     []string
-	Inputs       []string
+	Owners              []engine.Bundle
+	Python              string
+	Requirements        []string
+	CompileRequirements []string
+	Pins                []string
+	Projects            []string
+	Inputs              []string
 }
 
 // sharedRuntimePlan solves all agents together, rather than combining independently resolved environments.
@@ -40,7 +41,7 @@ func sharedRuntimePlan(agents []string) (runtimePackPlan, error) {
 		if pin != "" {
 			result.Pins = append(result.Pins, pin)
 		}
-		plan, err := inspectRuntimeDependencyPlan(bundle)
+		plan, err := inspectCompileDependencyPlan(bundle)
 		if err != nil {
 			return result, err
 		}
@@ -49,6 +50,7 @@ func sharedRuntimePlan(agents []string) (runtimePackPlan, error) {
 		}
 		result.Python = bundle.Config.Spec.Runtime.Version
 		result.Projects = append(result.Projects, plan.ProjectFiles...)
+		result.CompileRequirements = append(result.CompileRequirements, plan.CompileRequirements...)
 		result.Owners = append(result.Owners, bundle)
 		extras := runtimeEnvironmentProfile.wheelExtras(bundle.Config.Spec.Framework.Name, plan)
 		result.Requirements = append(result.Requirements, extras...)
@@ -65,7 +67,7 @@ func sharedRuntimePlan(agents []string) (runtimePackPlan, error) {
 
 // runtimePackInput binds dependency declarations, not source paths or unrelated agent code.
 func runtimePackInput(bundle engine.Bundle, plan runtimeDependencyPlan) (string, error) {
-	var requirements []string
+	requirements := append([]string{}, plan.CompileRequirements...)
 	for _, project := range plan.ProjectFiles {
 		values, err := projectRuntimeRequirements(project, "runtime pack")
 		if err != nil {
@@ -108,5 +110,6 @@ func uniqueSorted(values []string) []string {
 func writePackRequirements(root, wheel string, plan runtimePackPlan) (string, error) {
 	filename := filepath.Join(root, "runtime.in")
 	requirement := fmt.Sprintf("harnest[%s] @ %s\n", strings.Join(plan.Requirements, ","), runtimeWheelURI(wheel))
-	return filename, os.WriteFile(filename, []byte(requirement+strings.Join(uniqueSorted(plan.Pins), "\n")+"\n"), 0600)
+	requirements := append(append([]string{}, plan.Pins...), plan.CompileRequirements...)
+	return filename, os.WriteFile(filename, []byte(requirement+strings.Join(uniqueSorted(requirements), "\n")+"\n"), 0600)
 }

@@ -82,7 +82,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&profileValue,
 		"profile",
 		string(runtimeEnvironmentProfile),
-		"dependency profile: runtime, development, or eval",
+		"dependency profile: runtime, compile, development, or eval",
 	)
 	return command
 }
@@ -102,6 +102,7 @@ func (a *application) agentPython(
 	return a.resolvePython()
 }
 
+// syncAgentEnvironment resolves the selected command profile without changing other environments.
 func (a *application) syncAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
@@ -111,7 +112,7 @@ func (a *application) syncAgentEnvironment(
 	if err := validateAgentDependencyPolicy(bundle); err != nil {
 		return pythonSelection{}, err
 	}
-	plan, err := inspectRuntimeDependencyPlan(bundle)
+	plan, err := inspectProfileDependencyPlan(bundle, profile)
 	if err != nil {
 		return pythonSelection{}, err
 	}
@@ -203,6 +204,9 @@ func environmentFingerprint(
 		digest.Write([]byte{0})
 	}
 	digest.Write(wheel.Contents)
+	for _, requirement := range plan.CompileRequirements {
+		digest.Write([]byte("\x00compile:" + requirement))
+	}
 	for _, path := range plan.ProjectFiles {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, false); err != nil {
 			return "", err

@@ -777,7 +777,7 @@ def run_agent_tests(
     mode: str = "managed",
     cli_enabled: bool = False,
 ) -> int:
-    """Compile an authored agent and run its convention-based pytest suites."""
+    """Test authored source independently of standalone compile bundle selections."""
 
     _require_eval_trajectory(eval_trajectory)
     # Reject a dead output target before compiling so direct Python callers get
@@ -797,6 +797,7 @@ def run_agent_tests(
             framework=framework,
             mode=mode,
             cli_enabled=cli_enabled,
+            bundle_selection=False,
         )
         try:
             selected = _selected_test_directories(artifact, include_smoke)

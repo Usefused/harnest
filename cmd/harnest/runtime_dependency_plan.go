@@ -19,8 +19,9 @@ const (
 
 // runtimeDependencyPlan is the filesystem-only input used before Python imports.
 type runtimeDependencyPlan struct {
-	ProjectFiles []string
-	HasMCP       bool
+	ProjectFiles        []string
+	CompileRequirements []string
+	HasMCP              bool
 }
 
 // inspectRuntimeDependencyPlan joins declared dependencies without guessing a

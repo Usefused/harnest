@@ -25,6 +25,7 @@ class CompilerDaemonTests(unittest.TestCase):
         self.assertTrue(all(not item["ok"] for item in responses))
 
     def test_reuses_process_for_serial_compiles_and_isolates_authored_stdout(self):
+        """Reload reuses the protocol while bypassing standalone compile declarations."""
         requests = [
             {
                 "id": "1",
@@ -66,6 +67,7 @@ class CompilerDaemonTests(unittest.TestCase):
             ],
         )
         self.assertEqual(compile_mock.call_count, 2)
+        self.assertTrue(all(not call.kwargs["bundle_selection"] for call in compile_mock.call_args_list))
 
     def test_reports_malformed_and_compile_errors_without_ending_stream(self):
         input_stream = io.StringIO(

@@ -9,11 +9,13 @@ type environmentProfile string
 
 const (
 	runtimeEnvironmentProfile     environmentProfile = "runtime"
+	compileEnvironmentProfile     environmentProfile = "compile"
 	developmentEnvironmentProfile environmentProfile = "development"
 	evalEnvironmentProfile        environmentProfile = "eval"
 )
 
 var environmentProfiles = []environmentProfile{
+	compileEnvironmentProfile,
 	runtimeEnvironmentProfile,
 	developmentEnvironmentProfile,
 	evalEnvironmentProfile,
@@ -27,7 +29,7 @@ func parseEnvironmentProfile(value string) (environmentProfile, error) {
 			return profile, nil
 		}
 	}
-	return "", fmt.Errorf("--profile must be runtime, development, or eval")
+	return "", fmt.Errorf("--profile must be runtime, compile, development, or eval")
 }
 
 // stateFile keeps the existing runtime pointer compatible while isolating tools.

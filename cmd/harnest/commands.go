@@ -42,7 +42,11 @@ func (a *application) newCompileCommand() *cobra.Command {
 			if selectedEntrypoint == "" {
 				selectedEntrypoint = bundle.Config.Spec.Entrypoint
 			}
-			python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
+			profile, err := compileProfile(bundle)
+			if err != nil {
+				return err
+			}
+			python, err := a.agentPython(command, bundle, profile)
 			if err != nil {
 				return err
 			}
@@ -386,7 +390,7 @@ func compiledArtifactDirectory(output, name, prefix string) (string, func(), err
 	return filepath.Join(root, name), func() { _ = os.RemoveAll(root) }, nil
 }
 
-// compileBundle centralizes the immutable artifact contract shared by serve and run.
+// compileBundle preserves source-run behavior independently of standalone bundle selections.
 func (a *application) compileBundle(
 	command *cobra.Command,
 	python pythonSelection,
@@ -395,7 +399,7 @@ func (a *application) compileBundle(
 	stdin io.Reader,
 ) error {
 	var output bytes.Buffer
-	args := []string{"compile", bundle.Directory, "--output", artifact, "--entrypoint", bundle.Config.Spec.Entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
+	args := []string{"compile", bundle.Directory, "--source-run", "--output", artifact, "--entrypoint", bundle.Config.Spec.Entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
 	args = withCLICompilerInterface(args, bundle)
 	return runPythonCLI(command.Context(), a, python, args, configuredEnvironment(bundle), stdin, &output, command.ErrOrStderr())
 }

@@ -4,6 +4,17 @@
 
 ### Features
 
+* Add compile-only optional dependency selection in `harnest-compile.yaml`,
+  maintainable through project packs. Compile runtime code, standard agent files,
+  and complete skills/extensions/plugins while leaving teammate documentation and
+  other project-only files out of artifacts. Preserve whole dependency packages
+  and shared-runtime deduplication, and emit file/package inclusion and size reports.
+
+* Scaffold a company project pack with `harnest pack init NAME`, generating a
+  runnable Python CLI, editable `harnest-compile.yaml`, and sample team documentation.
+  Copy documentation and binary assets unchanged with `context.files.from_file`,
+  retaining pack ownership and managed migration checks.
+
 * Add opt-in project packs and an embeddable company CLI for typed init options,
   staged core/pack upgrade plans, versioned migrations, generated-file ownership,
   conflict detection, stale-plan rejection, and backed-up application with rollback.

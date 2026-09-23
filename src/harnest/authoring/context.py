@@ -75,15 +75,26 @@ class ProjectFiles:
     def from_template(self, path: str, *, template: str, values: Mapping[str, str] | None = None,
                       policy: WritePolicy = WritePolicy.IF_MISSING) -> _Operation:
         """Render an inert UTF-8 dollar template using only explicit substitutions."""
-        if self._templates is None:
-            raise ProjectError("pack has no template directory")
-        source = self._templates / relative_path(template)
-        if not source.resolve().is_relative_to(self._templates.resolve()):
-            raise ProjectError("template escapes its package directory")
-        content = source.read_text(encoding="utf-8")
+        content = self._template_file(template).read_text(encoding="utf-8")
         if values is not None:
             content = Template(content).substitute(values)
         return self.write_text(path, content, policy=policy)
+
+    def from_file(self, path: str, *, source: str,
+                  policy: WritePolicy = WritePolicy.IF_MISSING) -> _Operation:
+        """Copy a packaged document or binary asset unchanged through tracked file ownership."""
+        return _Operation("write", relative_path(path), policy_value(policy), self._template_file(source).read_bytes())
+
+    def _template_file(self, source: str) -> Path:
+        """Share one containment boundary for rendered templates and verbatim resources."""
+        if self._templates is None:
+            raise ProjectError("pack has no template directory")
+        path = self._templates / relative_path(source)
+        if not path.resolve().is_relative_to(self._templates.resolve()):
+            raise ProjectError("template escapes its package directory")
+        if not path.is_file():
+            raise ProjectError(f"pack resource must be a regular file: {source}")
+        return path
 
     def delete(self, path: str) -> _Operation:
         """Propose removal only if the pack still owns unchanged generated content."""

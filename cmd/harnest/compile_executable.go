@@ -64,10 +64,18 @@ func (a *application) compileExecutable(command *cobra.Command, source, output, 
 	if err = a.compilePackedArtifact(command, bundle, root, artifact, entrypoint, m); err != nil {
 		return err
 	}
-	if err = a.publishExecutable(command, output, artifact, options, m, bundle.Config.Spec.Environment); err != nil {
+	return a.publishExecutableWithReport(command, output, artifact, root, options, m, bundle.Config.Spec.Environment)
+}
+
+// publishExecutableWithReport exposes build accounting beside the completed native artifact.
+func (a *application) publishExecutableWithReport(command *cobra.Command, output, artifact, root string, options executableOptions, m agentpack.Manifest, environment map[string]string) error {
+	if err := a.publishExecutable(command, output, artifact, options, m, environment); err != nil {
 		return err
 	}
-	fmt.Fprintf(command.OutOrStdout(), "Agent executable: %s\nRuntime: %s (embedded: %t)\n", output, m.Digest, options.embed)
+	if err := writeExecutableReport(output, artifact, root, m, options.embed); err != nil {
+		return err
+	}
+	fmt.Fprintf(command.OutOrStdout(), "Agent executable: %s\nRuntime: %s (embedded: %t)\nReport: %s.build-report.json\n", output, m.Digest, options.embed, output)
 	return nil
 }
 
@@ -220,7 +228,7 @@ func validatePackAgent(bundle engine.Bundle, m agentpack.Manifest) error {
 	if err := validateAgentDependencyPolicy(bundle); err != nil {
 		return err
 	}
-	plan, err := inspectRuntimeDependencyPlan(bundle)
+	plan, err := inspectCompileDependencyPlan(bundle)
 	if err != nil {
 		return err
 	}

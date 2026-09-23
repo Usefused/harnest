@@ -113,6 +113,7 @@ func createRuntimeLockInput(
 	if pin != "" {
 		lines = append(lines, pin)
 	}
+	lines = append(lines, plan.CompileRequirements...)
 	path, cleanup, err := createRuntimeLockTemporary(bundle, ".runtime-lock-input-*")
 	if err != nil {
 		return "", nil, err
@@ -182,6 +183,9 @@ func runtimeLockInputFingerprint(
 		digest.Write([]byte{0})
 	}
 	digest.Write(wheel.Contents)
+	for _, requirement := range plan.CompileRequirements {
+		digest.Write([]byte("\x00compile:" + requirement))
+	}
 	for _, path := range plan.ProjectFiles {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, false); err != nil {
 			return "", err

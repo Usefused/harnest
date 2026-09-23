@@ -21,7 +21,7 @@ def _required_string(request: dict[str, Any], name: str) -> str:
 
 
 def _compile_request(request: dict[str, Any]) -> dict[str, Any]:
-    """Compile one immutable generation from a validated daemon request."""
+    """Compile a reload generation without applying standalone build selections."""
 
     request_id = _required_string(request, "id")
     cli_enabled = request.get("cliEnabled", False)
@@ -34,6 +34,7 @@ def _compile_request(request: dict[str, Any]) -> dict[str, Any]:
         framework=_required_string(request, "framework"),
         mode=_required_string(request, "mode"),
         cli_enabled=cli_enabled,
+        bundle_selection=False,
     )
     return {"id": request_id, "ok": True, "digest": manifest["digest"]}
 

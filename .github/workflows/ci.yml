@@ -101,7 +101,7 @@ jobs:
       - name: Test executable storage and native process behavior
         run: go test ./internal/agentpack ./cmd/harnest-agent
       - name: Test compiler executable packaging
-        run: go test ./cmd/harnest -run "Test(NativeExecutable|WindowsConsole|WindowsNative|ExecutableOptions|SharedRuntime|RuntimePack|RuntimeBuild|PortableConsole)"
+        run: go test ./cmd/harnest -run "Test(ProjectPackInit|CompileSelection|CompileManifest|RuntimeReport|NativeExecutable|WindowsConsole|WindowsNative|ExecutableOptions|SharedRuntime|RuntimePack|RuntimeBuild|PortableConsole)"
       - name: Build release-equivalent CLI with bundled Studio
         shell: bash
         run: |

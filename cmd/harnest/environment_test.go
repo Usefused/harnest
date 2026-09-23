@@ -520,6 +520,7 @@ func TestServeSelectsDevelopmentProfile(t *testing.T) {
 	}
 }
 
+// TestEnvironmentSyncRejectsUnknownProfile lists every supported isolated environment.
 func TestEnvironmentSyncRejectsUnknownProfile(t *testing.T) {
 	agent := filepath.Join(t.TempDir(), "invalid-profile-agent")
 	if err := createScaffold(agent, "invalid-profile-agent"); err != nil {
@@ -528,7 +529,7 @@ func TestEnvironmentSyncRejectsUnknownProfile(t *testing.T) {
 	_, _, err := executeForTest(
 		t, defaultSystem(), "env", "sync", agent, "--profile", "production",
 	)
-	if err == nil || !strings.Contains(err.Error(), "runtime, development, or eval") {
+	if err == nil || !strings.Contains(err.Error(), "runtime, compile, development, or eval") {
 		t.Fatalf("got error %v, want profile choices", err)
 	}
 }

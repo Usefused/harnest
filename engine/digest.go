@@ -99,9 +99,10 @@ func writeDigestHeader(hash io.Writer, relative string, size int64) error {
 	return nil
 }
 
+// ignoredBundleFile excludes secrets and command-specific tool locks from source identity.
 func ignoredBundleFile(name string) bool {
 	return name == ".env" || strings.HasPrefix(name, ".env.") ||
-		name == "harnest-development.lock" || name == "harnest-eval.lock" ||
+		name == "harnest-development.lock" || name == "harnest-eval.lock" || name == "harnest-compile.lock" ||
 		strings.HasSuffix(name, ".pyc") || strings.HasSuffix(name, ".pyo")
 }
 

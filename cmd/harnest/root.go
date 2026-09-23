@@ -48,6 +48,7 @@ Typical workflow:
   harnest extensions install ./harnest-extension-postgres --project my-agent
   harnest extensions install docker --project my-agent
   harnest extensions search postgres
+  harnest pack init acme --output ./acme-pack
   harnest init minimal-agent --minimal
   harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN --project minimal-agent
   harnest mcp inspect catalog --project minimal-agent
@@ -74,7 +75,7 @@ Typical workflow:
   harnest studio
   harnest studio --workspace my-agent
 
-Released commands select isolated production runtime, development, or eval environments derived
+Released commands select isolated production runtime, compile, development, or eval environments derived
 from config.yaml, authored dependency metadata, the corresponding committed
 Harnest lock, and the embedded Harnest wheel. Framework MCP and evaluation
 dependencies are installed only when the source or command needs them.
@@ -159,6 +160,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newAgentPluginsCommand(),
 		app.newExtensionsCommand(),
 		app.newTemplateCommand(),
+		app.newPackCommand(),
 		app.newModeCommand(),
 		app.newUpgradeCommand(),
 	)

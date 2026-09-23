@@ -33,6 +33,8 @@ from .compatibility import (
     validate_framework_compatibility,
 )
 from .cron import CompiledCron, Cron
+from .compile_selection import read_compile_selection, write_compile_report
+from .compile_source import compile_source_paths
 from .backends import (
     AdvancedBackendValidationError,
     BackendDependencyError,
@@ -751,8 +753,9 @@ def compile_artifact(
     framework: str = "adk",
     mode: str = "managed",
     cli_enabled: bool = False,
+    bundle_selection: bool = True,
 ) -> dict[str, Any]:
-    """Validate server policy before authored code and atomically build an artifact."""
+    """Build an artifact; source-run callers bypass compile-only bundle declarations."""
 
     if not isinstance(cli_enabled, bool):
         raise TypeError("cli_enabled must be a boolean")
@@ -782,6 +785,7 @@ def compile_artifact(
 
     # Reject conflicting or invalid server settings before importing authored Python.
     server_contents = project_server_config_yaml(source_directory)
+    selection = _compile_selection(source_directory, bundle_selection)
     built = compile_application(
         anchor, entrypoint=entrypoint, framework=framework, mode=mode
     )
@@ -794,12 +798,13 @@ def compile_artifact(
             )
         )
         try:
-            _copy_agent_source(source_directory, staging / "source")
+            _copy_selected_source(source_directory, staging / "source", selection)
             # Runtime policy stays mutable beside the launcher; source remains hashed.
             (staging / SERVER_CONFIG_FILENAME).write_text(
                 server_contents, encoding="utf-8"
             )
             _write_artifact_loader(staging, entrypoint, framework, mode, source_directory)
+            write_compile_report(staging, selection)
             file_records = _artifact_file_records(staging)
             extension_records = _compiled_extension_records(
                 built.extensions
@@ -850,6 +855,16 @@ def compile_artifact(
                 shutil.rmtree(staging)
     finally:
         _release_compiled_extensions(built.extensions)
+
+
+def _compile_selection(source: Path, enabled: bool) -> dict[str, Any] | None:
+    """Keep regular source runs independent from compile-only bundle declarations."""
+    if not enabled:
+        return None
+    try:
+        return read_compile_selection(source)
+    except (ValueError, OSError) as exc:
+        raise BundleConventionError(str(exc)) from exc
 
 
 def _compiled_extension_records(
@@ -905,8 +920,14 @@ def _release_compiled_extensions(extensions: Sequence[ActivatedExtension]) -> No
     release_extensions(tuple(item.descriptor for item in extensions))
 
 
-def _copy_agent_source(source: Path, destination: Path) -> None:
-    """Copy authored source and executable bits, excluding generated state."""
+def _copy_selected_source(source: Path, destination: Path, selection: dict[str, Any] | None) -> None:
+    """Apply runtime content rules only for compilation, leaving source runs unchanged."""
+    included = compile_source_paths(source) if selection is not None else None
+    _copy_agent_source(source, destination, included=included)
+
+
+def _copy_agent_source(source: Path, destination: Path, *, included: frozenset[Path] | None = None) -> None:
+    """Copy selected compile content, or the full authored tree for ordinary source runs."""
 
     destination.mkdir()
     paths = sorted(
@@ -928,6 +949,8 @@ def _copy_agent_source(source: Path, destination: Path) -> None:
         if not path.is_file():
             raise BundleConventionError(f"unsupported agent source resource: {path}")
         if path.suffix in {".pyc", ".pyo"}:
+            continue
+        if included is not None and relative not in included:
             continue
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from pydantic import BaseModel
 import yaml
 
-from harnest.authoring import ChangePlan, ProjectCLI, ProjectError, ProjectPack, ProjectPlanner, apply_project_plan
+from harnest.authoring import ChangePlan, ProjectCLI, ProjectError, ProjectPack, ProjectPlanner, WritePolicy, apply_project_plan
 from harnest.authoring.filesystem import atomic_write, snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +61,95 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         lock = json.loads((self.root / 'harnest-packs.lock').read_text())
         self.assertEqual(lock['packs'], {'acme': 2})
         self.assertNotIn('support', json.dumps(lock))
+
+    def test_generated_pack_cli_creates_compile_ready_agent(self):
+        """Keep generated teammate guides separate from the runnable agent artifact."""
+        from harnest.bundle import compile_artifact
+        pack_root = self.root.parent / 'company pack'
+        subprocess.run([str(self.binary), 'pack', 'init', 'acme', '--output', str(pack_root)],
+                       check=True, capture_output=True, text=True)
+        (pack_root / 'team-guide.md').write_text('Team-owned documentation before init.\n')
+        environment = dict(os.environ, HARNEST_CLI=str(self.binary), PYTHONPATH=str(ROOT / 'src'))
+        subprocess.run([sys.executable, str(pack_root / 'pack.py'), 'init', str(self.root), '--minimal'],
+                       env=environment, check=True, capture_output=True, text=True)
+        self.assertEqual((self.root / 'harnest-compile.yaml').read_bytes(),
+                         (pack_root / 'harnest-compile.yaml').read_bytes())
+        self.assertEqual((self.root / 'docs/team-guide.md').read_text(), 'Team-owned documentation before init.\n')
+        self.assertEqual(json.loads((self.root / 'harnest-packs.lock').read_text())['packs'], {'acme': 1})
+        # Compilation must consume generated declarations, without the authoring package.
+        shutil.rmtree(pack_root)
+        target = self.root.parent / 'artifact'
+        with patch.dict(os.environ, {'OPENAI_BASE_URL': 'http://localhost:11434/v1', 'OPENAI_MODEL': 'test-model'}):
+            compile_artifact(self.root, target)
+        report = json.loads((target / 'harnest-build-report.json').read_text())
+        self.assertNotIn('resources', report['selection'])
+        self.assertFalse((target / 'source/docs/team-guide.md').exists())
+        self.assertTrue((self.root / 'docs/team-guide.md').is_file())
+        self.assertFalse((target / 'source/pack.py').exists())
+
+    def test_pack_documents_remain_in_project_without_entering_compiled_agent(self):
+        """Pack documents retain exact bytes and ownership only in the generated project."""
+        from harnest.bundle import compile_artifact
+        assets = self.root.parent / 'pack-assets'
+        assets.mkdir()
+        content = b'%PDF-fixture\x00\xff\xfe\r\n'
+        (assets / 'handbook.pdf').write_bytes(content)
+        (assets / 'reference.md').write_text('Literal $EXAMPLE and ${VARIABLE} documentation.\n')
+        pack = ProjectPack('references', 1, templates=assets)
+        pack.initialize(lambda ctx: ChangePlan(
+            ctx.files.from_file('docs/handbook.pdf', source='handbook.pdf'),
+            ctx.files.from_file('docs/reference.md', source='reference.md'),
+            ctx.yaml.set('harnest-compile.yaml', key=('version',), value=1),
+        ))
+        plan = self.planner(packs=[pack]).plan_init(self.root, minimal=True)
+        self.assertFalse(plan.blockers)
+        apply_project_plan(plan)
+        self.assertEqual((self.root / 'docs/handbook.pdf').read_bytes(), content)
+        self.assertEqual((self.root / 'docs/reference.md').read_bytes(), (assets / 'reference.md').read_bytes())
+        lock = json.loads((self.root / 'harnest-packs.lock').read_text())
+        self.assertTrue(any(item['owner'] == 'references' and item['path'] == 'docs/handbook.pdf' for item in lock['claims']))
+        shutil.rmtree(assets)
+        target = self.root.parent / 'compiled-documents'
+        with patch.dict(os.environ, {'OPENAI_BASE_URL': 'http://localhost:11434/v1', 'OPENAI_MODEL': 'test-model'}):
+            compile_artifact(self.root, target)
+        self.assertEqual((self.root / 'docs/handbook.pdf').read_bytes(), content)
+        self.assertFalse((target / 'source/docs').exists())
+        report = json.loads((target / 'harnest-build-report.json').read_text())
+        self.assertFalse(any(item['path'].startswith('source/docs/') for item in report['files']))
+
+    def test_pack_file_copy_preserves_managed_update_checks(self):
+        """Binary copying uses the same ownership and local-edit protections as text templates."""
+        from harnest.authoring.context import ProjectFiles
+        from harnest.authoring.contracts import _File
+        from harnest.authoring.operations import OperationEngine, read_lock
+        source = self.root.parent / 'document.bin'
+        source.write_bytes(b'\xfforiginal')
+        engine = OperationEngine({}, read_lock({}))
+        files = ProjectFiles(engine.files, source.parent)
+        engine.apply('references', files.from_file('docs/document.bin', source=source.name))
+        source.write_bytes(b'\x00updated')
+        engine.apply('references', files.from_file('docs/document.bin', source=source.name, policy=WritePolicy.MANAGED))
+        self.assertEqual(engine.files['docs/document.bin'].content, b'\x00updated')
+        engine.files['docs/document.bin'] = _File(b'user edits')
+        with self.assertRaisesRegex(ProjectError, 'local modifications'):
+            engine.apply('references', files.from_file('docs/document.bin', source=source.name, policy=WritePolicy.MANAGED))
+        self.assertEqual(engine.files['docs/document.bin'].content, b'user edits')
+
+    def test_pack_file_copy_rejects_escaping_and_non_file_sources(self):
+        """Verbatim copies and templates share the pack's existing containment boundary."""
+        from harnest.authoring.context import ProjectFiles
+        assets = self.root.parent / 'assets'
+        assets.mkdir()
+        (assets / 'folder').mkdir()
+        outside = self.root.parent / 'outside.txt'
+        outside.write_text('outside')
+        (assets / 'escape').symlink_to(outside)
+        files = ProjectFiles({}, assets)
+        for source in ('../outside.txt', 'escape', 'missing.txt', 'folder'):
+            with self.subTest(source=source), self.assertRaises(ProjectError):
+                files.from_file('docs/reference', source=source)
+        with self.assertRaisesRegex(ProjectError, 'no template directory'):
+            ProjectFiles({}, None).from_file('docs/reference', source='reference')
 
     def test_invalid_options_block_before_live_mutation(self):
         for values in [{}, {'team': ''}, {'team': 'ok', 'environment': 'bad'}, {'team': 'ok', 'unknown': 'x'}]:
@@ -244,6 +333,7 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         self.assertIn('overlapping', str(plan.blockers))
 
     def test_migrated_agent_compiles_for_both_backends(self):
+        """Pack-generated agents compile without their authoring configuration or package."""
         from harnest.bundle import compile_artifact
         self.initialize()
         apply_project_plan(self.planner().plan_upgrade(self.root))
@@ -252,6 +342,9 @@ class ProjectPackIntegrationTests(unittest.TestCase):
                 target = self.root.parent / f'compiled-{framework}'
                 compile_artifact(self.root, target, framework=framework)
                 self.assertTrue((target / 'harnest-agent').exists())
+                report = json.loads((target / 'harnest-build-report.json').read_text())
+                self.assertNotIn('resources', report['selection'])
+                self.assertFalse((target / 'source/acme-agent.yaml').exists())
 
     def test_failed_init_rolls_back_new_project_directory(self):
         plan = self.planner().plan_init(self.root, options={'acme': {'team': 'support'}})

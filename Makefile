@@ -45,6 +45,7 @@ vet:
 	GOCACHE=$(GOCACHE) go vet ./...
 
 schemas:
+	$(PYTHON) -m json.tool schemas/compile.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/config.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/project-lock.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/agent-card.schema.json >/dev/null
