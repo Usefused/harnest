@@ -7,7 +7,7 @@ from harnest._exception_notes import add_exception_note
 
 class ExceptionNoteTests(unittest.TestCase):
     def test_notes_are_inspectable_on_every_supported_python(self) -> None:
-        """Preserve cleanup diagnostics even when add_note is unavailable."""
+        """Preserve cleanup diagnostics through native exception notes."""
 
         failure = RuntimeError("primary")
 

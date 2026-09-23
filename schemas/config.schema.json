@@ -60,7 +60,7 @@
           "additionalProperties": false,
           "required": ["version", "dependencyFile"],
           "properties": {
-            "version": { "enum": ["3.10", "3.11", "3.12", "3.13", "3.14"] },
+            "version": { "enum": ["3.11", "3.12", "3.13", "3.14"] },
             "dependencyFile": {
               "const": "pyproject.toml",
               "description": "Agent dependency project synchronized into its isolated environment."

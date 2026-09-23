@@ -54,9 +54,9 @@ metadata differs from the CLI version. The installer then:
 - atomically installs the native executable at
   `${HARNEST_INSTALL_DIR:-$HOME/.local/bin}/harnest`.
 
-The installer checks versioned Python commands from 3.14 down to 3.10, then
+The installer checks versioned Python commands from 3.14 down to 3.11, then
 `python3` and `python`, and uses the first interpreter that actually reports
-Python 3.10 or newer. This avoids selecting an older operating-system `python3`
+Python 3.11 or newer. This avoids selecting an older operating-system `python3`
 when a supported Homebrew, pyenv, or other installation is present. If none is
 compatible, embedded `uv` installs pinned CPython 3.12 under the Harnest data
 directory and creates the runtime from it. Harnest does not modify the system
@@ -162,7 +162,7 @@ the reviewed source version for releases while allowing local snapshot versions
 without modifying the checkout. Whenever framework support changes, update the
 bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
 the Python compatibility matrix, and the Go init compatibility table. A release
-machine needs Go 1.24 or newer, Python 3.10 or newer, the build dependencies
+machine needs Go 1.24 or newer, Python 3.11 or newer, the build dependencies
 from `.[adk,quality]` with `requirements/frameworks.txt` constraints, GoReleaser, and permission to download the pinned `uv` assets and
 publish to the GitHub repository.
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Breaking changes
+
+* Require Python 3.11 or newer across Harnest, Studio, bundled integrations, and
+  extension scaffolds. Python 3.10 projects and bootstrap interpreters are no
+  longer supported. New agents and the managed runtime continue to use Python
+  3.12; remove the Python 3.10 TOML and enum compatibility fallbacks.
+  `harnest upgrade --apply` migrates existing Python 3.10 runtime declarations
+  and compatible project requirements to 3.11, with the normal review, backups,
+  and stale-source checks. Agent commands refresh the changed environment.
+
 ### Features
 
 * Add compile-only optional dependency selection in `harnest-compile.yaml`,

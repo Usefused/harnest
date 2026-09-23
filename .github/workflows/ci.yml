@@ -41,7 +41,7 @@ jobs:
           --health-retries 10
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.11", "3.12"]
     env:
       HARNEST_TEST_POSTGRES_DSN: postgresql://harnest:harnest@127.0.0.1:5432/harnest
       HARNEST_TEST_POSTGRES_URL: postgresql://harnest:harnest@127.0.0.1:5432/harnest

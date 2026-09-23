@@ -1,4 +1,4 @@
-PYTHON ?= $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3.10 2>/dev/null || command -v python3)
+PYTHON ?= $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || command -v python3)
 GOCACHE ?= $(CURDIR)/.cache/go-build
 OPENAI_BASE_URL ?= https://models.example.invalid/v1
 OPENAI_MODEL ?= your-model

@@ -6,17 +6,7 @@ from dataclasses import asdict, dataclass, replace
 from types import MappingProxyType
 from typing import Literal, Mapping, cast
 
-try:
-    from enum import StrEnum
-except ImportError:  # Python 3.10 remains inside Harnest's supported range.
-    from enum import Enum
-
-    class StrEnum(str, Enum):
-        """Provide the value-preserving subset used by lifecycle diagnostics."""
-
-        def __str__(self) -> str:
-            """Match Python 3.11 StrEnum's JSON-friendly string behavior."""
-            return str(self.value)
+from enum import StrEnum
 
 
 class CoverageLevel(StrEnum):

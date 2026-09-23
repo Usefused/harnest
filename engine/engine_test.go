@@ -91,6 +91,25 @@ func TestIgnoredDeploymentFieldsPreserveEnvironment(t *testing.T) {
 	}
 }
 
+// TestAgentPythonMinimum checks source configuration at the supported version boundary.
+func TestAgentPythonMinimum(t *testing.T) {
+	for _, version := range []string{"3.10", "3.11", "3.12"} {
+		t.Run(version, func(t *testing.T) {
+			directory := writeAgent(t, t.TempDir(), "python-version", true)
+			path := filepath.Join(directory, "config.yaml")
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, path, strings.Replace(string(original), `version: "3.12"`, `version: "`+version+`"`, 1))
+			_, err = LoadBundle(directory)
+			if (err == nil) != (version != "3.10") {
+				t.Fatalf("Python %s: bundle error = %v", version, err)
+			}
+		})
+	}
+}
+
 func TestDiscoverLoadsEnabledBundlesInStableOrder(t *testing.T) {
 	project := t.TempDir()
 	writeAgent(t, project, "zeta", true)

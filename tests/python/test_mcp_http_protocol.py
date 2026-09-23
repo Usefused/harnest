@@ -93,7 +93,7 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(binding.close, reset=True)
 
     async def test_total_deadline_closes_keepalive_stream_without_replay(self):
-        """A busy SSE stream cannot extend the RPC deadline on Python 3.10 or newer."""
+        """A busy SSE stream cannot extend the RPC deadline on Python 3.11 or newer."""
 
         stream = KeepaliveStream()
         requests = []

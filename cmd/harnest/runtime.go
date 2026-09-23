@@ -36,7 +36,6 @@ var bootstrapPythonCandidates = []string{
 	"python3.13",
 	"python3.12",
 	"python3.11",
-	"python3.10",
 	"python3",
 	"python",
 }
@@ -51,6 +50,7 @@ func (a *application) newRuntimeCommand() *cobra.Command {
 	return command
 }
 
+// newRuntimeInstallCommand configures installation with a supported bootstrap Python.
 func (a *application) newRuntimeInstallCommand() *cobra.Command {
 	options := runtimeInstallOptions{
 		bootstrapPython: strings.TrimSpace(a.system.getenv("HARNEST_BOOTSTRAP_PYTHON")),
@@ -85,7 +85,7 @@ func (a *application) newRuntimeInstallCommand() *cobra.Command {
 		&options.bootstrapPython,
 		"bootstrap-python",
 		options.bootstrapPython,
-		"Python 3.10+ executable used instead of Harnest-managed Python",
+		"Python 3.11+ executable used instead of Harnest-managed Python",
 	)
 	return command
 }
@@ -223,23 +223,25 @@ func executableAlreadyChecked(seen map[string]struct{}, executable string) bool 
 	return false
 }
 
+// unsupportedPythonError explains the minimum version after discovery is exhausted.
 func unsupportedPythonError(problems []string) error {
 	detail := "no Python executable was found on PATH"
 	if len(problems) != 0 {
 		detail = strings.Join(problems, "; ")
 	}
 	return fmt.Errorf(
-		"Python 3.10 or newer was not found: %s",
+		"Python 3.11 or newer was not found: %s",
 		detail,
 	)
 }
 
+// validateBootstrapPython rejects hosts older than the runtime package supports.
 func (a *application) validateBootstrapPython(ctx context.Context, executable string) error {
 	process := a.system.commandContext(
 		ctx,
 		executable,
 		"-c",
-		"import platform, sys; print(platform.python_version()); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+		"import platform, sys; print(platform.python_version()); raise SystemExit(0 if sys.version_info >= (3, 11) else 1)",
 	)
 	var stdout bytes.Buffer
 	process.Stdout = &stdout

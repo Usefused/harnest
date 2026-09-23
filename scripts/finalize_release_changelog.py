@@ -8,10 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 uses the maintained compatibility package.
-    import tomli as tomllib
+import tomllib
 
 
 H2_PATTERN = re.compile(r"^## .+$", re.MULTILINE)

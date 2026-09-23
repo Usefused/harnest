@@ -8,10 +8,7 @@ from typing import Any
 
 import yaml
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+import tomllib
 
 from .server_config import _UniqueKeyLoader
 

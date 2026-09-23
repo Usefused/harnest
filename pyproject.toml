@@ -7,7 +7,7 @@ name = "harnest"
 version = "0.23.0"
 description = "Filesystem-first Python authoring SDK for ADK and LangGraph agents"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 classifiers = ["Typing :: Typed"]
 dependencies = [
@@ -21,7 +21,6 @@ dependencies = [
   "pydantic>=2.10,<3",
   "uvicorn>=0.31",
   "PyYAML>=6,<7",
-  "tomli>=2,<3; python_version < '3.11'",
   "opentelemetry-api>=1.40,<=1.42.1",
   "opentelemetry-sdk>=1.40,<=1.42.1",
   "opentelemetry-exporter-otlp-proto-http>=1.40,<=1.42.1",
@@ -75,7 +74,7 @@ packages = ["src/harnest", "src/harnest_postgres", "src/harnest_redis"]
 exclude = ["src/harnest/_playground/**", "src/harnest/_studio/**", "src/harnest/studio_*.py"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Correctness-only for now (unused imports/vars, undefined names, etc.), mirroring

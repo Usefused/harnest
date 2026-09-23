@@ -141,7 +141,7 @@ def _identity(scope: MemoryScope, key: str) -> tuple[str, str, str, str]:
 async def _locked_record(connection: Any, scope: MemoryScope, key: str) -> MemoryRecord | None:
     """Fence absent keys with the same signed lock identity on every Python version."""
     identity = _identity(scope, key)
-    # Python 3.10 requires byteorder; big-endian preserves locks used by 3.11+ replicas.
+    # Explicit big-endian byte order keeps lock IDs stable across runtime upgrades.
     lock = int.from_bytes(hashlib.sha256(json.dumps(identity).encode()).digest()[:8], "big", signed=True)
     await connection.execute("SELECT pg_advisory_xact_lock($1)", lock)
     raw = await connection.fetchval(

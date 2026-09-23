@@ -13,10 +13,7 @@ import yaml
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 uses the maintained compatibility package.
-    import tomli as tomllib
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]

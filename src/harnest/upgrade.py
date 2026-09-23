@@ -335,6 +335,9 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     _plan_server(root, blockers)
     _plan_project_lock(root, actions, blockers)
     _plan_dependencies(root, framework, actions, blockers)
+    from .upgrade_python import plan_python_minimum
+
+    plan_python_minimum(root, actions, blockers)
     _plan_mcp(root, actions, blockers)
     _plan_extensions(root, framework, actions, blockers)
     _plan_storage(root, actions, blockers)

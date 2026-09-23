@@ -7,7 +7,7 @@ name = "harnest-threadify"
 version = "0.1.0"
 description = "Optional business-focused Threadify telemetry for Harnest"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Fused" }]
 dependencies = ["harnest>=0.23,<0.24", "threadify-sdk==0.2.10"]

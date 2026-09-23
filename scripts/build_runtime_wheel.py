@@ -11,10 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 uses the project compatibility dependency.
-    import tomli as tomllib
+import tomllib
 
 
 from bundle_studio import bundle_studio

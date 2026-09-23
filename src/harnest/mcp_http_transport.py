@@ -95,7 +95,7 @@ async def _messages(response: Any, limit: int):
 
 
 async def _call(client: Any, url: str, method: str, params: dict[str, Any], limit: int, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    """Bound total RPC duration on every supported Python version, including 3.10."""
+    """Bound total RPC duration on every supported Python version, including 3.11."""
 
     import anyio
 

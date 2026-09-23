@@ -1,5 +1,5 @@
 [project]
 name = "harnest-slack-channel-test"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["harnest[adk,postgres]>=0.22,<0.24"]

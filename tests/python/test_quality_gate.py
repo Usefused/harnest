@@ -12,7 +12,7 @@ from _test_context import enter_context
 
 
 class FixtureContextTests(unittest.TestCase):
-    """Keep setup resources owned correctly on Python 3.10 and newer runners."""
+    """Keep setup resources owned correctly on Python 3.11 and newer runners."""
 
     def test_failed_setup_releases_contexts_in_cleanup_order(self):
         """Fixture failure still unwinds contexts in order with ordinary callbacks."""

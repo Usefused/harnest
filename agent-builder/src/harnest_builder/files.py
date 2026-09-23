@@ -14,10 +14,7 @@ from threading import RLock
 from fastapi import HTTPException
 import yaml
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 
 LIMIT = 1024 * 1024
 SUFFIXES = {".py", ".yaml", ".yml", ".json", ".md", ".mdx", ".toml", ".txt", ".lock", ".csv", ".j2", ".html", ".css", ".js"}

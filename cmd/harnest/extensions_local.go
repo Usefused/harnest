@@ -266,7 +266,7 @@ func extensionProjectScaffold(name string) string {
 	return fmt.Sprintf(`[project]
 name = "harnest-extension-%s"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
 
 [tool.uv]

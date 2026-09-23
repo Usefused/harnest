@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +12,29 @@ import (
 	"harnest.dev/harnest/internal/runtimewheel"
 	"harnest.dev/harnest/internal/uvbootstrap"
 )
+
+// TestBootstrapPythonMinimum executes the actual probe at the supported version boundary.
+func TestBootstrapPythonMinimum(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python is unavailable for bootstrap probe integration")
+	}
+	for _, minor := range []int{10, 11, 12} {
+		t.Run(fmt.Sprintf("3.%d", minor), func(t *testing.T) {
+			sys := defaultSystem()
+			sys.commandContext = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				// Simulate only the version boundary; execute the real validation program.
+				program := fmt.Sprintf("import sys; sys.version_info = (3, %d); ", minor) + args[1]
+				return exec.CommandContext(ctx, python, "-c", program)
+			}
+			app := application{system: sys}
+			err := app.validateBootstrapPython(context.Background(), python)
+			if (err == nil) != (minor >= 11) {
+				t.Fatalf("Python 3.%d: validation error = %v", minor, err)
+			}
+		})
+	}
+}
 
 func TestRuntimeInstallAutoDiscoversSupportedPython(t *testing.T) {
 	binDirectory := t.TempDir()
@@ -46,7 +71,7 @@ exit 1
 		t.Fatal("unsupported Python unexpectedly passed discovery")
 	}
 	assertContainsAll(t, "Python discovery error", err.Error(), []string{
-		"Python 3.10 or newer was not found",
+		"Python 3.11 or newer was not found",
 		"Python 3.9.6 at " + unsupported + " is unsupported",
 	})
 }

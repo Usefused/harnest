@@ -19,7 +19,7 @@ import (
 var (
 	agentNamePattern                = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	adkAgentNamePattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	pythonPattern                   = regexp.MustCompile(`^3\.(?:10|11|12|13|14)$`)
+	pythonPattern                   = regexp.MustCompile(`^3\.(?:11|12|13|14)$`)
 	entrypointPattern               = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):([A-Za-z_][A-Za-z0-9_]*)$`)
 	environmentNamePattern          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	secretEnvironmentNamePattern    = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)

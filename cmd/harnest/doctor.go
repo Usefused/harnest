@@ -57,7 +57,7 @@ for module, distribution in dependencies:
 print(json.dumps({
     "executable": sys.executable,
     "python": platform.python_version(),
-    "supported": sys.version_info >= (3, 10),
+    "supported": sys.version_info >= (3, 11),
     "packages": checks,
 }, separators=(",", ":")))
 `
@@ -207,13 +207,14 @@ func (a *application) probePython(command *cobra.Command, python pythonSelection
 	return result, nil
 }
 
+// writeDoctorResult reports unsupported interpreters and missing runtime dependencies.
 func writeDoctorResult(writer io.Writer, python pythonSelection, result doctorResult) int {
 	problems := 0
 	if result.Supported {
 		fmt.Fprintf(writer, "[ok] Python: %s (%s, selected from %s)\n", result.Python, result.Executable, python.Source)
 	} else {
 		problems++
-		fmt.Fprintf(writer, "[fail] Python: %s; Harnest requires Python 3.10 or newer\n", result.Python)
+		fmt.Fprintf(writer, "[fail] Python: %s; Harnest requires Python 3.11 or newer\n", result.Python)
 	}
 	for _, dependency := range result.Packages {
 		if dependency.OK {

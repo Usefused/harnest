@@ -1,5 +1,6 @@
 import os
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -12,6 +13,95 @@ from harnest.upgrade import UpgradeError, apply_upgrade, plan_upgrade
 
 
 class RepositoryUpgradeTests(unittest.TestCase):
+    def test_python_minimum_common_requirement_shapes(self):
+        """Preserve broad policy and move only supported minor-specific constraints."""
+        from harnest.upgrade_python import _project_source
+
+        cases = {
+            "": ">=3.11",
+            ">=3.10": ">=3.11",
+            ">=3.10,<3.11": "<3.12,>=3.11",
+            "==3.10.*": "==3.11.*,>=3.11",
+            "~=3.10.0": ">=3.11,~=3.11.0",
+            ">=3.10,!=3.13.*,<4": "!=3.13.*,<4,>=3.11",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                field = f"requires-python = '{value}' # preserve\n" if value else ""
+                result = _project_source('[project]\n' + field + 'name = "legacy"\n')
+                self.assertEqual(tomllib.loads(result)["project"]["requires-python"], expected)
+                if value:
+                    self.assertIn('# preserve', result)
+        with self.assertRaisesRegex(UpgradeError, "excludes Python 3.11"):
+            _project_source('[project]\nrequires-python = "==3.10.9"\n')
+
+    def test_python_minimum_migration_composes_with_legacy_dependencies(self):
+        """One backed-up migration updates old runtime and generated dependency metadata."""
+        import yaml
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            config = root / "config.yaml"
+            original = config.read_text().replace('version: "3.12"', 'version: "3.10" # selected runtime')
+            config.write_text(original)
+            plan = plan_upgrade(root)
+            self.assertEqual(plan.blockers, ())
+            self.assertEqual(config.read_text(), original)
+            self.assertEqual(len([a for a in plan.actions if a.path == "config.yaml"]), 1)
+            backup = apply_upgrade(plan)
+            self.assertEqual((backup / "config.yaml").read_text(), original)
+            self.assertEqual(yaml.safe_load(config.read_text())["spec"]["runtime"]["version"], "3.11")
+            self.assertIn('# selected runtime', config.read_text())
+            project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+            self.assertEqual(project["requires-python"], "<3.12,>=3.11")
+            self.assertIn("httpx>=0.28,<1", project["dependencies"])
+            self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_python_minimum_preserves_existing_project_and_checks_stale_plans(self):
+        """Current projects retain custom bounds, comments, dependencies, and source checks."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            config = root / "config.yaml"
+            config.write_text(config.read_text().replace('version: "3.12"', 'version: "3.10"'))
+            project = root / "pyproject.toml"
+            original = '[project]\nname = "legacy"\nrequires-python = ">=3.10,<4,!=3.13.*" # policy\ndependencies = ["httpx>=0.28,<1"]\n\n[tool.example]\nrequires-python = "unchanged"\n'
+            project.write_text(original)
+            plan = plan_upgrade(root)
+            self.assertEqual(plan.blockers, ())
+            project.write_text(original + '# concurrent edit\n')
+            with self.assertRaisesRegex(UpgradeError, "changed after planning"):
+                apply_upgrade(plan)
+            self.assertIn('version: "3.10"', config.read_text())
+            project.write_text(original)
+            backup = apply_upgrade(plan_upgrade(root))
+            result = tomllib.loads(project.read_text())
+            self.assertEqual(result["project"]["requires-python"], "!=3.13.*,<4,>=3.11")
+            self.assertEqual(result["project"]["dependencies"], ["httpx>=0.28,<1"])
+            self.assertEqual(result["tool"]["example"]["requires-python"], "unchanged")
+            self.assertIn('# policy', project.read_text())
+            self.assertEqual((backup / "pyproject.toml").read_text(), original)
+            self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_python_minimum_custom_exclusion_blocks_all_writes(self):
+        """Never override an explicit exclusion of the replacement interpreter."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            config = root / "config.yaml"
+            original = config.read_text().replace('version: "3.12"', 'version: "3.10"')
+            config.write_text(original)
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nrequires-python = ">=3.10,!=3.11.*"\n')
+            plan = plan_upgrade(root)
+            self.assertTrue(any("excludes Python 3.11" in b for b in plan.blockers))
+            with self.assertRaisesRegex(UpgradeError, "manual blockers"):
+                apply_upgrade(plan)
+            self.assertEqual(config.read_text(), original)
+
     def test_retired_model_requires_explicit_transport_migration(self):
         """Do not silently reroute a legacy agent or rewrite its credential mapping."""
         sources = (

@@ -168,6 +168,10 @@ class ProjectServerConfigTests(unittest.TestCase):
         )
         project["server"] = {"http": {"port": "${PORT}"}, "live": True}
         validator.validate(project)
+        project["spec"]["runtime"]["version"] = "3.10"
+        self.assertFalse(validator.is_valid(project))
+        project["spec"]["runtime"]["version"] = "3.11"
+        validator.validate(project)
         for name in ("resources", "scaling"):
             for value in (None, {}, {"cpu": "500m"}, {"maxReplicas": 1}):
                 with self.subTest(name=name, value=value):

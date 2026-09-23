@@ -12,10 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import tempfile
 import yaml
-try:
-    import tomllib
-except ImportError:  # Python 3.10 uses the same TOML parser through the backport.
-    import tomli as tomllib
+import tomllib
 from threading import RLock
 from typing import Any
 
