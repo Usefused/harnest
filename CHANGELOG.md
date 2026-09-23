@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.0.0](https://github.com/Usefused/harnest/compare/v0.23.0...v1.0.0) (2026-09-23)
 
 ### Breaking changes
 
@@ -71,6 +71,25 @@
 * Preserve ordinary tool JSON with list- or object-valued `type` fields, including
   JSON Schema unions, when inspecting media. Prevent the asset-content callback
   from failing with `unhashable type` while retaining real attachment detection.
+
+### ⚠ BREAKING CHANGES
+
+* require Python 3.11 and migrate legacy projects on upgrade
+
+### Features
+
+* add company project packs and authoring CLI ([1f260da](https://github.com/Usefused/harnest/commit/1f260dad38d5188d526b3dafc15dda9415fd700f))
+* add compile dependency selections and team pack scaffolding ([32dda66](https://github.com/Usefused/harnest/commit/32dda66a9658ca8d5f7285efd4923c148f3ea6de))
+* add optional Threadify business telemetry integration ([d2bd590](https://github.com/Usefused/harnest/commit/d2bd5904f0f6b53eecfe1fa296c1363420bdda7b))
+* compile native agents with deduplicated runtime packs ([bef9f73](https://github.com/Usefused/harnest/commit/bef9f7342903f41ca985f7e7820189188d6a268a))
+* forward templates through project pack initialization ([8496f2a](https://github.com/Usefused/harnest/commit/8496f2a3142c0681ce5f8e095621bb1adb7b5394))
+* require Python 3.11 and migrate legacy projects on upgrade ([9752172](https://github.com/Usefused/harnest/commit/9752172a54c86c1a588f1cee122c71309a05ba65))
+
+
+### Fixes
+
+* handle structured type fields in asset callbacks ([8592d20](https://github.com/Usefused/harnest/commit/8592d201e8c78290e210581ea2c9c52d4370da81))
+* ignore retired agent settings and harden continuation auth ([0647369](https://github.com/Usefused/harnest/commit/0647369585c047699b935ac2e144d7f43908768e))
 
 ## [0.23.0](https://github.com/Usefused/harnest/compare/v0.22.0...v0.23.0) (2026-09-22)
 
