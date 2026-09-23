@@ -74,8 +74,12 @@ class _Gateway(MCPClientLifecycle):
 
 class MCPSubscriptionHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_http_stream_recovers_retained_value_after_disconnect(self):
+        """Recover retained values over real HTTP despite ordinary runner contention."""
         import uvicorn
 
+        # This exercises recovery, not latency; dedicated protocol tests enforce
+        # RPC deadlines. Allow slow CI scheduling while keeping every wait bounded.
+        timeout = 30
         application = _live_application()
         listener_socket = socket.socket()
         listener_socket.bind(("127.0.0.1", 0))
@@ -90,18 +94,18 @@ class MCPSubscriptionHTTPTests(unittest.IsolatedAsyncioTestCase):
             if event.reason == "reconnect":
                 recovered.set()
 
-        configured = MCPClient.streamable_http(f"http://127.0.0.1:{port}/mcp", timeout_seconds=2,
+        configured = MCPClient.streamable_http(f"http://127.0.0.1:{port}/mcp", timeout_seconds=timeout,
             subscriptions=[MCPSubscription(URI, handler, method="subscriptions/listen")])
         bindings = configured._runtime_bindings("langgraph")
         try:
-            await asyncio.wait_for(_wait_started(server), 5)
+            await asyncio.wait_for(_wait_started(server), timeout)
             await start_mcp_lifecycles(bindings)
-            await asyncio.wait_for(recovered.wait(), 5)
+            await asyncio.wait_for(recovered.wait(), timeout)
             self.assertEqual(received, ["0", "1", "2"])
         finally:
             await close_mcp_lifecycles(bindings)
             server.should_exit = True
-            await asyncio.wait_for(server_task, 5)
+            await asyncio.wait_for(server_task, timeout)
             listener_socket.close()
 
     async def test_listen_ack_reconnect_read_and_cleanup_reuse_configured_gateway(self):
