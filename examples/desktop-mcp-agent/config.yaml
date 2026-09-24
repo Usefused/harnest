@@ -1,0 +1,19 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: desktop-operator
+  displayName: Desktop Operator
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    dependencyFile: pyproject.toml
+  environment:
+    OPENAI_MODEL: deepseek-flash
+    OPENAI_BASE_URL: https://api.deepseek.com
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
+    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"

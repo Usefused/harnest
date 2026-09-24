@@ -29,11 +29,11 @@ test-live:
 quality: test complexity lint skill-quality format-check vet validate-examples
 
 complexity:
-	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage agent-builder/src
+	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage examples/desktop-mcp-agent agent-builder/src
 	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
 
 lint:
-	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage official-extensions agent-builder/src
+	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage examples/desktop-mcp-agent official-extensions agent-builder/src
 
 skill-quality:
 	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .

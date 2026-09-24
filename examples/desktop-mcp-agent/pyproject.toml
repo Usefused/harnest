@@ -1,0 +1,8 @@
+[project]
+name = "harnest-desktop-mcp-example"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["docker>=7.1,<8", "fastmcp>=2.14.5,<3", "httpx>=0.28,<1", "typesafe-sdk==0.7.1"]
+
+[tool.uv]
+package = false

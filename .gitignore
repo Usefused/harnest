@@ -1,6 +1,10 @@
 .DS_Store
 .env
 .venv/
+.python_packages/
+site-packages/
+*.egg-info/
+*.dist-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/

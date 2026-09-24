@@ -1,0 +1,18 @@
+name: Desktop Operator
+description: Uses Jev to decide when to operate a persistent Linux desktop and Chrome browser.
+version: 0.1.0
+supportedInterfaces:
+  - url: http://127.0.0.1:1907
+    protocolBinding: HTTP+JSON
+    protocolVersion: "1.0"
+capabilities:
+  streaming: true
+defaultInputModes:
+  - text/plain
+defaultOutputModes:
+  - text/plain
+skills:
+  - id: desktop-operation
+    name: Desktop operation
+    description: Uses Jev to route browser use and operates a Linux desktop with Chrome.
+    tags: [desktop, chrome, playwright, jev]

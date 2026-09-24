@@ -99,6 +99,7 @@
       "test_bundle_resource_consumption",
       "test_checkpoint_compiler",
       "test_chrome_sandbox_example",
+      "test_desktop_mcp_example",
       "test_compatibility",
       "test_compiler_daemon",
       "test_compile_selection",

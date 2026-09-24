@@ -9,6 +9,11 @@
   their held session lease. Include a runnable CopilotKit compatibility demo.
 - Avoid duplicating the final LangGraph reply after multiple streamed messages.
 
+- Add a provisionable headless Linux desktop agent example with persistent Chrome,
+  session-aware Jev-gated desktop tools, DeepSeek environment defaults and dedicated
+  key selection, unrestricted HTTP(S) browsing by default, an optional host list
+  and noVNC viewer, and a Streamable HTTP MCP endpoint.
+
 - Mark cron storage implementation private while preserving public `harnest.cron`
   contracts and compatibility with existing `harnest.cron_storage` imports.
 
