@@ -232,7 +232,13 @@ class DesktopExampleTests(unittest.TestCase):
             "HARNEST_DESKTOP_TOKEN": "secret-token",
             "DESKTOP_ALLOWED_HOSTS": "",
         }
-        with patch.dict(os.environ, environment), patch("docker.from_env", return_value=client), patch.object(module, "_wait_ready"):
+        # Stub the import itself so this ownership test needs neither the
+        # optional Docker SDK nor a running Docker daemon.
+        with (
+            patch.dict(os.environ, environment),
+            patch.dict(sys.modules, {"docker": SimpleNamespace(from_env=lambda **_: client)}),
+            patch.object(module, "_wait_ready"),
+        ):
             owner = module.Desktop.start()
             self.assertEqual(len(created), 1)
             self.assertEqual(created[0][1]["name"], "harnest-desktop-alpha")
