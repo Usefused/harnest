@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.3.0](https://github.com/Usefused/harnest/compare/v1.2.0...v1.3.0) (2026-09-24)
 
 - Support client-created AG-UI threads, unique message IDs across turns, approval
   interrupts and client-tool resumes through the shared runtime. Forward client
@@ -11,9 +11,6 @@
 
 - Mark cron storage implementation private while preserving public `harnest.cron`
   contracts and compatibility with existing `harnest.cron_storage` imports.
-
-## [1.3.0](https://github.com/Usefused/harnest/compare/v1.2.0...v1.3.0) (2026-09-24)
-
 
 ### Features
 
