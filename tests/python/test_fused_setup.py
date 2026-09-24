@@ -58,6 +58,7 @@ class FusedSetupTests(unittest.TestCase):
     def test_multiple_specs_provision_one_pinned_standard_client(self):
         result = self.setup_client()
         config = json.loads(result.config_path.read_text())
+        self.assertNotIn("webhook_attachment", config)
         self.assertEqual(config["services"], {
             "crm": {"version": "2026-09", "select_all": True},
             "billing": {"version": "2026-09", "operations": ["listInvoices"]},
@@ -79,11 +80,6 @@ class FusedSetupTests(unittest.TestCase):
         result = self.setup_client(client)
         config = json.loads(result.config_path.read_text())
         self.assertEqual(config["webhook_attachment"], "slack-channel")
-
-    def test_webhook_attachment_defaults_to_absent(self):
-        result = self.setup_client()
-        config = json.loads(result.config_path.read_text())
-        self.assertNotIn("webhook_attachment", config)
 
     def test_generated_file_is_discovered_without_fused_package_or_cli(self):
         result = self.setup_client()

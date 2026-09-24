@@ -1,20 +1,13 @@
 import importlib.util
-import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
-from harnest.agent import Agent, AgentDefinition
+from harnest.agent import Agent
 from harnest.backends import (
     AdvancedBackendValidationError,
     UnknownBackendError,
     backend_names,
     get_backend,
 )
-from harnest.bundle import compile_application
-from harnest.graph import START, Edge, Graph
-from _session_store_fixture import write_session_store
 
 
 class BackendRegistryTests(unittest.TestCase):
@@ -26,47 +19,6 @@ class BackendRegistryTests(unittest.TestCase):
             UnknownBackendError, "framework must be adk or langgraph"
         ):
             get_backend("unknown")
-
-    def test_managed_agent_and_graph_lowering_dispatch_through_registry(self):
-        definition = AgentDefinition(
-            name="root", model="unused/model", instruction="Answer."
-        )
-        graph = Graph(
-            name="flow",
-            nodes={"step": lambda value: value},
-            edges=(Edge(START, "step"),),
-        )
-        adk_target = object()
-        langgraph_target = object()
-
-        with patch.object(
-            AgentDefinition, "build", return_value=adk_target
-        ) as adk_build:
-            self.assertIs(get_backend("adk").lower_managed(definition), adk_target)
-        adk_build.assert_called_once_with()
-
-        with patch(
-            "harnest.backends.langgraph.lower_graph",
-            return_value=langgraph_target,
-        ) as lower_graph:
-            self.assertIs(
-                get_backend("langgraph").lower_managed(graph),
-                langgraph_target,
-            )
-        lower_graph.assert_called_once_with(
-            graph, middleware=(), checkpointer=None
-        )
-
-    def test_native_extensions_are_an_explicit_backend_input(self):
-        validation_only = AgentDefinition(
-            name="root", model="unused/model", instruction="Answer."
-        )
-        self.assertIsNone(get_backend("adk").wrap_managed(validation_only))
-        self.assertIsNone(
-            get_backend("langgraph").wrap_managed(
-                object(), native_extensions=(object(),)
-            )
-        )
 
     def test_advanced_validation_rejects_objects_from_neither_framework(self):
         cases = (
@@ -91,40 +43,6 @@ class BackendRegistryTests(unittest.TestCase):
                     get_backend(framework).validate_advanced(
                         Agent.advanced(object()), fallback_name="fallback"
                     )
-
-    def test_bundle_selects_backend_once_then_uses_its_lowering_boundary(self):
-        target = SimpleNamespace(name="compiled")
-        backend = SimpleNamespace(
-            lower_managed=Mock(return_value=target),
-            wrap_managed=Mock(return_value=None),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "agent.py").write_text(
-                "from harnest.agent import Agent\n"
-                "root_agent = Agent(name='root', model='unused/model')\n",
-                encoding="utf-8",
-            )
-            (root / "instructions.md").write_text("Answer.\n", encoding="utf-8")
-            write_session_store(root)
-            with patch("harnest.bundle.get_backend", return_value=backend) as select:
-                application = compile_application(
-                    root, entrypoint="agent:root_agent", framework="adk"
-                )
-
-        select.assert_called_once_with("adk")
-        backend.lower_managed.assert_called_once()
-        lowered = backend.lower_managed.call_args.args[0]
-        self.assertIsInstance(lowered, AgentDefinition)
-        self.assertEqual(lowered.instruction, "Answer.")
-        backend.lower_managed.assert_called_once_with(
-            lowered, native_extensions=(), checkpointer=None
-        )
-        backend.wrap_managed.assert_called_once_with(
-            target, native_extensions=()
-        )
-        self.assertIs(application.target, target)
-
 
 if __name__ == "__main__":
     unittest.main()

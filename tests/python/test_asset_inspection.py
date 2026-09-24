@@ -91,132 +91,64 @@ def _mp4(
 
 
 class AssetInspectionTests(unittest.TestCase):
-    def test_inspects_supported_images(self):
+    def test_supported_formats_report_authoritative_metadata(self):
         cases = (
-            (_png(20, 10), "IMAGE/PNG", "image/png", (20, 10), 1),
-            (_png(20, 10, 3), "image/png", "image/png", (20, 10), 3),
-            (_jpeg(31, 17), "image/jpeg", "image/jpeg", (31, 17), 1),
-            (_gif(12, 9, 2), "image/gif", "image/gif", (12, 9), 2),
-            (_webp_lossless(24, 13), "image/webp", "image/webp", (24, 13), 1),
+            ("png", _png(20, 10), "IMAGE/PNG", {"width": 20, "height": 10, "frame_count": 1}),
+            ("apng", _png(20, 10, 3), "image/png", {"width": 20, "height": 10, "frame_count": 3}),
+            ("jpeg", _jpeg(31, 17), "image/jpeg", {"width": 31, "height": 17, "frame_count": 1}),
+            ("gif", _gif(12, 9, 2), "image/gif", {"width": 12, "height": 9, "frame_count": 2}),
+            ("webp", _webp_lossless(24, 13), "image/webp", {"width": 24, "height": 13, "frame_count": 1}),
+            ("pdf", b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n", "application/pdf", {"page_count": None}),
+            ("wav", _wav(2), "audio/wav", {"duration_seconds": 2, "channel_count": 1, "sample_rate_hz": 8_000}),
+            ("mp4-v0", _mp4(), "video/mp4", {"duration_seconds": 2, "width": 320, "height": 240}),
+            ("mp4-v1", _mp4(movie_header_version=1), "video/mp4", {"duration_seconds": 2, "width": 320, "height": 240}),
         )
-        for content, declared, expected, dimensions, frames in cases:
-            with self.subTest(expected=expected, dimensions=dimensions):
+        for name, content, declared, expected in cases:
+            with self.subTest(format=name):
                 metadata, concrete = inspect_asset(content, declared)
-                self.assertEqual(concrete, expected)
-                self.assertEqual((metadata.width, metadata.height), dimensions)
-                self.assertEqual(metadata.frame_count, frames)
+                self.assertEqual(concrete, declared.lower())
+                self.assertEqual({key: getattr(metadata, key) for key in expected}, expected)
 
-    def test_recognizes_pdf_without_guessing_page_count(self):
-        metadata, concrete = inspect_asset(
-            b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n",
-            "application/pdf",
-        )
-
-        self.assertEqual(concrete, "application/pdf")
-        self.assertIsNone(metadata.page_count)
-
-    def test_derives_wav_duration_and_channel_metadata(self):
-        metadata, concrete = inspect_asset(_wav(2), "audio/wav")
-
-        self.assertEqual(concrete, "audio/wav")
-        self.assertEqual(metadata.duration_seconds, 2)
-        self.assertEqual(metadata.channel_count, 1)
-        self.assertEqual(metadata.sample_rate_hz, 8_000)
-
-    def test_derives_mp4_duration_and_dimensions(self):
-        for version in (0, 1):
-            with self.subTest(version=version):
-                metadata, concrete = inspect_asset(
-                    _mp4(movie_header_version=version),
-                    "video/mp4",
-                )
-                self.assertEqual(concrete, "video/mp4")
-                self.assertEqual(metadata.duration_seconds, 2)
-                self.assertEqual((metadata.width, metadata.height), (320, 240))
-
-    def test_rejects_mp4_over_duration_and_pixel_ceilings(self):
+    def test_media_limits_reject_oversized_content(self):
         cases = (
-            (_mp4(duration=301_000), "duration limit"),
-            (_mp4(width=4_001, height=4_000), "pixel limit"),
+            (b"x" * (10 * 1024 * 1024 + 1), "image/png", "size limit"),
+            (_png(4_001, 4_000), "image/png", "pixel limit"),
+            (_wav(301, sample_rate=100), "audio/wav", "duration limit"),
+            (_mp4(duration=301_000), "video/mp4", "duration limit"),
+            (_mp4(width=4_001, height=4_000), "video/mp4", "pixel limit"),
         )
-        for content, error in cases:
-            with self.subTest(error=error):
-                with self.assertRaisesRegex(AssetInspectionError, error):
-                    inspect_asset(content, "video/mp4")
+        for content, declared, error in cases:
+            with self.subTest(declared=declared, error=error), self.assertRaisesRegex(AssetInspectionError, error):
+                inspect_asset(content, declared)
 
-    def test_fragmented_or_uninspectable_mp4_fails_closed(self):
+    def test_malformed_or_uninspectable_media_fails_closed(self):
+        duration_error = "^asset media duration could not be established$"
+        mp4_error = "duration could not be established|malformed"
         cases = (
-            _mp4(fragmented=True),
-            _mp4(timescale=0),
-            _mp4_box(b"ftyp", b"isom\0\0\0\0isom"),
-            b"\0\0\0\x18ftypisom" + b"\0" * 12,
+            ("fragmented", _mp4(fragmented=True), "video/mp4", mp4_error),
+            ("zero-timescale", _mp4(timescale=0), "video/mp4", mp4_error),
+            ("no-movie", _mp4_box(b"ftyp", b"isom\0\0\0\0isom"), "video/mp4", mp4_error),
+            ("mp3-duration", b"ID3\x04\0\0\0\0\0\0", "audio/mpeg", duration_error),
+            ("mp4-duration", b"\0\0\0\x18ftypisom" + b"\0" * 12, "video/mp4", duration_error),
+            ("webm-duration", b"\x1aE\xdf\xa3\x81\0", "video/webm", duration_error),
+            ("unknown", b"not an asset", "image/gif", "."),
+            ("short-png", b"\x89PNG\r\n\x1a\nshort", "image/png", "."),
+            ("empty-gif", b"GIF89a" + b"\0" * 7, "image/gif", "."),
+            ("incomplete-pdf", b"%PDF-1.7\nmissing trailer", "application/pdf", "."),
         )
-        for content in cases:
-            with self.subTest(size=len(content)):
-                with self.assertRaisesRegex(
-                    AssetInspectionError,
-                    "duration could not be established|malformed",
-                ):
-                    inspect_asset(content, "video/mp4")
+        for name, content, declared, error in cases:
+            with self.subTest(case=name), self.assertRaisesRegex(AssetInspectionError, error):
+                inspect_asset(content, declared)
 
-    def test_accepts_unknown_content_only_as_generic_binary(self):
-        metadata, concrete = inspect_asset(
-            b"private custom format\0\x01",
-            "application/octet-stream; charset=binary",
-        )
-
+    def test_declared_type_matches_bytes_without_disclosing_detected_type(self):
+        metadata, concrete = inspect_asset(b"private custom format\0\x01", "application/octet-stream; charset=binary")
         self.assertEqual(concrete, "application/octet-stream")
         self.assertIsNone(metadata.width)
-        with self.assertRaisesRegex(AssetInspectionError, "does not match"):
-            inspect_asset(_png(2, 2), "application/octet-stream")
-
-    def test_rejects_magic_byte_mismatch_without_echoing_values(self):
-        with self.assertRaisesRegex(
-            AssetInspectionError,
-            "^asset type does not match declared media type$",
-        ) as captured:
-            inspect_asset(_png(2, 2), "application/pdf")
-
-        self.assertNotIn("png", str(captured.exception))
-        self.assertNotIn("pdf", str(captured.exception))
-
-    def test_enforces_size_before_format_parsing(self):
-        with self.assertRaisesRegex(AssetInspectionError, "size limit"):
-            inspect_asset(b"x" * (10 * 1024 * 1024 + 1), "image/png")
-
-    def test_enforces_inspected_image_pixel_limit(self):
-        with self.assertRaisesRegex(AssetInspectionError, "pixel limit"):
-            inspect_asset(_png(4_001, 4_000), "image/png")
-
-    def test_enforces_inspected_media_duration_limit(self):
-        with self.assertRaisesRegex(AssetInspectionError, "duration limit"):
-            inspect_asset(_wav(301, sample_rate=100), "audio/wav")
-
-    def test_media_without_authoritative_duration_fails_closed(self):
-        cases = (
-            (b"ID3\x04\0\0\0\0\0\0", "audio/mpeg"),
-            (b"\0\0\0\x18ftypisom" + b"\0" * 12, "video/mp4"),
-            (b"\x1aE\xdf\xa3\x81\0", "video/webm"),
-        )
-        for content, declared in cases:
-            with self.subTest(declared=declared):
-                with self.assertRaisesRegex(
-                    AssetInspectionError,
-                    "^asset media duration could not be established$",
-                ):
-                    inspect_asset(content, declared)
-
-    def test_rejects_unknown_or_malformed_content(self):
-        cases = (
-            (b"not an asset", "image/gif"),
-            (b"\x89PNG\r\n\x1a\nshort", "image/png"),
-            (b"GIF89a" + b"\0" * 7, "image/gif"),
-            (b"%PDF-1.7\nmissing trailer", "application/pdf"),
-        )
-        for content, declared in cases:
-            with self.subTest(declared=declared):
-                with self.assertRaises(AssetInspectionError):
-                    inspect_asset(content, declared)
+        for declared in ("application/octet-stream", "application/pdf"):
+            with self.subTest(declared=declared), self.assertRaisesRegex(
+                AssetInspectionError, "^asset type does not match declared media type$"
+            ):
+                inspect_asset(_png(2, 2), declared)
 
 
 class AssetPolicyTests(unittest.TestCase):

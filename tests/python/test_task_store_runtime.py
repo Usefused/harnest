@@ -245,6 +245,7 @@ class ProviderCompilerTests(unittest.TestCase):
                 "def work():\n    return MemoryTaskStore()\n"
             )
             discovered = discover_extensions(lifecycle, framework="langgraph")
+            self.assertIs(discovered.session_store, discovered.checkpointer)
             self.assertIs(discovered.storage_registry.tasks, discovered.storage_registry.cron)
             self.assertEqual(len(discovered.storage_registry.owned_resources()), 2)
 

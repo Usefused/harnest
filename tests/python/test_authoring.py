@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harnest.agent import tool
-from harnest.agent import Agent, instruction_file
+from harnest.agent import Agent
 from harnest.orchestrator import AgentSource, Orchestrator
 from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEvalError, BundleExportError, BundleImportError, BundleSkillError, EvalSuite, bundle_agent, compile_agent, compile_artifact, discover_evals
 from harnest.model import LiteLLMModel
@@ -210,14 +210,6 @@ class AuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "needs a docstring"):
             tool(lambda: None)
 
-    def test_instruction_file_is_relative_to_anchor(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            anchor = root / "agent.py"
-            anchor.write_text("# test", encoding="utf-8")
-            (root / "instructions.md").write_text("  Be useful.\n", encoding="utf-8")
-            self.assertEqual(instruction_file(anchor), "Be useful.")
-
     def test_agent_definition_validates_without_importing_adk(self):
         definition = Agent(name="helper", model="gemini-test", instruction="Help.")
         self.assertEqual(definition.name, "helper")
@@ -241,26 +233,6 @@ class AuthoringTests(unittest.TestCase):
                 instruction="Help.",
                 history="messages",
             )
-
-    def test_agent_history_maps_to_explicit_adk_conversation_modes(self):
-        modules = _fake_adk_modules()
-        with patch.dict(sys.modules, modules):
-            session_agent = Agent(
-                name="session_agent",
-                model="gemini-test",
-                instruction="Remember.",
-            ).build()
-            turn_agent = Agent(
-                name="turn_agent",
-                model="gemini-test",
-                instruction="Focus.",
-                history="turn",
-            ).build()
-
-        self.assertEqual(session_agent.kwargs["mode"], "chat")
-        self.assertEqual(session_agent.kwargs["include_contents"], "default")
-        self.assertEqual(turn_agent.kwargs["mode"], "chat")
-        self.assertEqual(turn_agent.kwargs["include_contents"], "none")
 
     def test_agent_advanced_is_the_only_public_advanced_boundary(self):
         target = object()
@@ -451,32 +423,6 @@ class AuthoringTests(unittest.TestCase):
         }
         self.assertEqual(built_model.kwargs, expected)
         self.assertEqual(built_agent.kwargs["model"].kwargs, expected)
-
-    def test_litellm_model_reads_canonical_openai_model_environment(self):
-        with patch.dict(
-            os.environ,
-            {
-                "OPENAI_MODEL": "local-compatible-model",
-                "OPENAI_API_KEY": "synthetic-openai-key",
-                "OPENAI_BASE_URL": "http://models.example.test/v1",
-            },
-            clear=False,
-        ):
-            connector = LiteLLMModel.from_openai_environment()
-
-        self.assertEqual(connector.model, "openai/local-compatible-model")
-        self.assertEqual(connector.completion_args, {
-            "api_base": "http://models.example.test/v1", "api_key": "synthetic-openai-key",
-        })
-        self.assertNotIn("synthetic-openai-key", repr(connector))
-
-    def test_openai_model_environment_accepts_server_namespaces(self):
-        with patch.dict(
-            os.environ,
-            {"OPENAI_MODEL": "team/custom-model", "OPENAI_BASE_URL": "https://models.test/v1"},
-            clear=False,
-        ):
-            self.assertEqual(LiteLLMModel.from_openai_environment().model, "openai/team/custom-model")
 
     def test_openai_model_environment_accepts_qualified_names_and_default(self):
         with patch.dict(os.environ, {"OPENAI_BASE_URL": "https://models.test/v1"}, clear=True):

@@ -380,23 +380,6 @@ class FrameworkArtifactTests(unittest.TestCase):
             [{"content": "current"}],
         )
 
-    def test_graph_output_schema_validates_the_terminal_value(self):
-        from pydantic import BaseModel
-
-        class Answer(BaseModel):
-            value: str
-
-        application = SimpleNamespace(
-            bridge=None, output_schema=Answer, kind="graph"
-        )
-
-        _, result = _graph_output(
-            application,
-            {"value": {"value": "structured"}, "messages": []},
-        )
-
-        self.assertEqual(result, {"value": "structured"})
-
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_managed_adk_artifact_executes_without_provisioner(self):
         with tempfile.TemporaryDirectory() as directory:

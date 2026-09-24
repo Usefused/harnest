@@ -111,31 +111,19 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(_exporter_name("traces"), "none")
             self.assertEqual(_exporter_name("logs"), "otlp")
 
-    def test_default_http_spans_exclude_private_dynamic_identifiers(self):
-        app = SimpleNamespace(
-            router=SimpleNamespace(lifespan_context=lambda _app: None)
-        )
-        state = SimpleNamespace(enabled=True, tracer_provider=object())
-        target = "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app"
-        with patch.dict(os.environ, {}, clear=True), patch(target) as instrument:
-            instrument_fastapi(app, state)
-
-        excluded = instrument.call_args.kwargs["excluded_urls"]
-        self.assertIn("/sessions/.*", excluded)
-        self.assertIn("/responses/.*", excluded)
-        self.assertIn("/approvals/.*", excluded)
-        self.assertIn("/client-tools/.*", excluded)
-
-    def test_default_http_spans_never_export_response_poll_identifiers(self):
+    def test_default_http_spans_never_export_private_dynamic_identifiers(self):
         spans = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(spans))
         state = SimpleNamespace(enabled=True, tracer_provider=provider)
         app = FastAPI()
 
-        @app.get("/responses/{response_id}")
-        def response_status(response_id: str, sessionId: str):
-            return {"responseId": response_id, "sessionId": sessionId}
+        @app.get("/sessions/{private_id}")
+        @app.get("/responses/{private_id}")
+        @app.get("/approvals/{private_id}")
+        @app.get("/client-tools/{private_id}")
+        def private_status(private_id: str, sessionId: str):
+            return {"id": private_id, "sessionId": sessionId}
 
         @app.get("/safe")
         def safe_route():
@@ -145,13 +133,12 @@ class TelemetryTests(unittest.TestCase):
             instrument_fastapi(app, state)
         client = TestClient(app)
         try:
-            self.assertEqual(
-                client.get(
-                    "/responses/private-response-id",
-                    params={"sessionId": "private-session-id"},
-                ).status_code,
-                200,
-            )
+            for route in ("sessions", "responses", "approvals", "client-tools"):
+                with self.subTest(route=route):
+                    self.assertEqual(client.get(
+                        f"/{route}/private-{route}-id",
+                        params={"sessionId": "private-session-id"},
+                    ).status_code, 200)
             self.assertEqual(client.get("/safe").status_code, 200)
             provider.force_flush()
         finally:
@@ -164,8 +151,7 @@ class TelemetryTests(unittest.TestCase):
             default=str,
         )
         self.assertIn("/safe", exported)
-        self.assertNotIn("private-response-id", exported)
-        self.assertNotIn("private-session-id", exported)
+        self.assertNotIn("private-", exported)
 
     def test_manual_spans_and_logs_share_trace_context_and_export(self):
         spans = InMemorySpanExporter()

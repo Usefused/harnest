@@ -35,10 +35,9 @@ def _config(**overrides):
 
 
 class FusedChannelRegistrationTests(unittest.TestCase):
-    def test_importing_harnest_fused_registers_the_fused_extension(self):
-        self.assertIn("fused", registered_channel_adapters())
 
-    def test_create_channel_adapter_builds_from_plain_data(self):
+    def test_registered_adapter_builds_from_plain_data(self):
+        self.assertIn("fused", registered_channel_adapters())
         adapter = create_channel_adapter("fused", {
             "platform": "slack", "installation_id": "T1", "url": "https://engine.test/mcp",
             "reply_operation": "postMessage",
@@ -52,33 +51,27 @@ class FusedChannelRegistrationTests(unittest.TestCase):
 
 
 class FusedEventMappingTests(unittest.TestCase):
-    def test_resolves_dotted_paths_for_any_service_shape(self):
-        mapping = _mapping()
+    def test_adapter_maps_required_and_optional_event_fields(self):
         raw = {"event": {"id": "1", "type": "message", "user": "U1", "channel": "C1",
-                          "ts": "1700000000.1", "text": "hi", "thread_ts": "1700000000.0"}}
-        event = mapping.apply(platform="slack", installation_id="T1", raw=raw)
-        self.assertEqual((event.platform, event.installation_id, event.sender_id), ("slack", "T1", "U1"))
-        self.assertEqual((event.conversation_id, event.content, event.thread_id), ("C1", "hi", "1700000000.0"))
-        self.assertEqual(event.occurred_at, 1700000000.1)
+                         "ts": "1700000000.1", "text": "hi", "thread_ts": "1700000000.0"}}
+        for platform, installation, mapping, expected in (
+            ("slack", "T1", _mapping(), ("hi", "1700000000.0")),
+            ("teams", "T2", _mapping(content=None, thread_id=None), ("", None)),
+        ):
+            with self.subTest(platform=platform):
+                adapter = FusedChannelAdapter(_config(platform=platform, installation_id=installation, mapping=mapping))
+                event = adapter.normalize_event(raw)
+                self.assertEqual((event.platform, event.installation_id, event.sender_id), (platform, installation, "U1"))
+                self.assertEqual(event.conversation_id, "C1")
+                self.assertEqual((event.content, event.thread_id), expected)
+                self.assertEqual(event.occurred_at, 1700000000.1)
 
     def test_missing_required_field_raises_channel_error(self):
         with self.assertRaises(ChannelError):
             _mapping().apply(platform="slack", installation_id="T1", raw={"event": {"id": "1"}})
 
-    def test_optional_fields_are_absent_without_error(self):
-        mapping = _mapping(content=None, thread_id=None)
-        raw = {"event": {"id": "1", "type": "message", "user": "U1", "channel": "C1", "ts": "1.0"}}
-        event = mapping.apply(platform="teams", installation_id="T2", raw=raw)
-        self.assertEqual((event.content, event.thread_id), ("", None))
-
 
 class FusedChannelAdapterTests(unittest.TestCase):
-    def test_normalize_event_delegates_to_the_configured_mapping(self):
-        adapter = FusedChannelAdapter(_config())
-        raw = {"event": {"id": "1", "type": "message", "user": "U1", "channel": "C1", "ts": "1.0", "text": "hi"}}
-        event = adapter.normalize_event(raw)
-        self.assertEqual(event.platform, "slack")
-        self.assertEqual(event.installation_id, "T1")
 
     def test_send_reply_calls_the_configured_operation_deterministically(self):
         adapter = FusedChannelAdapter(_config())

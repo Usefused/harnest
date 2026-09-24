@@ -217,27 +217,6 @@ class MemoryAssetStoreTests(unittest.IsolatedAsyncioTestCase):
             await store.stat(scope=self.other_session, asset_id=other.asset_id)
         )
 
-    async def test_failed_stream_does_not_retain_reserved_capacity(self) -> None:
-        store = MemoryAssetStore(max_asset_bytes=8, max_total_bytes=8)
-
-        async def failing_stream():
-            yield b"secret"
-            raise RuntimeError("upstream failed")
-
-        with self.assertRaises(RuntimeError):
-            await store.save(
-                scope=self.scope,
-                media_type="text/plain",
-                chunks=failing_stream(),
-            )
-        record = await store.save(
-            scope=self.scope,
-            media_type="text/plain",
-            chunks=_chunks(b"12345678"),
-        )
-
-        self.assertEqual(record.size_bytes, 8)
-
     async def test_invalid_chunk_and_identifier_errors_do_not_expose_values(self) -> None:
         secret = "unique/secret/payload"
         store = MemoryAssetStore(
@@ -262,9 +241,9 @@ class MemoryAssetStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret, str(chunk_error.exception))
         self.assertNotIn(secret, str(identifier_error.exception))
 
-    async def test_upstream_stream_errors_are_sanitized(self) -> None:
+    async def test_failed_stream_sanitizes_errors_and_releases_capacity(self) -> None:
         secret = "stream-contained-secret"
-        store = MemoryAssetStore(max_asset_bytes=100, max_total_bytes=100)
+        store = MemoryAssetStore(max_asset_bytes=8, max_total_bytes=8)
 
         async def unsafe_stream():
             yield b"part"

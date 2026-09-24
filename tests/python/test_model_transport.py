@@ -88,21 +88,6 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_transport_bindings(borrowed), ())
         self.assertFalse(hasattr(borrowed, "__harnest_litellm_resources__"))
 
-    def test_only_explicit_transport_options_create_bindings(self):
-        """Generation-only options do not masquerade as owned transport choices."""
-
-        plain = LiteLLMModel("openai/agent-model", temperature=0).build()
-        self.assertEqual(model_transport_bindings(plain), ())
-        for key in (
-            "client", "api_base", "api_key", "api_version", "organization",
-            "extra_headers", "default_headers", "http_client",
-        ):
-            with self.subTest(option=key):
-                adapter = LiteLLMModel(
-                    "openai/agent-model", **{key: object()}
-                ).build()
-                self.assertEqual(len(model_transport_bindings(adapter)), 1)
-
     async def test_adk_eval_borrows_existing_controller_without_cleanup_ownership(self):
         """Agent and judge calls initialize one ADK transport and close it once."""
 
@@ -139,42 +124,6 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             lifecycle.requests,
             [("openai/agent-model", "adk", True), ("openai/judge-model", "adk", True)],
-        )
-
-    async def test_langgraph_eval_bridge_reuses_controller_and_original_owner(self):
-        """An ADK judge borrows the LangGraph controller rather than cloning it."""
-
-        lifecycle = _RecordingLifecycle()
-
-        async def complete(**kwargs):
-            """Observe the sentinel transport after the shared lifecycle hook."""
-
-            return {"same_transport": kwargs["client"] is lifecycle.transport}
-
-        with patch("litellm.acompletion", new=complete):
-            owner = LiteLLMModel(
-                "openai/agent-model", lifecycle=lifecycle
-            ).build_langgraph()
-            borrowed = model_transport_bindings(owner)[0].build_eval_model(
-                "openai/simulator-model"
-            )
-            await owner.client.acompletion(model=owner.model, messages=[], tools=[])
-            response = await borrowed.llm_client.acompletion(
-                model=borrowed.model, messages=[], tools=[]
-            )
-            await close_litellm_lifecycles(borrowed)
-            self.assertEqual(lifecycle.closed, 0)
-            await close_litellm_lifecycles(owner)
-
-        self.assertTrue(response["same_transport"])
-        self.assertEqual(lifecycle.created, 1)
-        self.assertEqual(lifecycle.closed, 1)
-        self.assertEqual(
-            lifecycle.requests,
-            [
-                ("openai/agent-model", "langgraph", True),
-                ("openai/simulator-model", "langgraph", True),
-            ],
         )
 
     async def test_propagation_deduplicates_bindings_and_cleanup_resources(self):
@@ -230,7 +179,13 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
 
             return "synthetic-token"
 
+        plain = LiteLLMModel("openai/agent-model", temperature=0).build()
+        self.assertEqual(model_transport_bindings(plain), ())
         options = {
+            "client": object(), "api_base": "https://synthetic.invalid/v1",
+            "api_key": "synthetic-key", "api_version": "synthetic-version",
+            "organization": "synthetic-org", "extra_headers": {},
+            "default_headers": {}, "http_client": object(),
             "azure_ad_token": "synthetic-token",
             "azure_ad_token_provider": token_provider,
             "ssl_verify": "/synthetic/ca.pem",
@@ -254,7 +209,7 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         for key, value in options.items():
             with self.subTest(option=key):
                 owner = LiteLLMModel("openai/agent-model", **{key: value}).build()
-                binding = model_transport_bindings(owner)[0]
+                binding, = model_transport_bindings(owner)
                 borrowed = binding.build_eval_model("openai/judge-model")
                 self.assertIs(borrowed._additional_args[key], value)
                 self.assertNotIn("synthetic", repr(binding))
@@ -326,6 +281,10 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lifecycle.closed, 0)
         await close_litellm_lifecycles(owner)
         self.assertEqual((lifecycle.created, lifecycle.closed), (1, 1))
+        self.assertEqual(lifecycle.requests, [
+            ("openai/agent-model", "langgraph", True),
+            ("openai/judge-model", "langgraph", True),
+        ])
 
     def test_langgraph_nested_credentials_preserve_top_level_precedence(self):
         """Explicit adapter credentials keep their existing conflict precedence."""

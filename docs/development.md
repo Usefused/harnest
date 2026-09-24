@@ -66,10 +66,18 @@ detail, schemas, examples, and background into linked `references/` files. The
 `skill-quality` gate enforces the word ceiling; reviewers enforce usefulness and
 action orientation.
 
-Every behavior change needs focused unit tests and an integration test when the
-change crosses a compiler/backend, process, transport, datastore, or framework
-boundary. Add an end-to-end test only when the behavior cannot be established at
-a smaller boundary or when a released user journey is at risk.
+Every behavior change needs focused coverage at the smallest boundary that can
+establish it. Use an integration test for compiler/backend, process, transport,
+datastore, or framework contracts. Add an end-to-end test only when the behavior
+cannot be established at a smaller boundary or when a released user journey is
+at risk.
+
+Extend an existing test when it already exercises the changed contract. Add a
+separate test for a distinct failure mode or behavior, not just another helper
+or layer on the same path. Prefer observable results over assertions about
+private wrapper shapes or mocked delegation. When removing overlapping tests,
+identify the retained test and preserve any unique assertions. Shared fixtures
+and tables should reduce maintenance; fewer test methods alone is not a goal.
 
 Every Python test module is assigned exactly one default tier in
 `tests/python/suites.json`. A narrow override may assign an individual class or

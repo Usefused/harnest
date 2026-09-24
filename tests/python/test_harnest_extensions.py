@@ -128,6 +128,7 @@ class HarnestExtensionTests(unittest.TestCase):
         declared = schema["properties"]["capabilities"]["items"]["enum"]
 
         self.assertEqual(set(declared), set(EXTENSION_CAPABILITIES))
+        self.assertTrue(all("." in value for value in declared))
 
     def test_incomplete_package_does_not_become_lifecycle_code(self):
         write(self.root / "extensions" / "broken" / "extension.py", "raise AssertionError('must not import')\n")

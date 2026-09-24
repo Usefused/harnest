@@ -343,25 +343,6 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                     framework="langgraph",
                 )
 
-    def test_discovers_the_required_session_store_factory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "extensions"
-            self._session_store(root)
-            result = discover_extensions(root, framework="adk")
-        self.assertIsInstance(result.session_store, InMemorySessionStore)
-        self.assertEqual(result.listeners, ())
-
-    def test_discovers_the_required_checkpoint_authority(self):
-        from harnest.checkpoint import MemoryStore
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self._session_store(root)
-
-            result = discover_extensions(root, framework="langgraph")
-
-        self.assertIsInstance(result.checkpointer, MemoryStore)
-
     def test_storage_namespace_assembles_distributed_contributions(self):
         """Compile independently placed storage factories into one typed registry."""
 
@@ -399,49 +380,13 @@ class ExtensionDiscoveryTests(unittest.TestCase):
 
             result = discover_extensions(root, framework="langgraph")
 
+        from harnest.checkpoint import MemoryStore
+
+        self.assertIsInstance(result.checkpointer, MemoryStore)
         self.assertIs(result.storage_registry.sessions, result.session_store)
         self.assertIs(result.storage_registry.checkpoints, result.checkpointer)
         self.assertEqual(set(result.storage_registry.assets), {"uploads"})
         self.assertEqual(set(result.storage_registry.custom), {"users"})
-
-    def test_stacked_storage_roles_instantiate_the_factory_once(self):
-        """Let one pool own multiple roles without hidden duplicate connections."""
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "state.py").write_text(
-                "from harnest import lifecycle\n"
-                "from harnest.store import MemoryStore\n"
-                "@lifecycle.storage.sessions\n"
-                "@lifecycle.storage.checkpoints\n"
-                "def state(): return MemoryStore()\n",
-                encoding="utf-8",
-            )
-
-            result = discover_extensions(root, framework="langgraph")
-
-        self.assertIs(result.session_store, result.checkpointer)
-
-    def test_new_and_legacy_storage_names_share_conflict_validation(self):
-        """Prevent aliases from bypassing uniqueness across authoring styles."""
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self._session_store(root)
-            (root / "assets.py").write_text(
-                "from harnest.assets import MemoryAssetStore\n"
-                "from harnest import lifecycle\n"
-                "@lifecycle.storage.assets(name='media')\n"
-                "def old(): return MemoryAssetStore()\n"
-                "@lifecycle.storage.assets('media')\n"
-                "def new(): return MemoryAssetStore()\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(
-                ExtensionDiscoveryError, "duplicate asset store names: media"
-            ):
-                discover_extensions(root, framework="adk")
 
     def test_custom_storage_names_are_unique_and_lifecycle_owned(self):
         """Require custom storage to support deterministic startup and cleanup."""
@@ -521,7 +466,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 "from harnest import lifecycle\n"
                 "@lifecycle.storage.assets(name='media')\n"
                 "def first(): return MemoryAssetStore()\n"
-                "@lifecycle.storage.assets(name='media')\n"
+                "@lifecycle.storage.assets('media')\n"
                 "def second(): return MemoryAssetStore()\n",
                 encoding="utf-8",
             )
@@ -685,15 +630,6 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 ExtensionDiscoveryError, "same ADKStore object"
             ):
                 discover_extensions(root, framework="adk")
-
-    def test_undecorated_public_helpers_are_ignored(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "extensions"
-            root.mkdir(parents=True)
-            self._session_store(root)
-            (root / "helpers.py").write_text("def parse(value): return value\n")
-            result = discover_extensions(root, framework="langgraph")
-        self.assertEqual(result.listeners, ())
 
     def test_runtime_resource_factory_is_discovered_without_invocation(self):
         with tempfile.TemporaryDirectory() as directory:

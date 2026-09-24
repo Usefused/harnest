@@ -4,22 +4,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from harnest.application import CompiledApplication
 from harnest.bundle import (
     BundleConventionError,
     _attach_advanced_native_extensions,
     compile_application,
 )
-from harnest.lifecycle import LifecycleListener
 from harnest.lifecycle_coverage import (
     CoverageLevel,
     LifecycleCoverage,
     lifecycle_coverage,
 )
 from harnest.lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
-from harnest.runtime import _runtime_driver
-from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
-from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.session import InMemorySessionStore
 
 
@@ -183,23 +178,6 @@ class ExtensionCompilerTests(unittest.TestCase):
             [plugin.name for plugin in result.native_app.plugins],
             ["existing", "discovered"],
         )
-
-    def test_runtime_adds_portable_wrapper(self):
-        callback = lambda _context, value: value
-        listener = LifecycleListener("before_invoke", callback, 0, "a.py", 1, "a")
-        application = CompiledApplication(
-            name="root",
-            framework="adk",
-            mode="managed",
-            target=object(),
-            lifecycle_extensions=(listener,),
-        )
-        raw_driver = Mock()
-        with patch("harnest.runtime_adk.ADKRuntimeDriver", return_value=raw_driver):
-            driver = _runtime_driver(application)
-        self.assertIsInstance(driver, LifecycleRuntimeDriver)
-        self.assertIsInstance(driver._driver, DynamicAgentPluginRuntimeDriver)
-        self.assertIs(driver._driver._driver, raw_driver)
 
     def test_advanced_mode_accepts_portable_extensions(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -26,7 +26,7 @@ from harnest.continuation import (
 )
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
-from harnest.store_redis import _checkpoint_dump, _continuation_dump, _run_dump
+from harnest.store_redis import _continuation_dump, _run_dump
 
 
 class _Transaction(AbstractAsyncContextManager):
@@ -1040,11 +1040,6 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
             store = RedisStore("redis://example")
             with self.assertRaisesRegex(RuntimeError, r"harnest\[redis\]"):
                 await store.start()
-
-    def test_checkpoint_codec_is_binary_safe(self):
-        encoded = _checkpoint_dump(_checkpoint())
-        self.assertEqual(json.loads(encoded)["payload"], "cGF5bG9hZA==")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -338,6 +338,7 @@ extension = TemporalExtension()
             descriptors = discover_extensions(root)
             first = activate_extensions(descriptors)
             second = activate_extensions(descriptors)
+            self.assertIs(first[0].module, second[0].module)
             first_manager = _manager(
                 first, release_namespaces_on_close=True
             )

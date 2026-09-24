@@ -81,20 +81,19 @@ class AuthoringErrorTests(unittest.TestCase):
             self.assertIn("_notes.md", message)
             self.assertEqual(_validate_namespace_file(path.with_name("_notes.md"), binding), 0)
 
-    def test_sandbox_missing_named_declaration_explains_safe_repair(self):
-        path = self.write("sandbox/backup.py", "# unused\n")
-        message = self.diagnostic(_discover_sandboxes, path.parent)
-        self.assertIn(str(path.parent), message)
-        self.assertIn("backup.py", message)
-        self.assertIn("must export 'backup'", message)
-        self.assertIn("lib/", message)
-        self.assertIn("Name the intended declaration 'backup'", message)
-
-    def test_sandbox_wrong_value_explains_required_assignment(self):
-        path = self.write("sandbox/sandbox.py", "sandbox = {}\n")
-        message = self.diagnostic(_discover_sandboxes, path.parent)
-        self.assertIn("got dict", message)
-        self.assertIn("sandbox = Sandbox.provider", message)
+    def test_invalid_sandbox_declarations_explain_the_required_export(self):
+        cases = (
+            ("backup", "# unused\n", ("must export 'backup'", "backup.py", "lib/", "Name the intended declaration 'backup'")),
+            ("sandbox", "sandbox = {}\n", ("got dict", "sandbox = Sandbox.provider")),
+        )
+        for name, source, expected in cases:
+            with self.subTest(source=source):
+                path = self.write(f"sandbox/{name}.py", source)
+                message = self.diagnostic(_discover_sandboxes, path.parent)
+                self.assertIn(str(path.parent), message)
+                for text in expected:
+                    self.assertIn(text, message)
+                path.unlink()
 
     def test_missing_export_explains_python_term_without_echoing_values(self):
         path = self.write("tools/search.py", "other = 'private-test-value'\n")
@@ -110,19 +109,17 @@ class AuthoringErrorTests(unittest.TestCase):
         self.assertIn("without spaces or hyphens", message)
         self.assertIn("search_customer.py", message)
 
-    def test_missing_nested_agent_names_the_file_to_create(self):
-        path = self.root / "subagents" / "researcher"
-        path.mkdir(parents=True)
-        message = self.diagnostic(_nested_subagent_entry, path)
-        self.assertIn(str(path / "agent.py"), message)
-        self.assertIn("_researcher", message)
-
-    def test_missing_skill_manifest_explains_case_and_location(self):
-        path = self.root / "skills" / "research"
-        path.mkdir(parents=True)
-        message = self.diagnostic(_validate_filesystem_directory, path)
-        self.assertIn(str(path / "SKILL.md"), message)
-        self.assertIn("skill.md", message)
+    def test_missing_directory_entrypoints_name_the_file_to_create(self):
+        for directory, operation, filename, repair in (
+            ("subagents/researcher", _nested_subagent_entry, "agent.py", "_researcher"),
+            ("skills/research", _validate_filesystem_directory, "SKILL.md", "skill.md"),
+        ):
+            with self.subTest(directory=directory):
+                path = self.root / directory
+                path.mkdir(parents=True)
+                message = self.diagnostic(operation, path)
+                self.assertIn(str(path / filename), message)
+                self.assertIn(repair, message)
 
     def test_eval_config_without_cases_explains_next_step(self):
         path = self.write("evals/test_config.json", "{}")

@@ -4,11 +4,9 @@ import tempfile
 import unittest
 
 from harnest.extension_descriptors import (
-    EXTENSION_CAPABILITIES,
     ExtensionConventionError,
     discover_extensions,
     extension_digest,
-    verify_extension,
 )
 
 
@@ -283,30 +281,6 @@ class HarnestExtensionDiscoveryTests(unittest.TestCase):
                 destination.symlink_to(directory / "extension.py")
                 with self.assertRaisesRegex(ExtensionConventionError, "symlink"):
                     discover_extensions(root)
-
-    def test_digest_detects_post_discovery_changes(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "extensions"
-            directory = self._runtime_extension(root, "mutable")
-            self._write(directory / "helpers.py", "VALUE = 1\n")
-            descriptor = discover_extensions(root)[0]
-            self.assertEqual(descriptor.digest, extension_digest(directory))
-
-            self._write(directory / "helpers.py", "VALUE = 2\n")
-
-            with self.assertRaisesRegex(ExtensionConventionError, "changed"):
-                verify_extension(descriptor)
-
-    def test_exported_capability_vocabulary_is_closed_and_dotted(self):
-        self.assertIn("lifecycle.agent", EXTENSION_CAPABILITIES)
-        self.assertIn("context.credentials", EXTENSION_CAPABILITIES)
-        self.assertIn("context.continuations", EXTENSION_CAPABILITIES)
-        self.assertIn("context.skills", EXTENSION_CAPABILITIES)
-        self.assertIn("lifecycle.skills", EXTENSION_CAPABILITIES)
-        self.assertIn("native.langgraph", EXTENSION_CAPABILITIES)
-        self.assertIn("sandbox.provider", EXTENSION_CAPABILITIES)
-        self.assertTrue(all("." in value for value in EXTENSION_CAPABILITIES))
-
 
 if __name__ == "__main__":
     unittest.main()

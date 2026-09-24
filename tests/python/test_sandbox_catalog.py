@@ -46,22 +46,6 @@ class SandboxCatalogTests(unittest.TestCase):
                 self.root / "agent.py", Agent(name="root", model="unused", sandboxes=names, **kwargs),
             )
 
-    def test_registry_presence_does_not_grant_any_sandbox(self):
-        definition = self.compose()
-        self.assertEqual(dict(definition._sandbox_bindings), {})
-        self.assertFalse(hasattr(definition, "sandbox"))
-
-    def test_multiple_grants_resolve_exact_names_in_authored_order(self):
-        definition = self.compose(["research", "calculations"])
-        self.assertEqual(tuple(definition._sandbox_bindings), ("research", "calculations"))
-        self.assertEqual(definition._sandbox_bindings["research"].metadata["profile"], "research")
-        self.assertNotIn("restricted", definition._sandbox_bindings)
-
-    def test_unknown_grant_explains_available_names_and_fails_closed(self):
-        with self.assertRaisesRegex(BundleConventionError, "unknown sandboxes: missing") as caught:
-            self.compose(["calculations", "missing"])
-        self.assertIn("Available names: calculations, research, restricted", str(caught.exception))
-
     def test_flat_children_require_their_own_assignments(self):
         self.write("subagents/worker.py", "from harnest.agent import Agent\nworker = Agent(name='worker', model='unused', instruction='Work.', sandboxes=['research'])\n")
         self.write("subagents/observer.py", "from harnest.agent import Agent\nobserver = Agent(name='observer', model='unused', instruction='Observe.')\n")
@@ -77,6 +61,7 @@ class SandboxCatalogTests(unittest.TestCase):
         definition = self.compose()
         self.assertEqual(tuple(definition.subagents[0]._sandbox_bindings), ("research", "private_work"))
         self.assertEqual(dict(definition._sandbox_bindings), {})
+        self.assertFalse(hasattr(definition, "sandbox"))
         with self.assertRaisesRegex(BundleConventionError, "unknown sandboxes: private_work"):
             self.compose(["private_work"])
 
@@ -90,14 +75,18 @@ class SandboxCatalogTests(unittest.TestCase):
     def test_inline_children_and_grandchildren_get_only_their_own_grants(self):
         grandchild = Agent(name="grandchild", model="unused", instruction="Work.", sandboxes=["research"])
         child = Agent(name="child", model="unused", instruction="Work.", subagents=[grandchild])
-        definition = self.compose(["calculations"], subagents=[child])
+        definition = self.compose(["research", "calculations"], subagents=[child])
+        self.assertEqual(tuple(definition._sandbox_bindings), ("research", "calculations"))
+        self.assertEqual(definition._sandbox_bindings["research"].metadata["profile"], "research")
+        self.assertNotIn("restricted", definition._sandbox_bindings)
         child = definition.subagents[0]
         self.assertEqual(dict(child._sandbox_bindings), {})
         self.assertEqual(tuple(child.subagents[0]._sandbox_bindings), ("research",))
 
     def test_failed_compilation_cannot_leak_catalog_to_next_project(self):
-        with self.assertRaises(BundleConventionError):
-            self.compose(["missing"])
+        with self.assertRaisesRegex(BundleConventionError, "unknown sandboxes: missing") as caught:
+            self.compose(["calculations", "missing"])
+        self.assertIn("Available names: calculations, research, restricted", str(caught.exception))
         other = self.root / "other"
         other.mkdir()
         (other / "agent.py").write_text("# anchor\n")

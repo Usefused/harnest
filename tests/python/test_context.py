@@ -15,7 +15,6 @@ from harnest.context import (
     activate_agent_scope,
     bind_resource,
     create_agent_context,
-    derive_agent_context,
     registration_for,
 )
 from harnest.client_tool import client_tool
@@ -111,27 +110,6 @@ class ContextAuthoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already bound"):
             bind_resource(active, "memory", object())
 
-    def test_subagent_context_derives_identity_without_copying_authority(self):
-        """Represent child execution as a scoped view rather than a new context type."""
-
-        active = create_agent_context(
-            framework="adk",
-            agent_name="root",
-            invocation_id="run-1",
-            user_id="user-1",
-            session_id="session-1",
-            metadata={},
-            resources={"memory": object()},
-        )
-        child = derive_agent_context(active, agent_name="researcher")
-
-        with activate_context(child):
-            self.assertEqual(context.agent_name, "researcher")
-            self.assertEqual(context.parent_agent_name, "root")
-            self.assertEqual(context.depth, 1)
-            self.assertFalse(context.is_root)
-            self.assertIs(context.resource("memory"), active.resource("memory"))
-
     def test_agent_scope_narrows_and_restores_the_active_identity(self):
         """Let framework callbacks identify a child without owning its authority."""
 
@@ -151,6 +129,7 @@ class ContextAuthoringTests(unittest.TestCase):
                 self.assertEqual(context.agent_name, "researcher")
                 self.assertEqual(context.parent_agent_name, "root")
                 self.assertEqual(context.depth, 1)
+                self.assertFalse(context.is_root)
                 self.assertIs(context.resource("memory"), active.resource("memory"))
             self.assertEqual(context.agent_name, "root")
             self.assertTrue(context.is_root)

@@ -11,7 +11,6 @@ from harnest.extensions import (
     ExtensionContextUnavailableError,
     ExtensionImportError,
     ExtensionNamespaceError,
-    ExtensionStartContext,
     activate_extensions,
     release_extensions,
     extension_namespaces,
@@ -157,39 +156,6 @@ class HarnestExtensionNamespaceTests(unittest.TestCase):
             with extension_namespaces(descriptors) as activated:
                 asyncio.run(exercise(activated[0].extension))
 
-    def test_base_start_and_stop_hooks_are_async_noops(self):
-        async def exercise(extension):
-            context = ExtensionStartContext(
-                extension_name="temporal",
-                framework="langgraph",
-                root_agent_name="root",
-                _custom_stores={},
-            )
-            self.assertIsNone(await extension.start(context))
-            self.assertIsNone(await extension.stop())
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "extensions"
-            self._extension(root, "temporal")
-            descriptors = discover_extensions(root)
-            with extension_namespaces(descriptors) as activated:
-                asyncio.run(exercise(activated[0].extension))
-
-    def test_same_extension_set_is_reference_counted(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "extensions"
-            self._extension(root, "shared")
-            descriptors = discover_extensions(root)
-            first = activate_extensions(descriptors)
-            second = activate_extensions(descriptors)
-            try:
-                self.assertIs(first[0].module, second[0].module)
-                release_extensions(descriptors)
-                self.assertIn("harnest.extensions.shared", sys.modules)
-            finally:
-                release_extensions(descriptors)
-            self.assertNotIn("harnest.extensions.shared", sys.modules)
-
     def test_competing_extension_sets_cannot_share_one_process(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -258,8 +224,10 @@ class HarnestExtensionNamespaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "extensions"
             directory = self._extension(root, "mutable")
+            self._write(directory / "helpers.py", "VALUE = 1\n")
             descriptors = discover_extensions(root)
-            self._write(directory / "extension.py", "extension = object()\n")
+            # Imported helpers are part of the sealed extension, too.
+            self._write(directory / "helpers.py", "VALUE = 2\n")
 
             with self.assertRaisesRegex(ExtensionConventionError, "changed"):
                 activate_extensions(descriptors)

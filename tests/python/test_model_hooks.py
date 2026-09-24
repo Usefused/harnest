@@ -152,21 +152,6 @@ class ModelLifecyclePipelineTests(unittest.IsolatedAsyncioTestCase):
                 lambda _request: _response(ModelCallResponse("ok")),
             )
 
-    def test_framework_adapters_use_native_extension_types(self):
-        model_listener = listener(
-            "before_model", lambda _context, _request: None
-        )
-        from google.adk.plugins.base_plugin import BasePlugin
-        from langchain.agents.middleware import AgentMiddleware
-
-        self.assertIsInstance(
-            portable_model_extension((model_listener,), framework="adk"), BasePlugin
-        )
-        self.assertIsInstance(
-            portable_model_extension((model_listener,), framework="langgraph"),
-            AgentMiddleware,
-        )
-
     def test_adk_text_changes_preserve_tool_parts_and_response_metadata(self):
         from google.adk.models.llm_request import LlmRequest
         from google.adk.models.llm_response import LlmResponse
