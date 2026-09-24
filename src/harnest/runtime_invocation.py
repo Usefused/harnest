@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -16,7 +16,7 @@ from .agent_principal import (
     AgentRuntimePrincipal,
     validate_agent_principal_runtime,
 )
-from .agent.approval import InMemoryApprovalStore
+from .agent.approval import ApprovalRun, InMemoryApprovalStore
 from .assets import AssetScope, AssetStore
 from .client_tool import InMemoryClientToolStore
 from .checkpoint import RunRecord
@@ -240,14 +240,16 @@ class InvocationCoordinator:
         request: InvocationRequest,
         *,
         encoder: Callable[[str, Mapping[str, Any]], str] | None = None,
+        continuation: tuple[ApprovalRun, Callable[[], Awaitable[None]]] | None = None,
     ) -> AsyncIterator[str]:
-        """Reserve a response and share execution policy across wire formats."""
+        """Reserve new work or stream an existing continuation through one runner."""
 
         from .runtime_sse import stream_response
 
         # Reserve before returning the iterator so capacity errors remain HTTP
         # errors rather than failures after streaming headers have been sent.
-        self.begin_response(request)
+        if continuation is None:
+            self.begin_response(request)
         return stream_response(
             store=self.approvals,
             client_tools=self.client_tools,
@@ -261,6 +263,7 @@ class InvocationCoordinator:
             response_statuses=self.response_statuses,
             external_continuations=self.external_continuations,
             encoder=encoder,
+            continuation=continuation,
         )
 
     async def invoke_json(self, request: InvocationRequest) -> dict[str, Any]:

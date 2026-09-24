@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Callable, Mapping
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
 from starlette.exceptions import HTTPException
 
@@ -249,8 +249,9 @@ async def stream_response(
     response_statuses: InMemoryResponseStatusStore | None = None,
     external_continuations: Any | None = None,
     encoder: Callable[[str, Mapping[str, Any]], str] | None = None,
+    continuation: tuple[ApprovalRun, Callable[[], Awaitable[None]]] | None = None,
 ) -> AsyncIterator[str]:
-    """Run the common response lifecycle, encoding only at the transport boundary."""
+    """Stream new or resumed work under the same capacity and failure policy."""
 
     encode = encoder or sse
     sequence = 0
@@ -265,7 +266,7 @@ async def stream_response(
         },
     )
     sequence += 1
-    run = start_approval_run(
+    run = continuation[0] if continuation is not None else start_approval_run(
         store,
         client_tools,
         driver,
@@ -274,8 +275,14 @@ async def stream_response(
         external_continuations=external_continuations,
     )
     deadline = asyncio.get_running_loop().time() + request_timeout
+    activated = continuation is None
     try:
         async with semaphore:
+            if continuation is not None:
+                # Validate and deliver only after capacity is acquired. A
+                # rejected duplicate must not cancel the accepted consumer.
+                await continuation[1]()
+                activated = True
             run.activation.set()
             async for frame in _sse_run_frames(
                 run,
@@ -290,6 +297,8 @@ async def stream_response(
             ):
                 yield frame
     except asyncio.CancelledError:
+        if not activated:
+            raise
         store.cancel_run(run)
         _record_response_status(
             response_statuses,
@@ -309,6 +318,9 @@ async def stream_response(
         )
         raise
     except Exception as exc:
+        if not activated:
+            yield encode("error", {"error": str(exc)})
+            return
         # Encoder failures must stop driver work just like execution failures.
         store.cancel_run(run)
         failed = {
@@ -360,14 +372,9 @@ async def _sse_run_frames(
     """Yield incremental frames until the run completes or suspends."""
 
     sequence = start_sequence
-    events: list[RuntimeEvent] = []
     while True:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        kind, value = await next_run_boundary(run, timeout=remaining)
+        kind, value = await _next_stream_boundary(run, deadline=deadline)
         if kind == "event":
-            events.append(value)
             frame = stream_frame(
                 value,
                 sequence=sequence,
@@ -462,9 +469,11 @@ async def _sse_run_frames(
             response_id=response_id,
             session_id=session_id,
             sequence=sequence,
-            events=events,
+            events=value.events,
             text=value.text,
-            metadata=metadata,
+            # Resumed streams carry the original invocation's metadata, not
+            # the empty transport envelope used to identify the continuation.
+            metadata=value.metadata,
             result=value.result,
         )
         _record_response_status(
@@ -479,6 +488,28 @@ async def _sse_run_frames(
             status,
         )
         return
+
+
+def _resolved_notification(kind: str, value: Any) -> bool:
+    """Skip a queued wait announcement already resolved by a batch resume."""
+
+    if kind == "approval":
+        return value.status != "pending"
+    if kind == "client_tool":
+        return value.future.done()
+    return False
+
+
+async def _next_stream_boundary(run: ApprovalRun, *, deadline: float) -> tuple[str, Any]:
+    """Drain resolved parallel wait announcements without extending the timeout."""
+
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        kind, value = await next_run_boundary(run, timeout=remaining)
+        if not _resolved_notification(kind, value):
+            return kind, value
 
 
 def _record_response_status(

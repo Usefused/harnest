@@ -1032,7 +1032,20 @@ def _event_items(
     items.extend(_function_response_items(event))
     items.extend(_agent_metadata_items(event, output_policy))
     items.extend(_agent_action_items(event))
+    items.extend(_authored_state_items(event))
     return items
+
+
+def _authored_state_items(event: Any) -> list[dict[str, Any]]:
+    """Publish portable graph state without forwarding native session internals."""
+
+    metadata = getattr(event, "custom_metadata", None)
+    if not isinstance(metadata, Mapping):
+        return []
+    delta = metadata.get("harnest.state_delta")
+    if not isinstance(delta, Mapping) or not delta:
+        return []
+    return [{"type": "state_delta", "delta": dict(delta)}]
 
 
 def _content_items(

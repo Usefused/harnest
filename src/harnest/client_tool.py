@@ -79,6 +79,7 @@ class PendingClientTool:
     run: ApprovalRun = field(repr=False)
     future: asyncio.Future[Any] = field(repr=False)
     submitting: bool = field(default=False, repr=False)
+    agui_tool_call_id: str | None = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
         """Return the client-safe fields required to execute this tool call."""
@@ -292,6 +293,28 @@ class InMemoryClientToolStore:
         """Return the live invocation waiting for a client tool result."""
 
         return pending.run
+
+    def pending_for(self, *, user_id: str, session_id: str) -> list[PendingClientTool]:
+        """Resolve live client calls without revealing another session's work."""
+
+        with self._lock:
+            return [
+                pending for pending in self._items.values()
+                if pending.user_id == user_id and pending.session_id == session_id
+                and not pending.future.done()
+            ]
+
+    def cancel(self, request_id: str, *, user_id: str) -> PendingClientTool:
+        """Deliver a caller cancellation through the same one-time authority gate."""
+
+        pending = self._reserve_submission(request_id, user_id)
+        try:
+            pending.run._accept_resume_authority()
+            pending.future.set_exception(ClientToolError("client tool was cancelled"))
+        finally:
+            self._release_submission(pending)
+        _audit(pending.name, "cancelled", trigger="user", outcome="cancelled")
+        return pending
 
 
 @dataclass(frozen=True, slots=True)

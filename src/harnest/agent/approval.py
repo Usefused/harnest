@@ -353,6 +353,17 @@ class InMemoryApprovalStore:
             waiter = self._waiters.get(pending.id)
             return None if waiter is None else waiter.run
 
+    def pending_for(self, *, user_id: str, session_id: str) -> list[PendingApproval]:
+        """Expose only live challenges owned by this principal and session."""
+
+        with self._lock:
+            return [
+                waiter.pending for waiter in self._waiters.values()
+                if waiter.pending.user_id == user_id
+                and waiter.pending.session_id == session_id
+                and waiter.pending.status == "pending"
+            ]
+
     def assert_consumed(self, pending: PendingApproval) -> None:
         """Require resumed execution to have reached the approved action."""
 

@@ -1335,10 +1335,12 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 self, graph_input, *, config, stream_mode, durability=None
             ):
                 del graph_input, config, stream_mode, durability
-                yield "messages", (
-                    _Message("com"),
-                    {"langgraph_node": "worker"},
-                )
+                progress = _Message("Progress.")
+                progress.id = "progress"
+                yield "messages", (progress, {"langgraph_node": "worker"})
+                reply = _Message("com")
+                reply.id = "reply"
+                yield "messages", (reply, {"langgraph_node": "worker"})
                 yield "values", {
                     "messages": [_Message("complete", name="worker")],
                     "value": "complete",

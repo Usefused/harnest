@@ -636,6 +636,27 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.driver.close()
 
+    async def test_authored_graph_state_streams_without_native_bookkeeping(self):
+        """Only explicitly authored portable state crosses the UI boundary."""
+
+        def answer(_value):
+            return Event(output="done", state_delta={"visible": 42})
+
+        graph = Graph(name="state_ui", nodes={"answer": answer}, edges=(Edge(START, "answer"),))
+        target = graph.build()
+        driver = ADKRuntimeDriver(CompiledApplication(
+            name=graph.name, framework="adk", mode="managed", kind="graph",
+            target=target, native_app=App(name=graph.name, root_agent=target),
+        ))
+        try:
+            await driver.create_session(session_id="state", user_id="test-user", state={})
+            events = [event async for event in driver.stream(_request("state"))]
+        finally:
+            await driver.close()
+        self.assertEqual([e["delta"] for e in events if e["type"] == "state_delta"], [{"visible": 42}])
+        internal = ADKEvent(author="agent", actions=EventActions(state_delta={"private": "secret"}))
+        self.assertFalse(any(e["type"] == "state_delta" for e in _ADKEventNormalizer().feed(internal)))
+
     async def test_implements_contract_and_owns_session_crud(self):
         self.assertIsInstance(self.driver, RuntimeDriver)
         self.assertEqual(self.driver.info.name, "Test card")

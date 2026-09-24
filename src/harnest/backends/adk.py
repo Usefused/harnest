@@ -18,6 +18,8 @@ def _adk_route(route: Any) -> Any:
 
 
 def _adk_event(value: Event) -> Any:
+    """Preserve authored state provenance separately from ADK's internal actions."""
+
     from google.adk.events import Event as AdkEvent
     from google.adk.events import EventActions
     from google.genai import types
@@ -35,6 +37,9 @@ def _adk_event(value: Event) -> Any:
         )
     if value.state_delta:
         kwargs["actions"] = EventActions(state_delta=dict(value.state_delta))
+        # ADK adds private bookkeeping to actions.state_delta. Only this
+        # explicitly authored copy is safe to project into public UI events.
+        kwargs["custom_metadata"] = {"harnest.state_delta": dict(value.state_delta)}
     return AdkEvent(**kwargs)
 
 

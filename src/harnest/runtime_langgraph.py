@@ -111,6 +111,7 @@ _NO_ORDINARY_CONTENT = object()
 class _StreamState:
     final_state: Any = None
     text: str = ""
+    text_message_id: str | None = None
     tools: set[tuple[Any, ...]] = field(default_factory=set)
     active_agents: set[str] = field(default_factory=set)
     active_task_counts: dict[str, int] = field(default_factory=dict)
@@ -1482,7 +1483,7 @@ def _langgraph_stream_message_events(
         # Included narration is public but is not part of the canonical reply
         # used to reconcile the graph's final values event.
         if not has_tool_calls:
-            state.text += content
+            _record_stream_text(message, content, state)
         events.append(
             _with_langgraph_agent(
                 {"type": "message", "role": "assistant", "text": content}, agent
@@ -1497,6 +1498,18 @@ def _langgraph_stream_message_events(
         agent=agent,
     )
     return events
+
+
+def _record_stream_text(message: Any, content: str, state: _StreamState) -> None:
+    """Reconcile the final reply against its chunks, excluding earlier messages."""
+
+    identity = getattr(message, "id", None)
+    if identity is not None and identity != state.text_message_id:
+        # Graph nodes can emit separate complete messages in one run. Combining
+        # their text makes final-value reconciliation publish the last one twice.
+        state.text = ""
+        state.text_message_id = identity
+    state.text += content
 
 
 def _append_stream_metadata(
@@ -1635,6 +1648,8 @@ def _final_stream_events(
     *,
     turn_start: int,
 ) -> list[dict[str, Any]]:
+    """Emit only missing terminal text, then tools, metadata and structured output."""
+
     final_text, public_result = _graph_output(
         application, state.final_state, turn_start=turn_start
     )

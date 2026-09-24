@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support client-created AG-UI threads, unique message IDs across turns, approval
+  interrupts and client-tool resumes through the shared runtime. Forward client
+  state and context, stream authored ADK graph state, and preserve structured
+  results and external-wait status. Resume live interactions without reacquiring
+  their held session lease. Include a runnable CopilotKit compatibility demo.
+- Avoid duplicating the final LangGraph reply after multiple streamed messages.
+
 - Mark cron storage implementation private while preserving public `harnest.cron`
   contracts and compatibility with existing `harnest.cron_storage` imports.
 
