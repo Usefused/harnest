@@ -13,6 +13,8 @@
   session-aware Jev-gated desktop tools, DeepSeek environment defaults and dedicated
   key selection, unrestricted HTTP(S) browsing by default, an optional host list
   and noVNC viewer, and a Streamable HTTP MCP endpoint.
+- Preserve safe task-runtime diagnostics in `harnest run` so storage and worker
+  failures report their cause instead of only `TaskRuntimeError`.
 
 - Mark cron storage implementation private while preserving public `harnest.cron`
   contracts and compatibility with existing `harnest.cron_storage` imports.

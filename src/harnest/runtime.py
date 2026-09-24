@@ -1376,7 +1376,9 @@ async def _run_local_application(application: Any, args: Any, message: str) -> N
 
 
 def _run_command(args: Any) -> int:
-    """Invoke a positional or stdin message and preserve shell cancellation semantics."""
+    """Invoke one message, retaining safe task diagnostics and shell cancellation."""
+
+    from .runtime_task import TaskRuntimeError
 
     try:
         if not _compiled_cli_enabled(args.artifact):
@@ -1391,6 +1393,11 @@ def _run_command(args: Any) -> int:
         asyncio.run(_run_local_artifact(args, message))
     except KeyboardInterrupt:
         return 130
+    except TaskRuntimeError as exc:
+        # Task boundaries already sanitize provider failures; hiding their text
+        # loses actionable storage and worker diagnostics without adding privacy.
+        print(f"harnest-agent: {exc}", file=sys.stderr)
+        return 1
     except (AgentRuntimeError, ImportError, OSError, TypeError, ValueError) as exc:
         print(f"harnest-agent: {exc}", file=sys.stderr)
         return 2
