@@ -161,7 +161,14 @@ class InMemoryClientToolStore:
         run.notifications.put_nowait(("client_tool", pending))
         try:
             result = await asyncio.wait_for(pending.future, timeout=timeout_seconds)
-            return result.take() if private_input else result
+            if private_input:
+                # Python 3.11 wait_for can return a completed future even when
+                # this task was cancelled. Never transfer private input then.
+                owner = asyncio.current_task()
+                if owner is not None and owner.cancelling():
+                    raise asyncio.CancelledError
+                return result.take()
+            return result
         except asyncio.TimeoutError as exc:
             _audit(name, "expired", trigger="agent", outcome="failed")
             raise ClientToolError(f"client tool {name!r} timed out") from exc

@@ -161,7 +161,7 @@ class PrivateInputTests(unittest.IsolatedAsyncioTestCase):
                 await store.submit(pending.id, user_id="alice", output={"credential": SECRET})
                 delivery = pending.future.result()
                 if mode == "cancel":
-                    task.cancel()
+                    self.assertTrue(task.cancel())
                 with self.assertRaises((ClientToolError, asyncio.CancelledError)) as rejected:
                     await task
                 self.assertIsNone(rejected.exception.__context__)
