@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Align internal Fused and Threadify package dependencies with Harnest `>=1.0.0,<2`.
+
 ## [1.3.0](https://github.com/Usefused/harnest/compare/v1.2.0...v1.3.0) (2026-09-24)
 
 - Support client-created AG-UI threads, unique message IDs across turns, approval
