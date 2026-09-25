@@ -61,10 +61,13 @@ packages join only the profiles that need them. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. The explicit sync command maintains a `.venv`
 link for IDE discovery when that path is absent or already Harnest-owned. It
-also adds `${workspaceFolder}/.venv/bin/python` to VS Code's
-`.vscode/settings.json` when no interpreter is selected there. It preserves
-existing VS Code choices and user-owned `.venv` paths, and prints the exact
-managed interpreter as a fallback. Upgrade Harnest to change framework versions.
+also adds `${workspaceFolder}/.venv/bin/python` to the shared
+`.vscode/settings.json` used by VS Code, Antigravity IDE, Windsurf, and the
+Codex IDE extension's host editor when no interpreter is selected there. It
+preserves existing editor choices and user-owned `.venv` paths, and prints the
+exact managed interpreter as a fallback. Codex desktop, Codex CLI, and
+Antigravity 2.0 can run `.venv/bin/python` directly. Upgrade Harnest to change
+framework versions.
 Harnest Extensions use this same interpreter and dependency set. Agent Plugin
 MCP servers may use separate runtimes; their mutable dependencies and caches
 belong in client-managed `PLUGIN_DATA`, not the immutable plugin source.

@@ -11,7 +11,7 @@ import (
 
 const vscodeInterpreterKey = "python.defaultInterpreterPath"
 
-// syncVSCodeInterpreterSettings selects Harnest's stable IDE link without replacing editor choices.
+// syncVSCodeInterpreterSettings selects Harnest's stable link for VS Code-compatible editors.
 func syncVSCodeInterpreterSettings(project string) (string, error) {
 	directory := filepath.Join(project, ".vscode")
 	if err := ensureRegularPrivateDirectory(directory, "VS Code settings directory"); err != nil {

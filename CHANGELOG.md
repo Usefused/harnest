@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Reclaim old, unleased agent environments before short CLI commands exit, and
-  add the managed `.venv` interpreter to VS Code workspace settings on `env sync`
+  add the managed `.venv` interpreter to VS Code-compatible workspace settings
+  on `env sync` for VS Code, Antigravity IDE, Windsurf, and Codex's IDE extension
   while preserving existing editor preferences.
 - Keep desktop-example browser routing aware of the agent's last reply so Jev
   recognizes short confirmations after idle periods, and avoid presenting direct

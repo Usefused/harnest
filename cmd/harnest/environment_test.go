@@ -302,6 +302,9 @@ func mustSyncAgentEnvironment(
 	if !strings.Contains(stdout, "Agent environment ready:") {
 		t.Fatalf("unexpected sync output %q", stdout)
 	}
+	if !strings.Contains(stdout, "VS Code-compatible editor settings:") {
+		t.Fatalf("sync did not report shared editor settings: %q", stdout)
+	}
 	return stdout
 }
 

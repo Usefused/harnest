@@ -72,10 +72,10 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 			fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
 			settingsPath, err := syncVSCodeInterpreterSettings(bundle.Directory)
 			if err != nil {
-				fmt.Fprintf(command.ErrOrStderr(), "VS Code settings unchanged: %v\n", err)
+				fmt.Fprintf(command.ErrOrStderr(), "VS Code-compatible editor settings unchanged: %v\n", err)
 				return nil
 			}
-			fmt.Fprintf(command.OutOrStdout(), "VS Code settings: %s\n", settingsPath)
+			fmt.Fprintf(command.OutOrStdout(), "VS Code-compatible editor settings: %s\n", settingsPath)
 			return nil
 		},
 	}

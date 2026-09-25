@@ -95,10 +95,14 @@ environment for their complete execution lifetime. Once a replacement is
 published, Harnest removes older unleased fingerprints before the command exits;
 an overlapping command keeps its environment until that lease is released. An
 IDE-linked environment is also retained until `harnest env sync` retargets the
-link. That command writes `python.defaultInterpreterPath` to VS Code's
-`.vscode/settings.json` when no explicit interpreter choice exists. VS Code uses
-this default only before it has selected an interpreter for that workspace;
-select `.venv/bin/python` once in an already-open workspace if needed.
+link. That command writes `python.defaultInterpreterPath` to the shared
+`.vscode/settings.json` used by VS Code-compatible editors, including Antigravity
+IDE and Windsurf, and by the Codex IDE extension's host editor. It preserves an
+explicit interpreter choice. The Python extension uses this default only before
+it has selected an interpreter for that workspace; select `.venv/bin/python`
+once in an already-open workspace if needed. Codex desktop, Codex CLI, and
+Antigravity 2.0 are separate agent applications; their terminal commands can use
+`.venv/bin/python` but do not inherit a VS Code interpreter setting.
 
 Rerunning the installer upgrades the managed runtime from the new executable
 before atomically replacing the installed executable. For a review-first
