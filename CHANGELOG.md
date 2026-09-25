@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.4.1](https://github.com/Usefused/harnest/compare/v1.4.0...v1.4.1) (2026-09-25)
 
 - Reclaim old, unleased agent environments before short CLI commands exit, and
   add the managed `.venv` interpreter to VS Code-compatible workspace settings
@@ -9,9 +9,6 @@
 - Keep desktop-example browser routing aware of the agent's last reply so Jev
   recognizes short confirmations after idle periods, and avoid presenting direct
   answers as a temporary desktop outage.
-
-## [1.4.1](https://github.com/Usefused/harnest/compare/v1.4.0...v1.4.1) (2026-09-25)
-
 
 ### Fixes
 
