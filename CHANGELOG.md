@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow official extension publishing to skip wheels already on PyPI when a
+  release is retried or tagged after manual publication.
 - Align internal Fused and Threadify package dependencies with Harnest `>=1.0.0,<2`.
 
 ## [1.3.0](https://github.com/Usefused/harnest/compare/v1.2.0...v1.3.0) (2026-09-24)

@@ -189,6 +189,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
+          # Manual releases and later tags can refer to the same immutable wheel.
+          skip-existing: true
 
   publish-hatchet:
     name: Publish Hatchet extension
@@ -212,6 +214,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
+          # Manual releases and later tags can refer to the same immutable wheel.
+          skip-existing: true
 
   publish-rag:
     name: Publish RAG extension
@@ -235,3 +239,5 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
+          # Manual releases and later tags can refer to the same immutable wheel.
+          skip-existing: true

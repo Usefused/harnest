@@ -165,6 +165,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 )
             )
             self.assertNotIn("password", publish_step.get("with", {}))
+            self.assertTrue(publish_step["with"]["skip-existing"])
         self.assertIn('GITHUB_REF}" != "refs/heads/main', scripts)
         self.assertIn('tag_version}" != "${project_version}', scripts)
         self.assertIn(
