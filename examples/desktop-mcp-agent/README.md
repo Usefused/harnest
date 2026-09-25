@@ -6,8 +6,9 @@ Chrome runs on a virtual X11 display, so no physical monitor is needed. The
 agent uses Playwright for navigation and desktop tools for screenshots, clicks,
 typing, and keys. Jev decides whether each request should use those tools. A
 separate Streamable HTTP MCP server exposes the running agent through `ask_agent`.
-Jev sees the two previous user requests from the same session so brief follow-ups,
-such as new dates for a flight search, keep their context.
+Jev sees the two previous user requests and the last agent reply from the same
+session. Brief follow-ups, including date changes and confirmations of a
+proposed browser action, retain their context after the Playground sits idle.
 
 ## What you need
 

@@ -2,6 +2,9 @@
 
 ## [1.4.0](https://github.com/Usefused/harnest/compare/v1.3.0...v1.4.0) (2026-09-25)
 
+- Keep desktop-example browser routing aware of the agent's last reply so Jev
+  recognizes short confirmations after idle periods, and avoid presenting direct
+  answers as a temporary desktop outage.
 - Add `@client_input` for one-time private client payloads consumed only by
   application code, with a separately authored model response and explicit
   AG-UI interrupts that keep input out of transcript tool results. Discard

@@ -12,6 +12,7 @@ DESKTOP_TOOLS = frozenset({
 })
 RECENT_REQUEST_LIMIT = 2
 RECENT_REQUEST_LENGTH = 1500
+LAST_REPLY_LENGTH = 2000
 _decision: ContextVar[tuple[str, bool] | None] = ContextVar("browser_use_decision", default=None)
 
 
@@ -22,12 +23,17 @@ async def decide_browser_use(lifecycle_context, request):
         raise ValueError("Jev browser routing requires a non-empty text request")
     session = context.session.namespace("browser_routing")
     stored = await session.get("recent_user_requests", [])
+    last_reply = await session.get("last_agent_reply", "")
     prior = (
         [item for item in stored[-RECENT_REQUEST_LIMIT:] if isinstance(item, str)]
         if isinstance(stored, list) else []
     )
     evaluation = await context.decisions.evaluate(
-        "browser_use", {"request": request.input[:8000], "prior_user_requests": prior}
+        "browser_use", {
+            "request": request.input[:8000],
+            "prior_user_requests": prior,
+            "last_agent_reply": last_reply if isinstance(last_reply, str) else "",
+        }
     )
     if evaluation.error is not None:
         raise RuntimeError("Jev browser decision failed")
@@ -42,7 +48,9 @@ async def decide_browser_use(lifecycle_context, request):
     guidance = (
         "Jev browser-use decision: browser and desktop tools are allowed for this request."
         if allowed else
-        "Jev browser-use decision: answer directly; browser and desktop tools are unavailable."
+        "Jev browser-use decision: answer directly without browser or desktop actions "
+        "for this request. The desktop remains running; do not describe its tools as "
+        "expired, disconnected, or waiting to switch back on."
     )
     return lifecycle_context.next(replace(request, input=f"{request.input}\n\n{guidance}"))
 
@@ -56,12 +64,19 @@ async def enforce_browser_use(tool_context, call):
     if decision is None or decision[0] != tool_context.invocation_id:
         raise RuntimeError("desktop tool has no Jev decision for this invocation")
     if not decision[1]:
-        return tool_context.finish("Jev selected a direct answer. Do not use browser or desktop tools.")
+        return tool_context.finish(
+            "Jev selected a direct response for this request. Do not use browser or desktop tools."
+        )
     return tool_context.next()
 
 
 @lifecycle.agent.after
-def clear_browser_use(lifecycle_context, result):
-    """Discard this task's decision after the agent turn completes."""
+async def clear_browser_use(lifecycle_context, result):
+    """Keep the reply for short follow-ups and discard this turn's tool decision."""
+    if result.text.strip():
+        # The user's next confirmation refers to this reply, even after an idle
+        # period. Retain its ending where the agent usually asks the question.
+        session = context.session.namespace("browser_routing")
+        await session.set("last_agent_reply", result.text[-LAST_REPLY_LENGTH:])
     _decision.set(None)
     return lifecycle_context.next()

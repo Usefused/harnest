@@ -18,7 +18,7 @@ from harnest.context import activate_context, create_agent_context, revoke_conte
 from harnest.context_session import invocation_session_context
 from harnest.decisions import DecisionAction, DecisionOutcome
 from harnest.lifecycle import LifecycleContext
-from harnest.runtime_contract import InvocationRequest
+from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.session import InMemorySessionStore
 from harnest.tool_lifecycle import ToolCallRequest, ToolLifecycleContext
 
@@ -138,17 +138,20 @@ class DesktopExampleTests(unittest.TestCase):
             unrelated = await module.enforce_browser_use(
                 tool_context, ToolCallRequest("unrelated_tool")
             )
-            module.clear_browser_use(agent_context, None)
+            await module.clear_browser_use(agent_context, SimpleNamespace(text=""))
             return routed, browser, unrelated, jev
 
         allowed, blocked, unrelated, jev = asyncio.run(
             evaluate_case(DecisionAction.BLOCK, "invoke-direct")
         )
         self.assertIn("answer directly", allowed.value.input)
+        self.assertIn("The desktop remains running", allowed.value.input)
         self.assertIn("Do not use browser", blocked.result)
         self.assertFalse(unrelated.replaces)
         jev.assert_awaited_once_with(
-            "browser_use", {"request": "Open example.com", "prior_user_requests": []}
+            "browser_use", {
+                "request": "Open example.com", "prior_user_requests": [], "last_agent_reply": "",
+            }
         )
         allowed, permitted, _, _ = asyncio.run(
             evaluate_case(DecisionAction.PROCEED, "invoke-browser")
@@ -156,32 +159,37 @@ class DesktopExampleTests(unittest.TestCase):
         self.assertIn("tools are allowed", allowed.value.input)
         self.assertFalse(permitted.replaces)
 
-    def test_jev_uses_prior_requests_only_from_the_same_session(self):
-        """A date follow-up keeps its flight-search context without crossing sessions."""
+    def test_jev_uses_prior_turns_only_from_the_same_session(self):
+        """A brief confirmation keeps the proposed action in its session context."""
         module = load("desktop_example_multiturn_gate", ROOT / "lifecycle" / "browser_gate.py")
         seen = []
 
         async def evaluate(_name, state):
             """Model Jev's choice from the context actually sent by the hook."""
             seen.append(state)
-            prior = state["prior_user_requests"]
-            browser = "flight" in state["request"].lower() or any(
-                "flight" in item.lower() for item in prior
+            browser = (
+                "flight" in state["request"].lower()
+                or "flight" in state["last_agent_reply"].lower()
+                or any("flight" in item.lower() for item in state["prior_user_requests"])
             )
             action = DecisionAction.PROCEED if browser else DecisionAction.BLOCK
             return SimpleNamespace(outcome=DecisionOutcome(action), error=None)
 
         async def run():
-            """Execute three turns against real, independently leased sessions."""
+            """Execute separate conversations across several session leases."""
             store = InMemorySessionStore()
             await store.start()
             for session_id in ("flights", "other"):
                 await store.create(session_id=session_id, user_id="user", state={})
             try:
-                for invocation, session_id, message in (
-                    ("first", "flights", "Find cheap flights to Malta"),
-                    ("follow-up", "flights", "Check for 20-25th Oct"),
-                    ("unrelated", "other", "Check for 20-25th Oct"),
+                for invocation, session_id, message, reply in (
+                    ("first", "flights", "Find cheap flights to Malta",
+                     "I found flights. Want me to open the checkout?"),
+                    ("follow-up", "flights", "Check for 20-25th Oct",
+                     "These flights are available. Want me to open the checkout?"),
+                    ("unrelated", "other", "Check for 20-25th Oct", "No search requested."),
+                    ("brief", "flights", "Hi", "The flight checkout is ready. Should I open it?"),
+                    ("confirmation", "flights", "Yes please", "I opened the flight checkout."),
                 ):
                     active = create_agent_context(
                         framework="adk", agent_name="desktop", invocation_id=invocation,
@@ -201,12 +209,17 @@ class DesktopExampleTests(unittest.TestCase):
                                     "decisions": SimpleNamespace(evaluate=evaluate)
                                 }):
                                     result = await module.decide_browser_use(lifecycle_context, request)
+                                    await module.clear_browser_use(
+                                        lifecycle_context,
+                                        InvocationResult(reply, (), None, session_id, {}),
+                                    )
                         if invocation == "follow-up":
                             self.assertIn("tools are allowed", result.value.input)
                         if invocation == "unrelated":
-                            self.assertIn("tools are unavailable", result.value.input)
+                            self.assertIn("answer directly", result.value.input)
+                        if invocation == "confirmation":
+                            self.assertIn("tools are allowed", result.value.input)
                     finally:
-                        module.clear_browser_use(lifecycle_context, None)
                         revoke_context(active)
             finally:
                 await store.close()
@@ -214,7 +227,13 @@ class DesktopExampleTests(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(seen[0]["prior_user_requests"], [])
         self.assertEqual(seen[1]["prior_user_requests"], ["Find cheap flights to Malta"])
+        self.assertEqual(seen[1]["last_agent_reply"],
+                         "I found flights. Want me to open the checkout?")
         self.assertEqual(seen[2]["prior_user_requests"], [])
+        self.assertEqual(seen[2]["last_agent_reply"], "")
+        self.assertEqual(seen[4]["prior_user_requests"], ["Check for 20-25th Oct", "Hi"])
+        self.assertEqual(seen[4]["last_agent_reply"],
+                         "The flight checkout is ready. Should I open it?")
 
     def test_start_reuses_one_named_container_until_close(self):
         """Prove one provisioned agent owns one container across operations."""
