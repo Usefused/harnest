@@ -10,6 +10,19 @@
   release is retried or tagged after manual publication.
 - Align internal Fused and Threadify package dependencies with Harnest `>=1.0.0,<2`.
 
+## [1.4.0](https://github.com/Usefused/harnest/compare/v1.3.0...v1.4.0) (2026-09-25)
+
+
+### Features
+
+* add private one-time client input ([b13ccd3](https://github.com/Usefused/harnest/commit/b13ccd380875951083431012b21be910cdc4371a))
+
+
+### Fixes
+
+* align internal package dependencies with Harnest 1.x ([ce2fb20](https://github.com/Usefused/harnest/commit/ce2fb20452afaf8f08f6fec0ef5399bb0864f3a2))
+* skip published official extension wheels on release retries ([900e7d2](https://github.com/Usefused/harnest/commit/900e7d2c6bbf1eba17f4334306ca8958771b7404))
+
 ## [1.3.0](https://github.com/Usefused/harnest/compare/v1.2.0...v1.3.0) (2026-09-24)
 
 - Support client-created AG-UI threads, unique message IDs across turns, approval
