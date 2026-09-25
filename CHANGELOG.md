@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.4.1](https://github.com/Usefused/harnest/compare/v1.4.0...v1.4.1) (2026-09-25)
 
 - Reclaim old, unleased agent environments before short CLI commands exit, and
   add the managed `.venv` interpreter to VS Code-compatible workspace settings
@@ -9,6 +9,11 @@
 - Keep desktop-example browser routing aware of the agent's last reply so Jev
   recognizes short confirmations after idle periods, and avoid presenting direct
   answers as a temporary desktop outage.
+
+### Fixes
+
+* prune stale agent environments and configure VS Code Python ([616d2a6](https://github.com/Usefused/harnest/commit/616d2a604fa3cd5518a32a26642aa6d851cfdab7))
+* retain desktop routing context across idle turns ([2543b80](https://github.com/Usefused/harnest/commit/2543b80e0254fedc56cc10d5c4255f1c18b7ed15))
 
 ## [1.4.0](https://github.com/Usefused/harnest/compare/v1.3.0...v1.4.0) (2026-09-25)
 
