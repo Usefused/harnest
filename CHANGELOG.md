@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.4.0](https://github.com/Usefused/harnest/compare/v1.3.0...v1.4.0) (2026-09-25)
 
 - Add `@client_input` for one-time private client payloads consumed only by
   application code, with a separately authored model response and explicit
@@ -9,9 +9,6 @@
 - Allow official extension publishing to skip wheels already on PyPI when a
   release is retried or tagged after manual publication.
 - Align internal Fused and Threadify package dependencies with Harnest `>=1.0.0,<2`.
-
-## [1.4.0](https://github.com/Usefused/harnest/compare/v1.3.0...v1.4.0) (2026-09-25)
-
 
 ### Features
 
