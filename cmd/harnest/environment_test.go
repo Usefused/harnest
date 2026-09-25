@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,6 +46,7 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 		t.Fatalf("task-free agent installed optional task dependencies:\n%s", firstCalls)
 	}
 	assertFilesExist(t, agent, []string{runtimeRequirementsLockFile, ".harnest/environment.json"})
+	assertVSCodeInterpreter(t, agent)
 	lock := string(mustReadTestFile(t, filepath.Join(agent, runtimeRequirementsLockFile)))
 	assertContainsAll(t, "committed runtime lock", lock, []string{
 		runtimeLockFormatLine,
@@ -114,7 +116,7 @@ func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForArtifactRemoval(t, testAgentEnvironment(project, stale))
+	assertTestEnvironmentRemoved(t, project, stale)
 	assertTestEnvironmentExists(t, project, current)
 	assertTestEnvironmentExists(t, project, leased)
 	assertTestEnvironmentExists(t, project, developmentCurrent)
@@ -122,9 +124,37 @@ func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	selection.releaseLease()
 	assertTestEnvironmentExists(t, project, leased)
 	overlapping.releaseLease()
-	waitForArtifactRemoval(t, testAgentEnvironment(project, leased))
+	assertTestEnvironmentRemoved(t, project, leased)
 	assertTestEnvironmentExists(t, project, current)
 	assertTestEnvironmentExists(t, project, developmentCurrent)
+}
+
+// TestEnvironmentPruningKeepsEditorLinkUntilRetargeted protects automatic-sync IDE use.
+func TestEnvironmentPruningKeepsEditorLinkUntilRetargeted(t *testing.T) {
+	project := t.TempDir()
+	current := "1111111111111111"
+	previous := "2222222222222222"
+	writeTestAgentEnvironment(t, project, current)
+	writeTestAgentEnvironment(t, project, previous)
+	state := filepath.Join(project, ".harnest", environmentStateFile)
+	if err := writeEnvironmentState(state, environmentState{
+		Fingerprint: current,
+		Directory:   filepath.ToSlash(filepath.Join("environments", current)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idePath := filepath.Join(project, ".venv")
+	oldTarget := filepath.Join(".harnest", "environments", previous)
+	if err := os.Symlink(oldTarget, idePath); err != nil {
+		t.Fatal(err)
+	}
+	pruneAgentEnvironments(project)
+	assertTestEnvironmentExists(t, project, previous)
+	if err := replaceIDEEnvironmentLink(idePath, filepath.Join(".harnest", "environments", current)); err != nil {
+		t.Fatal(err)
+	}
+	pruneAgentEnvironments(project)
+	assertTestEnvironmentRemoved(t, project, previous)
 }
 
 // writeTestAgentEnvironment creates the interpreter shape recognized as managed.
@@ -149,6 +179,27 @@ func assertTestEnvironmentExists(t *testing.T, project, name string) {
 	t.Helper()
 	if _, err := os.Stat(runtimePythonPath(testAgentEnvironment(project, name))); err != nil {
 		t.Fatalf("environment %s is unavailable: %v", name, err)
+	}
+}
+
+// assertTestEnvironmentRemoved verifies cleanup completed before the caller returned.
+func assertTestEnvironmentRemoved(t *testing.T, project, name string) {
+	t.Helper()
+	if _, err := os.Lstat(testAgentEnvironment(project, name)); !os.IsNotExist(err) {
+		t.Fatalf("stale environment %s was not removed: %v", name, err)
+	}
+}
+
+// assertVSCodeInterpreter checks the editor points through Harnest's stable link.
+func assertVSCodeInterpreter(t *testing.T, agent string) {
+	t.Helper()
+	contents := mustReadTestFile(t, filepath.Join(agent, ".vscode", "settings.json"))
+	var settings map[string]string
+	if err := json.Unmarshal(contents, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings[vscodeInterpreterKey] != "${workspaceFolder}/.venv/bin/python" {
+		t.Fatalf("VS Code interpreter is %q", settings[vscodeInterpreterKey])
 	}
 }
 
@@ -199,6 +250,42 @@ func mustRetargetIDEEnvironment(
 	mustSyncAgentEnvironment(t, sys, agent)
 	if updatedTarget := mustReadIDEEnvironmentLink(t, idePath); updatedTarget == firstTarget {
 		t.Fatalf("dependency change did not retarget IDE link %q", updatedTarget)
+	}
+	assertTestEnvironmentRemoved(t, agent, filepath.Base(firstTarget))
+	assertVSCodeInterpreter(t, agent)
+}
+
+// TestEnvironmentSyncPreservesVSCodeJSONCAndExistingInterpreter protects editor preferences.
+func TestEnvironmentSyncPreservesVSCodeJSONCAndExistingInterpreter(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	settingsPath := filepath.Join(agent, ".vscode", "settings.json")
+	if err := os.Mkdir(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "{\n  // Keep this editor choice.\n  \"editor.tabSize\": 4,\n}\n"
+	mustWriteEnvironmentFixture(t, settingsPath, original)
+	t.Setenv("HARNEST_ENV_TEST_CALLS", filepath.Join(root, "calls.txt"))
+	mustSyncAgentEnvironment(t, environmentTestSystem(t, root), agent)
+	updated := string(mustReadTestFile(t, settingsPath))
+	if !strings.Contains(updated, "// Keep this editor choice.") || !strings.Contains(updated, `"editor.tabSize": 4`) {
+		t.Fatalf("sync discarded VS Code JSONC settings: %s", updated)
+	}
+	if strings.Count(updated, vscodeInterpreterKey) != 1 {
+		t.Fatalf("sync did not add exactly one VS Code interpreter: %s", updated)
+	}
+	masked, err := maskVSCodeComments([]byte(updated))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(maskVSCodeTrailingCommas(masked), &parsed); err != nil {
+		t.Fatalf("updated VS Code settings are invalid JSONC: %v", err)
+	}
+	mustWriteEnvironmentFixture(t, settingsPath,
+		"{\n  \"python.defaultInterpreterPath\": \"/user/python\"\n}\n")
+	mustSyncAgentEnvironment(t, environmentTestSystem(t, root), agent)
+	if got := string(mustReadTestFile(t, settingsPath)); got != "{\n  \"python.defaultInterpreterPath\": \"/user/python\"\n}\n" {
+		t.Fatalf("sync replaced an explicit interpreter: %s", got)
 	}
 }
 

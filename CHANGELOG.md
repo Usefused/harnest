@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reclaim old, unleased agent environments before short CLI commands exit, and
+  add the managed `.venv` interpreter to VS Code workspace settings on `env sync`
+  while preserving existing editor preferences.
 - Keep desktop-example browser routing aware of the agent's last reply so Jev
   recognizes short confirmations after idle periods, and avoid presenting direct
   answers as a temporary desktop outage.

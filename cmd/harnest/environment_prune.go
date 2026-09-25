@@ -40,12 +40,12 @@ func leaseAgentPython(
 		once.Do(func() {
 			_ = os.Remove(leasePath)
 			_ = os.Remove(leaseDirectory)
-			pruneAgentEnvironmentsAsync(project)
+			pruneAgentEnvironments(project)
 		})
 	}
 	// A lease is visible before pruning starts, so overlapping commands cannot
 	// lose dependencies after selecting an older but still valid interpreter.
-	pruneAgentEnvironmentsAsync(project)
+	pruneAgentEnvironments(project)
 	return selection, nil
 }
 
@@ -79,17 +79,12 @@ func ensureRegularLeaseDirectory(path string) error {
 	return nil
 }
 
-// pruneAgentEnvironmentsAsync reclaims unleased fingerprints outside command latency.
-func pruneAgentEnvironmentsAsync(project string) {
+// pruneAgentEnvironments removes stale fingerprints before a short command exits.
+func pruneAgentEnvironments(project string) {
 	stale := staleAgentEnvironments(project)
-	if len(stale) == 0 {
-		return
+	for _, path := range stale {
+		_ = os.RemoveAll(path)
 	}
-	go func() {
-		for _, path := range stale {
-			_ = os.RemoveAll(path)
-		}
-	}()
 }
 
 // staleAgentEnvironments preserves the published and every actively leased runtime.
@@ -99,6 +94,11 @@ func staleAgentEnvironments(project string) []string {
 	if !safe {
 		// A missing or malformed publication pointer cannot authorize deletion.
 		return nil
+	}
+	if name := linkedIDEEnvironment(root); name != "" {
+		// Automatic sync does not retarget the editor link. Keep its runtime
+		// until an explicit env sync publishes a new link.
+		current[name] = struct{}{}
 	}
 	environments := filepath.Join(root, "environments")
 	entries, err := os.ReadDir(environments)
@@ -117,6 +117,23 @@ func staleAgentEnvironments(project string) []string {
 		stale = append(stale, filepath.Join(environments, name))
 	}
 	return stale
+}
+
+// linkedIDEEnvironment protects a Harnest-owned editor link during automatic syncs.
+func linkedIDEEnvironment(root string) string {
+	project := filepath.Dir(root)
+	target, err := os.Readlink(filepath.Join(project, ".venv"))
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(project, target)
+	}
+	name, err := filepath.Rel(filepath.Join(root, "environments"), filepath.Clean(target))
+	if err != nil || filepath.Dir(name) != "." || !environmentFingerprintPattern.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 // currentAgentEnvironments reads every valid profile pointer before authorizing deletion.

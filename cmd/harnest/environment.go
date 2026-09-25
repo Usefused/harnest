@@ -35,6 +35,7 @@ func (a *application) newEnvironmentCommand() *cobra.Command {
 	return command
 }
 
+// newEnvironmentSyncCommand publishes the selected runtime and editor pointers.
 func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 	var frozen bool
 	var profileValue string
@@ -55,7 +56,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer pruneAgentEnvironmentsAsync(bundle.Directory)
+			defer pruneAgentEnvironments(bundle.Directory)
 			fmt.Fprintf(
 				command.OutOrStdout(),
 				"Agent environment ready: %s\n",
@@ -69,6 +70,12 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
+			settingsPath, err := syncVSCodeInterpreterSettings(bundle.Directory)
+			if err != nil {
+				fmt.Fprintf(command.ErrOrStderr(), "VS Code settings unchanged: %v\n", err)
+				return nil
+			}
+			fmt.Fprintf(command.OutOrStdout(), "VS Code settings: %s\n", settingsPath)
 			return nil
 		},
 	}
