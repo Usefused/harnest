@@ -23,6 +23,7 @@ from ..client_tool import (
     client_tool_execution,
     current_transient_media,
 )
+from ..client_input import client_input
 # MCP imports approval from this package; annotations must not make the domain
 # modules depend on which public import a developer happens to write first.
 if TYPE_CHECKING:
@@ -405,6 +406,7 @@ __all__ = [
     "ToolCallRequest",
     "ToolLifecycleContext",
     "ToolLifecycleError",
+    "client_input",
     "client_tool",
     "client_tool_execution",
     "current_transient_media",

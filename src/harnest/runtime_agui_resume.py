@@ -30,6 +30,7 @@ def prepare_resume(
     """Validate correlation before any decision or browser result is delivered."""
 
     pending = pending_actions(coordinator, user_id=user_id, session_id=envelope.thread_id or "")
+    _validate_private_resume(envelope, pending)
     replies = _replies(envelope, pending)
     if not pending:
         if replies:
@@ -61,6 +62,16 @@ def prepare_resume(
         invocation_id=run.call_id, metadata={}, transport="agui",
     )
     return request, (run, deliver)
+
+
+def _validate_private_resume(envelope: AGUIInput, pending: list[Any]) -> None:
+    """Reject transcript-bearing submissions before the encoder can echo them."""
+
+    if any(isinstance(item, PendingClientTool) and item.private_input for item in pending):
+        # The encoder echoes messages and state. Private results must travel
+        # only in explicit resume payloads, never in the client transcript.
+        if envelope.messages or envelope.state:
+            raise HTTPException(400, "Private client input resumes must omit messages and state")
 
 
 def _shared_run(coordinator: InvocationCoordinator, pending: list[Any]) -> Any:

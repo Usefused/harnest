@@ -13,9 +13,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Iterator, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Iterator, TypeVar, overload
 
-from .agent.approval import ApprovalRun, bind_tool_arguments
 from .assets import AssetScope, AssetStorage, AssetStoreError
 from .logging import get_logger
 from .structured import (
@@ -36,6 +35,9 @@ from .stored_media import (
     StoredMediaStage,
     stage_stored_media_transaction,
 )
+
+if TYPE_CHECKING:
+    from .agent.approval import ApprovalRun
 
 F = TypeVar("F", bound=Callable[..., Any])
 _CURRENT: contextvars.ContextVar["ClientToolExecution | None"] = contextvars.ContextVar(
@@ -80,11 +82,12 @@ class PendingClientTool:
     future: asyncio.Future[Any] = field(repr=False)
     submitting: bool = field(default=False, repr=False)
     agui_tool_call_id: str | None = field(default=None, repr=False)
+    private_input: bool = False
 
     def public(self) -> dict[str, Any]:
         """Return the client-safe fields required to execute this tool call."""
 
-        return {
+        payload = {
             "id": self.id,
             "callId": self.call_id,
             "name": self.name,
@@ -93,6 +96,10 @@ class PendingClientTool:
                 self.expires_at, tz=timezone.utc
             ).isoformat(),
         }
+        if self.private_input:
+            payload["privateInput"] = True
+            payload["inputSchema"] = self.output_schema.model_json_schema()
+        return payload
 
 
 class InMemoryClientToolStore:
@@ -128,9 +135,12 @@ class InMemoryClientToolStore:
         arguments: dict[str, Any],
         output_schema: PydanticModel | None,
         timeout_seconds: int,
+        private_input: bool = False,
     ) -> Any:
-        """Suspend an invocation until the client submits a result or times out."""
+        """Suspend for one result, transferring private values without retention."""
 
+        if private_input and output_schema is None:
+            raise ClientToolError("private client input requires a schema")
         loop = asyncio.get_running_loop()
         pending = PendingClientTool(
             id=f"client_tool_{uuid.uuid4().hex}",
@@ -143,19 +153,22 @@ class InMemoryClientToolStore:
             expires_at=self._clock() + timeout_seconds,
             run=run,
             future=loop.create_future(),
+            private_input=private_input,
         )
         with self._lock:
             self._items[pending.id] = pending
         _audit(name, "requested", trigger="agent", outcome="suspended")
         run.notifications.put_nowait(("client_tool", pending))
         try:
-            return await asyncio.wait_for(pending.future, timeout=timeout_seconds)
+            result = await asyncio.wait_for(pending.future, timeout=timeout_seconds)
+            return result.take() if private_input else result
         except asyncio.TimeoutError as exc:
             _audit(name, "expired", trigger="agent", outcome="failed")
             raise ClientToolError(f"client tool {name!r} timed out") from exc
         finally:
             with self._lock:
                 self._items.pop(pending.id, None)
+            _clear_private_delivery(pending)
 
     async def submit(
         self, request_id: str, *, user_id: str, output: Any
@@ -206,6 +219,8 @@ class InMemoryClientToolStore:
         except BaseException:
             # Remove only this rejected submission's leases; parallel accepted
             # results may still need other media owned by the same run.
+            if pending.private_input:
+                prepared.value.clear()
             if isinstance(prepared.value, _StagedClientToolResult):
                 self._transient_media.commit(
                     scope=_transient_scope(pending), lease_ids=prepared.value.lease_ids
@@ -241,8 +256,12 @@ class InMemoryClientToolStore:
     async def _prepared_output(
         self, pending: PendingClientTool, output: Any
     ) -> _PreparedClientToolResult:
-        """Validate and stage typed media after submission is reserved."""
+        """Keep private input out of durable assets and model media staging."""
 
+        if pending.private_input:
+            from .client_input import _prepare_private_input
+
+            return _PreparedClientToolResult(_prepare_private_input(pending.output_schema, output))
         if pending.output_schema is None:
             return _PreparedClientToolResult(output)
         validated = validate_output_value(
@@ -331,6 +350,7 @@ class ClientToolExecution:
         arguments: dict[str, Any],
         output_schema: PydanticModel | None,
         timeout_seconds: int,
+        private_input: bool = False,
     ) -> Any:
         """Request one client-hosted tool call and await its validated result."""
 
@@ -340,6 +360,7 @@ class ClientToolExecution:
             arguments=arguments,
             output_schema=output_schema,
             timeout_seconds=timeout_seconds,
+            private_input=private_input,
         )
 
     @property
@@ -409,6 +430,10 @@ def client_tool(
     )
 
     def decorate(fn: F) -> F:
+        """Reject private input consumers before ordinary model-result wrapping."""
+
+        if getattr(fn, "__harnest_client_input__", False):
+            raise TypeError("private client input cannot also be a client tool")
         schema = configured_schema or callable_output_schema(fn)
         from .context import registration_for as context_registration_for
         from .lifecycle import registration_for as lifecycle_registration_for
@@ -424,6 +449,7 @@ def client_tool(
 
         @functools.wraps(fn)
         async def invoke(*args: Any, **kwargs: Any) -> Any:
+            from .agent.approval import bind_tool_arguments
             from .agent_principal import require_capability
 
             require_capability(invoke, name=fn.__name__)
@@ -486,6 +512,15 @@ def _audit(name: str, operation: str, *, trigger: str, outcome: str) -> None:
         outcome=outcome,
         action=f"client_tool:{name}",
     )
+
+
+def _clear_private_delivery(pending: PendingClientTool) -> None:
+    """Clear values left in a completed future, including cancellation races."""
+
+    if not pending.private_input or not pending.future.done() or pending.future.cancelled():
+        return
+    if pending.future.exception() is None:
+        pending.future.result().clear()
 
 
 def _transient_scope(pending: PendingClientTool) -> TransientMediaScope:

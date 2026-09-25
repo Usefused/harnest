@@ -204,7 +204,7 @@ class _AGUIEncoder:
     def _finish_actions(self, actions: list[Mapping[str, Any]], events: list[dict], finished: dict) -> None:
         """Keep automatic frontend tools separate from human decision interrupts."""
 
-        if any(action["type"] == "human_approval" for action in actions):
+        if any(action["type"] == "human_approval" or action.get("privateInput") for action in actions):
             finished["outcome"] = {
                 "type": "interrupt", "interrupts": [self._interrupt(action) for action in actions],
             }
@@ -239,6 +239,8 @@ class _AGUIEncoder:
                 "type": "object", "properties": {"approved": {"type": "boolean"}},
                 "required": ["approved"], "additionalProperties": False,
             })
+        elif action.get("privateInput"):
+            interrupt.update(reason="private_input", responseSchema=action["inputSchema"])
         else:
             interrupt.update(reason="tool_call", toolCallId=self._client_tool_id(action))
         return interrupt
@@ -255,8 +257,10 @@ class _AGUIEncoder:
         return action["id"]
 
     def _client_tool(self, action: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """Expose client execution without duplicating an existing tool call."""
+        """Keep private prompts out of automatic frontend tool-result loops."""
 
+        if action.get("privateInput"):
+            return []
         identity = self._client_tool_id(action)
         events = []
         if identity not in self._tool_calls:

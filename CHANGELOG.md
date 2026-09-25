@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `@client_input` for one-time private client payloads consumed only by
+  application code, with a separately authored model response and explicit
+  AG-UI interrupts that keep input out of transcript tool results.
 - Allow official extension publishing to skip wheels already on PyPI when a
   release is retried or tagged after manual publication.
 - Align internal Fused and Threadify package dependencies with Harnest `>=1.0.0,<2`.

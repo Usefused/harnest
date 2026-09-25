@@ -18,6 +18,7 @@ CONTRACTS = {
             "AgentRuntimePrincipal",
         ],
         "_agent_tool": ["tool"],
+        "client_input": ["client_input"],
         "client_tool": [
             "client_tool",
             "client_tool_execution",

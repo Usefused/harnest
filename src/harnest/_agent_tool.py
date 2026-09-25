@@ -95,6 +95,8 @@ def _validate_tool_authoring(function: Any, description: str | None) -> None:
 
     if not callable(function):
         raise TypeError("@tool can only decorate callables")
+    if getattr(function, "__harnest_client_input__", False):
+        raise TypeError("private client input cannot also be a server tool")
     from .context import registration_for as context_registration_for
     from .lifecycle import registration_for as lifecycle_registration_for
 

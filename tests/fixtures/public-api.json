@@ -61,6 +61,7 @@
     "ToolLifecycleContext",
     "ToolLifecycleError",
     "approval",
+    "client_input",
     "client_tool",
     "client_tool_execution",
     "current_transient_media",

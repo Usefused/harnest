@@ -88,6 +88,7 @@
       "test_project_packs",
       "test_a2a",
       "test_agui",
+      "test_client_input",
       "test_agent_builder",
       "test_agent_builder_release_support",
       "test_agent_builder_assistant",

@@ -1837,7 +1837,7 @@ def _discover_tools(directory: Path) -> tuple[Callable[..., Any], ...]:
         module, value = _load_export(path, name)
         if not callable(value) or not getattr(value, "__harnest_tool__", False):
             raise BundleExportError(
-                f"tool module {path} must export @tool or @client_tool callable "
+                f"tool module {path} must export @tool, @client_tool, or @client_input callable "
                 f"{name!r}"
             )
         if getattr(value, "__name__", None) != name:
