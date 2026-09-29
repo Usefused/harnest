@@ -6,6 +6,13 @@
   registering queued tasks with configurable queue and retry policy. Dynamic
   schedules can select deployed cron functions by name without importing them.
 
+## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
+
+
+### Features
+
+* **cron:** declare scheduled functions with automatic tasks ([8595377](https://github.com/Usefused/harnest/commit/8595377cdff28a278be818413e0dc42e30ac892e))
+
 ## [1.4.1](https://github.com/Usefused/harnest/compare/v1.4.0...v1.4.1) (2026-09-25)
 
 - Reclaim old, unleased agent environments before short CLI commands exit, and
