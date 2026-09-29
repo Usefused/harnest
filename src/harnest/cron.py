@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import inspect
 import re
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 from ._cron_storage import CronRecord, CronStore, CronStoreConflictError
 from .task import (
@@ -17,6 +17,7 @@ from .task import (
     TaskCallable,
     registration_for as task_registration_for,
     safe_task_arguments,
+    task as task_decorator,
 )
 
 
@@ -27,6 +28,7 @@ _ACTIVE_RUNTIME: ContextVar[Any | None] = ContextVar(
     "harnest_cron_runtime", default=None
 )
 _UNSET = object()
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class CronUnavailableError(RuntimeError):
@@ -69,6 +71,59 @@ class Cron:
         # Cron declarations may live for the process lifetime after compilation;
         # freezing nested containers prevents later imports changing queued work.
         object.__setattr__(self, "arguments", _freeze_mapping(arguments))
+
+
+@dataclass(frozen=True, slots=True)
+class _CronDefinition:
+    """Register a cron target with an optional application-owned schedule."""
+
+    task: TaskCallable[Any]
+    declaration: Cron | None
+
+
+def cron(
+    schedule: str | None = None,
+    *,
+    arguments: Mapping[str, Any] | None = None,
+    timezone: str = "UTC",
+    queue: str = "default",
+    max_retries: int = 3,
+) -> Callable[[_F], TaskCallable[_F]]:
+    """Declare a cron function in ``cron/`` with an implicit queued task.
+
+    Omit the schedule for dynamic scheduling only. The filename and function
+    name must match. Direct calls remain inline; serving registers the task.
+    """
+
+    def decorate(function: _F) -> TaskCallable[_F]:
+        """Keep schedule metadata on the exact callable the compiler registers."""
+
+        # Stacked task decorators would leave competing queue policies and
+        # callable identities; the cron declaration owns both here.
+        if task_registration_for(function) is not None:
+            raise TypeError("@cron creates its own task; decorate an undecorated function")
+        authored = task_decorator(queue=queue, max_retries=max_retries)(function)
+        # Dynamic calls supply their own arguments; do not silently discard
+        # static options when no application-owned schedule will be registered.
+        if schedule is None and (arguments is not None or timezone != "UTC"):
+            raise ValueError("@cron arguments and timezone require a fixed schedule")
+        declaration = None if schedule is None else Cron(
+            schedule, task=authored,
+            arguments={} if arguments is None else arguments, timezone=timezone,
+        )
+        setattr(authored, "__harnest_cron_definition__", _CronDefinition(authored, declaration))
+        return authored
+
+    return decorate
+
+
+def _registration_for(value: Any) -> _CronDefinition | None:
+    """Recognize decorator metadata only on its original task callable."""
+
+    declaration = getattr(value, "__harnest_cron_definition__", None)
+    if isinstance(declaration, _CronDefinition) and declaration.task is value:
+        return declaration
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,17 +232,20 @@ async def create(
     *,
     key: str,
     expression: str,
-    task: TaskCallable[Any],
+    task: TaskCallable[Any] | str,
     arguments: Mapping[str, Any] | None = None,
 ) -> CronJob:
-    """Persist an idempotently keyed schedule for the active invocation user."""
+    """Schedule a registered callable or a ``cron/`` function name for this user."""
 
     _validate_schedule_key(key)
     _validate_schedule(expression)
-    if task_registration_for(task) is None:
-        raise TypeError("dynamic cron task must be a Harnest @task callable")
+    if not isinstance(task, str) and task_registration_for(task) is None:
+        raise TypeError("dynamic cron task must be a Harnest @task or @cron callable, or a cron function name")
     normalized = safe_task_arguments({} if arguments is None else arguments)
-    _validate_task_call(task, normalized)
+    # Named targets resolve within the active application, where their compiled
+    # signatures can be checked without importing a second copy of the function.
+    if not isinstance(task, str):
+        _validate_task_call(task, normalized)
     return await _schedule_runtime().create_dynamic_schedule(
         key=key, expression=expression, task=task, arguments=normalized
     )
@@ -425,6 +483,7 @@ __all__ = [
     "CronUnavailableError",
     "cancel",
     "create",
+    "cron",
     "delete",
     "get",
     "list",

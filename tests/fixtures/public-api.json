@@ -261,6 +261,7 @@
     "CronUnavailableError",
     "cancel",
     "create",
+    "cron",
     "delete",
     "get",
     "list",

@@ -11,10 +11,11 @@ from . import context
 from .cron import (
     CronConflictError, CronJob, CronNotFoundError, CronRuntimeError, CronUnavailableError,
     _UNSET, _validate_schedule, _validate_task_call,
+    _registration_for,
 )
 from ._cron_storage import CronRecord, CronStoreConflictError
 from .logging import get_logger
-from .task import safe_task_arguments
+from .task import CompiledTask, safe_task_arguments
 
 
 _AUDIT = get_logger("cron.audit")
@@ -78,10 +79,11 @@ class StoredCronRuntime:
     async def create_dynamic_schedule(
         self, *, key: str, expression: str, task: Any, arguments: Mapping[str, Any]
     ) -> CronJob:
-        """Create one user-owned schedule with provider-enforced idempotency."""
+        """Validate a deployed target and persist its user-owned, idempotent schedule."""
 
         owner = self._owner()
-        compiled = self._manager._compiled_for(task)
+        compiled = self._resolve_target(task)
+        _validate_task_call(compiled.authored, arguments)
         now = time.time()
         record = CronRecord(
             schedule_id=f"cron_{uuid.uuid4().hex}", application_id=self._application.name,
@@ -90,6 +92,18 @@ class StoredCronRuntime:
             created_at=now, updated_at=now,
         )
         return self._job(await self._mutation("create", self._store.create_cron(record)))
+
+    def _resolve_target(self, task: Any) -> CompiledTask:
+        """Resolve names only to this application's compiler-discovered cron functions."""
+
+        if not isinstance(task, str):
+            return self._manager._compiled_for(task)
+        compiled = self._tasks.get(f"harnest.{self._application.name}.tasks.cron.{task}")
+        # Never import code or register work from a user-supplied string. Only
+        # deployed cron functions may be selected through the named API.
+        if compiled is None or _registration_for(compiled.authored) is None:
+            raise ValueError(f"cron function {task!r} is not registered in this application")
+        return compiled
 
     async def get_dynamic_schedule(self, schedule_id: str) -> CronJob | None:
         """Read an immutable snapshot of one owned job."""

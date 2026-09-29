@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `@cron(...)` for fixed and dynamic schedules in `cron/`, automatically
+  registering queued tasks with configurable queue and retry policy. Dynamic
+  schedules can select deployed cron functions by name without importing them.
 - Reclaim old, unleased agent environments before short CLI commands exit, and
   add the managed `.venv` interpreter to VS Code-compatible workspace settings
   on `env sync` for VS Code, Antigravity IDE, Windsurf, and Codex's IDE extension

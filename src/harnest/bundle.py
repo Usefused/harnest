@@ -33,6 +33,7 @@ from .compatibility import (
     validate_framework_compatibility,
 )
 from .cron import CompiledCron, Cron
+from .cron import _registration_for as cron_registration_for
 from .compile_selection import read_compile_selection, write_compile_report
 from .compile_source import compile_source_paths
 from .backends import (
@@ -1864,6 +1865,10 @@ def _discover_tasks(directory: Path, application_name: str) -> tuple[CompiledTas
     for path in _resource_files(directory, kind="tasks"):
         export_name = path.stem
         module, value = _load_export(path, export_name)
+        # Schedules are discovered only in cron/; accepting this here would
+        # silently drop the schedule while registering an ordinary task.
+        if cron_registration_for(value) is not None:
+            raise BundleExportError(f"@cron function {export_name!r} must be defined under cron/")
         definition = task_registration_for(value)
         if definition is None:
             raise BundleExportError(
@@ -1896,14 +1901,16 @@ def _discover_tasks(directory: Path, application_name: str) -> tuple[CompiledTas
 def _discover_tasks_and_crons(
     bundle_root: Path, application_name: str
 ) -> tuple[tuple[CompiledTask, ...], tuple[CompiledCron, ...]]:
-    """Resolve tasks first so cron imports bind to compiler-owned callables."""
+    """Bind explicit task imports, then register tasks authored by cron decorators."""
 
     tasks = _discover_tasks(bundle_root / "tasks", application_name)
     with _compiled_task_imports(bundle_root / "tasks", tasks):
-        crons = _discover_crons(
+        implicit, crons = _discover_crons(
             bundle_root / "cron", bundle_root, application_name, tasks
         )
-    return tasks, crons
+    # Decorated cron functions have their own task namespace so a same-named
+    # task in tasks/ remains a separate executable with independent policy.
+    return tasks + implicit, crons
 
 
 def _discover_crons(
@@ -1911,36 +1918,69 @@ def _discover_crons(
     bundle_root: Path,
     application_name: str,
     tasks: Sequence[CompiledTask],
-) -> tuple[CompiledCron, ...]:
-    """Load filename-matched schedules and resolve only discovered task targets."""
+) -> tuple[tuple[CompiledTask, ...], tuple[CompiledCron, ...]]:
+    """Register cron functions and any fixed schedules alongside explicit tasks."""
 
     crons = []
+    implicit = []
     for path in _resource_files(directory, kind="cron"):
         export_name = path.stem
         module, value = _load_export(path, export_name)
-        if not isinstance(value, Cron):
+        definition = cron_registration_for(value)
+        if not isinstance(value, Cron) and definition is None:
             raise BundleExportError(
-                f"cron module {path} must export Cron {export_name!r}"
+                f"cron module {path} must export Cron or @cron callable {export_name!r}"
             )
         _reject_extra_exports(
             module,
             path,
             export_name,
             kind="cron",
-            predicate=lambda item: isinstance(item, Cron),
+            predicate=lambda item: isinstance(item, Cron) or cron_registration_for(item) is not None,
         )
-        target = _resolve_cron_task(value.task, tasks, bundle_root)
+        if definition is not None:
+            target = _compile_cron_task(value, path, application_name)
+            implicit.append(target)
+            declaration = definition.declaration
+        else:
+            declaration = value
+            target = _resolve_cron_task(value.task, tasks, bundle_root)
+        # A dynamic-only target is executable but must not create a static job.
+        if declaration is None:
+            continue
         crons.append(
             CompiledCron(
                 name=f"harnest.{application_name}.cron.{export_name}",
                 source=f"cron/{path.name}",
-                schedule=value.schedule,
-                timezone=value.timezone,
+                schedule=declaration.schedule,
+                timezone=declaration.timezone,
                 task=target,
-                arguments=value.arguments,
+                arguments=declaration.arguments,
             )
         )
-    return tuple(crons)
+    return tuple(implicit), tuple(crons)
+
+
+def _compile_cron_task(
+    value: Any, path: Path, application_name: str,
+) -> CompiledTask:
+    """Give filename-matched local cron functions stable queued-task identities."""
+
+    definition = task_registration_for(value)
+    if (
+        definition is None
+        or getattr(value, "__name__", None) != path.stem
+        or _callable_source(definition.function) != path.resolve()
+    ):
+        # An imported alias must not silently register another file's work as
+        # a new task or schedule under this file's identity.
+        raise BundleExportError(
+            f"cron module {path} must define @cron function {path.stem!r} locally"
+        )
+    return CompiledTask(
+        name=f"harnest.{application_name}.tasks.cron.{path.stem}",
+        source=f"cron/{path.name}", definition=definition, authored=value,
+    )
 
 
 def _resolve_cron_task(

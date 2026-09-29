@@ -246,7 +246,7 @@ marked root-only:
 | `lib/**/*.py` (root-only) | Ordinary reusable Python mounted below `harnest.lib`; no resource export contract. |
 | `tools/<name>.py` | An `@tool`-decorated callable named `<name>`. |
 | `tasks/<name>.py` (root-only) | An application-owned `@task` callable named `<name>`; not exposed to the model. |
-| `cron/<name>.py` (root-only) | A same-named `Cron` targeting a discovered root task; strict five-column UTC schedule. |
+| `cron/<name>.py` (root-only) | A same-named `@cron` function, or a `Cron` targeting a discovered root task. Decorated functions register an implicit task named `harnest.<app>.tasks.cron.<name>` with source `cron/<name>.py`; a supplied five-column UTC expression also registers a fixed schedule. |
 | `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
 | `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
 | `plugins/<folder>/plugin.json` (root-only) | Agent Plugins 1.0 manifest; declares the unique portable package name. |

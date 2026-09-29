@@ -134,6 +134,48 @@ def _invocation(user_id: str):
 
 
 class CronAuthoringTests(unittest.TestCase):
+    def test_decorator_preserves_direct_calls_and_task_policy(self):
+        """One declaration remains callable and carries ordinary queue policy."""
+
+        arguments = {"value": {"items": [1]}}
+
+        @cron.cron("0 9 * * *", arguments=arguments, queue="reports", max_retries=5)
+        def deliver(value):
+            """Return a directly supplied value."""
+            return value
+
+        arguments["value"]["items"].append(2)
+        self.assertEqual(deliver("direct"), "direct")
+        self.assertEqual(deliver.__name__, "deliver")
+        definition = registration_for(deliver)
+        self.assertEqual((definition.queue, definition.max_retries), ("reports", 5))
+        declaration = cron._registration_for(deliver).declaration
+        self.assertEqual(declaration.arguments["value"]["items"], (1,))
+
+    def test_decorator_reuses_schedule_and_task_validation(self):
+        """Invalid scheduled calls fail at authoring rather than worker execution."""
+
+        def deliver(value="default"):
+            """Return a value with a schedulable default."""
+            return value
+
+        cases = (
+            ({"schedule": "bad"}, ValueError, "five columns"),
+            ({"timezone": "Europe/London"}, ValueError, "timezone must be UTC"),
+            ({"arguments": {"unknown": 1}}, TypeError, "task signature"),
+            ({"queue": "bad queue"}, ValueError, "queue"),
+            ({"max_retries": -1}, ValueError, "max_retries"),
+            ({"arguments": {"value": object()}}, TypeError, "JSON"),
+            ({"schedule": None, "arguments": {}}, ValueError, "require a fixed schedule"),
+        )
+        for options, error, message in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(error, message):
+                cron.cron(**({"schedule": "0 9 * * *"} | options))(deliver)
+        with self.assertRaisesRegex(TypeError, "creates its own task"):
+            cron.cron("0 9 * * *")(task(deliver))
+        with self.assertRaisesRegex(TypeError, "creates its own task"):
+            cron.cron("0 9 * * *")(cron.cron("0 8 * * *")(deliver))
+
     def test_validates_five_column_utc_schedule_and_static_arguments(self):
         @task
         def deliver(value, *, retries=1):
@@ -338,6 +380,83 @@ class DynamicCronTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CronCompilerTests(unittest.TestCase):
+    def test_dynamic_decorator_registers_work_without_a_fixed_schedule(self):
+        """Required arguments are supplied when a dynamic schedule is created."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write(root / "cron" / "deliver.py",
+                        "from harnest.cron import cron\n"
+                        "@cron()\ndef deliver(value):\n    '''Deliver a user value.'''\n    return value\n")
+            tasks, crons = _discover_tasks_and_crons(root, "reporter")
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(crons, ())
+        self.assertEqual(tasks[0].authored("direct"), "direct")
+
+    def test_decorator_registers_a_stable_task_without_a_tasks_folder(self):
+        """Discovery owns the schedule target and supports sync and async work."""
+
+        for prefix in ("", "async "):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._write_decorated_cron(root, prefix=prefix)
+                tasks, crons = _discover_tasks_and_crons(root, "reporter")
+                repeated, _ = _discover_tasks_and_crons(root, "reporter")
+                self.assertFalse((root / "tasks").exists())
+                self.assertEqual(len(tasks), 1)
+                self.assertIs(crons[0].task, tasks[0])
+                self.assertEqual(tasks[0].name, "harnest.reporter.tasks.cron.deliver")
+                self.assertEqual(tasks[0].name, repeated[0].name)
+                self.assertEqual(tasks[0].source, "cron/deliver.py")
+                self.assertEqual((tasks[0].queue, tasks[0].max_retries), ("reports", 2))
+                self.assertEqual(crons[0].arguments, {"value": "scheduled"})
+
+    def test_decorator_coexists_with_same_named_task_and_explicit_schedule(self):
+        """Implicit tasks cannot replace an existing target with the same filename."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_task(root)
+            self._write_decorated_cron(root)
+            self._write(root / "cron" / "other.py",
+                        "from harnest.cron import Cron\n"
+                        "from tasks.deliver import deliver\n"
+                        "other = Cron('0 8 * * *', task=deliver, arguments={'value': 'explicit'})\n")
+            tasks, crons = _discover_tasks_and_crons(root, "reporter")
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(len({item.name for item in tasks}), 2)
+        schedules = {item.name.rsplit('.', 1)[-1]: item for item in crons}
+        self.assertIs(schedules["other"].task, tasks[0])
+        self.assertIs(schedules["deliver"].task, tasks[1])
+
+    def test_decorator_rejects_mismatched_and_extra_exports(self):
+        """A scheduled callable must obey the same one-resource-per-file contract."""
+
+        cases = (
+            ("deliver = other\ndel other", "locally"),
+            ("@cron('0 8 * * *')\ndef deliver():\n    '''Second schedule.'''", "additional cron"),
+        )
+        for suffix, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._write(root / "cron" / "deliver.py",
+                            "from harnest.cron import cron\n"
+                            "@cron('0 9 * * *')\ndef other():\n    '''First schedule.'''\n"
+                            + suffix + "\n")
+                with self.assertRaisesRegex(BundleExportError, message):
+                    _discover_tasks_and_crons(root, "reporter")
+
+    def test_decorator_rejects_placement_in_tasks_folder(self):
+        """Misplacing a decorator must not silently discard its schedule."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_decorated_cron(root)
+            (root / "tasks").mkdir()
+            (root / "cron" / "deliver.py").rename(root / "tasks" / "deliver.py")
+            with self.assertRaisesRegex(BundleExportError, "must be defined under cron/"):
+                _discover_tasks_and_crons(root, "reporter")
+
     def test_discovers_filename_export_and_resolves_task_folder_import(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -448,6 +567,19 @@ class CronCompilerTests(unittest.TestCase):
         self.assertNotIn("manifest-secret", json.dumps(first))
         self.assertNotEqual(first["digest"], second["digest"])
         self.assertEqual(first["runtimeDependencies"], [])
+
+    @staticmethod
+    def _write_decorated_cron(root: Path, *, prefix: str = "") -> None:
+        """Write a single-file schedule with explicit task execution options."""
+
+        CronCompilerTests._write(
+            root / "cron" / "deliver.py",
+            "from harnest.cron import cron\n"
+            "@cron('0 9 * * *', arguments={'value': 'scheduled'}, queue='reports', max_retries=2)\n"
+            f"{prefix}def deliver(value):\n"
+            "    '''Deliver a scheduled value.'''\n"
+            "    return value\n",
+        )
 
     @staticmethod
     def _write_task(root: Path) -> None:

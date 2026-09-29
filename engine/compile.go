@@ -290,7 +290,7 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	return validateCompiledCrons(manifest.Name, manifest.Crons, manifest.Tasks)
 }
 
-var compiledTaskNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.tasks\.[A-Za-z_][A-Za-z0-9_]*$`)
+var compiledTaskNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.tasks\.(cron\.)?[A-Za-z_][A-Za-z0-9_]*$`)
 var compiledTaskQueuePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._~-]{0,63}$`)
 var compiledCronNamePattern = regexp.MustCompile(`^harnest\.[A-Za-z_][A-Za-z0-9_]*\.cron\.[A-Za-z_][A-Za-z0-9_]*$`)
 var compiledCronSourcePattern = regexp.MustCompile(`^cron/([A-Za-z_][A-Za-z0-9_]*)\.py$`)
@@ -330,11 +330,11 @@ func validateCompiledTask(index int, task CompiledTask, seen map[string]struct{}
 	return nil
 }
 
-// validateCompiledTaskSources binds each declaration to one immutable source.
+// validateCompiledTaskSources binds explicit and cron-generated tasks to immutable sources.
 func validateCompiledTaskSources(tasks []CompiledTask, files map[string]struct{}) error {
 	for _, task := range tasks {
 		path := "source/" + task.Source
-		if !strings.HasPrefix(task.Source, "tasks/") || !strings.HasSuffix(task.Source, ".py") {
+		if !validCompiledTaskSource(task) {
 			return fmt.Errorf("compiled task %q has invalid source %q", task.Name, task.Source)
 		}
 		if _, exists := files[path]; !exists {
@@ -342,6 +342,18 @@ func validateCompiledTaskSources(tasks []CompiledTask, files map[string]struct{}
 		}
 	}
 	return nil
+}
+
+// validCompiledTaskSource keeps generated cron identities tied to their filename
+// while preserving the released source contract for explicitly authored tasks.
+func validCompiledTaskSource(task CompiledTask) bool {
+	_, name, implicit := strings.Cut(task.Name, ".tasks.cron.")
+	// Dynamic-only cron targets have no schedule record, so validate their
+	// source identity here rather than relying on fixed-schedule validation.
+	if implicit {
+		return task.Source == "cron/"+name+".py"
+	}
+	return strings.HasPrefix(task.Source, "tasks/") && strings.HasSuffix(task.Source, ".py")
 }
 
 // validateCompiledCrons binds stable schedule identities to compiled task names.

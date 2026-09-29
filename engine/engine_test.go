@@ -773,6 +773,8 @@ func TestCompiledExtensionDigestMatchesPythonCompilerContract(t *testing.T) {
 	}
 }
 
+// TestCompiledArtifactValidatesCronRecords checks fixed schedules and implicit
+// task sources, including deployed cron functions without a fixed schedule.
 func TestCompiledArtifactValidatesCronRecords(t *testing.T) {
 	source, directory := compiledCronArtifactFixture(t)
 	path := filepath.Join(directory, compiledManifestFilename)
@@ -805,6 +807,24 @@ func TestCompiledArtifactValidatesCronRecords(t *testing.T) {
 			mutate:  func(manifest *CompiledManifest) { manifest.Crons[0].Task = "harnest.scheduler.tasks.missing" },
 			message: "unknown task",
 		},
+		"implicit-task-source": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Tasks[1].Source = "tasks/deliver.py" },
+			message: "invalid source",
+		},
+		"dynamic-task-source": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Tasks[2].Source = "cron/alpha.py" },
+			message: "invalid source",
+		},
+		"explicit-task-source": {
+			mutate:  func(manifest *CompiledManifest) { manifest.Tasks[0].Source = "cron/alpha.py" },
+			message: "invalid source",
+		},
+		"implicit-task-namespace": {
+			mutate: func(manifest *CompiledManifest) {
+				manifest.Tasks[2].Name = "harnest.scheduler.tasks.cron.nested.on_demand"
+			},
+			message: "invalid stable name",
+		},
 		"duplicate": {
 			mutate: func(manifest *CompiledManifest) {
 				manifest.Crons = append(manifest.Crons, manifest.Crons[1])
@@ -829,6 +849,7 @@ func TestCompiledArtifactValidatesCronRecords(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := baseline
 			changed.Crons = append([]CompiledCron(nil), baseline.Crons...)
+			changed.Tasks = append([]CompiledTask(nil), baseline.Tasks...)
 			testCase.mutate(&changed)
 			changed.Digest = compiledManifestDigest(
 				changed.Files, changed.Interfaces, changed.Extensions, changed.Tasks, changed.Crons, changed.RuntimeDependencies,
@@ -931,14 +952,15 @@ func compiledServerArtifactFixture(t *testing.T) (Bundle, string) {
 	return source, directory
 }
 
-// compiledCronArtifactFixture creates an artifact whose schedules and task
-// sources are all covered by the same immutable manifest file set.
+// compiledCronArtifactFixture covers explicit tasks, fixed cron functions, and
+// dynamic-only cron functions in the same immutable manifest file set.
 func compiledCronArtifactFixture(t *testing.T) (Bundle, string) {
 	t.Helper()
 	root := writeAgent(t, t.TempDir(), "scheduler", true)
 	mustWrite(t, filepath.Join(root, "tasks", "deliver.py"), "def deliver():\n    return None\n")
 	mustWrite(t, filepath.Join(root, "cron", "alpha.py"), "alpha = object()\n")
 	mustWrite(t, filepath.Join(root, "cron", "daily_report.py"), "daily_report = object()\n")
+	mustWrite(t, filepath.Join(root, "cron", "on_demand.py"), "def on_demand():\n    return None\n")
 	source, err := LoadBundle(root)
 	if err != nil {
 		t.Fatal(err)
@@ -953,9 +975,17 @@ func compiledCronArtifactFixture(t *testing.T) (Bundle, string) {
 		Name: "harnest.scheduler.tasks.deliver", Source: "tasks/deliver.py",
 		Queue: "default", MaxRetries: 3,
 	}
-	manifest.Tasks = []CompiledTask{task}
+	implicit := CompiledTask{
+		Name: "harnest.scheduler.tasks.cron.alpha", Source: "cron/alpha.py",
+		Queue: "reports", MaxRetries: 2,
+	}
+	dynamic := CompiledTask{
+		Name: "harnest.scheduler.tasks.cron.on_demand", Source: "cron/on_demand.py",
+		Queue: "reports", MaxRetries: 2,
+	}
+	manifest.Tasks = []CompiledTask{task, implicit, dynamic}
 	manifest.Crons = []CompiledCron{
-		{Name: "harnest.scheduler.cron.alpha", Source: "cron/alpha.py", Schedule: "0 8 * * *", Timezone: "UTC", Task: task.Name},
+		{Name: "harnest.scheduler.cron.alpha", Source: "cron/alpha.py", Schedule: "0 8 * * *", Timezone: "UTC", Task: implicit.Name},
 		{Name: "harnest.scheduler.cron.daily_report", Source: "cron/daily_report.py", Schedule: "0 9 * * *", Timezone: "UTC", Task: task.Name},
 	}
 	manifest.RuntimeDependencies = []string{}

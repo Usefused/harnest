@@ -1,10 +1,14 @@
 """Verify static schedule deployment reconciliation and provider safety seams."""
 
 from dataclasses import replace
+from pathlib import Path
+import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from harnest import cron
+from harnest.bundle import _discover_tasks_and_crons
 from harnest.context import activate_context, revoke_context
 from harnest.cron import CompiledCron, CronNotFoundError, CronRuntimeError, CronStore
 from harnest.runtime_task import TaskExecutionError, TaskRuntimeError
@@ -44,6 +48,93 @@ class StaticProviderTests(unittest.IsolatedAsyncioTestCase):
 
         return await self.store.list_crons(application_id=self.application.name,
                                            user_id="_harnest_automation", limit=100)
+
+    def decorated_application(self, *, fixed):
+        """Compile actual cron source without any separately authored task file."""
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "cron").mkdir()
+        schedule = "'* * * * *', arguments={'value': 'retry'}, " if fixed else ""
+        (root / "cron" / "report.py").write_text(
+            "from harnest.cron import cron\n_attempts = 0\n"
+            f"@cron({schedule}queue='reports', max_retries=2)\n"
+            "async def report(value):\n"
+            "    '''Return scheduled work after a transient failure.'''\n"
+            "    global _attempts\n    _attempts += 1\n"
+            "    if value == 'retry' and _attempts == 1:\n"
+            "        raise RuntimeError('transient')\n"
+            "    return {'value': value}\n",
+            encoding="utf-8",
+        )
+        tasks, crons = _discover_tasks_and_crons(root, self.application.name)
+        return replace(self.application, tasks=tasks, crons=crons)
+
+    async def claim_report(self):
+        """Claim through storage so queue selection and lease ownership are real."""
+
+        records = await self.store.claim_tasks(
+            application_id=self.application.name, queues=("reports",),
+            now=time.time(), lease_seconds=30, limit=10,
+        )
+        self.assertEqual(len(records), 1)
+        return records[0]
+
+    async def test_decorated_static_schedule_dispatches_retries_and_survives_restart(self):
+        """Implicit tasks use ordinary atomic handoff, retries and stable identities."""
+
+        application = self.decorated_application(fixed=True)
+        manager = await self.start_manager(application)
+        schedule, = await self.schedules()
+        due = await self.store.update_cron(
+            replace(schedule, next_run_at=60), expected_revision=schedule.revision,
+        )
+        await manager.cron_runtime.dispatch(60)
+        await manager.cron_runtime.dispatch(60)
+        record = await self.claim_report()
+        self.assertEqual((record.queue, record.max_retries, record.trigger), ("reports", 2, "cron"))
+        await manager._execute_record(record)
+        failed = await self.store.get_task(application_id=application.name, job_id=record.job_id)
+        self.assertEqual(failed.status, "pending")
+        with patch("time.time", return_value=failed.scheduled_at + 1):
+            await manager._execute_record(await self.claim_report())
+        finished = await self.store.get_task(application_id=application.name, job_id=record.job_id)
+        self.assertEqual((finished.status, finished.result, finished.attempt),
+                         ("completed", {"value": "retry"}, 2))
+        await manager.close()
+        await self.start_manager(self.decorated_application(fixed=True))
+        restarted, = await self.schedules()
+        self.assertEqual((restarted.schedule_id, restarted.next_run_at), (due.schedule_id, 120))
+
+    async def test_dynamic_cron_resolves_names_validates_arguments_and_executes(self):
+        """A tool can schedule deployed cron work without importing its callable."""
+
+        application = self.decorated_application(fixed=False)
+        manager = await self.start_manager(application)
+        self.assertEqual(await self.schedules(), ())
+        active = invocation()
+        self.addCleanup(revoke_context, active)
+        with activate_context(active), cron._activate_runtime(manager.cron_runtime):
+            for target in ("missing", "../report", "harnest.provider_test.tasks.cron.report"):
+                with self.subTest(target=target), self.assertRaisesRegex(ValueError, "not registered"):
+                    await cron.create(key="report", expression="* * * * *", task=target)
+            with self.assertRaisesRegex(TypeError, "task signature"):
+                await cron.create(key="report", expression="* * * * *", task="report")
+            self.assertEqual(await cron.list(), ())
+            job = await cron.create(key="report", expression="* * * * *", task="report",
+                                    arguments={"value": "dynamic"})
+            replay = await cron.create(key="report", expression="* * * * *", task=application.tasks[0].authored,
+                                       arguments={"value": "dynamic"})
+            self.assertEqual(replay.id, job.id)
+        stored = await self.store.get_cron(application_id=application.name, user_id="user-1", schedule_id=job.id)
+        await self.store.update_cron(replace(stored, next_run_at=60), expected_revision=stored.revision)
+        await manager.cron_runtime.dispatch(60)
+        record = await self.claim_report()
+        await manager._execute_record(record)
+        finished = await self.store.get_task(application_id=application.name, job_id=record.job_id)
+        self.assertEqual((finished.status, finished.result, finished.user_id),
+                         ("completed", {"value": "dynamic"}, "user-1"))
 
     async def test_unchanged_restart_retains_due_cursor_and_revision(self):
         """A deployment restart cannot skip an occurrence that became due offline."""
