@@ -1,13 +1,10 @@
 # Changelog
 
-## Unreleased
+## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
 
 - Add `@cron(...)` for fixed and dynamic schedules in `cron/`, automatically
   registering queued tasks with configurable queue and retry policy. Dynamic
   schedules can select deployed cron functions by name without importing them.
-
-## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
-
 
 ### Features
 
