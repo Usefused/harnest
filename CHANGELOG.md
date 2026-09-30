@@ -24,9 +24,16 @@
 - Make `harnest upgrade` identify existing `Cron(...)` declarations and show
   optional decorator migration guidance without rewriting working schedules
   or changing their persisted task identities.
+
+## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
+
 - Add `@cron(...)` for fixed and dynamic schedules in `cron/`, automatically
   registering queued tasks with configurable queue and retry policy. Dynamic
   schedules can select deployed cron functions by name without importing them.
+
+### Features
+
+* **cron:** declare scheduled functions with automatic tasks ([8595377](https://github.com/Usefused/harnest/commit/8595377cdff28a278be818413e0dc42e30ac892e))
 
 ## [1.4.1](https://github.com/Usefused/harnest/compare/v1.4.0...v1.4.1) (2026-09-25)
 
