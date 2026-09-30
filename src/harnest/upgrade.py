@@ -312,8 +312,11 @@ class UpgradePlan:
     framework: str
     actions: tuple[UpgradeAction, ...]
     blockers: tuple[str, ...]
+    notes: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
+        """Expose optional migration guidance separately from mutations and blockers."""
+
         return {
             "apiVersion": "harnest.dev/v1alpha1",
             "kind": "UpgradePlan",
@@ -322,6 +325,7 @@ class UpgradePlan:
             "framework": self.framework,
             "actions": [item.public() for item in self.actions],
             "blockers": list(self.blockers),
+            "notes": list(self.notes),
         }
 
 
@@ -345,11 +349,14 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
 
     plan_application_layout(root, actions, blockers)
     _plan_authoring_namespaces(root, actions, blockers)
+    from .upgrade_cron import cron_migration_notes
+
     return UpgradePlan(
         root,
         framework,
         tuple(sorted(actions, key=_action_order)),
         tuple(sorted(set(blockers))),
+        cron_migration_notes(root),
     )
 
 
@@ -370,6 +377,10 @@ def render_upgrade_plan(plan: UpgradePlan, *, applying: bool = False) -> str:
     ]
     lines.extend(_render_actions(plan.actions))
     lines.extend(_render_blockers(plan.blockers))
+    # Supported authoring forms should surface alternatives without making a
+    # safe project fail upgrade or silently changing persisted task identities.
+    if plan.notes:
+        lines.extend(("", "Optional migrations:", *(f"  - {note}" for note in plan.notes)))
     if not plan.actions and not plan.blockers:
         lines.append("No repository changes are required.")
     elif not applying and not plan.blockers:

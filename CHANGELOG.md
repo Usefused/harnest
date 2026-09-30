@@ -21,6 +21,9 @@
 - Add Studio controls for evaluation trajectory matching and dependency profiles;
   prevent hidden fields from blocking another form mode and recognize PostgreSQL
   task storage during deployment discovery.
+- Make `harnest upgrade` identify existing `Cron(...)` declarations and show
+  optional decorator migration guidance without rewriting working schedules
+  or changing their persisted task identities.
 - Add `@cron(...)` for fixed and dynamic schedules in `cron/`, automatically
   registering queued tasks with configurable queue and retry policy. Dynamic
   schedules can select deployed cron functions by name without importing them.

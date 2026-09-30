@@ -13,6 +13,84 @@ from harnest.upgrade import UpgradeError, apply_upgrade, plan_upgrade
 
 
 class RepositoryUpgradeTests(unittest.TestCase):
+    def test_cron_migration_advice_preserves_supported_declarations(self):
+        """Alias-aware guidance stays read-only, non-blocking, and free of arguments."""
+
+        imports = (
+            ("from harnest.cron import Cron", "Cron"),
+            ("from harnest.cron import Cron as Schedule", "Schedule"),
+            ("from harnest import cron", "cron.Cron"),
+            ("from harnest import cron as schedules", "schedules.Cron"),
+            ("import harnest.cron", "harnest.cron.Cron"),
+            ("import harnest.cron as schedules", "schedules.Cron"),
+            ("import harnest as h", "h.cron.Cron"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            for statement, constructor in imports:
+                with self.subTest(statement=statement):
+                    source = (statement + "\nraise RuntimeError('must not import')\n"
+                              + f"daily = {constructor}('0 9 * * *', task=deliver, arguments={{'secret': 'private-payload'}})\n")
+                    self.write(root / "cron" / "daily.py", source)
+                    plan = plan_upgrade(root)
+                    self.assertEqual((plan.actions, plan.blockers), ((), ()))
+                    self.assertEqual(len(plan.notes), 1)
+                    self.assertIn("cron/daily.py:3:", plan.notes[0])
+                    self.assertIn("Cron(...) remains supported", plan.notes[0])
+                    self.assertIn("Conversion changes the task identity", plan.notes[0])
+                    self.assertNotIn("private-payload", plan.notes[0])
+                    self.assertEqual(plan.public()["notes"], list(plan.notes))
+                    self.assertIsNone(apply_upgrade(plan))
+                    self.assertEqual((root / "cron" / "daily.py").read_text(), source)
+
+    def test_cron_advice_composes_with_required_import_migration(self):
+        """Legacy imports migrate once while supported constructors remain unchanged."""
+
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            source = "from harnest import Agent, Cron as Schedule\ndaily = Schedule('0 9 * * *', task=deliver)\n"
+            self.write(root / "cron" / "daily.py", source)
+            plan = plan_upgrade(root)
+            self.assertEqual(plan.blockers, ())
+            self.assertEqual(len(plan.notes), 1)
+            self.assertIn("cron/daily.py:2:", plan.notes[0])
+            backup = apply_upgrade(plan)
+            self.assertEqual((backup / "cron" / "daily.py").read_text(), source)
+            self.assertEqual(json.loads((backup / "plan.json").read_text())["notes"], list(plan.notes))
+            migrated = (root / "cron" / "daily.py").read_text()
+            self.assertIn("from harnest.cron import Cron as Schedule", migrated)
+            self.assertIn("daily = Schedule('0 9 * * *', task=deliver)", migrated)
+            self.assertEqual(plan_upgrade(root).actions, ())
+            for arguments in ([], ["--apply"]):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    result = cli_main(["upgrade", str(root), *arguments])
+                self.assertEqual(result, 0)
+                self.assertIn("Optional migrations:", stdout.getvalue())
+                self.assertIn("@cron(", stdout.getvalue())
+                self.assertEqual((root / "cron" / "daily.py").read_text(), migrated)
+
+    def test_cron_advice_ignores_new_decorators_and_unrelated_types(self):
+        """Only recognized Harnest constructor calls warrant migration guidance."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            self.write(root / "cron" / "daily.py",
+                       "from harnest.cron import cron\n"
+                       "@cron('0 9 * * *')\ndef daily():\n    '''Scheduled work.'''\n")
+            self.write(root / "lib" / "other.py",
+                       "from unrelated import Cron\nvalue = Cron()\n")
+            self.write(root / ".venv" / "old.py",
+                       "from harnest.cron import Cron\nvalue = Cron()\n")
+            self.assertEqual(plan_upgrade(root).notes, ())
+
     def test_python_minimum_common_requirement_shapes(self):
         """Preserve broad policy and move only supported minor-specific constraints."""
         from harnest.upgrade_python import _project_source
