@@ -113,7 +113,13 @@ def _state_delta_output_item(event: RuntimeEvent) -> dict[str, Any]:
     }
 
 
+def _ui_output_item(event: RuntimeEvent) -> dict[str, Any]:
+    """Expose only the authored display event, independent of native transport metadata."""
+    return {"type": "ui_event", "name": event.get("name"), "value": event.get("value"), **_public_event_agent(event)}
+
+
 _SIMPLE_OUTPUT_ITEM_BUILDERS = {
+    "ui_event": _ui_output_item,
     "tool_call": _tool_call_output_item,
     "tool_result": _tool_result_output_item,
     "state_delta": _state_delta_output_item,

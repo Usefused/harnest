@@ -74,6 +74,44 @@ class _BuilderFixture(unittest.TestCase):
 
 
 class AgentBuilderTests(_BuilderFixture):
+    def test_agui_transport_preview_preserves_source_and_conflict_checked_apply(self):
+        """Edit only transport policy, including legacy files and environment references."""
+        path = self.project / "config.yaml"
+        original = path.read_text() + "# server policy\nserver:\n  live: false # keep this comment\n  agui: ${AGUI} # deployment choice\n"
+        path.write_text(original)
+        self.assertEqual(self.client.get("/api/transports?project=sample").json()["agui"], "${AGUI}")
+        response = self.client.post("/api/transports/preview", json={"project":"sample", "agui":False})
+        self.assertEqual(response.status_code, 200, response.text)
+        file = response.json()["files"][0]
+        self.assertEqual(file["text"], original.replace("${AGUI}", "false"))
+        self.assertEqual(path.read_text(), original)
+        change = {key:file[key] for key in ("path", "text", "revision")}
+        path.write_text(original + "# concurrent edit\n")
+        self.assertEqual(self.client.put("/api/files", json={"project":"sample", "files":[change]}).status_code, 409)
+        path.write_text(original)
+        self.assertEqual(self.client.put("/api/files", json={"project":"sample", "files":[change]}).status_code, 200)
+        self.assertIn("agui: false", path.read_text())
+        self.assertEqual(self.client.post("/api/transports/preview", json={"project":"sample", "agui":"false"}).status_code, 422)
+
+    def test_agui_transport_preview_handles_missing_flow_legacy_and_ambiguous_yaml(self):
+        """Keep native YAML variants usable and reject ambiguous anchored scalar edits."""
+        from harnest_builder.transports import proposal
+        import yaml
+        path = self.project / "config.yaml"
+        for text in ("metadata: {name: sample}\n", "server: {}\n", "server: {live: false}\n", "server:\n  live: false\n"):
+            path.write_text(text)
+            output = proposal(self.project.resolve(), True)["files"][0]["text"]
+            self.assertTrue(yaml.safe_load(output)["server"]["agui"])
+        path.write_text("metadata: {name: sample}\n")
+        from harnest.server_config import DEFAULT_SERVER_YAML
+        legacy = self.project / "server.yaml"
+        legacy.write_text(DEFAULT_SERVER_YAML)
+        self.assertEqual(proposal(self.project.resolve(), False)["files"][0]["path"], "server.yaml")
+        legacy.unlink()
+        for text in ("server:\n  agui: true\n  agui: false\n", "server: &policy {agui: true}\n", "server: {unknown: true}\n"):
+            path.write_text(text)
+            self.assertEqual(self.client.post("/api/transports/preview", json={"project":"sample", "agui":False}).status_code, 422)
+
     """Exercise the real standalone routes against temporary, explicitly owned projects."""
 
     def test_launch_authorization_and_same_origin(self):
@@ -164,12 +202,67 @@ class AgentBuilderTests(_BuilderFixture):
 
     def test_components_create_native_files_and_refuse_collisions(self):
         """Non-command resources become source immediately and never replace an existing identity."""
-        for kind in ("skill", "plugin", "model", "library", "test", "smoke", "storage", "sandbox", "eval"):
-            body = {"project": "sample", "kind": kind, "name": "example"}
+        for kind in ("skill", "plugin", "model", "library", "test", "smoke", "storage", "sandbox", "cron", "client-input", "ui-event", "agui"):
+            body = {"project": "sample", "kind": kind, "name": "example_" + kind.replace("-", "_")}
             result = self.client.post("/api/component", json=body)
             self.assertEqual(result.status_code, 200, result.text)
             self.assertTrue((self.project / result.json()["files"][0]["path"]).is_file())
             self.assertEqual(self.client.post("/api/component", json=body).status_code, 409)
+
+    def test_storage_starters_resolve_one_shared_task_and_cron_provider(self):
+        """Discover real memory and database factories without opening external connections."""
+        from harnest.extension_loader import discover_extensions
+        from harnest_builder.catalog import template
+
+        for provider in ("memory", "postgres", "redis"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path, source = next(iter(template("task-storage", "queue_store", {"provider": provider}).items()))
+                (root / path).parent.mkdir()
+                (root / path).write_text(source)
+                session_path, session_source = next(iter(template("storage", "session_store", {}).items()))
+                (root / session_path).write_text(session_source)
+                with patch.dict(os.environ, {"DATABASE_URL": "postgresql://localhost/test", "REDIS_URL": "redis://localhost/0"}):
+                    hooks = discover_extensions(root / "lifecycle", framework="adk")
+                self.assertIs(hooks.storage_registry.tasks, hooks.storage_registry.cron)
+                self.assertEqual(len(hooks.storage_registry.owned_resources()), 2)
+
+    def test_agui_smoke_starter_runs_without_invoking_the_model(self):
+        """Execute the generated test against a real neutral HTTP app, including its SSE response."""
+        from harnest.neutral_runtime import create_neutral_app
+        from harnest_builder.catalog import template
+        from test_neutral_runtime import FakeDriver
+
+        source = next(iter(template("agui", "handshake", {}).values()))
+        namespace = {}
+        exec(compile(source, "test_handshake.py", "exec"), namespace)
+        driver = FakeDriver()
+        with TestClient(create_neutral_app(driver)) as client:
+            namespace["test_agui_handshake"](client)
+        self.assertEqual(driver.invocations, [])
+
+    def test_runtime_component_validation_rejects_invalid_source_before_write(self):
+        """Reject invalid schedule policy and JSON through the public HTTP boundary."""
+        options = [
+            {"schedule": "not cron"}, {"arguments": "[]"}, {"arguments": "{"},
+            {"arguments": '{"x": NaN}'}, {"queue": "bad queue"},
+            {"max_retries": "101"}, {"mode": "unknown"},
+            {"mode": "existing", "task": "../escape"},
+        ]
+        for value in options:
+            with self.subTest(options=value):
+                response = self.client.post("/api/component", json={"project": "sample", "kind": "cron", "name": "invalid", "options": value})
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertFalse((self.project / "cron/invalid.py").exists())
+
+    def test_unavailable_eval_catalog_is_actionable_and_source_is_untouched(self):
+        """An older/missing CLI cannot silently fall back to stale evaluation scaffolds."""
+        response = self.client.get("/api/evaluation-metrics")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("updated Harnest CLI", response.json()["detail"])
+        response = self.client.post("/api/component", json={"project": "sample", "kind": "eval", "name": "old"})
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse((self.project / "evals").exists())
 
     def test_graph_node_creation_and_wiring_changes_real_source(self):
         """A visual graph node creates its module, import, and Graph.nodes entry together."""
@@ -209,6 +302,23 @@ class AgentBuilderTests(_BuilderFixture):
         job = self.wait_job(response.json()["id"])
         self.assertEqual(job["status"], "failed")
         self.assertIn("Unable to run Harnest", job["output"])
+
+    def test_execution_options_forward_only_the_selected_cli_policy(self):
+        """Keep dependency profiles separate from init profiles and reject unknown policy values."""
+        with patch.object(self.app.state.jobs, "start", return_value={"id": "test"}) as start:
+            for trajectory in ("business", "strict"):
+                response = self.client.post("/api/command", json={"action": "eval", "project": "sample", "eval_trajectory": trajectory})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(start.call_args.args[0], ["test", str(self.project.resolve()), "--evals", "--eval-trajectory", trajectory])
+            for profile in ("runtime", "compile", "development", "eval"):
+                response = self.client.post("/api/command", json={"action": "sync", "project": "sample", "environment_profile": profile})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(start.call_args.args[0], ["env", "sync", str(self.project.resolve()), "--profile", profile])
+            start.reset_mock()
+            for options in ({"eval_trajectory": "approximate"}, {"environment_profile": "--help"}):
+                response = self.client.post("/api/command", json={"action": "eval", "project": "sample", **options})
+                self.assertEqual(response.status_code, 422)
+            start.assert_not_called()
 
     def test_running_commands_block_saves_and_can_be_stopped(self):
         """Job cancellation releases a real process group and prevents concurrent CLI/source writes."""
@@ -561,6 +671,48 @@ class AgentBuilderCLIIntegrationTests(_BuilderFixture):
                 self.assertEqual(job["status"], "succeeded", job["output"])
         self.assertTrue((self.root / "real-agent/tools/lookup.py").is_file())
         self.assertTrue((self.root / "real-agent/.harnest/builder/harnest-agent").is_file())
+
+    def test_current_runtime_starters_and_eval_presets_compile_on_both_frameworks(self):
+        """Exercise Studio's new forms against the actual CLI and compiler without live models."""
+        self.app.state.jobs.cli = self.cli
+        metrics = self.client.get("/api/evaluation-metrics").json()["metrics"]
+        self.assertTrue({"response_match_score", "custom"} <= {item["id"] for item in metrics})
+        for framework in ("adk", "langgraph"):
+            with self.subTest(framework=framework), patch.dict(os.environ, {"HARNEST_PYTHON": sys.executable}):
+                self._compile_runtime_starters(framework)
+
+    def _successful_command(self, **body):
+        """Run one browser command and surface the CLI's failure output in assertions."""
+        response = self.client.post("/api/command", json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        job = self.wait_job(response.json()["id"])
+        self.assertEqual(job["status"], "succeeded", job["output"])
+        return job
+
+    def _compile_runtime_starters(self, framework):
+        """Check canonical eval merging, private tools, and both cron authoring modes together."""
+        project = framework + "-current"
+        self._successful_command(action="init", name=project, framework=framework, profile="minimal")
+        components = [("cron", "daily", {}), ("cron", "on_demand", {"mode": "dynamic", "queue": "reports", "max_retries": "5"}), ("task-storage", "queue_store", {}), ("client-input", "private_form", {})]
+        for kind, name, options in components:
+            response = self.client.post("/api/component", json={"project": project, "kind": kind, "name": name, "options": options})
+            self.assertEqual(response.status_code, 200, response.text)
+        self._successful_command(action="add", project=project, kind="task", name="existing_task")
+        scheduled = self.client.post("/api/component", json={"project": project, "kind": "cron", "name": "existing_schedule", "options": {"mode": "existing", "task": "existing_task", "arguments": '{"payload": "report"}'}})
+        self.assertEqual(scheduled.status_code, 200, scheduled.text)
+        self._successful_command(action="add", project=project, kind="eval", name="quality", metric="response_match_score")
+        root = self.root / project
+        config = root / "evals/test_config.json"
+        payload = json.loads(config.read_text())
+        payload["criteria"]["response_match_score"] = 0.93
+        config.write_text(json.dumps(payload))
+        self._successful_command(action="add", project=project, kind="eval", name="trajectory", metric="tool_trajectory_avg_score")
+        self._successful_command(action="add", project=project, kind="eval", name="custom_score", metric="custom")
+        criteria = json.loads(config.read_text())["criteria"]
+        self.assertEqual(criteria["response_match_score"], 0.93)
+        self.assertIn("tool_trajectory_avg_score", criteria)
+        self.assertIn("NotImplementedError", (root / "lib/custom_score.py").read_text())
+        self._successful_command(action="compile", project=project)
 
     def test_real_external_init_and_local_extension_install(self):
         """Exercise chosen save destinations and extension authoring/install against the real CLI."""

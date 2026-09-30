@@ -1,10 +1,10 @@
+import {runtimeFields, evaluationFields, executionFields, activeField} from "./components.js";
 import {mcpPanel,reviewMCP} from "./mcp.js";
 import {$, el, on, error, status, button, field, select, modal, preference, sendDraft, renderDiff, renderCommandOutput, commandOutputText, copyCommandText} from "./ui.js";
 import {deploymentEnabled,renderDeploymentControl} from "./features.js";
 import {Canvas, ICONS, kindOf} from "./canvas.js";
 
 const state = {workspace:null, project:null, document:null, dirty:false, library:"components", view:"canvas", context:new Set(), jobs:[], jobId:null, observed:new Set(), callbacks:new Map(), projectRequest:0, fileRequest:0, inspectorRequest:0, prompting:false};
-const CLI_KINDS = new Set(["tool","subagent","task","lifecycle","context","mcp","channel","extension"]);
 const canvas = new Canvas($("canvas-host"), {drop:(kind,point)=>addComponent(kind,point).catch(error), open:path=>openFile(path).catch(error), select:node=>inspect(node).catch(error), connect:(source,target)=>editConnection({source,target}), edge:edge=>editConnection(edge), assign:(resource,owner)=>editOwnership(resource,owner).catch(error), reconnect:(edge,endpoint,target)=>reconnectEdge(edge,endpoint,target).catch(error), hint:status, zoom:value=>{$("zoom-label").textContent=value+"%";}});
 let token = "";
 let pollTimer;
@@ -316,6 +316,20 @@ function installExtension(project,initial="") {
   form.append(button("Browse local extension…",()=>chooseFolder("Choose an extension folder",source.value.startsWith("/")?source.value:state.workspace.path,path=>{installExtension(project,path);return false;},()=>installExtension(project,source.value))));
 }
 
+/** Review an agent's AG-UI transport policy before applying source changes. */
+async function configureTransports() {
+  if(state.dirty) throw new Error("Save your source edits before configuring transports.");
+  const project=state.project.id, current=await api("transports?project="+encodeURIComponent(project));
+  if(state.project?.id!==project)return;
+  let choice;
+  const form=modal("AG-UI transport",`Configure ${current.path}. AG-UI sends text, tool calls, structured state, results, and resumable actions over SSE. Rebuild and restart after applying changes.`,"Review change",async()=>{
+    const proposed=await api("transports/preview","POST",{project,agui:choice.value==="true"});
+    proposalCard(project,proposed);showSide("assistant");
+  });
+  choice=select(form,"AG-UI endpoint",[["true","Enabled · POST /agui"],["false","Disabled"]],String(current.agui!==false));
+  if(typeof current.agui==="string")form.append(el("p",`Current value uses ${current.agui}. Applying a choice replaces this environment reference with an explicit boolean.`));
+}
+
 /** Open existing root contracts or create components using the authoritative CLI/source route. */
 async function addComponent(kind,point) {
   if(!state.project) {createProject();return;}
@@ -323,35 +337,36 @@ async function addComponent(kind,point) {
   if(!item) return;
   if(item.path) {await openFile(item.path);return;}
   if(kind==="source") {newFile();return;}
+  if(kind==="transports") {await configureTransports();return;}
   if(kind==="node" && !state.project.graph.available) {convertWorkflow();return;}
   const identity=state.project.id;
-  let name,url,tokenEnv,via,task,schedule;
+  const metrics=kind==="eval"?(await api("evaluation-metrics")).metrics:[];
+  if(state.project?.id!==identity)return;
+  let name,url,tokenEnv,via,metric,options=()=>({});
   const form=modal(`Add ${item.title.toLowerCase()}`,item.description,"Add component",async()=>{
-    if(CLI_KINDS.has(kind)) {
-      const job=await command({action:"add",project:identity,kind,name:name.value,url:url?.value||"",token_env:tokenEnv?.value||"",via:via?.value||""});
-      state.callbacks.set(job.id,async()=>{placeComponent(identity,kind,name.value,point);if(state.project?.id===identity)await refreshProject();});
+    const createdName=name.value;
+    if(item.command) {
+      const job=await command({action:"add",project:identity,kind,name:createdName,url:url?.value||"",token_env:tokenEnv?.value||"",via:via?.value||"",metric:metric?.value||"response_match_score"});
+      state.callbacks.set(job.id,async()=>{placeComponent(identity,kind,createdName,point);if(state.project?.id===identity)await refreshProject();});
     } else {
-      await api("component","POST",{project:identity,kind,name:name.value,options:{...(task?{task:task.value,schedule:schedule.value}:{})}});
-      placeComponent(identity,kind,name.value,point);
+      await api("component","POST",{project:identity,kind,name:createdName,options:options()});
+      placeComponent(identity,kind,createdName,point);
       await refreshProject();status(`Created ${item.title.toLowerCase()}. Edit its source to customize it.`);
     }
   });
   name=field(form,"Name","",{required:true,pattern:"[a-z][a-z0-9_-]{0,62}",maxLength:63,placeholder:kind==="channel"?"slack":kind==="tool"?"search":"my_"+kind});
   if(kind==="mcp") {url=field(form,"MCP server URL","",{type:"url",required:true,placeholder:"https://your-server.example/mcp"});tokenEnv=field(form,"Token environment variable (optional)","",{placeholder:"MCP_API_TOKEN",hint:"Stores only the environment variable reference, never the secret."});}
   if(kind==="channel") via=field(form,"Transport extension","fused",{required:true,hint:"The installed extension owns the platform transport and credentials."});
-  if(kind==="cron") {
-    const tasks=state.project.files.filter(p=>/^tasks\/[^_][^/]*\.py$/.test(p)).map(p=>[p.slice(6,-3),p.slice(6,-3)]);
-    task=select(form,"Durable task",tasks.length?tasks:[["","Add a durable task first"]]);task.required=true;
-    schedule=field(form,"UTC schedule","0 9 * * *",{required:true,hint:"Starter arguments use payload='scheduled'; edit them to match your task."});
-  }
-  const notes={sandbox:"Install the docker extension from Run & test → Install extension, then assign this sandbox name to an Agent. Docker is needed when it executes.",node:"This creates a subagent source file and adds it to Graph.nodes. Connect it in Workflow to include it in execution.",storage:"Only one provider may own each storage role. Replace an existing provider instead of creating duplicate authorities.",eval:"Native conversation evals use ADK. For LangGraph, author pytest evaluations through Source file.",subagent:"The CLI adds discovered subagents to managed ADK agents. For a Graph, use Graph agent instead.",tool:"The CLI validates framework and authoring mode. Advanced agents wire tools explicitly in source."};
+  options=runtimeFields(kind,form,state.project.files);
+  if(kind==="eval")metric=evaluationFields(form,metrics);
+  const notes={sandbox:"Install the docker extension from Run & test → Install extension, then assign this sandbox name to an Agent. Docker is needed when it executes.",node:"This creates a subagent source file and adds it to Graph.nodes. Connect it in Workflow to include it in execution.",storage:"Only one provider may own each storage role. Replace an existing provider instead of creating duplicate authorities.",subagent:"The CLI adds discovered subagents to managed ADK agents. For a Graph, use Graph agent instead.",tool:"The CLI validates framework and authoring mode. Advanced agents wire tools explicitly in source."};
   if(notes[kind]) form.append(el("p",notes[kind],"empty-note"));
 }
 
 /** Remember drop coordinates only for the created component's visual source identity. */
 function placeComponent(project,kind,name,point) {
   if(!point) return;
-  const directory={tool:"tools",subagent:"subagents",task:"tasks",lifecycle:"lifecycle",context:"lifecycle",mcp:"mcp",channel:"channels",node:"subagents",library:"lib",model:"models",storage:"lifecycle",sandbox:"sandbox",cron:"cron"}[kind];
+  const directory={tool:"tools",subagent:"subagents",task:"tasks",lifecycle:"lifecycle",context:"lifecycle",mcp:"mcp",channel:"channels",node:"subagents",library:"lib",model:"models",storage:"lifecycle","task-storage":"lifecycle","client-input":"tools",sandbox:"sandbox",cron:"cron"}[kind];
   const mode=$("canvas-mode").value;
   const path=kind==="node"&&mode==="workflow"?name.replaceAll("-","_"):directory?`${directory}/${name.replaceAll("-","_")}.py`:null;
   if(!path) return;
@@ -481,7 +496,10 @@ async function deletedCapabilities() {
   if(!state.project)return;
   const project=state.project.id;
   const result=await api(`capabilities/deleted?project=${encodeURIComponent(project)}`);
-  const form=modal("Deleted capabilities","Restore source to its original location. Existing files are never overwritten.","Done",async()=>{});
+  const form=modal("Deleted capabilities","Restore source to its original location. Existing files are never overwritten.","Save",async()=>{preference("ai-timeout",timeout.value);preference("ai-max-tokens",tokens.value);});
+  const limits=assistantLimits();
+  timeout=field(form,"Model timeout (seconds)",limits.timeout,{type:"number",min:1,max:1800,step:1,required:true,hint:"Per provider call. Range: 1–1800 seconds."});
+  tokens=field(form,"Maximum output tokens",limits.max_tokens,{type:"number",min:1,max:131072,step:1,required:true,hint:"Your provider may impose a lower limit."});
   if(!result.items.length)form.append(el("p","No deleted capabilities in this project.","empty-note"));
   for(const item of result.items) {
     const row=el("div","","dialog-field"), failure=el("p","","dialog-error");
@@ -603,18 +621,13 @@ async function command(body) {
 
 /** Expose the complete local build/test loop and dependency/provider installation. */
 function runMenu() {
-  let action,input,port,extension;
+  let action,options;
   const project=state.project.id;
   const form=modal("Run your agent","Commands run against the project on disk. Save your changes first.","Run command",async()=>{
-    await command({action:action.value,project,input:input.value,port:Number(port.value),name:extension.value});
+    await command({action:action.value,project,...options()});
   });
   action=select(form,"Action",[["serve","Start development server · reload enabled"],["run","Send a prompt to the agent"],["test","Run unit tests"],["smoke","Run smoke tests"],["eval","Run evaluations"],["sync","Sync dependency environment"],["install-extension","Install a Harnest extension"]]);
-  input=field(form,"Prompt for the agent","",{multiline:true,rows:3,placeholder:"What can you help me with?"});
-  port=field(form,"Local server port","1907",{type:"number",min:1024,max:65535});
-  extension=field(form,"Extension package or slug","docker",{placeholder:"docker, rag, hatchet, or a package name"});
-  const hint=el("p","","empty-note");form.append(hint);
-  const update=()=>{input.parentElement.hidden=action.value!=="run";input.required=action.value==="run";port.parentElement.hidden=action.value!=="serve";extension.parentElement.hidden=action.value!=="install-extension";hint.textContent=action.value==="serve"?`The server will listen at http://127.0.0.1:${port.value}. Watch command output for readiness.`:action.value==="run"?"Enable spec.interfaces.cli: true in config.yaml. Live calls use the agent's configured model and tools; results appear in the terminal.":"Commands use the project on disk. Results and failures appear in the terminal.";};
-  form.addEventListener("change",update);update();
+  options=executionFields(form,action);
 }
 
 /** Open the guided review, deployment progress, and agent access screen. */
@@ -652,7 +665,7 @@ function configureDeployment(inspection) {
   form.append(button("Add Redis service example",()=>{const current=services.value.trim();if(/^  ?cache:/m.test(current)||/^cache:/m.test(current))throw new Error("A cache service is already defined.");services.value=(current==="{}"?"":current+"\n")+"cache:\n  mode: provision\n  type: redis\n  image: redis:7.4\n  ports: {redis: 6379}\n  healthcheck: {command: [redis-cli, ping]}\n  persistence: {mount: /data, size: 5Gi}\n  provides:\n    REDIS_URL: redis://${services.cache.host}:${services.cache.ports.redis}/0\n";}));
   network=field(form,"Agent network settings","{}",{multiline:true,rows:3,hint:"Optional YAML: hosts: {host.docker.internal: host-gateway} for local host access, or hostname-to-IP mappings. dns: [IP] replaces default DNS; omit it to retain service discovery."});
   for(const note of inspection.warnings)form.append(el("p",note,"empty-note"));
-  const update=()=>{const kube=backend.value==="kubernetes";context.parentElement.hidden=!kube;namespace.parentElement.hidden=!kube;context.required=kube;namespace.required=kube;};
+  const update=()=>{const kube=backend.value==="kubernetes";activeField(context,kube,true);activeField(namespace,kube,true);};
   backend.addEventListener("change",update);update();
 }
 
@@ -683,6 +696,11 @@ function renderJobs() {
   if(state.jobId) selector.value=state.jobId;
   const job=state.jobs.find(j=>j.id===state.jobId), output=$("job-output");
   renderCommandOutput(output,job?`$ ${job.argv.join(" ")}\n\n${job.output||"Starting command…"}`:"Run a Harnest command to see output here.",job?.id);
+  let workLink=$("open-runtime-work");
+  if(!workLink) {workLink=el("a","Tasks & schedules ↗","button secondary");workLink.id="open-runtime-work";workLink.target="_blank";workLink.rel="noopener noreferrer";$("job-status").parentElement.append(workLink);}
+  const portIndex=job?.argv.indexOf("--port")??-1, port=portIndex>=0?Number(job.argv[portIndex+1]):0;
+  workLink.hidden=!(job?.serving && job.status==="running" && Number.isInteger(port) && port>0 && port<=65535);
+  if(!workLink.hidden) workLink.href=`http://127.0.0.1:${port}/?view=work`;
   $("copy-output").disabled=!job;
   $("job-status").textContent=job?.status||"idle";$("stop-job").hidden=job?.status!=="running";
   const active=state.jobs.filter(j=>j.status==="running").length;$("running-count").textContent=active?`· ${active} running`:"";
@@ -718,7 +736,7 @@ async function sendPrompt(event) {
   preference("model",model);message(prompt,"user");
   const pending=message("Harnest builder agent is reading source and preparing a code proposal…");pending.classList.add("pending");
   try {
-    const proposal=await sendDraft($("prompt"),submitted=>api("propose","POST",{project,prompt:submitted,model,paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked}),()=>state.project?.id===project);
+    const proposal=await sendDraft($("prompt"),submitted=>api("propose","POST",{project,prompt:submitted,model,...assistantLimits(),paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked}),()=>state.project?.id===project);
     pending.remove();proposalCard(project,proposal);
   } catch(problem) {pending.classList.remove("pending");pending.classList.add("error");pending.textContent=problem.message;}
   finally {state.prompting=false;$("send-prompt").disabled=!state.project;}
@@ -751,9 +769,18 @@ function reviewProposal(project,proposal,reviewButton) {
   choose(proposal.files[0]);
 }
 
-/** Explain provider setup without accepting or persisting credentials in browser state. */
+/** Apply local model-budget preferences over the validated host defaults. */
+function assistantLimits() {
+  return {timeout:Number(preference("ai-timeout") || state.workspace.llm.timeout),max_tokens:Number(preference("ai-max-tokens") || state.workspace.llm.max_tokens)};
+}
+
+/** Configure bounded provider budgets for subsequent proposals. */
 function providerHelp() {
-  const form=modal("Connect your model","Build with AI runs a compiled Harnest agent grounded in the bundled Harnest authoring skills. It uses your chosen model through LiteLLM. Set provider credentials in the terminal that starts Studio, then restart Studio.","Done",async()=>{});
+  let timeout,tokens;
+  const form=modal("Connect your model","Build with AI runs a compiled Harnest agent grounded in the bundled Harnest authoring skills. It uses your chosen model through LiteLLM. Set provider credentials in the terminal that starts Studio, then restart Studio.","Save",async()=>{preference("ai-timeout",timeout.value);preference("ai-max-tokens",tokens.value);});
+  const limits=assistantLimits();
+  timeout=field(form,"Model timeout (seconds)",limits.timeout,{type:"number",min:1,max:1800,step:1,required:true,hint:"Per provider call. Range: 1–1800 seconds."});
+  tokens=field(form,"Maximum output tokens",limits.max_tokens,{type:"number",min:1,max:131072,step:1,required:true,hint:"Your provider may impose a lower limit."});
   form.append(el("pre","export HARNEST_BUILDER_MODEL=provider/model\n\n# Use your provider's standard key environment variable,\n# or a builder-specific key:\nexport HARNEST_BUILDER_API_KEY=...\n\n# Optional compatible endpoint:\nexport HARNEST_BUILDER_API_BASE=https://your-endpoint/v1","command-preview"));
   form.append(el("p","Provider requests include your prompt and selected source files. Credentials are read only by the local server.","empty-note"));
 }

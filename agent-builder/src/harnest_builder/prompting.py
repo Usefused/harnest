@@ -10,6 +10,7 @@ import re
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .assistant_settings import AssistantLimits
 from .catalog import catalog
 from .files import inventory, read, source_path, validate
 from harnest.provisioner_config import Deployment
@@ -23,6 +24,8 @@ class Prompt(BaseModel):
     project: str
     prompt: str = Field(min_length=1, max_length=16000)
     model: str = Field(default="", max_length=200)
+    timeout: int | None = Field(default=None, ge=1, le=1800)
+    max_tokens: int | None = Field(default=None, ge=1, le=131072)
     paths: list[str] = Field(default_factory=list, max_length=24)
     allow_related_source: bool = False
     allow_fused_discovery: bool = False
@@ -30,7 +33,7 @@ class Prompt(BaseModel):
 
 def settings() -> dict:
     """Expose model identifiers and readiness without returning any credential values."""
-    return {"model": os.getenv("HARNEST_BUILDER_MODEL", ""), "configured": bool(os.getenv("HARNEST_BUILDER_MODEL"))}
+    return {"model": os.getenv("HARNEST_BUILDER_MODEL", ""), "configured": bool(os.getenv("HARNEST_BUILDER_MODEL")), **AssistantLimits.from_environment().model_dump()}
 
 
 async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session="") -> dict:
@@ -38,6 +41,7 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
     model = body.model.strip() or settings()["model"]
     if not model:
         raise HTTPException(422, "Set HARNEST_BUILDER_MODEL or enter a LiteLLM model identifier, such as openai/your-model.")
+    limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **body.model_dump(include={"timeout", "max_tokens"}, exclude_none=True)})
     root = workspace.project(body.project)
     with workspace.lock:
         documents = [read(root, p) for p in dict.fromkeys(body.paths)]
@@ -47,7 +51,7 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
     source_rounds = 0
     for attempt in range(9):
         context = _context(documents, known, body.allow_related_source, fused)
-        content = await _complete(model, body.prompt, context, completion)
+        content = await _complete(model, body.prompt, context, completion, limits)
         payload = _payload(content)
         handled = await _fused_reply(payload, mcp, session, body, fused)
         if handled is not None:
@@ -154,11 +158,11 @@ def _expand_source(workspace, root, documents: list[dict], missing: list[str], a
         documents.extend(read(root, path) for path in missing)
 
 
-async def _complete(model: str, prompt: str, context: str, completion) -> str:
+async def _complete(model: str, prompt: str, context: str, completion, limits: AssistantLimits | None = None) -> str:
     """Call the compiled agent boundary and keep diagnostics from exposing credentials."""
     if completion is None:
         raise HTTPException(503, "The Harnest builder agent is not configured.")
-    options = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": context}, {"role": "user", "content": prompt}], "timeout": 120, "max_tokens": 12000}
+    options = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": context}, {"role": "user", "content": prompt}], **(limits or AssistantLimits.from_environment()).model_dump()}
     if os.getenv("HARNEST_BUILDER_API_BASE"):
         options["api_base"] = os.environ["HARNEST_BUILDER_API_BASE"]
     if os.getenv("HARNEST_BUILDER_API_KEY"):

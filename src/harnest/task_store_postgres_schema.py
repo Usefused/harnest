@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS harnest_durable_tasks (
     PRIMARY KEY(application_id, job_id),
     UNIQUE(application_id, user_id, task_name, idempotency_key)
 );
+CREATE INDEX IF NOT EXISTS harnest_durable_tasks_owner
+ON harnest_durable_tasks(application_id, user_id, job_id);
 CREATE INDEX IF NOT EXISTS harnest_durable_tasks_ready
 ON harnest_durable_tasks(application_id, queue, scheduled_at, job_id)
 WHERE status='pending';
@@ -49,6 +51,8 @@ CREATE TABLE IF NOT EXISTS harnest_durable_crons (
     PRIMARY KEY(application_id,schedule_id),
     UNIQUE(application_id,user_id,schedule_key)
 );
+CREATE INDEX IF NOT EXISTS harnest_durable_crons_owner
+ON harnest_durable_crons(application_id,user_id,schedule_id);
 CREATE INDEX IF NOT EXISTS harnest_durable_crons_due
 ON harnest_durable_crons(application_id,next_run_at,schedule_id)
 WHERE status='active';

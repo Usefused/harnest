@@ -125,6 +125,19 @@ root_agent = Agent.advanced(LlmAgent(name="live_fixture", model="gemini-test"))
                             self.assertEqual(caught.exception.code, 1008)
                     self.assertEqual(calls, [])
 
+    def test_agui_setting_controls_discovery_and_endpoint_on_every_backend(self):
+        """Carry source configuration through compilation and the real server factory."""
+        for framework, mode in (("adk", "managed"), ("langgraph", "managed"), ("adk", "advanced")):
+            for enabled in (True, False):
+                with self.subTest(framework=framework, mode=mode, enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                    app = self._server(Path(directory), framework, mode, {"agui":enabled})
+                    with TestClient(app, base_url="http://127.0.0.1") as client:
+                        self.assertEqual("agui" in client.get("/agent").json()["endpoints"], enabled)
+                        response = client.post("/agui", json={"messages":[], "state":{}})
+                        self.assertEqual(response.status_code, 200 if enabled else 404)
+                        if enabled:
+                            self.assertIn("RUN_FINISHED", response.text)
+
     def test_true_enables_live_handshake_for_each_backend(self):
         """The compiled startup setting exposes discovery and a usable live session."""
         for framework, mode in (("adk", "managed"), ("langgraph", "managed"), ("adk", "advanced")):

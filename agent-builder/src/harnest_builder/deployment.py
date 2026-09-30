@@ -145,10 +145,11 @@ def _connections(services: list[dict]) -> dict:
 
 
 def _services(variables: set[str], source: str, configured: dict) -> list[dict]:
-    """Report service hints without assuming optional backends must be provisioned."""
+    """Recognize session and task providers without assuming backends must be provisioned."""
     result = []
     if "DATABASE_URL" in variables:
-        result.append({"name": "database", "type": "postgres" if "PostgresStore" in source else "database", "variables": ["DATABASE_URL"]})
+        postgres = any(provider in source for provider in ("PostgresStore", "PostgresTaskStore"))
+        result.append({"name": "database", "type": "postgres" if postgres else "database", "variables": ["DATABASE_URL"]})
     if "REDIS_URL" in variables:
         result.append({"name": "redis", "type": "redis", "variables": ["REDIS_URL"]})
     if "11434" in str(configured) or "ollama" in source.lower():

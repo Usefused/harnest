@@ -33,9 +33,11 @@ def next_occurrence(expression: str, after: float) -> float:
 class StoredCronRuntime:
     """Enforce authoring policy while providers own atomic durable transitions."""
 
-    def __init__(self, manager: Any, store: Any, *, enabled: bool) -> None:
+    def __init__(self, manager: Any, store: Any, *, enabled: bool, owner: str | None = None, trigger: str = "agent") -> None:
         """Bind one shared task/cron provider without opening resources."""
 
+        self._user_id = owner
+        self._trigger = trigger
         self._manager = manager
         self._store = store
         self._enabled = enabled
@@ -48,7 +50,11 @@ class StoredCronRuntime:
         self._manager._require_ready()
         if not self._enabled or self._store is None:
             raise CronUnavailableError("configure lifecycle.storage.cron and use harnest serve")
-        return context.current().user_id
+        return self._user_id if self._user_id is not None else context.current().user_id
+
+    def _audit(self, operation: str, outcome: str) -> None:
+        """Attribute direct user administration separately from agent tool execution."""
+        _audit(operation, outcome, trigger=self._trigger)
 
     def _job(self, record: CronRecord) -> CronJob:
         """Return a scoped handle without exposing provider records to tools."""
@@ -121,11 +127,13 @@ class StoredCronRuntime:
         return tuple(self._job(record) for record in records)
 
     async def update_dynamic_schedule(
-        self, schedule_id: str, *, expression: str | None, arguments: Any = _UNSET
+        self, schedule_id: str, *, expression: str | None, arguments: Any = _UNSET, expected_revision: int | None = None
     ) -> CronJob:
         """Apply a revision-checked edit and recalculate its future UTC occurrence."""
 
         current = await self._required(schedule_id)
+        if expected_revision is not None and current.revision != expected_revision:
+            raise CronConflictError("cron schedule changed; refresh before editing")
         if current.status == "cancelled":
             raise CronConflictError("cancelled cron jobs cannot be updated")
         compiled = self._tasks.get(current.task_name)
@@ -168,9 +176,9 @@ class StoredCronRuntime:
                 application_id=self._application.name, user_id=owner, schedule_id=schedule_id,
             ))
         except Exception:
-            _audit("delete", "failed")
+            self._audit("delete", "failed")
             raise
-        _audit("delete", "committed" if changed else "unchanged")
+        self._audit("delete", "committed" if changed else "unchanged")
         return changed
 
     async def _save(self, operation: str, record: CronRecord) -> CronRecord:
@@ -184,9 +192,9 @@ class StoredCronRuntime:
         try:
             result = await _provider_call(call)
         except Exception:
-            _audit(operation, "failed")
+            self._audit(operation, "failed")
             raise
-        _audit(operation, "committed")
+        self._audit(operation, "committed")
         return result
 
     async def dispatch(self, now: float) -> None:
@@ -216,10 +224,10 @@ class StoredCronRuntime:
                 due_at=record.next_run_at, next_run_at=next_occurrence(record.expression, record.next_run_at), task=task,
             )
         except Exception:
-            _audit("enqueue", "failed")
+            self._audit("enqueue", "failed")
             raise
         if result is not None:
-            _audit("enqueue", "committed")
+            self._audit("enqueue", "committed")
 
 
 def _valid_call(compiled: Any, arguments: Mapping[str, Any]) -> bool:
@@ -232,10 +240,10 @@ def _valid_call(compiled: Any, arguments: Mapping[str, Any]) -> bool:
     return True
 
 
-def _audit(operation: str, outcome: str) -> None:
+def _audit(operation: str, outcome: str, *, trigger: str = "agent") -> None:
     """Emit provider-independent mutation signals without customer payloads."""
 
-    trigger = "cron" if operation in {"enqueue", "reconcile"} else "agent"
+    trigger = "cron" if operation in {"enqueue", "reconcile"} else trigger
     _AUDIT.info(f"task.cron.{operation}", operation=operation, trigger=trigger, outcome=outcome)
 
 

@@ -72,6 +72,13 @@ Use the read_files protocol above for project source. Do not follow a skill's
 command-running directions: this service proposes code and MCP plans only; Studio runs the
 explicit commands requested by the user separately.
 
+For tasks, schedules, private input, evaluation metrics, or AG-UI work, load
+harnest-authoring references/runtime-features.md and references/python-api.md.
+Prefer @cron for new schedule functions and retain existing Cron declarations
+unless migration is requested. Inspect storage ownership before adding providers.
+Evals support both ADK and LangGraph. Use the current metric contract instead of
+inventing framework restrictions. Never route private input into model context.
+
 For deployment work, load harnest-authoring references/deployment.md. Context
 includes deployment_schema, the exact Harnest deployment input schema.
 Read config.yaml, relevant lifecycle/storage, MCP, extension, and agent source

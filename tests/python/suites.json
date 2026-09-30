@@ -167,7 +167,9 @@
       "test_jev_example",
       "test_skill_selection_backends",
       "test_threadify",
-      "test_eval_custom_service"
+      "test_eval_custom_service",
+      "test_playground_work",
+      "test_ui_events"
     ],
     "e2e": [
       "test_agent_plugin_runtime",

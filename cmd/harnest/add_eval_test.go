@@ -10,6 +10,30 @@ import (
 	"testing"
 )
 
+// TestListEvalMetrics returns the canonical JSON catalog without a project or writes.
+func TestListEvalMetrics(t *testing.T) {
+	root := t.TempDir()
+	output, _, err := executeForTest(t, defaultSystem(), "add", "eval", "--list-metrics", "--project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual []evalScaffold
+	if err := json.Unmarshal([]byte(output), &actual); err != nil {
+		t.Fatal(err)
+	}
+	expected, _ := evalScaffolds()
+	if len(actual) != len(expected) || actual[len(actual)-1].ID != "custom" {
+		t.Fatalf("unexpected presets: %s", output)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("listing changed the project: %v %v", entries, err)
+	}
+	if _, _, err := executeForTest(t, defaultSystem(), "add", "eval", "unwanted", "--list-metrics"); err == nil {
+		t.Fatal("listing accepted an ignored resource name")
+	}
+}
+
 // TestAddEvalCreatesPresets covers every CLI choice without initializing Python dependencies.
 func TestAddEvalCreatesPresets(t *testing.T) {
 	choices, err := evalScaffolds()

@@ -4,6 +4,7 @@ import os
 
 from harnest.agent import Agent
 from harnest.model import LiteLLMModel
+from harnest.lib.builder_settings import AssistantLimits
 
 
 root_agent = Agent(
@@ -16,7 +17,6 @@ root_agent = Agent(
             ("api_base", "HARNEST_BUILDER_API_BASE"),
             ("api_key", "HARNEST_BUILDER_API_KEY"),
         ) if os.getenv(value)},
-        timeout=120,
-        max_tokens=12000,
+        **AssistantLimits.from_environment().model_dump(),
     ),
 )

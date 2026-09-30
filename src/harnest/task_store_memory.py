@@ -69,6 +69,17 @@ class MemoryTaskStore:
                 return None
             return _copy_record(record)
 
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Return a bounded owner-scoped metadata page without copying private payloads."""
+        from .task_inspection import task_metadata, task_page, validate_page
+
+        validate_page(limit)
+        async with self._lock:
+            records = sorted((item for item in self._tasks.values()
+                              if item.application_id == application_id and item.user_id == user_id
+                              and (after is None or item.job_id > after)), key=lambda item: item.job_id)
+            return task_page([task_metadata(item) for item in records[:limit]], limit)
+
     async def claim_tasks(
         self, *, application_id: str, queues: tuple[str, ...], now: float,
         lease_seconds: float, limit: int = 1,
@@ -193,6 +204,17 @@ class MemoryTaskStore:
                 key=lambda item: item.schedule_id,
             )
             return tuple(_copy_record(item) for item in records[:limit])
+
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Project an owner-scoped schedule page without copying task arguments."""
+        from .task_inspection import CRON_FIELDS, cron_page, validate_page
+
+        validate_page(limit)
+        async with self._lock:
+            records = sorted((item for item in self._crons.values()
+                              if item.application_id == application_id and item.user_id == user_id
+                              and item.schedule_id > (after or "")), key=lambda item: item.schedule_id)
+            return cron_page([{name: getattr(item, name) for name in CRON_FIELDS} for item in records[:limit]], limit)
 
     async def update_cron(
         self, record: CronRecord, *, expected_revision: int

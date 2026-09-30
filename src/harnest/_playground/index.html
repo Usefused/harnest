@@ -30,6 +30,7 @@
         <nav class="workspace-nav" aria-label="Workspace">
           <button class="workspace-nav-item active" data-workspace="chat" type="button" aria-pressed="true"><span aria-hidden="true">⌁</span> Playground</button>
           <button class="workspace-nav-item" data-workspace="evals" type="button" aria-pressed="false"><span aria-hidden="true">✓</span> Evals</button>
+          <button class="workspace-nav-item" data-workspace="work" type="button" aria-pressed="false"><span aria-hidden="true">◷</span> Work</button>
         </nav>
 
         <section class="session-panel chat-only" aria-labelledby="session-heading">
@@ -115,6 +116,7 @@
             <button class="transport active" data-transport="stream" role="radio" aria-checked="true" type="button">Stream</button>
             <button class="transport" data-transport="response" role="radio" aria-checked="false" type="button">Response</button>
             <button class="transport" data-transport="live" role="radio" aria-checked="false" type="button" disabled title="Live connections are disabled for this agent">Live</button>
+            <button class="transport" data-transport="agui" role="radio" aria-checked="false" type="button" disabled>AG-UI</button>
           </div>
         </section>
         <div id="connection-status" class="status" data-tone="pending">
@@ -128,6 +130,8 @@
       <main class="workspace">
 
         <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+        <section id="work-workspace" class="work-workspace" hidden aria-label="Tasks and schedules"></section>
 
         <div id="chat-workspace" class="chat-workspace">
           <section id="conversation" class="conversation" aria-live="polite">
@@ -259,6 +263,8 @@
     <dialog id="builder-dialog" class="builder-dialog" aria-labelledby="builder-dialog-title"></dialog>
     <script src="/_harnest/selects.js?v=2" defer></script>
     <script src="/_harnest/builder.js?v=2" defer></script>
+    <script src="/_harnest/work.js"></script>
+    <script src="/_harnest/agui.js"></script>
     <script src="/_harnest/playground.js?v=15" defer></script>
   </body>
 </html>

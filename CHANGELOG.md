@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Add owner-scoped live task and cron management in Playground, linked from
+  Studio, with bounded metadata queries, cancellation, and audited schedule
+  changes. Fixed schedules remain source-controlled.
+- Add AG-UI chat and batch continuation forms to Playground, plus Studio
+  configuration for the new `server.agui` transport setting. Existing agents
+  keep AG-UI enabled unless explicitly disabled.
+- Add `harnest.ui.emit` for bounded, invocation-scoped custom UI events across
+  ADK and LangGraph, a Studio authoring scaffold, and inert Playground rendering.
+- Make Studio AI model timeouts and output-token limits configurable per request
+  and through host defaults, with matching compiled-agent and HTTP deadlines.
+
+- Bring Studio authoring up to date with fixed and dynamic cron functions, shared
+  task/cron storage, private client input, AG-UI smoke tests, and CLI-owned
+  evaluation presets for ADK and LangGraph. Refresh the bundled AI guidance and
+  standalone runtime dependency; clear submitted private input in Playground.
+- Expose evaluation authoring presets as JSON with `harnest add eval --list-metrics`.
+- Add Studio controls for evaluation trajectory matching and dependency profiles;
+  prevent hidden fields from blocking another form mode and recognize PostgreSQL
+  task storage during deployment discovery.
 - Add `@cron(...)` for fixed and dynamic schedules in `cron/`, automatically
   registering queued tasks with configurable queue and retry policy. Dynamic
   schedules can select deployed cron functions by name without importing them.

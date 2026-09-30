@@ -32,6 +32,17 @@ class ServerConfigTests(unittest.TestCase):
             with self.assertRaises(ServerConfigError):
                 load_server_config(path, environment={"API_DOCS": "nope"})
 
+    def test_agui_policy_preserves_legacy_default_and_validates_environment(self):
+        """Keep existing AG-UI endpoints enabled while allowing strict transport selection."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.yaml"
+            path.write_text(DEFAULT_SERVER_YAML.replace("agui: true\n", ""))
+            self.assertTrue(load_server_config(path).agui)
+            path.write_text(DEFAULT_SERVER_YAML.replace("agui: true", "agui: ${AGUI}"))
+            self.assertFalse(load_server_config(path, environment={"AGUI":"false"}).agui)
+            with self.assertRaises(ServerConfigError):
+                load_server_config(path, environment={"AGUI":"private-invalid-value"})
+
     def test_api_startup_urls_follow_effective_host_port_and_visibility(self):
         """Print discoverable resources only when enabled, including usable IPv6 URLs."""
         from harnest.runtime_openapi import announce_openapi

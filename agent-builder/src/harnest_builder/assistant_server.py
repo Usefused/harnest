@@ -20,6 +20,7 @@ from fastapi import HTTPException
 import httpx
 
 from .assistant_build import PACKAGE, compile_assistant
+from .assistant_settings import AssistantLimits
 from .processes import terminate_tree
 from .assistant_errors import MESSAGES, RETRYABLE, failure_category
 
@@ -87,25 +88,27 @@ class AssistantServer:
         self.process = None
         self.client = None
         self.model = None
+        self.limits = None
         self.lock = asyncio.Lock()
         self.temporary = None
         self.log = None
         self.diagnostics = None
         self.session = None
 
-    async def completion(self, *, model, messages, **_options):
+    async def completion(self, *, model, messages, timeout=None, max_tokens=None, **_options):
         """Translate the existing proposal boundary into the native Harnest response protocol."""
         user = [item["content"] for item in messages if item["role"] == "user"]
         payload = json.dumps({"context": json.loads(user[-2]), "request": user[-1]})
         async with self.lock:
-            content = await self.request(model, payload)
+            limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **{key: value for key, value in {"timeout": timeout, "max_tokens": max_tokens}.items() if value is not None}})
+            content = await self.request(model, payload, limits)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
-    async def request(self, model: str, payload: str) -> str:
+    async def request(self, model: str, payload: str, limits: AssistantLimits | None = None) -> str:
         """Retry a read-only proposal once for transient failures, using a fresh owned server."""
         reference = uuid.uuid4().hex[:12]
         for attempt in range(2):
-            await self.ensure_running(model)
+            await self.ensure_running(model, limits)
             try:
                 return await self.invoke(payload)
             except asyncio.CancelledError:
@@ -178,15 +181,16 @@ class AssistantServer:
                 await task
             raise
 
-    async def ensure_running(self, model: str) -> None:
+    async def ensure_running(self, model: str, limits: AssistantLimits | None = None) -> None:
         """Restart after model changes or process exits, never changing global provider settings."""
-        if self.process is not None and self.process.returncode is None and self.model == model:
+        limits = limits or AssistantLimits.from_environment()
+        if self.process is not None and self.process.returncode is None and (self.model, self.limits) == (model, limits):
             return
         await self.stop()
         await self.prepare()
         token, port = secrets.token_urlsafe(32), free_port()
         self.diagnostics = tempfile.TemporaryDirectory(prefix="harnest-builder-diagnostics-")
-        environment = {**os.environ, "HARNEST_BUILDER_MODEL": model, "HARNEST_BUILDER_SERVICE_TOKEN": token,
+        environment = {**os.environ, **limits.environment(), "HARNEST_BUILDER_MODEL": model, "HARNEST_BUILDER_SERVICE_TOKEN": token,
                        "HARNEST_BUILDER_DIAGNOSTICS": str(Path(self.diagnostics.name) / "failure.json")}
         self.log = tempfile.TemporaryFile()
         try:
@@ -194,9 +198,10 @@ class AssistantServer:
                 sys.executable, str(self.artifact), "serve", "--host", "127.0.0.1", "--port", str(port),
                 cwd=str(self.artifact), env=environment, stdout=self.log, stderr=self.log, start_new_session=True,
             )
-            self.client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": "Bearer " + token}, timeout=185, trust_env=False)
+            self.client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": "Bearer " + token}, timeout=limits.timeout + 65, trust_env=False)
             await self.wait_ready()
             self.model = model
+            self.limits = limits
         except BaseException:
             await self.stop()
             raise
@@ -248,6 +253,7 @@ class AssistantServer:
                 await self.process.wait()
         self.process = None
         self.model = None
+        self.limits = None
         if self.log is not None:
             self.log.close()
             self.log = None

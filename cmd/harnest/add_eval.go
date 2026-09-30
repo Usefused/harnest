@@ -33,13 +33,21 @@ func evalScaffolds() ([]evalScaffold, error) {
 // newAddEvalCommand scaffolds evaluations without resolving or running dependencies.
 func (a *application) newAddEvalCommand() *cobra.Command {
 	var project, metric string
-	var interactive bool
+	var interactive, listMetrics bool
 	command := &cobra.Command{
 		Use:     "eval NAME",
 		Short:   "Add an evaluation set or a bare custom metric",
 		Example: "  harnest add eval answer-quality\n  harnest add eval answer-quality --i\n  harnest add eval company-quality --metric custom",
-		Args:    cobra.ExactArgs(1),
+		Args: func(command *cobra.Command, arguments []string) error {
+			if listMetrics {
+				return cobra.NoArgs(command, arguments)
+			}
+			return cobra.ExactArgs(1)(command, arguments)
+		},
 		RunE: func(command *cobra.Command, arguments []string) error {
+			if listMetrics {
+				return writeEvalScaffolds(command)
+			}
 			choice, err := selectEvalScaffold(command, metric, interactive)
 			if err != nil {
 				return err
@@ -63,7 +71,17 @@ func (a *application) newAddEvalCommand() *cobra.Command {
 	flags.StringVar(&metric, "metric", "response_match_score", "built-in metric ID or custom; use --i to see choices")
 	flags.BoolVarP(&interactive, "interactive", "i", false, "choose an evaluation interactively")
 	flags.BoolVar(&interactive, "i", false, "alias for --interactive")
+	flags.BoolVar(&listMetrics, "list-metrics", false, "print evaluation presets as JSON without creating files")
 	return command
+}
+
+// writeEvalScaffolds exposes the same presets to Studio without project execution.
+func writeEvalScaffolds(command *cobra.Command) error {
+	choices, err := evalScaffolds()
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(command.OutOrStdout()).Encode(choices)
 }
 
 // selectEvalScaffold shares the catalog between scripted and interactive creation.

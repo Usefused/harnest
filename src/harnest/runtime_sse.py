@@ -143,7 +143,13 @@ def _state_delta_frame(
     }
 
 
+def _ui_event_frame(event: RuntimeEvent, common: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Carry one authored UI event through every native streaming transport."""
+    return "response.ui_event", {**common, **_public_event_agent(event), "type": "response.ui_event", "name": event.get("name"), "value": event.get("value")}
+
+
 _SIMPLE_FRAME_BUILDERS = {
+    "ui_event": _ui_event_frame,
     "tool_call": _tool_call_frame,
     "tool_result": _tool_result_frame,
     "state_delta": _state_delta_frame,

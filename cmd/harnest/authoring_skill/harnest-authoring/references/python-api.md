@@ -3,6 +3,9 @@
 Read this reference when editing authored Python or selecting a resource type.
 Every symbol must be imported explicitly.
 
+For current cron decorators, private client input, custom evaluation metrics,
+and AG-UI integration, also read [runtime-features.md](runtime-features.md).
+
 ## Root agents and portable graphs
 
 ```python
@@ -603,7 +606,12 @@ inherits the invoking user and public metadata. Durable external waits return a
 typed pending response. Human approvals and client tools fail closed because
 their continuations are process-local after the task returns.
 
-Schedule an existing task from root `cron/<name>.py`:
+Prefer a same-named `@cron(...)` function in root `cron/<name>.py` for new work.
+It owns its queued task; do not stack `@task`. Omit the schedule for a dynamic
+target, then use `await harnest.cron.create(key=..., expression=..., task="name",
+arguments=...)` inside runtime code. See [runtime-features.md](runtime-features.md).
+
+Existing `Cron(...)` declarations remain supported. Schedule an existing task:
 
 ```python
 from harnest.cron import Cron

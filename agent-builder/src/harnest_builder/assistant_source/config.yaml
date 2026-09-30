@@ -18,7 +18,7 @@ server:
   http:
     host: 127.0.0.1
     port: 1941
-    requestTimeoutSeconds: 180
+    requestTimeoutSeconds: ${HARNEST_BUILDER_REQUEST_TIMEOUT_SECONDS}
     maxConcurrentRequests: 4
   playground:
     enabled: false

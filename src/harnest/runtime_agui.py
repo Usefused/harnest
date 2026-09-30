@@ -283,6 +283,8 @@ class _AGUIEncoder:
             return boundary + self._tool_call(event)
         if event_type == "tool_result":
             return boundary + self._tool_result(event)
+        if event_type == "ui_event":
+            return boundary + [{"type": "CUSTOM", "name": event["name"], "value": event["value"]}]
         if event_type == "state_delta":
             return boundary + self._state_delta(event)
         if event_type in {

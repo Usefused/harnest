@@ -21,6 +21,7 @@ from harnest_builder.assistant_build import compile_assistant, skill_sources
 from harnest_builder.assistant_server import AssistantServer, final_reply, traceback_summary
 from harnest_builder.prompting import _payload
 from harnest_builder.assistant_errors import failure_category
+from harnest_builder.assistant_settings import AssistantLimits
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -109,11 +110,16 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(root, "/missing/harnest", token="test-studio")
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)), base_url="http://127.0.0.1", headers={"Authorization": "Bearer test-studio"}) as client:
-                response = await client.post("/api/propose", json={"project": "sample", "prompt": "Improve instructions", "model": "openai/test", "paths": ["instructions.md"]})
+                response = await client.post("/api/propose", json={"project": "sample", "prompt": "Improve instructions", "model": "openai/test", "paths": ["instructions.md"], "timeout": 240, "max_tokens": 3456})
+                invalid = await client.post("/api/propose", json={"project":"sample", "prompt":"test", "timeout":0})
+                self.assertEqual(invalid.status_code, 422)
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["files"][0]["before"], "Be useful.\n")
             self.assertEqual((project / "instructions.md").read_text(), "Be useful.\n")
             runtime = app.state.assistant
+            self.assertEqual(runtime.limits, AssistantLimits(timeout=240, max_tokens=3456))
+            self.assertEqual(Provider.requests[-1]["max_tokens"], 3456)
+            self.assertEqual(runtime.client.timeout.read, 305)
             rejected = await runtime.client.post("/sessions", json={}, headers={"Authorization": ""})
             self.assertEqual(rejected.status_code, 401)
             self.assertEqual((await runtime.client.get("/sessions")).json()["sessions"], [])
@@ -134,6 +140,14 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(self.server.process, first)
         self.assertIsNotNone(first.returncode)
         self.assertEqual(self.server.model, "openai/second")
+        second = self.server.process
+        limits = AssistantLimits(timeout=240, max_tokens=2048)
+        await self.server.ensure_running("openai/second", limits)
+        self.assertIsNot(self.server.process, second)
+        self.assertIsNotNone(second.returncode)
+        third = self.server.process
+        await self.server.ensure_running("openai/second", limits)
+        self.assertIs(self.server.process, third)
 
     async def test_packaged_artifact_never_compiles_at_runtime(self):
         """Production requires its precompiled artifact and does not silently fall back to sources."""

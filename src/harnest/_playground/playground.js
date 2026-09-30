@@ -70,7 +70,7 @@ const ui = {
 const themeStorageKey = "harnest.playground.theme";
 const sessionQueryKey = "session";
 const workspaceQueryKey = "view";
-const workspaceNames = new Set(["chat", "evals"]);
+const workspaceNames = new Set(["chat", "evals", "work"]);
 const supportedThemes = new Set(["dark", "light", "system"]);
 const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
@@ -99,6 +99,7 @@ const runtime = {
 };
 
 const transportNotes = {
+  agui: "AG-UI streams text, tools, state and resumable agent actions.",
   stream: "SSE streams response events as they arrive.",
   response: "Wait for one complete JSON response.",
   live: "WebSocket live mode uses same-origin cookie authentication.",
@@ -528,6 +529,7 @@ function renderOutputItem(item) {
     const text = (item.content || []).map((part) => part.text || "").join("");
     if (text) appendThinking(text, item.agent);
   }
+  if (item.type === "ui_event") appendUIEvent(item);
   if (item.type === "agent_activity") appendAgentActivity(item);
   if (item.type === "agent_metadata") appendAgentMetadata(item);
   if (item.type === "decision_result") appendDecisionResult(item);
@@ -555,6 +557,9 @@ async function loadAgent() {
   ui.agentFramework.textContent = agent.framework || "custom";
   ui.agentMode.textContent = agent.mode || "managed";
   configureLiveTransport(agent);
+  const agui = document.querySelector('.transport[data-transport="agui"]');
+  agui.disabled = !agent.endpoints?.agui;
+  agui.title = agui.disabled ? "AG-UI is disabled for this agent" : "";
 }
 
 /** Keep the Live control and any existing connection aligned with server discovery. */
@@ -579,6 +584,7 @@ async function selectWorkspace(name, { push = false } = {}) {
   document.body.classList.toggle("eval-mode", name !== "chat");
   ui.chatWorkspace.hidden = name !== "chat";
   ui.evalWorkspace.hidden = !evaluating;
+  document.querySelector("#work-workspace").hidden = name !== "work";
 
   ui.workspaceEyebrow.textContent = evaluating ? "Evaluation" : "Playground";
   ui.workspaceTitle.textContent = evaluating ? "Evals" : "Conversation";
@@ -588,6 +594,10 @@ async function selectWorkspace(name, { push = false } = {}) {
     const active = button.dataset.workspace === name;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
+  }
+  if (name === "work") {
+    ui.workspaceEyebrow.textContent = "Runtime"; ui.workspaceTitle.textContent = "Tasks & schedules";
+    await harnestWork.open(api);
   }
   if (evaluating) {
     if (!runtime.evalCatalog) await loadEvals();
@@ -1229,6 +1239,7 @@ function stopTracePolling() {
 
 async function sendResponse(input) {
   const sessionId = await ensureSession();
+  if (runtime.transport === "agui") return harnestAgui.run(sessionId, input);
   if (runtime.transport === "live") return sendLive(input, sessionId);
   const stream = runtime.transport === "stream";
   const response = await api(endpoints.responses, {
@@ -1411,7 +1422,7 @@ function appendClientToolAction(action, transport) {
   const title = document.createElement("strong");
   title.textContent = action.name;
   const status = document.createElement("small");
-  status.textContent = "Client tool · awaiting host result";
+  status.textContent = action.privateInput ? "Private input · only the authored response reaches the model" : "Client tool · awaiting host result";
   heading.append(title, status);
   const argumentsLabel = document.createElement("span");
   argumentsLabel.className = "client-tool-label";
@@ -1426,19 +1437,27 @@ function appendClientToolAction(action, transport) {
   setStatus("Client tool result required", "pending");
 }
 
+/** Display private schemas separately from public tool arguments and submitted values. */
 function clientToolResultForm(action, transport, panel) {
   const form = document.createElement("form");
   form.className = "client-tool-result";
   const label = document.createElement("label");
-  label.textContent = "Result JSON";
+  label.textContent = action.privateInput ? "Private input JSON" : "Result JSON";
   const input = document.createElement("textarea");
   input.rows = 3;
-  input.placeholder = '{"result": "..."}';
+  input.placeholder = action.privateInput ? '{"value": "..."}' : '{"result": "..."}';
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  if (action.privateInput && action.inputSchema) {
+    const schema = document.createElement("pre");
+    schema.textContent = pretty(action.inputSchema);
+    form.append(schema);
+  }
   input.setAttribute("aria-label", `Result for ${action.name}`);
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "approval-button approval-button-approve";
-  submit.textContent = "Submit result";
+  submit.textContent = action.privateInput ? "Submit private input" : "Submit result";
   label.append(input);
   form.append(label, submit);
   form.addEventListener("submit", (event) => {
@@ -1448,17 +1467,20 @@ function clientToolResultForm(action, transport, panel) {
   return form;
 }
 
+/** Clear private values before transport, including when the server rejects the request. */
 async function submitClientToolResult(action, transport, panel, input, submit) {
   clearError();
   let output;
   try {
     output = JSON.parse(input.value);
   } catch (_error) {
+    if (action.privateInput) input.value = "";
     showError(new Error("Client tool result must be valid JSON"));
     return;
   }
   submit.disabled = true;
   panel.dataset.status = "submitting";
+  if (action.privateInput) input.value = "";
   startAgentResume("Resuming agent with client tool result…");
   try {
     if (transport === "live") {
@@ -1499,7 +1521,7 @@ function markClientToolSubmitted(panel) {
   panel.querySelector(".client-tool-result")?.replaceWith(note);
 }
 
-async function consumeSse(response) {
+async function consumeSse(response, handleFrame = handleStreamFrame) {
   if (!response.body) throw new Error("Streaming response did not include a body");
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
@@ -1508,7 +1530,7 @@ async function consumeSse(response) {
     buffer += value || "";
     const parsed = consumeSseBuffer(buffer, done);
     buffer = parsed.rest;
-    for (const frame of parsed.frames) handleStreamFrame(frame);
+    for (const frame of parsed.frames) handleFrame(frame);
     if (done) break;
   }
 }
@@ -1524,7 +1546,15 @@ function parseSseFrame(chunk) {
   return data ? JSON.parse(data.slice(6)) : null;
 }
 
+/** Render authored display data as inert text; custom events never execute browser code. */
+function appendUIEvent(event) {
+  const panel=document.createElement("details"), title=document.createElement("summary"), value=document.createElement("pre");
+  panel.className="ui-event"; title.textContent=`UI event · ${event.name}`; value.textContent=pretty(event.value);
+  panel.append(title,value); ui.conversation.append(panel); scrollConversation();
+}
+
 function handleStreamFrame(frame) {
+  if (frame.type === "response.ui_event") appendUIEvent(frame);
   if (frame.type === "response.created") beginStreamingOutput();
   if (frame.type === "response.thinking.delta") appendThinking(frame.delta || "", frame.agent);
   if (frame.type === "response.agent_activity") appendAgentActivity(frame);
@@ -1675,10 +1705,11 @@ async function submitMessage(event) {
   event.preventDefault();
   const input = ui.input.value.trim();
   if (!input || runtime.busy) return;
+  if (typeof harnestAgui !== "undefined" && harnestAgui.pending(runtime.sessionId)) { showError(new Error("Complete the pending AG-UI actions before sending another message.")); return; }
   startRequest(input);
   try {
     await sendResponse(input);
-    if (runtime.transport !== "live") await finishRequest("Response complete");
+    if (!["live", "agui"].includes(runtime.transport)) await finishRequest("Response complete");
   } catch (error) {
     finishFailedRequest(error);
   }
@@ -1703,7 +1734,8 @@ async function finishRequest(message) {
   setStatus(message, "ok");
   stopTracePolling();
   try {
-    await Promise.all([loadSessionState(), loadTraces()]);
+    if (typeof harnestAgui !== "undefined" && harnestAgui.pending(runtime.sessionId)) await loadTraces();
+    else await Promise.all([loadSessionState(), loadTraces()]);
   } catch (error) {
     showError(error);
   }
@@ -1724,7 +1756,7 @@ function finishFailedRequest(error) {
 /** Select an available transport and retire connections owned by the previous one. */
 function selectTransport(button) {
   // Disabled controls can also be reached by programmatic selection.
-  if (button.disabled) return;
+  if (button.disabled || runtime.busy) return;
   runtime.transport = button.dataset.transport;
   button.closest(".segmented").dataset.active = runtime.transport;
   for (const candidate of document.querySelectorAll(".transport")) {
@@ -1895,6 +1927,7 @@ async function changeSession(sessionId) {
 /** Select a session and reset client state only when ownership changes. */
 function setActiveSession(sessionId, clearConversation = true) {
   const changed = runtime.sessionId !== sessionId;
+  if (changed && clearConversation && (runtime.busy || (typeof harnestAgui !== "undefined" && harnestAgui.pending(runtime.sessionId)))) throw new Error("Finish or cancel the active run before changing sessions.");
   runtime.sessionId = sessionId;
   if (changed && clearConversation) resetConversation();
 }

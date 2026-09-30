@@ -38,7 +38,8 @@
     "telemetry",
     "testing",
     "tokens",
-    "tracing"
+    "tracing",
+    "ui"
   ],
   "harnest.a2a": [
     "A2AClient",
@@ -599,5 +600,8 @@
     "Score",
     "ScoreResult",
     "ThresholdPolicy"
+  ],
+  "harnest.ui": [
+    "emit"
   ]
 }

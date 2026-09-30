@@ -68,6 +68,7 @@ class ServerConfig:
     live: bool = False
     agent_principal: Literal["optional", "required"] = "optional"
     openapi: bool = True
+    agui: bool = True
 
     def with_overrides(
         self,
@@ -103,6 +104,7 @@ DEFAULT_SERVER_CONFIG = ServerConfig()
 DEFAULT_SERVER_YAML = """apiVersion: harnest.dev/v1alpha1
 kind: Server
 openapi: true
+agui: true
 live: false
 agentPrincipal: optional
 http:
@@ -218,11 +220,11 @@ def _project_server_document(value: Any) -> dict[str, Any]:
 
     settings = _mapping(value, "config.yaml server")
     document = yaml.safe_load(DEFAULT_SERVER_YAML)
-    sections = {"http", "limits", "playground", "live", "agentPrincipal", "openapi"}
+    sections = {"http", "limits", "playground", "live", "agentPrincipal", "openapi", "agui"}
     _require_keys(dict.fromkeys(sections) | dict(settings), sections, "server")
     for name, value in settings.items():
         # Scalar policies replace defaults; structured sections merge supplied fields.
-        if name in {"live", "agentPrincipal", "openapi"}:
+        if name in {"live", "agentPrincipal", "openapi", "agui"}:
             document[name] = value
             continue
         overrides = _mapping(value, f"server.{name}")
@@ -289,6 +291,7 @@ def _decode_config(
         "live": True,
         "agentPrincipal": "optional",
         "openapi": True,
+        "agui": True,
         **_mapping(value, "server.yaml"),
     }
     _require_keys(
@@ -302,6 +305,7 @@ def _decode_config(
             "live",
             "agentPrincipal",
             "openapi",
+            "agui",
         },
         "server.yaml",
     )
@@ -318,6 +322,7 @@ def _decode_config(
         live=_resolved_boolean(root["live"], "live", environment),
         agent_principal=_agent_principal_mode(root["agentPrincipal"]),
         openapi=_resolved_boolean(root["openapi"], "openapi", environment),
+        agui=_resolved_boolean(root["agui"], "agui", environment),
     )
 
 

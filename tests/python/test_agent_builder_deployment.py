@@ -64,6 +64,20 @@ class BuilderDeploymentTests(_BuilderFixture):
                 self.assertNotIn("IGNORED_VARIABLE", result.json()["variables"])
                 del config["spec"][name]
 
+    def test_task_storage_palette_drives_matching_deployment_requirements(self):
+        """The actual generated providers identify database kinds without executing factories."""
+        from harnest_builder.catalog import template
+
+        (self.project / "lifecycle").mkdir()
+        for provider, variable, kind in (("postgres", "DATABASE_URL", "postgres"), ("redis", "REDIS_URL", "redis")):
+            path, source = next(iter(template("task-storage", "queue_store", {"provider": provider}).items()))
+            (self.project / path).write_text(source)
+            response = self.client.get("/api/deployment/inspect", params={"project": "sample"})
+            self.assertEqual(response.status_code, 200, response.text)
+            service = next(item for item in response.json()["services"] if variable in item["variables"])
+            self.assertEqual(service["type"], kind)
+            self.assertIn(variable, response.json()["variables"])
+
     def test_local_proposal_then_save_and_plan(self):
         """A complete proposal preserves external services and writes only after explicit review."""
         self.discover_source()

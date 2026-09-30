@@ -66,6 +66,7 @@ def create_playground_router(
     mcp_service: Any | None = None,
     studio_service: Any | None = None,
     connectors_service: Any | None = None,
+    work_driver: Any | None = None,
 ) -> Any:
     """Capture development asset ownership before handling asynchronous requests."""
 
@@ -110,6 +111,8 @@ def create_playground_router(
 
     @router.get("/_harnest/selects.css", include_in_schema=False)
     @router.get("/_harnest/selects.js", include_in_schema=False)
+    @router.get("/_harnest/work.js", include_in_schema=False)
+    @router.get("/_harnest/agui.js", include_in_schema=False)
     @router.get("/_harnest/builder.js", include_in_schema=False)
     @router.get("/_harnest/builder.css", include_in_schema=False)
     @router.get("/_harnest/markdown.js", include_in_schema=False)
@@ -126,6 +129,9 @@ def create_playground_router(
 
     from .playground_studio import install_studio_routes
 
+    from .playground_work import create_work_router
+
+    router.routes.extend(create_work_router(work_driver).routes)
     install_studio_routes(router, studio_service)
     if studio_service is not None:
         from .playground_builder import install_builder_routes

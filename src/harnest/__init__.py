@@ -46,6 +46,7 @@ __all__ = [
     "testing",
     "tokens",
     "tracing",
+    "ui",
 ]
 _PUBLIC_DOMAINS = frozenset(__all__)
 

@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 
 from .decision_output import DecisionOutput
+from .ui_output import UIOutput
 
 if TYPE_CHECKING:
     from .context_memory import MemoryContext
@@ -82,6 +83,7 @@ class AgentContext:
     _skill_pins: dict[tuple[str, str, str], str] = field(repr=False)
     _extension_bindings: Mapping[str, Any] = field(repr=False)
     _lifetime: _ContextLifetime = field(repr=False, compare=False)
+    _ui_output: UIOutput = field(default_factory=UIOutput, repr=False, compare=False)
     _decision_output: DecisionOutput = field(default_factory=DecisionOutput, repr=False, compare=False)
     _skill_selection_cache: dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -404,6 +406,7 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         _lifetime=active._lifetime,
         # Child decisions belong to the same invocation output, with their own attribution.
         _decision_output=active._decision_output,
+        _ui_output=active._ui_output,
     )
 
 

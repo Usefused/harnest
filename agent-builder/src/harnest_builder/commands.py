@@ -26,9 +26,12 @@ class Command(BaseModel):
     directory: str = Field(default="", max_length=4096)
     name: str = ""
     kind: str = ""
+    metric: str = Field(default="response_match_score", pattern=r"^[a-z][a-z0-9_]{0,127}$")
     framework: str = "adk"
     mode: str = "managed"
     profile: str = "minimal"
+    environment_profile: Literal["runtime", "compile", "development", "eval"] = "runtime"
+    eval_trajectory: Literal["business", "strict"] = "business"
     url: str = Field(default="", max_length=8192)
     token_env: str = Field(default="", max_length=128)
     via: str = ""
@@ -54,8 +57,8 @@ def arguments(workspace, command: Command) -> tuple[list[str], str]:
         "compile": ["compile", root, "--output", root + "/.harnest/builder"],
         "test": ["test", root],
         "smoke": ["test", root, "--smoke"],
-        "eval": ["test", root, "--evals"],
-        "sync": ["env", "sync", root],
+        "eval": ["test", root, "--evals", "--eval-trajectory", command.eval_trajectory],
+        "sync": ["env", "sync", root, "--profile", command.environment_profile],
         "serve": ["serve", root, "--reload", "--host", "127.0.0.1", "--port", str(command.port)],
         "run": ["run", "--", root, command.input],
     }
@@ -102,6 +105,8 @@ def _add(root: str, command: Command) -> list[str]:
             args.extend(["--token-env", command.token_env])
     if command.kind == "channel":
         args.extend(["--via", name(command.via)])
+    if command.kind == "eval":
+        args.extend(["--metric", command.metric])
     return args
 
 

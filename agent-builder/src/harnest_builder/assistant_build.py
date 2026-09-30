@@ -27,6 +27,8 @@ def skill_sources() -> Path:
 def stage_source(destination: Path) -> None:
     """Snapshot authored source and complete skill references, excluding local build state."""
     shutil.copytree(PACKAGE / "assistant_source", destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "skills"))
+    (destination / "lib").mkdir(exist_ok=True)
+    shutil.copyfile(PACKAGE / "assistant_settings.py", destination / "lib" / "builder_settings.py")
     for name in SKILL_NAMES:
         shutil.copytree(skill_sources() / name, destination / "skills" / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
@@ -40,6 +42,7 @@ def compile_assistant(output: Path, *, runtime_source: Path | None = None) -> Pa
         if runtime_source is not None:
             environment["PYTHONPATH"] = str(runtime_source)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["HARNEST_BUILDER_REQUEST_TIMEOUT_SECONDS"] = "180"
         environment["HARNEST_BUILDER_MODEL"] = "ollama_chat/qwen3.5:cloud"
         result = subprocess.run(
             [sys.executable, "-m", "harnest.cli", "compile", str(source), "--output", str(output), "--framework", "adk", "--mode", "managed"],

@@ -22,6 +22,8 @@ _PUBLIC_PATHS = frozenset(
         "/_harnest/playground.css",
         "/_harnest/playground.js",
         "/_harnest/builder.js",
+        "/_harnest/agui.js",
+        "/_harnest/work.js",
         "/_harnest/selects.js",
         "/_harnest/selects.css",
         "/_harnest/builder.css",

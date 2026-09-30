@@ -68,7 +68,7 @@ function browser() {
     history,
     addEventListener(name, callback) { (listeners[name] ||= []).push(callback); },
   };
-  const context = vm.createContext({ document, window, console, URL, URLSearchParams });
+  const context = vm.createContext({ document, window, console, URL, URLSearchParams, crypto: require("node:crypto").webcrypto });
   return { get, context, run: (code) => vm.runInContext(code, context), window, location, history, listeners, getPushCount: () => pushCount };
 }
 
@@ -77,10 +77,31 @@ function descendants(node) { return [node, ...node.children.flatMap(descendants)
 function workspacePage() {
   const page = browser();
   const code = fs.readFileSync(path.join(assets, "playground.js"), "utf8").replace(/initialize\(\);\s*$/, "");
+  vm.runInContext(fs.readFileSync(path.join(assets, "agui.js"), "utf8"), page.context);
   vm.runInContext(code, page.context);
   page.run('runtime.sessionId = "session-kept"; runtime.evalCatalog = {suites: []}; ui.token.value = "";');
   return page;
 }
+
+test("private input displays its schema and clears values before a failed submission", async () => {
+  const page = workspacePage();
+  const form = page.run('clientToolResultForm({id:"private", name:"credentials", privateInput:true, inputSchema:{type:"object"}}, "response", document.createElement("section"))');
+  const nodes = descendants(form);
+  assert.ok(nodes.some(node => node.tag === "pre" && node.textContent.includes('"object"')));
+  assert.ok(nodes.some(node => node.textContent === "Private input JSON"));
+  const input = nodes.find(node => node.tag === "textarea");
+  assert.equal(input.autocomplete, "off");
+  assert.equal(input.spellcheck, false);
+  page.context.privateField = input;
+  page.run('clearError=()=>{}; startAgentResume=()=>{}; finishFailedRequest=()=>{}; api=async()=>{if(privateField.value)throw new Error("private value retained");throw new Error("unavailable");}');
+  input.value = '{"value":"private-secret"}';
+  await page.run('submitClientToolResult({id:"private", privateInput:true}, "response", document.createElement("section"), privateField, document.createElement("button"))');
+  assert.equal(input.value, "");
+  input.value = "invalid private secret";
+  page.run('showError=()=>{}');
+  await page.run('submitClientToolResult({id:"private", privateInput:true}, "response", document.createElement("section"), privateField, document.createElement("button"))');
+  assert.equal(input.value, "");
+});
 
 test("switching Playground and Evals preserves conversation and active session", async () => {
   const page = workspacePage();
@@ -221,4 +242,82 @@ test("themed option menus fit mobile edges and open upwards near the bottom", ()
   assert.ok(bounds.left + bounds.width <= 312);
   assert.ok(bounds.top >= 8 && bounds.top < 640);
   assert.ok(bounds.height <= 280);
+});
+
+
+test("AG-UI renders streaming tools and output without replaying a transcript", async () => {
+  const page=workspacePage();
+  page.run(`
+    var sent=[], rendered=[];
+    api=async(path,options)=>{sent.push({path,body:JSON.parse(options.body)});return {};};
+    consumeSse=async(response,handle)=>[
+      {type:"RUN_STARTED"}, {type:"TEXT_MESSAGE_START",messageId:"one"},
+      {type:"TEXT_MESSAGE_CONTENT",delta:"Hello"}, {type:"TEXT_MESSAGE_END"},
+      {type:"TOOL_CALL_START",toolCallId:"tool",toolCallName:"lookup"},
+      {type:"TOOL_CALL_ARGS",toolCallId:"tool",delta:'{"id":1}'}, {type:"TOOL_CALL_END",toolCallId:"tool"},
+      {type:"TOOL_CALL_RESULT",toolCallId:"tool",content:'{"ok":true}'},
+      {type:"STATE_DELTA",delta:[{op:"add",path:"/__proto__/bad",value:true}]},
+      {type:"RUN_FINISHED",result:{ok:true}}
+    ].forEach(handle);
+    beginStreamingOutput=()=>{}; beginToolBoundary=()=>{}; clearTypingIndicator=()=>{};
+    appendStreamingText=value=>rendered.push(value);
+    appendToolCall=(...value)=>rendered.push(value); appendToolResult=(...value)=>rendered.push(value);
+    appendResult=value=>rendered.push(value); finishRequest=async()=>{};
+  `);
+  await page.run('harnestAgui.run("session-kept","Hello")');
+  const sent=JSON.parse(page.run('JSON.stringify(sent[0])'));
+  assert.equal(sent.path,"/agui"); assert.equal(sent.body.threadId,"session-kept");
+  assert.equal(sent.body.messages.length,1); assert.equal(sent.body.messages[0].role,"user");
+  assert.deepEqual(sent.body.state,{});
+  assert.deepEqual(JSON.parse(page.run('JSON.stringify(rendered)')),["Hello",["lookup",{id:1},"tool"],["lookup",{ok:true},"tool"],{ok:true}]);
+  assert.equal(page.run('({}).bad'),undefined);
+  page.run('consumeSse=async()=>{};');
+  await assert.rejects(page.run('harnestAgui.run("session-kept","next")'),/ended before the run finished/);
+});
+
+test("AG-UI batches approvals and private input only in resume and clears rejected secrets", async () => {
+  const page=workspacePage();
+  page.run(`
+    var sent=[];
+    api=async(path,options)=>{sent.push(JSON.parse(options.body));return {};};
+    consumeSse=async(response,handle)=>handle({type:"RUN_FINISHED",outcome:{interrupts:[
+      {metadata:{harnest:{id:"approval",type:"human_approval",message:"Send?"}}},
+      {metadata:{harnest:{id:"private",type:"client_tool",name:"secret",privateInput:true,inputSchema:{type:"object"}}}}
+    ]}});
+    clearTypingIndicator=()=>{}; scrollConversation=()=>{}; startAgentResume=()=>{};
+    finishRequest=async()=>{}; finishFailedRequest=()=>{}; setStatus=()=>{};
+  `);
+  await page.run('harnestAgui.run("session-kept","start")');
+  assert.equal(page.run('harnestAgui.pending("session-kept")'),true);
+  const form=page.get("#conversation").children.at(-1), fields=descendants(form);
+  const approval=fields.find(node=>node.tag==="select"), secret=fields.find(node=>node.tag==="textarea");
+  assert.equal(secret.autocomplete,"off"); approval.value="approve"; secret.value='{"value":"sensitive"}';
+  page.context.secretField=secret;
+  page.run('api=async(path,options)=>{if(secretField.value)throw new Error("secret retained");sent.push(JSON.parse(options.body));throw new Error("rejected");};');
+  await form.listeners.submit({preventDefault(){}});
+  assert.equal(secret.value,"");
+  const body=JSON.parse(page.run('JSON.stringify(sent.at(-1))'));
+  assert.deepEqual(body.messages,[]);assert.deepEqual(body.state,{});
+  assert.deepEqual(body.resume,[{interruptId:"approval",status:"resolved",payload:{approved:true}},{interruptId:"private",status:"resolved",payload:{value:"sensitive"}}]);
+  secret.value="invalid secret";
+  await form.listeners.submit({preventDefault(){}});
+  assert.equal(secret.value,""); assert.equal(page.run('sent.length'),2);
+  assert.throws(()=>page.run('setActiveSession("another")'),/Finish or cancel/);
+  page.run('runtime.busy=true;');
+  const transport=new Element("button");transport.dataset.transport="agui";page.context.transport=transport;
+  page.run('selectTransport(transport)');assert.equal(page.run('runtime.transport'),"stream");
+});
+
+
+test("custom UI event payloads render as inert JSON across native and AG-UI transports",async()=>{
+  const page=workspacePage();
+  page.run('scrollConversation=()=>{}; renderOutputItem({type:"ui_event",name:"app.card",value:{html:"<script>bad()</script>"}});');
+  let card=page.get("#conversation").children.at(-1);
+  assert.equal(card.children[0].textContent,"UI event · app.card");
+  assert.ok(card.children[1].textContent.includes("<script>bad()</script>"));
+  assert.equal(descendants(card).some(node=>node.tag==="script"),false);
+  page.run(`api=async()=>({}); consumeSse=async(response,handle)=>[{type:"CUSTOM",name:"app.status",value:{percent:50}},{type:"RUN_FINISHED"}].forEach(handle); clearTypingIndicator=()=>{}; finishRequest=async()=>{};`);
+  await page.run('harnestAgui.run("session-kept","start")');
+  card=page.get("#conversation").children.at(-1);
+  assert.equal(card.children[0].textContent,"UI event · app.status");
 });

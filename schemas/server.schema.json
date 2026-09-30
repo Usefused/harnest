@@ -114,6 +114,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "agui": {"$ref": "#/$defs/agui"},
         "openapi": {
           "$ref": "#/$defs/openapi"
         },
@@ -135,6 +136,11 @@
           "$ref": "#/$defs/agentPrincipal"
         }
       }
+    },
+    "agui": {
+      "oneOf": [{"type": "boolean"}, {"$ref": "#/$defs/environmentReference"}],
+      "default": true,
+      "description": "Expose the AG-UI SSE transport at POST /agui."
     },
     "openapi": {
       "oneOf": [{"type": "boolean"}, {"$ref": "#/$defs/environmentReference"}],
@@ -166,6 +172,7 @@
     "playground"
   ],
   "properties": {
+    "agui": {"$ref": "#/$defs/agui"},
     "openapi": {
       "$ref": "#/$defs/openapi"
     },

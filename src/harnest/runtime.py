@@ -752,6 +752,7 @@ def create_fastapi_app(
     playground_enabled: bool = True,
     openapi_enabled: bool = True,
     live_enabled: bool = True,
+    agui_enabled: bool = True,
     agent_principal_required: bool = False,
     adk_session_storage: ADKSessionStorage | None = None,
     langgraph_session_store: SessionStore | None = None,
@@ -767,6 +768,8 @@ def create_fastapi_app(
     # A transport opt-in must never rely on the truthiness of a string.
     if not isinstance(live_enabled, bool):
         raise TypeError("live_enabled must be boolean")
+    if not isinstance(agui_enabled, bool):
+        raise TypeError("agui_enabled must be boolean")
     if not isinstance(playground_enabled, bool):
         raise TypeError("playground_enabled must be boolean")
     from .playground import playground_available
@@ -787,6 +790,7 @@ def create_fastapi_app(
             playground_enabled=playground_enabled,
             openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
+            agui_enabled=agui_enabled,
             agent_principal_required=agent_principal_required,
             adk_session_storage=adk_session_storage,
             langgraph_session_store=langgraph_session_store,
@@ -809,6 +813,7 @@ def _build_fastapi_app(
     playground_enabled: bool,
     openapi_enabled: bool,
     live_enabled: bool,
+    agui_enabled: bool,
     agent_principal_required: bool,
     adk_session_storage: ADKSessionStorage | None,
     langgraph_session_store: SessionStore | None,
@@ -852,6 +857,7 @@ def _build_fastapi_app(
             playground_enabled=playground_enabled,
             openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
+            agui_enabled=agui_enabled,
             agent_principal_required=agent_principal_required,
             authenticator=authenticator,
             telemetry_exporter_factories=application.telemetry_exporters,
@@ -894,6 +900,7 @@ def _build_fastapi_app(
             playground_enabled=playground_enabled,
             openapi_enabled=openapi_enabled,
             live_enabled=live_enabled,
+            agui_enabled=agui_enabled,
             agent_principal_required=agent_principal_required,
             playground_eval_service=eval_service,
             playground_mcp_service=mcp_service,
@@ -965,6 +972,7 @@ def _build_native_adk_app(
     playground_enabled: bool,
     openapi_enabled: bool,
     live_enabled: bool,
+    agui_enabled: bool,
     agent_principal_required: bool,
     authenticator: Authenticator | None,
     telemetry_exporter_factories: Any,
@@ -1019,6 +1027,7 @@ def _build_native_adk_app(
                 mcp_service=PlaygroundMCPService(Path(artifact) / "source", application.framework),
                 studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework),
                 connectors_service=PlaygroundConnectorsService(),
+                work_driver=pipeline_driver,
             ).routes
         )
     neutral = create_neutral_router(
@@ -1027,6 +1036,7 @@ def _build_native_adk_app(
         max_concurrency=max_concurrency,
         max_request_bytes=max_request_bytes,
         live_enabled=live_enabled,
+        agui_enabled=agui_enabled,
         agent_principal_required=agent_principal_required,
         asset_store=application.asset_store,
         asset_stores=application.asset_stores,
@@ -1223,6 +1233,7 @@ def _create_configured_app(artifact: Path, server: Any, development: bool) -> An
         playground_enabled=development and server.playground.enabled,
         openapi_enabled=server.openapi,
         live_enabled=server.live,
+        agui_enabled=server.agui,
         agent_principal_required=server.agent_principal == "required",
     )
 

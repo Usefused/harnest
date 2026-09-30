@@ -98,6 +98,19 @@ class PostgresTaskStore(TaskStore, CronStore):
             )
         return None if row is None else _task(row)
 
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Push owner, cursor, projection, ordering, and limit into one database query."""
+        from .task_inspection import TASK_FIELDS, task_page, validate_page
+
+        validate_page(limit)
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT " + ",".join(TASK_FIELDS) + " FROM harnest_durable_tasks "
+                "WHERE application_id=$1 AND user_id=$2 AND ($3::text IS NULL OR job_id>$3) "
+                "ORDER BY job_id LIMIT $4", application_id, user_id, after, limit,
+            )
+        return task_page([dict(row) for row in rows], limit)
+
     async def claim_tasks(
         self, *, application_id: str, queues: tuple[str, ...], now: float,
         lease_seconds: float, limit: int = 1,
@@ -212,6 +225,20 @@ class PostgresTaskStore(TaskStore, CronStore):
                 application_id, user_id, after, limit,
             )
         return tuple(_cron(row) for row in rows)
+
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Read a bounded metadata projection with owner filtering in one SQL query."""
+        from .task_inspection import CRON_FIELDS, cron_page, validate_page
+
+        validate_page(limit)
+        projection = ",".join("schedule_key AS key" if name == "key" else name for name in CRON_FIELDS)
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT " + projection + " FROM harnest_durable_crons WHERE application_id=$1 AND user_id=$2 "
+                "AND ($3::text IS NULL OR schedule_id>$3) ORDER BY schedule_id LIMIT $4",
+                application_id, user_id, after, limit,
+            )
+        return cron_page([dict(row) for row in rows], limit)
 
     async def update_cron(self, record: CronRecord, *, expected_revision: int) -> CronRecord:
         """Replace one schedule conditionally, preserving its immutable identity."""

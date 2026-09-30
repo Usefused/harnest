@@ -17,6 +17,7 @@ from .catalog import catalog, resource_name, template
 from .commands import Command, arguments
 from .files import Workspace, inventory, read
 from .jobs import Jobs
+from .evaluations import presets
 from .prompting import Prompt, propose, settings
 from .assistant_server import AssistantServer
 from .features import deployment_enabled, require_deployment
@@ -25,7 +26,7 @@ from .mcp_service import MCPService
 from . import mcp_routes
 
 STATIC = Path(__file__).parent / "static"
-ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js"}
+ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js", "components.js"}
 SECURITY = {"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
 
@@ -131,6 +132,8 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     extensions.install_routes(app, workspace)
     ownership.install_routes(app, workspace, jobs, _configuration)
     deletion.install_routes(app, workspace, jobs)
+    from . import transports
+    transports.install_routes(app, workspace)
     deployment.install_routes(app, workspace)
     deployment_overview.install_routes(app, workspace)
     _install_reads(app, workspace, jobs)
@@ -215,6 +218,11 @@ def _install_reads(app, workspace, jobs) -> None:
         """Read exact on-disk text so external editor changes are reflected on refresh."""
         with workspace.lock:
             return read(workspace.project(project), path)
+
+    @app.get("/api/evaluation-metrics")
+    def evaluation_metrics():
+        """Use the installed CLI as the authoritative evaluation authoring catalog."""
+        return {"metrics": presets(jobs.cli, workspace.root)}
 
     @app.get("/api/jobs")
     def job_list():

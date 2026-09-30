@@ -1006,7 +1006,7 @@ def create_neutral_app(
     install_live_policy(app, live_enabled)
     if playground_enabled:
         app.include_router(
-            create_playground_router(trace_store, playground_eval_service, openapi_enabled=openapi_enabled, mcp_service=playground_mcp_service, studio_service=playground_studio_service, connectors_service=playground_connectors_service)
+            create_playground_router(trace_store, playground_eval_service, openapi_enabled=openapi_enabled, mcp_service=playground_mcp_service, studio_service=playground_studio_service, connectors_service=playground_connectors_service, work_driver=driver)
         )
     app.include_router(
         create_neutral_router(

@@ -28,10 +28,12 @@ local function enqueue(raw, identity, fingerprint, ready)
     if job.user_id ~= incoming.user_id or job._fingerprint ~= fingerprint then
       return {'conflict'}
     end
+    redis.call('ZADD', KEYS[#KEYS], 0, cjson.encode(job.user_id) .. ':' .. job.job_id)
     return {'ok', existing}
   end
   incoming._fingerprint = fingerprint
   local encoded = cjson.encode(incoming)
+  redis.call('ZADD', KEYS[#KEYS], 0, cjson.encode(incoming.user_id) .. ':' .. incoming.job_id)
   redis.call('HSET', KEYS[1], incoming.job_id, encoded)
   if identity ~= '' then redis.call('HSET', KEYS[2], identity, incoming.job_id) end
   redis.call('ZADD', ready, incoming.scheduled_at, incoming.job_id)
@@ -250,4 +252,49 @@ local raw = redis.call('HGET', KEYS[1], ARGV[1])
 if not raw then return false end
 if ARGV[3] ~= 'trusted' and cjson.decode(raw).user_id ~= ARGV[2] then return false end
 return raw
+"""
+
+# Upgrade old databases in incremental server-side scans. New writes maintain
+# the index in the enqueue transaction, including cron occurrences. Never
+# pretend an incomplete legacy index is a complete task listing.
+LIST_TASKS = """
+local cursor = redis.call('GET', KEYS[3]) or '0'
+if cursor ~= 'ready' then
+  local page = redis.call('HSCAN', KEYS[1], cursor, 'COUNT', 100)
+  for index=2,#page[2],2 do
+    local job = cjson.decode(page[2][index])
+    redis.call('ZADD', KEYS[2], 0, cjson.encode(job.user_id) .. ':' .. job.job_id)
+  end
+  if page[1] == '0' then cursor = 'ready' else cursor = page[1] end
+  redis.call('SET', KEYS[3], cursor)
+  if cursor ~= 'ready' then return {'indexing'} end
+end
+local prefix = cjson.encode(ARGV[1]) .. ':'
+local lower = '[' .. prefix
+if ARGV[2] ~= '' then lower = '(' .. prefix .. ARGV[2] end
+local members = redis.call('ZRANGEBYLEX', KEYS[2], lower, '[' .. prefix .. string.char(255), 'LIMIT', 0, ARGV[3])
+local fields, result = cjson.decode(ARGV[4]), {'ready'}
+for _, member in ipairs(members) do
+  local job = cjson.decode(redis.call('HGET', KEYS[1], string.sub(member, #prefix+1)))
+  if job.user_id == ARGV[1] then
+    local item = {}
+    for _, field in ipairs(fields) do item[field] = job[field] end
+    table.insert(result, cjson.encode(item))
+  end
+end
+return result
+"""
+
+LIST_CRON_METADATA = """
+local ids = redis.call('ZRANGEBYLEX', KEYS[2], ARGV[1], '+', 'LIMIT', 0, ARGV[2])
+local fields, result = cjson.decode(ARGV[3]), {}
+for _, id in ipairs(ids) do
+  local record = cjson.decode(redis.call('HGET', KEYS[1], id))
+  if record.user_id == ARGV[4] then
+    local item = {}
+    for _, field in ipairs(fields) do item[field] = record[field] end
+    table.insert(result, cjson.encode(item))
+  end
+end
+return result
 """

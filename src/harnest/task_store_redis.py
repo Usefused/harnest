@@ -29,7 +29,7 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
 
         result = await self._eval(
             scripts.ENQUEUE,
-            self._enqueue_keys(record),
+            (*self._enqueue_keys(record), self._durable_key(record.application_id, "inspection")),
             (_task_dump(record), _task_identity(record), task_fingerprint(record)),
         )
         return _task_outcome(result)
@@ -45,6 +45,20 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
             (job_id, user_id if user_id is not None else "", "trusted" if user_id is None else "owner"),
         )
         return _task_load(raw) if raw else None
+
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Index legacy jobs incrementally and project one owner page inside Redis."""
+        from .task_inspection import TASK_FIELDS, task_page, validate_page
+
+        validate_page(limit)
+        result = await self._eval(
+            scripts.LIST_TASKS,
+            tuple(self._durable_key(application_id, name) for name in ("jobs", "inspection", "inspection-cursor")),
+            (user_id, after or "", limit, json.dumps(TASK_FIELDS)),
+        )
+        if _text(result[0]) == "indexing":
+            return {"items": [], "after": None, "indexing": True}
+        return task_page([json.loads(raw) for raw in result[1:]], limit)
 
     async def claim_tasks(
         self, *, application_id: str, queues: tuple[str, ...], now: float,
@@ -148,6 +162,16 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         )
         return tuple(_cron_load(raw) for raw in rows)
 
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+        """Project one indexed owner page in Redis without transferring private arguments."""
+        from .task_inspection import CRON_FIELDS, cron_page, validate_page
+
+        validate_page(limit)
+        rows = await self._eval(scripts.LIST_CRON_METADATA,
+            (self._durable_key(application_id, "crons"), self._durable_key(application_id, "owner", _identity(user_id))),
+            ("-" if after is None else "(" + after, limit, json.dumps(CRON_FIELDS), user_id))
+        return cron_page([json.loads(raw) for raw in rows], limit)
+
     async def update_cron(
         self, record: CronRecord, *, expected_revision: int
     ) -> CronRecord:
@@ -207,7 +231,7 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         if next_run_at <= due_at:
             raise ValueError("next_run_at must advance the schedule")
         keys = (*self._enqueue_keys(task), self._durable_key(application_id, "crons"),
-                self._durable_key(application_id, "due"))
+                self._durable_key(application_id, "due"), self._durable_key(application_id, "inspection"))
         outcome = await self._eval(
             scripts.COMMIT_OCCURRENCE, keys,
             (schedule_id, user_id, expected_revision, due_at, next_run_at,

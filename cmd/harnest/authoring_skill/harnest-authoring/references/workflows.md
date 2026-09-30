@@ -155,6 +155,9 @@ harnest test support-agent --smoke --evals
   model tokens, MCP services, time, and money. Use it only when authorized.
   Put real gateway/MCP handshakes here and assert tool behavior rather than a
   fixed number of adapter-created HTTP clients.
+- Scaffold with `harnest add eval NAME --metric ID`; `--list-metrics` lists current
+  presets and `--metric custom` creates a scorer stub. See
+  [runtime-features.md](runtime-features.md) for the `@metric` contract.
 - `--evals` runs validated ADK EvalSet assets against either ADK or LangGraph
   after Python tests. The optional `test_config.json` can select any installed
   ADK metric, judge/user-simulator configuration, or `customMetrics` function.

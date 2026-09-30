@@ -618,7 +618,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                     "wrapped runtime driver returned a non-InvocationResult value"
                 )
             events = await self._invocation_events(
-                lifecycle_context, agent_context._decision_output.drain() + list(result.events)
+                lifecycle_context, agent_context._decision_output.drain() + agent_context._ui_output.drain() + list(result.events)
             )
             current = _result_with_events(result, events)
             return await self._after(lifecycle_context, current)
@@ -640,7 +640,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[RuntimeEvent]:
-        """Merge opted-in decisions into native events without exposing scoped capabilities."""
+        """Merge decisions and UI events while keeping invocation authority out of consumers."""
         self._validate_agent_principal(request)
         await self._start_resources()
         lifecycle_context = _context(self._driver, request)
@@ -671,7 +671,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                             yield event
                         return
                     iterator = agent_context._decision_output.stream(
-                        self._driver.stream(transformed_request).__aiter__()
+                        agent_context._ui_output.stream(self._driver.stream(transformed_request).__aiter__())
                     )
                     while True:
                         transformed_event = await self._next_stream_event(
@@ -851,7 +851,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
     ) -> AsyncIterator[RuntimeEvent]:
         """Project a lifecycle-finished response through normal stream policy."""
 
-        for event in agent_context._decision_output.drain() + list(result.events):
+        for event in agent_context._decision_output.drain() + agent_context._ui_output.drain() + list(result.events):
             with (
                 activate_context(agent_context),
                 activate_agent_principal(principal_binding),
