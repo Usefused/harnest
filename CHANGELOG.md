@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.6.0](https://github.com/Usefused/harnest/compare/v1.5.0...v1.6.0) (2026-10-01)
 
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
 
@@ -51,9 +51,6 @@
 - Add an opt-in Threadify shared-workflow API for contract-gated agent actions,
   update its SDK requirement for permission waits, and include a refund example
   that combines Harnest human approval with a Threadify grant before payment.
-
-## [1.6.0](https://github.com/Usefused/harnest/compare/v1.5.0...v1.6.0) (2026-10-01)
-
 
 ### Features
 
