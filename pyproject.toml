@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Release staging pins this to the compiled Studio assistant framework.
-studio = ["google-adk>=2.8,<3"]
+studio = ["google-adk>=2.8,<3", "ruff>=0.14,<1"]
 quality = [
   "fakeredis[lua]>=2.34,<3",
   "build>=1,<2",

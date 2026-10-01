@@ -1,6 +1,9 @@
+import {StudioEditor} from "./editor.js";
+import {runBuilder, activityCard} from "./agui.js";
+import {AgentExperience, agentName} from "./experience.js";
 import {runtimeFields, evaluationFields, executionFields, activeField} from "./components.js";
 import {mcpPanel,reviewMCP} from "./mcp.js";
-import {$, el, on, error, status, button, field, select, modal, preference, sendDraft, renderDiff, renderCommandOutput, commandOutputText, copyCommandText} from "./ui.js";
+import {$, el, on, error, status, button, field, select, modal, preference, sendDraft, renderDiff, renderCommandOutput, commandOutputText, copyCommandText, buildFileTree, renderFileTree} from "./ui.js";
 import {deploymentEnabled,renderDeploymentControl} from "./features.js";
 import {Canvas, ICONS, kindOf} from "./canvas.js";
 
@@ -10,6 +13,27 @@ let token = "";
 let pollTimer;
 let connecting = false;
 let connected = false;
+const sourceEditor=new StudioEditor({host:$("source-editor"),textarea:$("code-editor"),status:$("lint-status"),request:body=>api("diagnostics","POST",body),changed:editorChanged});
+const conversations=new Map();
+const collapsedFolders=new Map();
+const conversationTemplate=$("conversation").cloneNode(true);
+const experience=new AgentExperience({api,project:()=>state.project,dirty:()=>state.dirty,view:setView,
+  track:job=>{state.jobs=state.jobs.filter(item=>item.id!==job.id);state.jobs.push(job);state.jobId=job.id;renderJobs();},
+  logs:job=>{if(job){state.jobId=job.id;$("terminal").hidden=false;renderJobs();}},
+  build:async(project,prompt)=>{await openProject(project);if(state.project?.id!==project)return;setView("canvas");showSide("assistant");$("prompt").value=prompt;$("prompt").focus();}});
+
+/** Store builder drafts and proposals with their project, never with the visible tab. */
+function builderConversation(project) {
+  if(!conversations.has(project))conversations.set(project,{host:conversationTemplate.cloneNode(true),draft:"",history:[]});
+  return conversations.get(project);
+}
+
+/** Restore project-specific authoring history without losing asynchronous proposal cards. */
+function selectConversation(previous,identity) {
+  if(previous)builderConversation(previous).draft=$("prompt").value;
+  const conversation=builderConversation(identity);
+  $("conversation").replaceWith(conversation.host);$("prompt").value=conversation.draft;
+}
 
 /** Read legacy tab credentials without depending on browser storage availability. */
 function storedToken(value) {
@@ -32,7 +56,7 @@ function authorize() {
 /** Keep workspace actions unavailable until the authenticated workspace has loaded. */
 function connectionState(ready, message="") {
   connected=ready;
-  for(const id of ["new-project","welcome-create","open-project","project-select","mobile-project-select","refresh"]) $(id).disabled=!ready;
+  for(const id of ["new-project","welcome-create","open-project","project-select","mobile-project-select","refresh","studio-packs"]) $(id).disabled=!ready;
   $("connection-panel").hidden=ready;
   $("connection-message").textContent=message || "Connecting to your local workspace…";
   $("connection-form").hidden=ready || !message;
@@ -98,7 +122,6 @@ async function start() {
 async function refreshWorkspace() {
   state.workspace=await api("workspace");
   renderDeploymentControl($("deployment"),state.workspace,state.project);
-  $("workspace-name").textContent=state.workspace.name;
   const picker=$("project-select"), selected=state.project?.id || picker.value;
   picker.replaceChildren();
   if(!state.workspace.projects.length) { const option=el("option","No projects yet"); option.value=""; picker.append(option); }
@@ -120,18 +143,21 @@ async function openProject(identity, force=false) {
   const project=await api("project?project="+encodeURIComponent(identity));
   if(ticket!==state.projectRequest) return;
   const changed=state.project?.id!==identity;
+  const previous=state.project?.id;
+  if(changed)selectConversation(previous,identity);
   state.project=project; preference("project",identity); preference("last-folder",project.path); $("project-select").value=identity;$("mobile-project-select").value=identity;
   if(changed) { state.fileRequest++; state.inspectorRequest++; state.document=null; state.context=new Set(["agent.py","instructions.md","config.yaml","pyproject.toml","harnest-deployment.yaml"].filter(p=>project.files.includes(p))); resetEditor(); setView("canvas"); }
   $("project-title").textContent=project.config.name;
-  $("workspace-name").textContent=project.path;$("workspace-name").title=project.path;
   $("framework-tag").textContent=project.config.framework.toUpperCase(); $("framework-tag").hidden=false;
   $("project-description").textContent=`${project.config.framework} · ${project.config.mode} · ${project.files.length} files`;
-  for(const id of ["compile","run-menu","new-file","send-prompt","extensions","mcp-connections","deleted-capabilities"]) $(id).disabled=false;
+  for(const id of ["compile","run-menu","new-file","send-prompt","extensions","mcp-connections","deleted-capabilities","step-build","step-connect","step-run","run-agent","try-tab"]) $(id).disabled=false;
+  $("send-prompt").disabled=state.prompting;
   renderDeploymentControl($("deployment"),state.workspace,state.project);
   $("welcome").hidden=true; $("canvas-controls").hidden=false; $("canvas-legend").hidden=false;
   const workflowOption=$("canvas-mode").querySelector('option[value="workflow"]'); workflowOption.disabled=!project.graph.available;
   if(!project.graph.available) $("canvas-mode").value="architecture";
   renderLibrary(); renderContext(); renderCanvas();
+  if(changed)experience.select();
   status(`Opened ${project.config.name}. Source changes save directly to your workspace.`);
 }
 
@@ -156,6 +182,7 @@ function renderLibrary() {
   const host=$("library"), search=$("library-search").value.toLowerCase().trim(); host.replaceChildren();
   $("file-count").textContent=state.project?.files.length||0;
   if(state.library==="files") { renderFiles(host,search); return; }
+  renderPackLibrary(host,search);
   const groups=new Map();
   for(const item of state.workspace?.catalog||[]) {
     if(!`${item.title} ${item.description}`.toLowerCase().includes(search)) continue;
@@ -169,19 +196,24 @@ function renderLibrary() {
   if(!host.children.length) host.append(el("p","No matching components.","empty-note"));
 }
 
-/** Keep the full native source tree accessible, including configuration and capability metadata. */
+/** Keep folder expansion separate for each project across searches and source refreshes. */
+function projectFolders() {
+  const identity=state.project?.id;
+  if(!collapsedFolders.has(identity))collapsedFolders.set(identity,new Set());
+  return collapsedFolders.get(identity);
+}
+
+/** Show the source hierarchy while retaining full paths for opening and filtering files. */
 function renderFiles(host,search) {
-  const files=(state.project?.files||[]).filter(path=>path.toLowerCase().includes(search));
-  for(const path of files) {
-    const item=button(path,()=>openFile(path),"file-item"); item.title=path;
-    item.classList.toggle("active",state.document?.path===path);host.append(item);
-  }
-  if(!files.length) host.append(el("p",state.project?"No matching source files.":"Create or open a project to see its files.","empty-note"));
+  const nodes=buildFileTree(state.project?.files||[],search);
+  renderFileTree(host,nodes,{collapsed:projectFolders(),selected:state.document?.path,search,open:openFile});
+  if(!nodes.length)host.append(el("p",state.project?"No matching source files.":"Create or open a project to see its files.","empty-note"));
 }
 
 /** Switch between native file navigation and draggable capability creation. */
 function setLibrary(name) {
   state.library=name;
+  document.querySelector(".library-foot").hidden=name==="files";
   for(const key of ["components","files"]) { $(key+"-tab").classList.toggle("active",name===key);$(key+"-tab").setAttribute("aria-selected",String(name===key)); }
   $("library-search").value="";$("library-search").placeholder=name==="files"?"Find a file…":"Find a component…";renderLibrary();
 }
@@ -189,41 +221,48 @@ function setLibrary(name) {
 /** Keep editor buffers alive while viewing the canvas. */
 function setView(name) {
   state.view=name;
-  for(const key of ["canvas","code"]) { $(key+"-tab").classList.toggle("active",name===key);$(key+"-tab").setAttribute("aria-selected",String(name===key));$(key+"-pane").hidden=name!==key; }
+  for(const key of ["canvas","code","try"]) { $(key+"-tab").classList.toggle("active",name===key);$(key+"-tab").setAttribute("aria-selected",String(name===key));$(key+"-pane").hidden=name!==key; }
   $("canvas-mode").hidden=name!=="canvas";
   $("create-workflow").hidden=name!=="canvas"||!state.project||state.project.graph.available||state.project.config.mode!=="managed";
   $("connect-nodes").hidden=name!=="canvas"||$("canvas-mode").value!=="workflow"||!state.project?.graph.available;
-  if(name==="code") setLibrary("files"); else canvas.viewport();
+  if(name==="code") setLibrary("files");
+  if(name==="canvas")canvas.viewport();
+  if(name==="try")experience.poll().catch(error);
 }
 
 /** Build every field before opening the dialog; submit one immutable initialization draft. */
 function createProject(draft={}) {
   if(!connected || !state.workspace) {status("Connect to your workspace before creating an agent.");return;}
   const content=el("div","","dialog-form");
-  const name=field(content,"Project name",draft.name||"",{placeholder:"research-assistant",required:true,pattern:"[a-z][a-z0-9-]{0,62}",maxLength:63});
-  const directory=field(content,"Save in folder",draft.directory||state.workspace.path,{required:true,hint:"A new folder with the project name will be created here."});
-  const browse=el("div");content.append(browse);
-  const row=el("div","","dialog-grid");content.append(row);
+  const prompt=field(content,"What should your agent do?",draft.prompt||"",{multiline:true,rows:4,placeholder:"Help customers track orders and resolve delivery issues…",maxLength:16000,hint:"Studio will prepare source changes for you to review. Leave blank to start from an empty project."});
+  const model=field(content,"Builder model",draft.model||$("model").value,{placeholder:"provider/model",hint:"Uses the provider credentials configured on the Studio server."});
+  const name=field(content,"Agent name",draft.name||agentName(draft.prompt||""),{placeholder:"research-assistant",required:true,pattern:"[a-z][a-z0-9-]{0,62}",maxLength:63});
+  const advanced=el("details","","creation-options"),optionsHost=el("div","","dialog-form");advanced.append(el("summary","Project settings"),optionsHost);content.append(advanced);
+  const directory=field(optionsHost,"Save in folder",draft.directory||state.workspace.path,{required:true,hint:"A new folder with the project name will be created here."});
+  const browse=el("div");optionsHost.append(browse);
+  const row=el("div","","dialog-grid");optionsHost.append(row);
   const framework=select(row,"Framework",[["adk","Google ADK"],["langgraph","LangGraph"]],draft.framework||"adk");
   const mode=select(row,"Authoring mode",[["managed","Managed · automatic discovery"],["advanced","Advanced · native wiring"]],draft.mode||"managed");
-  const profile=select(content,"Starting point",[["minimal","Minimal · just the essentials"],["guided","Guided · folder guides"],["example","Examples · optional sample files"]],draft.profile||"minimal");
-  const prompt=field(content,"What should this agent do? (optional)",draft.prompt||"",{multiline:true,rows:3,placeholder:"Research a topic, compare sources, and produce a concise report…",hint:"Your description will be ready in the AI panel after initialization."});
-  const snapshot=()=>({name:name.value,framework:framework.value,mode:mode.value,profile:profile.value,prompt:prompt.value,directory:directory.value});
+  const profile=select(optionsHost,"Starting point",[["minimal","Minimal · just the essentials"],["guided","Guided · folder guides"],["example","Examples · optional sample files"]],draft.profile||"minimal");
+  let named=Boolean(draft.name);name.addEventListener("input",()=>{named=true;});prompt.addEventListener("input",()=>{if(!named)name.value=agentName(prompt.value);});
+  const snapshot=()=>({name:name.value,framework:framework.value,mode:mode.value,profile:profile.value,prompt:prompt.value,directory:directory.value,model:model.value});
   browse.append(button("Browse folders…",()=>{
     const saved=snapshot();
     return chooseFolder("Choose save location",saved.directory,path=>{createProject({...saved,directory:path});return false;},()=>createProject(saved));
   }));
-  const preview=el("pre","","command-preview");content.append(preview);
+  const preview=el("pre","","command-preview");optionsHost.append(preview);
   const update=()=>{preview.textContent=`harnest init "${directory.value}/${name.value||"my-agent"}" --framework ${framework.value} --mode ${mode.value}${profile.value==="guided"?"":" --"+profile.value}`;};
   content.addEventListener("input",update);content.addEventListener("change",update);update();
-  const form=modal("Create an agent","Start a real Harnest project. Choose a foundation; add every capability as you build.","Initialize project",async()=>{
+  const form=modal("What will your agent do?","Create an editable Harnest project. Your description and initial source will be sent to the configured builder model to draft changes for review.","Create agent",async()=>{
     // Jobs outlive the dialog, so completion must never read mutable form controls.
     const saved=snapshot();
-    const {prompt:description,...options}=saved;
+    const {prompt:description,model:builderModel,...options}=saved;
+    if(description.trim() && !builderModel.trim())throw new Error("Choose a builder model before generating your agent, or leave the description blank to start with source.");
+    $("model").value=builderModel;preference("model",builderModel);
     const job=await command({action:"init",...options});
     state.callbacks.set(job.id,async()=>{
       await refreshWorkspace();await openProject(job.project);
-      if(description.trim()) {$("prompt").value=description;showSide("assistant");$("prompt").focus();}
+      if(description.trim() && state.project?.id===job.project) {$("prompt").value=description;showSide("assistant");sendPrompt({preventDefault(){}}).catch(error);}
     });
   });
   form.append(content);
@@ -271,7 +310,7 @@ async function extensionPanel() {
   const project=state.project.id;
   const form=modal("Harnest extensions","Install packages, inspect capabilities, and edit each extension’s native configuration.","Done",()=>{},true);
   const actions=el("div","","folder-controls");
-  actions.append(button("Install extension…",()=>installExtension(project)),button("Create extension…",()=>addComponent("extension")),button("Sync dependencies",async()=>{await command({action:"sync",project});$("dialog").close();}));
+  actions.append(button("Install extension…",()=>installExtension(project)),button("Create extension…",()=>addComponent("extension")),button("Sync dependencies",()=>syncDependencies(project)));
   form.append(actions);
   form.append(el("h3","Installed in this agent"));
   const list=el("div","","extension-list");form.append(list);
@@ -408,7 +447,11 @@ async function openFile(path,force=false) {
   state.document={...document,project};state.dirty=false;
   $("code-editor").value=document.text;$("code-editor").disabled=false;$("file-path").textContent=path;
   $("file-format").textContent=path.split(".").at(-1).toUpperCase()+" · UTF-8";
-  $("reload-file").disabled=false;editorChanged();setView("code");$("code-editor").focus();
+  // Opening a file from the canvas also reveals its location in the Files tree.
+  const parents=path.split("/");parents.pop();
+  while(parents.length){projectFolders().delete(parents.join("/"));parents.pop();}
+  if(state.library==="files")renderLibrary();
+  $("reload-file").disabled=false;editorChanged();setView("code");sourceEditor.focus();
 }
 
 /** Clear ownership whenever the selected project changes. */
@@ -416,12 +459,11 @@ function resetEditor() {
   state.dirty=false;$("code-editor").value="";$("code-editor").disabled=true;$("file-path").textContent="Select a file";$("reload-file").disabled=true;editorChanged();
 }
 
-/** Track text changes and line numbers without interpreting user source as markup. */
+/** Track unsaved source while synchronizing the visible editor and draft diagnostics. */
 function editorChanged() {
   state.dirty=Boolean(state.document && $("code-editor").value!==state.document.text);
   $("dirty-label").hidden=!state.dirty;$("save-file").disabled=!state.dirty;
-  $("line-numbers").textContent=Array.from({length:$("code-editor").value.split("\n").length},(_,i)=>i+1).join("\n");
-  $("line-numbers").scrollTop=$("code-editor").scrollTop;
+  sourceEditor.sync($("code-editor").value,state.document?.path,state.document?.project,$("code-editor").disabled);
 }
 
 /** Save the reviewed revision; preserve edits typed while the request was in flight. */
@@ -470,12 +512,12 @@ async function deleteCapability(node) {
   if(state.dirty) throw new Error("Save your source edits before deleting a capability.");
   const project=state.project.id;
   const preview=await api("capabilities/delete-preview","POST",{project,path:node.path});
-  const form=modal("Delete capability",`${preview.path} will be removed from this project. You can restore its source from Deleted capabilities.`,"Delete capability",async()=>{
+  const form=modal("Delete capability",`${preview.path} will be removed from this project. You can restore its source from Recently deleted.`,"Delete capability",async()=>{
     if(state.dirty) throw new Error("Save your source edits before deleting a capability.");
     await api("capabilities/delete","POST",{project,path:preview.path,revision:preview.revision});
     if(state.project?.id===project) {
       forgetDeletedSource(preview.path);await refreshProject();showSide("assistant");
-      status(`Deleted ${preview.path}. Restore it from Deleted capabilities.`);
+      status(`Deleted ${preview.path}. Restore it from Recently deleted.`);
     }
   });
   form.append(el("p",`${preview.files.length} file${preview.files.length===1?"":"s"} will be removed:`));
@@ -496,11 +538,8 @@ async function deletedCapabilities() {
   if(!state.project)return;
   const project=state.project.id;
   const result=await api(`capabilities/deleted?project=${encodeURIComponent(project)}`);
-  const form=modal("Deleted capabilities","Restore source to its original location. Existing files are never overwritten.","Save",async()=>{preference("ai-timeout",timeout.value);preference("ai-max-tokens",tokens.value);});
-  const limits=assistantLimits();
-  timeout=field(form,"Model timeout (seconds)",limits.timeout,{type:"number",min:1,max:1800,step:1,required:true,hint:"Per provider call. Range: 1–1800 seconds."});
-  tokens=field(form,"Maximum output tokens",limits.max_tokens,{type:"number",min:1,max:131072,step:1,required:true,hint:"Your provider may impose a lower limit."});
-  if(!result.items.length)form.append(el("p","No deleted capabilities in this project.","empty-note"));
+  const form=modal("Recently deleted","Tools, skills, and other agent components removed in Studio. Restore their files to the original location without overwriting existing source.","Close",async()=>{},false,{cancel:false});
+  if(!result.items.length)form.append(el("p","Nothing to restore. Components you remove in Studio will appear here.","empty-note"));
   for(const item of result.items) {
     const row=el("div","","dialog-field"), failure=el("p","","dialog-error");
     const restore=button(`Restore ${item.path}`,async()=>{
@@ -619,15 +658,26 @@ async function command(body) {
   status(`Running harnest ${job.argv.slice(1,3).join(" ")}…`);return job;
 }
 
-/** Expose the complete local build/test loop and dependency/provider installation. */
-function runMenu() {
+/** Keep validation in one place; serving, chat and extensions have dedicated screens. */
+function checksMenu() {
   let action,options;
   const project=state.project.id;
-  const form=modal("Run your agent","Commands run against the project on disk. Save your changes first.","Run command",async()=>{
+  const form=modal("Check your agent","Run tests or evaluations against your saved project. Results appear in the terminal.","Run check",async()=>{
+    if(state.dirty)throw new Error("Save your source changes before running checks.");
     await command({action:action.value,project,...options()});
   });
-  action=select(form,"Action",[["serve","Start development server · reload enabled"],["run","Send a prompt to the agent"],["test","Run unit tests"],["smoke","Run smoke tests"],["eval","Run evaluations"],["sync","Sync dependency environment"],["install-extension","Install a Harnest extension"]]);
+  action=select(form,"Action",[["test","Unit tests"],["smoke","Smoke tests"],["eval","Evaluations"]]);
   options=executionFields(form,action);
+}
+
+/** Keep environment maintenance beside extension installation, preserving profile choice. */
+function syncDependencies(project) {
+  let options;
+  const form=modal("Sync dependencies","Update the dependencies for this project.","Sync dependencies",async()=>{
+    if(state.dirty)throw new Error("Save your source changes before syncing dependencies.");
+    await command({action:"sync",project,...options()});
+  });
+  options=executionFields(form,{value:"sync"});
 }
 
 /** Open the guided review, deployment progress, and agent access screen. */
@@ -682,7 +732,7 @@ async function pollJobs() {
       if(job.status!=="succeeded"&&callback?.failed)callback.failed(job);
       if(job.id===state.jobId) status(job.status==="succeeded"?"Harnest command completed successfully.":`Harnest command ${job.status}. Check command output.`);
     }
-    renderJobs();
+    renderJobs();await experience.poll();
   } catch(problem) {if(problem.status===401)return;delay=4000;$("connection-label").textContent="Reconnecting";status(problem.message);}
   pollTimer=setTimeout(pollJobs,delay);
 }
@@ -721,8 +771,8 @@ function renderContext() {
 function updateContextCount() {$("context-count").textContent=`${state.context.size} files`;}
 
 /** Append inert conversation text and reveal the latest provider result. */
-function message(text,kind="assistant") {
-  const node=el("div",text,"message "+kind);$("conversation").append(node);node.scrollIntoView({block:"nearest"});return node;
+function message(text,kind="assistant",project=state.project?.id) {
+  const node=el("div",text,"message "+kind);builderConversation(project).host.append(node);node.scrollIntoView({block:"nearest"});return node;
 }
 
 /** Generate a real model proposal, with source sharing and apply kept separate. */
@@ -733,12 +783,18 @@ async function sendPrompt(event) {
   const project=state.project.id,prompt=$("prompt").value.trim(),model=$("model").value.trim();
   if(!prompt) return;
   state.prompting=true;$("send-prompt").disabled=true;showSide("assistant");
+  const conversation=builderConversation(project),history=conversation.history.slice(-6);
+  conversation.history.push({role:"user",text:prompt.slice(0,8000)});
   preference("model",model);message(prompt,"user");
   const pending=message("Harnest builder agent is reading source and preparing a code proposal…");pending.classList.add("pending");
+  const controller=new AbortController(),activity=activityCard(pending,()=>controller.abort());
   try {
-    const proposal=await sendDraft($("prompt"),submitted=>api("propose","POST",{project,prompt:submitted,model,...assistantLimits(),paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked}),()=>state.project?.id===project);
-    pending.remove();proposalCard(project,proposal);
-  } catch(problem) {pending.classList.remove("pending");pending.classList.add("error");pending.textContent=problem.message;}
+    const proposal=await sendDraft($("prompt"),submitted=>runBuilder({project,prompt:submitted,model,history,...assistantLimits(),paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked},{signal:controller.signal,activity:text=>activity.update(text),token}),()=>state.project?.id===project);
+    conversation.history.push({role:"assistant",text:proposal.summary.slice(0,8000)});
+    conversation.history=conversation.history.slice(-6);
+    activity.finish(proposal.kind==="message"?"Builder replied":"Proposal ready for review");
+    if(proposal.kind==="message")message(proposal.summary,"assistant",project);else proposalCard(project,proposal);
+  } catch(problem) {activity.finish(problem.name==="AbortError"?"Stopped — no changes applied":problem.message);if(problem.name!=="AbortError")pending.classList.add("error");}
   finally {state.prompting=false;$("send-prompt").disabled=!state.project;}
 }
 
@@ -748,7 +804,7 @@ function proposalCard(project,proposal) {
   card.append(el("h3",`✧ ${proposal.files.length} proposed file changes`),el("p",proposal.summary),el("p",`Project: ${project}`));
   if(proposal.context_paths) card.append(el("p",`Source read: ${proposal.context_paths.join(", ")}`));
   for(const file of proposal.files) card.append(el("div",(file.revision?"~ ":"+ ")+file.path,"proposal-path"));
-  const review=button("Review changes ↗",()=>{if(proposal.mcp_review){requireSavedForMCP();return reviewMCP(api,proposal,async()=>{review.disabled=true;review.textContent="Applied ✓";if(state.project?.id===project)await refreshProject();});}return reviewProposal(project,proposal,review);},"button primary");card.append(review);$("conversation").append(card);card.scrollIntoView({block:"nearest"});
+  const review=button("Review changes ↗",()=>{if(proposal.mcp_review){requireSavedForMCP();return reviewMCP(api,proposal,async()=>{recordApplied(project,proposal,review);await refreshAppliedProject(project);});}return reviewProposal(project,proposal,review);},"button primary");card.append(review);builderConversation(project).host.append(card);card.scrollIntoView({block:"nearest"});
 }
 
 /** Keep source buffers from being silently invalidated by an MCP configuration review. */
@@ -758,15 +814,40 @@ function requireSavedForMCP(){if(state.dirty)throw new Error("Save your source e
 function reviewProposal(project,proposal,reviewButton) {
   const form=modal("Review proposed changes",proposal.summary,"Apply to project",async()=>{
     if(state.dirty) throw new Error("Save your editor changes before applying a proposal.");
-    await api("files","PUT",{project,files:proposal.files.map(({path,text,revision})=>({path,text,revision}))});
-    reviewButton.textContent="Applied to project ✓";reviewButton.disabled=true;
-    if(state.project?.id===project) {await refreshProject();if(state.document) await openFile(state.document.path,true);}
-    status("Changes applied. Build and test the agent to validate them.");
+    if(proposal.pack_review)await api("packs/apply","POST",{review:proposal.pack_review});
+    else await api("files","PUT",{project,files:proposal.files.map(({path,text,revision})=>({path,text,revision}))});
+    recordApplied(project,proposal,reviewButton);
+    await refreshAppliedProject(project);
   },true);
   const tabs=el("div","","review-tabs"),preview=el("div","","review-diff");form.append(tabs,preview);
   const choose=file=>{renderDiff(preview,file);for(const tab of tabs.children)tab.classList.toggle("active",tab.textContent===file.path);};
   for(const file of proposal.files) tabs.append(button(file.path,()=>choose(file),""));
   choose(proposal.files[0]);
+}
+
+/** Record confirmed writes in both the visible conversation and the builder's next-turn context. */
+function recordApplied(project,proposal,reviewButton) {
+  if(reviewButton.disabled)return;
+  reviewButton.textContent="Applied to project ✓";reviewButton.disabled=true;
+  const count=proposal.files.length,paths=proposal.files.map(file=>file.path);
+  const title=`✓ Successfully applied ${count} ${count===1?"file":"files"}`;
+  reviewButton.closest(".proposal-card").querySelector("h3").textContent=title;
+  const note=message("","applied-note",project);note.setAttribute("role","status");
+  note.append(el("strong",title),el("p",proposal.summary));
+  const files=el("ul");for(const path of paths)files.append(el("li",path));note.append(files);
+  note.append(el("p",proposal.mcp_review?"Restart your agent to use the connection.":"Saved to your project. Run your agent to try the changes.","small muted"));
+  const conversation=builderConversation(project);
+  conversation.history.push({role:"assistant",text:`Applied successfully to ${project}: ${paths.join(", ")}. ${proposal.summary}`.slice(0,8000)});
+  conversation.history=conversation.history.slice(-6);
+  note.scrollIntoView({block:"nearest"});
+}
+
+/** A refresh failure must not turn a committed edit into an invitation to apply it again. */
+async function refreshAppliedProject(project) {
+  status("Changes applied. Run your agent to try them in a conversation.");
+  if(state.project?.id!==project)return;
+  try {await refreshProject();if(state.document)await openFile(state.document.path,true);}
+  catch(problem) {status(`Changes were saved, but the view could not refresh: ${problem.message}`);}
 }
 
 /** Apply local model-budget preferences over the validated host defaults. */
@@ -788,11 +869,15 @@ function providerHelp() {
 /** Bind single-instance controls once; source and job refreshes replace only their own content. */
 function bind() {
   bindNavigation();bindEditor();bindJobs();bindAssistant();
-  on($("new-project"),"click",()=>createProject());on($("welcome-create"),"click",()=>createProject());
+  on($("new-project"),"click",()=>createProject());on($("idea-form"),"submit",()=>createProject({prompt:$("agent-idea").value}));
+  on($("step-build"),"click",()=>{setView("canvas");showSide("assistant");$("prompt").focus();});
+  on($("step-connect"),"click",()=>{requireSavedForMCP();return mcpPanel(api,state.project,refreshProject);});
+  on($("step-run"),"click",()=>setView("try"));
+  on($("studio-packs"),"click",showPacks);
   on($("open-project"),"click",openFolder);on($("extensions"),"click",extensionPanel);
   on($("deployment"),"click",deploymentMenu);
   on($("mcp-connections"),"click",()=>{requireSavedForMCP();return mcpPanel(api,state.project,refreshProject);});
-  on($("compile"),"click",()=>command({action:"compile"}));on($("run-menu"),"click",runMenu);
+  on($("compile"),"click",()=>command({action:"compile"}));on($("run-menu"),"click",checksMenu);
   on($("deleted-capabilities"),"click",deletedCapabilities);
   on($("new-file"),"click",newFile);on($("refresh"),"click",refreshProject);
   on($("project-select"),"change",()=>openProject($("project-select").value));
@@ -805,15 +890,13 @@ function bind() {
 /** Tabs expose their selection to both the visual styling and assistive technology. */
 function bindNavigation() {
   for(const key of ["components","files"]) $(key+"-tab").addEventListener("click",()=>setLibrary(key));
-  for(const key of ["canvas","code"]) $(key+"-tab").addEventListener("click",()=>setView(key));
+  for(const key of ["canvas","code","try"]) $(key+"-tab").addEventListener("click",()=>setView(key));
   for(const key of ["assistant","inspector"]) $(key+"-tab").addEventListener("click",()=>showSide(key));
 }
 
 /** Keyboard save and indentation operate on real textarea source, preserving browser undo. */
 function bindEditor() {
   $("code-editor").addEventListener("input",editorChanged);
-  $("code-editor").addEventListener("scroll",()=>{$("line-numbers").scrollTop=$("code-editor").scrollTop;});
-  $("code-editor").addEventListener("keydown",event=>{if(event.key==="Tab"){event.preventDefault();const editor=event.target;editor.setRangeText("    ",editor.selectionStart,editor.selectionEnd,"end");editorChanged();}});
   on($("save-file"),"click",saveFile);on($("reload-file"),"click",()=>openFile(state.document.path));
   window.addEventListener("keydown",event=>{if((event.metaKey||event.ctrlKey)&&event.key==="s"){event.preventDefault();saveFile().catch(error);}});
   window.addEventListener("beforeunload",event=>{if(state.dirty){event.preventDefault();event.returnValue="";}});
@@ -831,10 +914,94 @@ function bindJobs() {
 /** Suggested prompts populate editable input; they never silently send workspace source. */
 function bindAssistant() {
   on($("prompt-form"),"submit",sendPrompt);on($("provider-help"),"click",providerHelp);
-  for(const node of document.querySelectorAll("[data-prompt]")) node.addEventListener("click",()=>{$("prompt").value=node.dataset.prompt;$("prompt").focus();});
+  document.addEventListener("click",event=>{const node=event.target.closest("[data-prompt]");if(node){if(!state.project){createProject({prompt:node.dataset.prompt});return;}$("prompt").value=node.dataset.prompt;$("prompt").focus();}});
 }
 
 authorize();bind();
 on($("connection-form"),"submit",reconnect);
 window.addEventListener("hashchange",()=>{authorize();connect();});
 connect();
+
+
+/** Present installed company catalogs without exposing arbitrary executable UI plugins. */
+async function showPacks() {
+  const result=await api("packs"),form=modal("Studio Packs","Company templates, components, services, skills, and configuration profiles.","Close",()=>{},true,{cancel:false});
+  if(!result.resources.length){form.append(el("p","No company packs are loaded. Start Studio with --pack /path/to/pack or install your company’s Studio distribution.","empty-note"));return;}
+  const search=field(form,"Find a resource","",{placeholder:"Search templates, tools, skills…"}),list=el("div","","pack-resources");form.append(list);
+  const render=()=>{
+    list.replaceChildren();
+    for(const item of result.resources.filter(item=>`${item.title} ${item.description} ${item.kind} ${item.pack}`.toLowerCase().includes(search.value.toLowerCase()))) {
+      const card=el("section","","pack-resource");card.append(el("h3",item.title),el("p",`${item.pack} · ${item.version} · ${item.kind}`,"small muted"),el("p",item.description));
+      if(item.kind==="builder-skill")card.append(el("span","Active builder guidance","tag"));
+      else if(item.creates_agent)card.append(button("Create agent…",()=>createPackAgent(item)));
+      else {const install=button("Review installation…",()=>previewPack(item));install.disabled=!state.project;card.append(install);}
+      list.append(card);
+    }
+    if(!list.children.length)list.append(el("p","No matching resources.","empty-note"));
+  };
+  search.addEventListener("input",render);render();
+}
+
+/** Capture the new agent destination before requesting a source-only template preview. */
+function createPackAgent(item) {
+  let name,directory;
+  const form=modal(item.title,"Create an editable agent from this company template. Review its files before creating the folder.","Review template",async()=>{
+    const proposal=await api("packs/preview","POST",{resources:[item.id],name:name.value,directory:directory.value});
+    reviewPack(proposal);return false;
+  });
+  name=field(form,"Agent name","",{required:true,pattern:"[a-z][a-z0-9-]{0,62}",placeholder:"my-agent"});
+  directory=field(form,"Parent folder",state.workspace.path,{required:true});
+}
+
+/** Keep unsaved editor changes out of pack mutation, just like ordinary source proposals. */
+async function previewPack(item) {
+  if(state.dirty)throw new Error("Save your source changes before installing a pack resource.");
+  const proposal=await api("packs/preview","POST",{project:state.project.id,resources:[item.id]});
+  reviewPack(proposal);
+}
+
+/** Apply a server-owned pack snapshot only after reviewing its native source diff. */
+function reviewPack(proposal) {
+  if(!proposal.files.length) {
+    modal("Already up to date",proposal.summary,"Done",()=>{},false,{cancel:false});
+    $("dialog").classList.add("pack-current-dialog");
+    return;
+  }
+  const form=modal("Review pack changes",proposal.summary,"Apply changes",async()=>{
+    if(state.dirty)throw new Error("Save your source changes before applying a pack resource.");
+    const result=await api("packs/apply","POST",{review:proposal.review});
+    const summary=`Applied ${proposal.resources.join(", ")} successfully to ${result.project}.`;
+    builderConversation(result.project).history.push({role:"assistant",text:summary.slice(0,8000)});
+    message(summary,"applied-note",result.project);
+    try {await refreshWorkspace();await openProject(result.project,true);status("Pack changes applied successfully.");}
+    catch(problem){status(`Pack changes were saved, but the view could not refresh: ${problem.message}`);}
+  },true);
+  $("dialog").classList.add("pack-review-dialog");
+  const sourceFiles=proposal.files.filter(file=>file.path!=="studio-packs.lock");
+  const receipt=proposal.files.find(file=>file.path==="studio-packs.lock");
+  if(sourceFiles.length) {
+    const tabs=el("div","","review-tabs"),preview=el("div","","review-diff");form.append(tabs,preview);
+    const choose=file=>{renderDiff(preview,file);for(const tab of tabs.children)tab.classList.toggle("active",tab.textContent===file.path);};
+    for(const file of sourceFiles)tabs.append(button(file.path,()=>choose(file),""));
+    choose(sourceFiles[0]);
+  } else form.append(el("p","Your agent files are unchanged. Only the installed pack record will be updated.","pack-review-note"));
+  if(receipt) {
+    const details=el("details","","pack-receipt"),preview=el("div","","review-diff");
+    details.append(el("summary","Installation record · studio-packs.lock"),preview);
+    details.addEventListener("toggle",()=>{if(details.open&&!preview.children.length)renderDiff(preview,receipt);});
+    form.append(details);
+  }
+}
+
+
+/** Company resources appear beside native components and use the same catalog as the builder. */
+function renderPackLibrary(host,search) {
+  const groups=new Map();
+  for(const item of state.workspace?.packs||[]) {
+    if(item.kind==="builder-skill"||!`${item.title} ${item.description} ${item.pack}`.toLowerCase().includes(search))continue;
+    if(!groups.has(item.pack)){const group=el("section","","library-group");group.append(el("h3",item.pack));host.append(group);groups.set(item.pack,group);}
+    const card=button("",()=>item.creates_agent?createPackAgent(item):previewPack(item),"palette-card");
+    card.title=item.description;card.disabled=!item.creates_agent&&!state.project;
+    card.append(el("span","▧","palette-icon"),el("strong",item.title));groups.get(item.pack).append(card);
+  }
+}

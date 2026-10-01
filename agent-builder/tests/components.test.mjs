@@ -5,6 +5,7 @@ import {cronFields,evaluationFields,runtimeFields,executionFields} from '../src/
 class Element extends EventTarget {
   children=[];value='';hidden=false;
   constructor(tag){super();this.tag=tag;}
+  setAttribute(name,value){this[name]=String(value);}
   append(...nodes){for(const node of nodes){node.parentElement=this;this.children.push(node);if(this.tag==='select'&&this.children.length===1)this.value=node.value;}}
 }
 globalThis.document={createElement:tag=>new Element(tag)};

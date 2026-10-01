@@ -1,0 +1,209 @@
+"""Studio Pack parsing, reviewed source transactions, and company wheel integration."""
+
+import asyncio
+import csv
+import hashlib
+from io import StringIO
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from zipfile import ZipFile
+
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "agent-builder/src"))
+from harnest_builder.app import create_app
+from harnest_builder.pack_distribution import package_packs
+from harnest_builder.packs import Packs
+from harnest_builder.prompting import Prompt, propose
+
+
+class StudioPackTests(unittest.TestCase):
+    """Exercise packs using real files, the authenticated API, and installable wheel artifacts."""
+
+    def setUp(self):
+        """Isolate pack publishing from the employee's mutable workspace."""
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.pack = self.root / "pack"
+        shutil.copytree(ROOT / "examples/studio-packs/company-support", self.pack)
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        self.project = self.workspace / "existing"
+        shutil.copytree(self.pack / "templates/support", self.project)
+        self.packs = Packs([self.pack])
+        self.app = create_app(self.workspace, "/missing/harnest", token="test", packs=self.packs)
+        self.client = self.enterContext(TestClient(self.app, base_url="http://127.0.0.1", client=("127.0.0.1", 1234)))
+        self.client.headers["Authorization"] = "Bearer test"
+
+    def preview(self, resources, **target):
+        """Request the same immutable review that the local Studio UI displays."""
+        response = self.client.post("/api/packs/preview", json={"resources": resources, **target})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def apply(self, review):
+        """Commit the server-owned plan without accepting replacement client-side source."""
+        response = self.client.post("/api/packs/apply", json={"review": review["review"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def change_manifest(self, change):
+        """Alter publisher inputs without mutating a previously loaded catalog snapshot."""
+        path = self.pack / "studio-pack.yaml"
+        manifest = yaml.safe_load(path.read_text())
+        change(manifest)
+        path.write_text(yaml.safe_dump(manifest))
+
+    def test_catalog_is_shared_and_discovery_never_executes_pack_code(self):
+        """Company resources have one identity in the UI, builder, and packaged snapshot."""
+        marker = self.root / "executed"
+        source = self.pack / "components/reference.py"
+        source.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        packs = Packs([self.pack])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.client.get("/api/workspace").json()["packs"], self.client.get("/api/packs").json()["resources"])
+        self.assertEqual(packs.catalog(), packs.context()["resources"])
+        self.assertTrue(packs.context()["builder_skills"])
+        self.assertTrue(next(item for item in packs.catalog() if item["kind"] == "bundle")["creates_agent"])
+
+    def test_install_is_reviewed_revision_checked_and_receipted(self):
+        """Nothing writes before approval, and external edits invalidate the whole apply."""
+        review = self.preview(["company-support/ticket-reference"], project="existing")
+        target = self.project / "tools/reference.py"
+        self.assertFalse(target.exists())
+        self.apply(review)
+        receipt = json.loads((self.project / "studio-packs.lock").read_text())
+        item = receipt["resources"]["company-support/ticket-reference"]
+        self.assertEqual(item["version"], "1.0.0")
+        self.assertEqual(item["files"]["tools/reference.py"], hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertEqual(self.client.post("/api/packs/apply", json={"review": review["review"]}).status_code, 409)
+        unchanged = self.preview(["company-support/ticket-reference"], project="existing")
+        self.assertEqual(unchanged["files"], [])
+        self.assertEqual(unchanged["kind"], "message")
+        self.assertNotIn("review", unchanged)
+        self.assertFalse(self.packs.reviews)
+        # A version-only upgrade needs a receipt diff, but unchanged source still guards the apply.
+        self.packs.resources["company-support/ticket-reference"]["version"] = "1.0.1"
+        stale = self.preview(["company-support/ticket-reference"], project="existing")
+        self.assertEqual([item["path"] for item in stale["files"]], ["studio-packs.lock"])
+        target.write_text("# employee edit\n")
+        rejected = self.client.post("/api/packs/apply", json={"review": stale["review"]})
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(target.read_text(), "# employee edit\n")
+        self.assertEqual(self.client.post("/api/packs/preview", json={"project": "existing", "resources": ["company-support/ticket-reference"]}).status_code, 409)
+
+    def test_template_bundle_composes_profile_and_preserves_other_projects(self):
+        """Create a full native agent only after reviewing its composed source and configuration."""
+        review = self.preview(["company-support/support-starter"], directory=str(self.workspace), name="new-agent")
+        target = self.workspace / "new-agent"
+        self.assertFalse(target.exists())
+        result = self.apply(review)
+        self.assertEqual(result["project"], "new-agent")
+        config = yaml.safe_load((target / "config.yaml").read_text())
+        self.assertEqual(config["spec"]["framework"]["name"], "adk")
+        self.assertTrue(config["server"]["agui"])
+        self.assertIn("${COMPANY_MCP_TOKEN}", (target / "mcp/company.py").read_text())
+        self.assertTrue((target / "skills/company-support/SKILL.md").is_file())
+        self.assertFalse((self.project / "tools/reference.py").exists())
+        repeated = self.preview(["company-support/support-starter"], project="new-agent")
+        self.assertEqual(repeated["files"], [])
+        self.assertNotIn("review", repeated)
+
+    def test_templates_compile_with_local_storage_and_bundled_tools(self):
+        """Both a bare template and its composed starter must compile without provider calls."""
+        for resource in ("support-agent", "support-starter"):
+            with self.subTest(resource=resource):
+                review = self.preview(["company-support/" + resource], directory=str(self.workspace), name=resource)
+                self.apply(review)
+                result = subprocess.run(
+                    [sys.executable, "-m", "harnest.cli", "compile", str(self.workspace / resource), "--output", str(self.root / resource)],
+                    env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "OPENAI_MODEL": "test-model", "OPENAI_BASE_URL": "https://models.example.invalid/v1", "COMPANY_MODEL": "test-model", "COMPANY_MODEL_URL": "https://models.example.invalid/v1", "COMPANY_MCP_URL": "https://mcp.example.invalid/mcp", "COMPANY_MCP_TOKEN": "test-only"},
+                    capture_output=True, text=True, timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.root / resource / "harnest-manifest.json").is_file())
+                card = yaml.safe_load((self.workspace / resource / "agent-card.yaml").read_text())
+                self.assertTrue(card["supportedInterfaces"])
+                self.assertTrue(card["skills"])
+
+    def test_pack_boundary_rejects_links_traversal_duplicates_and_cycles(self):
+        """A declarative catalog cannot widen the set of explicitly referenced source files."""
+        with self.subTest("duplicate"):
+            with self.assertRaisesRegex(ValueError, "Duplicate Studio pack"):
+                Packs([self.pack, self.pack])
+        self.change_manifest(lambda manifest: manifest["resources"][1]["files"].update({"tools/escape.py": "../outside.py"}))
+        with self.assertRaises(HTTPException):
+            Packs([self.pack])
+        self.change_manifest(lambda manifest: manifest["resources"][1]["files"].pop("tools/escape.py"))
+        source = self.pack / "components/reference.py"
+        source.unlink()
+        source.symlink_to(self.project / "agent.py")
+        with self.assertRaises(HTTPException):
+            Packs([self.pack])
+        source.unlink()
+        source.write_text("answer = 42\n")
+        self.change_manifest(lambda manifest: manifest["resources"][-1]["includes"].append("support-starter"))
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            Packs([self.pack])
+
+    def test_compatibility_and_immutable_reviews(self):
+        """Changing a publisher directory cannot alter already reviewed source."""
+        review = self.preview(["company-support/ticket-reference"], project="existing")
+        original = (self.pack / "components/reference.py").read_text()
+        (self.pack / "components/reference.py").write_text("raise RuntimeError('changed after review')\n")
+        self.apply(review)
+        self.assertEqual((self.project / "tools/reference.py").read_text(), original)
+        self.change_manifest(lambda manifest: manifest["requires"].update(studio=">=99"))
+        with self.assertRaisesRegex(ValueError, "requires Studio"):
+            Packs([self.pack])
+
+    def test_builder_selects_exact_catalog_source_for_review(self):
+        """The model selects IDs while the host owns source bytes and installation receipts."""
+        async def completion(**options):
+            context = json.loads(options["messages"][1]["content"])
+            self.assertEqual(context["studio_packs"]["resources"], self.packs.catalog())
+            content = json.dumps({"summary": "Use the company ticket tool", "pack_resources": ["company-support/ticket-reference"]})
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        response = self.client.get("/api/workspace")
+        self.assertEqual(response.status_code, 200)
+        from harnest_builder.files import Workspace
+        workspace = Workspace(self.workspace)
+        workspace.packs = self.packs
+        proposal = asyncio.run(propose(workspace, Prompt(project="existing", prompt="Add the company ticket tool", model="test/model"), completion))
+        self.assertTrue(proposal["pack_review"])
+        self.assertEqual(proposal["files"][0]["text"], (self.pack / "components/reference.py").read_text())
+        self.assertFalse((self.project / "tools/reference.py").exists())
+        self.apply({"review": proposal["pack_review"]})
+        repeated = asyncio.run(propose(workspace, Prompt(project="existing", prompt="Add the company ticket tool", model="test/model"), completion))
+        self.assertEqual(repeated["kind"], "message")
+        self.assertEqual(repeated["files"], [])
+        self.assertNotIn("pack_review", repeated)
+
+    def test_company_wheel_installs_with_embedded_pack_and_exact_dependency(self):
+        """Produce a real pip-installable artifact without copying unreferenced publisher files."""
+        (self.pack / "private.txt").write_text("must not ship")
+        wheel = package_packs([self.pack], self.root / "dist", "acme-studio", "1.0.0")
+        with ZipFile(wheel) as archive:
+            names = archive.namelist()
+            self.assertFalse(any("private.txt" in name for name in names))
+            metadata = archive.read("acme_studio-1.0.0.dist-info/METADATA").decode()
+            self.assertIn("Requires-Dist: harnest-agent-builder==0.1.0", metadata)
+            records = list(csv.reader(StringIO(archive.read("acme_studio-1.0.0.dist-info/RECORD").decode())))
+            self.assertEqual({row[0] for row in records}, set(names))
+        target = self.root / "installed"
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", "--target", str(target), str(wheel)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        embedded = Packs([target / "acme_studio_studio/packs/company-support"])
+        self.assertEqual(embedded.catalog(), self.packs.catalog())
+        self.assertTrue((target / "bin/acme-studio").exists())

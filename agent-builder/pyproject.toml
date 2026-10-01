@@ -7,9 +7,10 @@ name = "harnest-agent-builder"
 version = "0.1.0"
 description = "A local visual and LLM-assisted builder for Harnest agents by Fused"
 requires-python = ">=3.11"
-dependencies = ["harnest[adk]==1.5.0", "fastapi>=0.115", "uvicorn>=0.31", "httpx>=0.28,<1", "PyYAML>=6,<7", "litellm>=1.84,<2"]
+dependencies = ["harnest[adk]==1.5.0", "fastapi>=0.115", "uvicorn>=0.31", "httpx>=0.28,<1", "PyYAML>=6,<7", "litellm>=1.84,<2", "ruff>=0.14,<1"]
 
 [project.scripts]
+harnest-studio = "harnest_builder.__main__:main"
 harnest-builder = "harnest_builder.__main__:main"
 
 [tool.hatch.build.targets.wheel]

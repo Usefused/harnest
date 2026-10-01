@@ -24,6 +24,11 @@ from harnest_builder.assistant_errors import failure_category
 from harnest_builder.assistant_settings import AssistantLimits
 
 
+def stream_events(text):
+    """Decode the Studio SSE wire format for transport-level assertions."""
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
 class Provider(BaseHTTPRequestHandler):
     """Implement a deterministic OpenAI-compatible transport behind the actual agent runtime."""
 
@@ -52,9 +57,27 @@ class Provider(BaseHTTPRequestHandler):
         if len(self.requests) <= len(self.requested_tools):
             result["choices"] = [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": None,
                 "tool_calls": [{"id": f"skill-{len(self.requests)}", "type": "function", "function": self.requested_tools[len(self.requests) - 1]}]}}]
+        if payload.get("stream"):
+            self.stream_result(result)
+            return
         body = json.dumps(result).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def stream_result(self, result):
+        """Serve OpenAI streaming deltas so native AG-UI exercises its real stream path."""
+        choice = result["choices"][0]
+        delta = dict(choice["message"])
+        if "tool_calls" in delta:
+            delta["tool_calls"] = [{"index": index, **tool} for index, tool in enumerate(delta["tool_calls"])]
+        chunk = {**result, "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+        finish = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}]}
+        body = ("data: " + json.dumps(chunk) + "\n\ndata: " + json.dumps(finish) + "\n\ndata: [DONE]\n\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -129,6 +152,67 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Improve instructions", request)
             self.assertNotIn("test-only-key", request)
         self.assertIsNotNone(process.returncode)
+
+    async def test_agui_streams_native_tool_activity_and_validated_proposal(self):
+        """Exercise both AG-UI boundaries against a real native runtime and local provider."""
+        Provider.requested_tools = [{"name": "report_progress", "arguments": json.dumps({"message": "I am checking the existing instructions."})}]
+        root = Path(self.temp.name) / "agui-workspace"
+        project = root / "sample"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "config.yaml").write_text("metadata:\n  name: sample\n")
+        (project / "instructions.md").write_text("Be useful.\n")
+        app = create_app(root, "/missing/harnest", token="test-studio")
+        body = {"threadId": "builder-thread", "runId": "builder-run", "messages": [{"id": "request", "role": "user", "content": "Improve instructions"}],
+                "forwardedProps": {"project": "sample", "model": "openai/test", "paths": ["instructions.md"]}}
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)), base_url="http://127.0.0.1", headers={"Authorization": "Bearer test-studio"}) as client:
+                response = await client.post("/api/agui", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                events = stream_events(response.text)
+                self.assertEqual(events[0], {"type": "RUN_STARTED", "threadId": "builder-thread", "runId": "builder-run"})
+                self.assertEqual(events[-1]["type"], "RUN_FINISHED", response.text)
+                activity = [e["value"]["message"] for e in events if e.get("name") == "studio.activity"]
+                self.assertIn("I am checking the existing instructions.", activity)
+                proposal = next(e["value"] for e in events if e.get("name") == "studio.proposal")
+                self.assertEqual(proposal["files"][0]["before"], "Be useful.\n")
+                text = next(e["delta"] for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
+                self.assertEqual(text, proposal["summary"])
+                self.assertNotIn("test-only-key", response.text)
+                self.assertEqual((project / "instructions.md").read_text(), "Be useful.\n")
+                self.assertEqual((await app.state.assistant.client.get("/sessions")).json()["sessions"], [])
+                invalid = await client.post("/api/agui", json={**body, "forwardedProps": {"project": "sample", "timeout": 0}})
+                self.assertEqual(invalid.status_code, 422)
+                Provider.failure_status = 401
+                failed = await client.post("/api/agui", json=body)
+                failure = stream_events(failed.text)
+                self.assertEqual(failure[-1]["type"], "RUN_ERROR")
+                self.assertNotIn("studio.proposal", failed.text)
+                self.assertNotIn("private-provider-message", failed.text)
+                self.assertIsNone(app.state.assistant.process)
+
+    async def test_closing_agui_stream_cancels_pending_authoring(self):
+        """Browser disconnection must cancel work rather than leave an orphaned model call."""
+        from harnest_builder.agui import events
+        from harnest_builder.files import Workspace
+        from harnest_builder.prompting import Prompt
+        from harnest.runtime_agui_input import AGUIInput
+        root = Path(self.temp.name) / "cancel-workspace"
+        root.mkdir(exist_ok=True)
+        (root / "config.yaml").write_text("metadata:\n  name: cancel\n")
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        async def completion(**options):
+            """Stand in for a provider call that is still processing."""
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        stream = events(Workspace(root), Prompt(project=".", prompt="Build", model="test"), completion, None, "browser", AGUIInput.parse({}))
+        first = await anext(stream)
+        self.assertIn("RUN_STARTED", first)
+        await asyncio.wait_for(started.wait(), 2)
+        await stream.aclose()
+        self.assertTrue(cancelled.is_set())
 
     async def test_model_change_restarts_only_the_owned_runtime(self):
         """A model selection cannot race with a running request or reuse the prior model."""

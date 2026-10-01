@@ -1,0 +1,68 @@
+apiVersion: harnest.dev/studio-pack/v1
+name: company-support
+version: 1.0.0
+title: Company support
+description: An offline example pack for local Harnest Studio.
+requires:
+  studio: '>=0.1,<0.2'
+  harnest: '>=1.5,<2'
+resources:
+- id: support-agent
+  kind: template
+  title: Company support agent
+  description: An editable starting point for internal support. Configure the model
+    before running it.
+  files:
+    agent.py: templates/support/agent.py
+    config.yaml: templates/support/config.yaml
+    pyproject.toml: templates/support/pyproject.toml
+    instructions.md: templates/support/instructions.md
+    harnest.lock: templates/support/harnest.lock
+    lifecycle/storage.py: templates/support/lifecycle/storage.py
+    agent-card.yaml: templates/support/agent-card.yaml
+- id: ticket-reference
+  kind: component
+  title: Ticket reference
+  description: Format internal support ticket identifiers.
+  files:
+    tools/reference.py: components/reference.py
+- id: internal-services
+  kind: service
+  title: Company service connection
+  description: Use COMPANY_MCP_URL and COMPANY_MCP_TOKEN from the local launch environment.
+  files:
+    mcp/company.py: services/company.py
+- id: support-skill
+  kind: agent-skill
+  title: Support skill
+  description: Give generated agents the company support workflow.
+  files:
+    skills/company-support/SKILL.md: skills/support/SKILL.md
+- id: builder-conventions
+  kind: builder-skill
+  title: Company builder guidance
+  description: Use the company catalog when building support agents.
+  files:
+    skills/company-builder/SKILL.md: skills/builder/SKILL.md
+- id: local-profile
+  kind: profile
+  title: Local team configuration
+  description: Enable AG-UI and reference company model configuration.
+  config:
+    server:
+      agui: true
+    spec:
+      environment:
+        OPENAI_MODEL: ${COMPANY_MODEL}
+        OPENAI_BASE_URL: ${COMPANY_MODEL_URL}
+- id: support-starter
+  kind: bundle
+  title: Support team starter
+  description: Create a support agent with the company tool, service connection, skill,
+    and configuration.
+  includes:
+  - support-agent
+  - ticket-reference
+  - internal-services
+  - support-skill
+  - local-profile

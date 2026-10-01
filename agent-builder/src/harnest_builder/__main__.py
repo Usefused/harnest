@@ -5,18 +5,24 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import sys
 
 import uvicorn
 
 from .app import create_app
 
 
-def main() -> None:
+def main(*, embedded_packs=()) -> None:
     """Print a private launch URL and bind only to loopback with the selected Harnest CLI."""
+    if sys.argv[1:2] == ["pack"]:
+        from .pack_cli import main as pack_main
+        pack_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description="Harnest Agent Builder · built by Fused")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="Existing agent folder or parent folder for projects")
     parser.add_argument("--port", type=int, default=1940)
     parser.add_argument("--cli", default=os.getenv("HARNEST_BUILDER_CLI", "harnest"), help="Harnest CLI executable")
+    parser.add_argument("--pack", type=Path, action="append", default=[], help="Local Studio Pack folder (repeatable)")
     options = parser.parse_args()
     executable = shutil.which(options.cli)
     if executable is None:
@@ -25,9 +31,15 @@ def main() -> None:
         parser.error("--workspace must be an existing directory.")
     if not 1024 <= options.port <= 65535:
         parser.error("--port must be between 1024 and 65535.")
+    from .packs import Packs
+    from fastapi import HTTPException
+    try:
+        packs = Packs([*embedded_packs, *options.pack])
+    except (ValueError, OSError, HTTPException) as error:
+        parser.error(str(getattr(error, "detail", error)))
     token = secrets.token_urlsafe(32)
     print(f"\nHarnest Agent Builder · Fused\nOpen http://127.0.0.1:{options.port}/#token={token}\nWorkspace: {options.workspace.resolve()}\n", flush=True)
-    uvicorn.run(create_app(options.workspace, executable, token=token), host="127.0.0.1", port=options.port, access_log=False)
+    uvicorn.run(create_app(options.workspace, executable, token=token, packs=packs), host="127.0.0.1", port=options.port, access_log=False)
 
 
 if __name__ == "__main__":

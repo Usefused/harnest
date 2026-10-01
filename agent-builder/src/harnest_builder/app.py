@@ -5,10 +5,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import hmac
 from pathlib import Path
+from importlib.resources import files as resource_files
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
@@ -26,7 +27,7 @@ from .mcp_service import MCPService
 from . import mcp_routes
 
 STATIC = Path(__file__).parent / "static"
-ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js", "components.js"}
+ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js", "components.js", "experience.js", "agui.js", "editor.js", "editor.LICENSE.txt"}
 SECURITY = {"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
 
@@ -69,9 +70,12 @@ class Conversion(BaseModel):
     revision: str
 
 
-def create_app(root: Path, cli: str, *, token: str | None = None, completion=None, connector=None, credentials=None) -> FastAPI:
+def create_app(root: Path, cli: str, *, token: str | None = None, completion=None, connector=None, credentials=None, packs=None) -> FastAPI:
     """Compose a standalone app with no dependency on Harnest's existing browser UIs."""
+    style_nonce = secrets.token_urlsafe(24)
+    from .packs import Packs
     workspace = Workspace(root)
+    workspace.packs = packs or Packs()
     credentials = credentials or CredentialStore()
     jobs = Jobs(cli, workspace, credentials)
     mcp = MCPService(workspace, jobs, credentials, connector)
@@ -103,6 +107,7 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
             return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=SECURITY)
         response = await call_next(request)
         response.headers.update(SECURITY)
+        response.headers["Content-Security-Policy"] = SECURITY["Content-Security-Policy"].replace("style-src 'self'", f"style-src 'self' 'nonce-{style_nonce}'")
         if request.url.path == "/api/workspace" and response.status_code == 200:
             # Cookies survive tab recreation; bind them to this launch and port so
             # another local builder cannot accidentally replace this connection.
@@ -118,17 +123,22 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     @app.get("/")
     def index():
         """Serve the independent builder entrypoint."""
-        return FileResponse(STATIC / "index.html")
+        return Response((STATIC / "index.html").read_text().replace("__EDITOR_STYLE_NONCE__", style_nonce), media_type="text/html")
 
     @app.get("/assets/{filename}")
     def asset(filename: str):
-        """Serve a fixed asset set, never user-selected filesystem paths."""
+        """Serve fixed Studio assets and the runtime-owned shared dropdown controls."""
+        if filename in {"selects.js", "selects.css"}:
+            media = "text/javascript" if filename.endswith(".js") else "text/css"
+            return Response(resource_files("harnest").joinpath("_playground", filename).read_bytes(), media_type=media)
         if filename not in ASSETS:
             raise HTTPException(404, "Asset not found.")
         return FileResponse(STATIC / filename)
 
     mcp_routes.install_routes(app, mcp)
     folders.install_routes(app, workspace)
+    from . import pack_routes
+    pack_routes.install_routes(app, workspace, jobs, workspace.packs)
     extensions.install_routes(app, workspace)
     ownership.install_routes(app, workspace, jobs, _configuration)
     deletion.install_routes(app, workspace, jobs)
@@ -136,9 +146,13 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     transports.install_routes(app, workspace)
     deployment.install_routes(app, workspace)
     deployment_overview.install_routes(app, workspace)
+    from . import diagnostics
+    diagnostics.install_routes(app, workspace)
     _install_reads(app, workspace, jobs)
     _install_edits(app, workspace, jobs)
     _install_commands(app, workspace, jobs)
+    from . import preview
+    preview.install_routes(app, workspace, jobs)
 
     @app.post("/api/propose")
     async def proposal(body: Prompt, request: Request):
@@ -151,6 +165,8 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
             response.set_cookie(mcp_routes.cookie_name(request), browser, httponly=True, samesite="lax", path="/", max_age=86400)
         return response
 
+    from .agui import install_routes as install_agui
+    install_agui(app, workspace, completion or assistant.completion, mcp)
     return app
 
 
@@ -196,7 +212,7 @@ def _install_reads(app, workspace, jobs) -> None:
     def workspace_info():
         """List projects alongside available capabilities and provider configuration."""
         with workspace.lock:
-            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "llm": settings(), "features": {"deployment": deployment_enabled()}}
+            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "packs": workspace.packs.catalog(), "llm": settings(), "features": {"deployment": deployment_enabled()}}
 
     @app.get("/api/project")
     def project_info(project: str):

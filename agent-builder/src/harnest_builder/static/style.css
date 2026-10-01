@@ -11,8 +11,13 @@
   #mobile-project-select { display: block; width: 140px; margin-left: auto; padding: 7px; font-size: 10px; }
   .topbar .product-label { display: none; }
 }
-.workspace-actions{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap}.workspace-actions .quiet{font-size:11px}.project-area p{line-height:1.5}.folder-controls{display:flex;gap:8px;flex-wrap:wrap}.folder-list{max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px}.folder-item{display:block;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line);padding:12px 15px;overflow-wrap:anywhere}.folder-item:hover{background:var(--hover);color:var(--accent)}.extension-list{display:grid;gap:12px}.extension-card{border:1px solid var(--line);border-radius:8px;padding:15px}.extension-card h3{margin-top:0}.extension-card>.button{margin:6px 8px 0 0}.extension-card p{line-height:1.6}
-@media(max-width:600px){.workspace-actions{gap:8px;justify-content:center}.workspace-actions .quiet{font-size:8px;padding:4px 0}}
+/* Stable navigation rows keep workspace actions readable at every sidebar width. */
+.workspace-actions{display:grid;gap:2px;margin-top:12px}
+.workspace-actions .quiet{display:flex;align-items:center;gap:10px;width:100%;min-height:32px;padding:7px 9px;border-radius:6px;text-align:left;font-size:11px;white-space:nowrap}
+.workspace-actions .quiet:hover:not(:disabled){background:var(--soft)}
+.workspace-actions svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.folder-controls{display:flex;gap:8px;flex-wrap:wrap}.folder-list{max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px}.folder-item{display:block;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line);padding:12px 15px;overflow-wrap:anywhere}.folder-item:hover{background:var(--hover);color:var(--accent)}.extension-list{display:grid;gap:12px}.extension-card{border:1px solid var(--line);border-radius:8px;padding:15px}.extension-card h3{margin-top:0}.extension-card>.button{margin:6px 8px 0 0}.extension-card p{line-height:1.6}
+@media(max-width:600px){.workspace-actions{justify-items:center}.workspace-actions .quiet{width:40px;min-height:36px;padding:8px;justify-content:center}.workspace-actions .quiet span{display:none}}
 
 /* Category controls share file-card geometry while making disclosure explicit. */
 .category-card .card-bg{stroke:#343d48;fill:#15191f}.category-chevron{fill:none;stroke:#8f9caa;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}.node-card:focus-visible .card-bg{stroke:var(--accent);stroke-width:2}
@@ -64,3 +69,116 @@
 
 /* Keep MCP operation selection readable in wide and narrow dialogs. */
 .dialog-form fieldset{min-width:0;border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:10px}.dialog-form legend{color:var(--muted);font-size:12px;padding:0 6px}.context-option{display:flex;align-items:center;gap:9px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}.context-option input{width:auto;flex-shrink:0}
+
+/* The build and test conversations stay visually distinct throughout the local loop. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.journey{display:flex;align-items:center;gap:8px;padding:10px 24px;border-bottom:1px solid var(--line);background:#11170f}
+.journey button{background:transparent;border:1px solid #36442c;border-radius:6px;padding:8px 12px;font-size:11px;color:#c5d3b5}.journey button:hover{border-color:var(--accent)}.journey>span{margin-left:auto;font-size:10px;color:var(--muted)}
+.idea-form{display:grid;gap:12px;width:min(440px,95%)}.idea-form textarea{resize:vertical;min-height:86px;max-height:160px;font-size:13px;line-height:1.6;background:#141b12;border-color:#495b37}.idea-form button{justify-content:center}.creation-options summary{cursor:pointer;color:var(--muted);font-size:12px;padding:10px 0}.creation-options>div{padding-top:10px}
+.try-pane{flex:1;min-height:0;display:flex;flex-direction:column;background:#0e1215}.preview-toolbar{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;gap:14px;flex-wrap:wrap;align-items:center}.preview-toolbar strong{font-size:14px}.preview-toolbar p{font-size:11px;color:var(--muted);line-height:1.6;margin:7px 0 0}.preview-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.preview-actions a{font-size:11px;text-decoration:none;color:var(--accent)}.try-scroll{flex:1;min-height:0;overflow:auto;padding:18px 24px}.try-empty{text-align:center;max-width:440px;margin:40px auto;color:var(--muted);line-height:1.8}.try-empty>span{font-size:35px;color:var(--accent)}.try-empty h2{font-size:23px;font-weight:500;color:var(--text);letter-spacing:-.5px}.try-empty p{font-size:12px}.try-messages{max-width:850px;margin:auto}.try-messages .message{font-size:13px;padding:17px}.try-form{display:grid;gap:9px;padding:15px 24px;border-top:1px solid var(--line);background:#14191d}.try-form label{font-size:11px;color:var(--muted)}.try-form textarea{resize:vertical;max-height:160px;min-height:70px;font-size:13px;line-height:1.6}.try-form>div{display:flex;align-items:center;justify-content:space-between;gap:12px}.run-details{margin-top:15px;border-top:1px solid var(--line);padding-top:12px;white-space:normal}.run-details summary{cursor:pointer;font-size:11px;color:var(--muted)}.run-details pre{max-height:300px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}.run-actions{display:flex;gap:14px;margin-top:12px}.message.error>.quiet{display:block;margin-top:14px;color:var(--accent)}
+@media(max-width:1200px){#compile{display:none}.journey{padding:9px 14px;gap:5px}.journey button{padding:7px;font-size:10px}.journey>span{display:none}.preview-toolbar,.try-scroll,.try-form{padding:14px}}
+@media(max-width:600px){.journey{padding:8px;flex-wrap:wrap}.journey button{font-size:9px;flex:1;padding:8px 3px}.preview-actions{gap:10px}.try-form>div{align-items:flex-end}.try-form .small{font-size:9px}.welcome{justify-content:flex-start;overflow:auto;padding-top:25px}.welcome-glyph{margin:15px 0 5px}.welcome-features{display:none}.welcome h2{font-size:28px}.idea-form textarea{font-size:11px}.view-tabs #try-tab span{display:inline}.try-empty{margin:15px auto}.try-empty h2{font-size:19px}}
+
+/* Reserve room for the conversation on short laptop viewports. */
+.preview-toolbar{padding:12px 24px;gap:8px}.try-empty{margin:10px auto}.try-empty>span{font-size:24px}.try-empty h2{font-size:20px;margin:8px 0}.try-empty p{margin:8px 0}.try-form textarea{min-height:56px;height:64px}.run-actions a{font-size:11px;color:var(--accent);text-decoration:none}.run-actions{flex-wrap:wrap}
+
+/* Keep real builder activity readable inside the narrow conversation pane. */
+.builder-elapsed { display:block; font-size:11px; color:var(--muted); margin:4px 0; }
+.message ol { padding-left:18px; margin:10px 0; font-size:12px; line-height:1.6; }
+
+/* Keep sharing controls available without crowding the composer. */
+#context-details[open] { max-height: min(280px, 35dvh); overflow-y: auto; padding-bottom: 8px; }
+#context-details .related-source { align-items: flex-start; }
+.message.applied-note { border-color: #526737; background: #192016; }
+.applied-note strong { color: var(--accent); font-size: 12px; }
+.applied-note p { margin: 8px 0 0; }
+.applied-note ul { margin: 8px 0; padding-left: 18px; overflow-wrap: anywhere; font-size: 11px; }
+
+/* Separate navigation from workspace actions so labels never compete for one row. */
+.viewbar { height: auto; padding: 0; gap: 0; align-items: stretch; flex-direction: column; }
+.viewbar-primary, .viewbar-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 18px; }
+.viewbar-primary { min-height: 52px; }
+.viewbar-primary #project-description { margin-left: auto; white-space: nowrap; font-size: 10px; }
+.viewbar-tools { border-top: 1px solid #1b1e24; gap: 8px; }
+.view-tabs { flex: none; }
+.view-tabs button { flex: none; white-space: nowrap; }
+.view-tabs button span { display: inline; }
+.viewbar-tools select { flex: 0 0 auto; width: 148px; min-width: 148px; font-size: 11px; padding: 7px 28px 7px 10px; }
+.viewbar-tools .quiet { flex: none; white-space: nowrap; padding: 7px 9px; font-size: 11px; }
+#deleted-capabilities { margin-left: auto; }
+@media (max-width: 600px) {
+  .viewbar-primary, .viewbar-tools { padding: 9px 10px; }
+  .view-tabs button { font-size: 11px; padding: 7px; }
+  .viewbar-primary #project-description { margin-left: 0; }
+  #deleted-capabilities { margin-left: 0; }
+}
+
+/* Reuse Harnest's dropdown primitives, including their inset chevrons and keyboard menus. */
+:root { --control-height: 36px; --control-radius: 7px; --font-body: Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --panel-soft: var(--soft); --panel-hover: var(--hover); --panel-raised: #171b22; --line-strong: #3c454e; --accent-soft: #b8f34a18; }
+.harnest-select:has(+ select[hidden]) { display: none; }
+.viewbar-tools > .harnest-select { width: 148px; flex: none; }
+.viewbar-tools .harnest-select-trigger { height: 31px; font-size: 11px; }
+.terminal-header > .harnest-select { width: min(220px, 35vw); }
+.terminal-header .harnest-select-trigger { height: 28px; font-size: 10px; }
+.topbar > .harnest-select { display: none; }
+.dialog-error:empty { display: none; }
+.connections-dialog .dialog-description { margin-bottom: 18px; }
+.connection-choice { padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.connection-choice h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.connection-choice p { margin: 8px 0 14px; line-height: 1.6; }
+.connection-choice .button { width: auto; }
+.fused-connection { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; }
+.fused-connection summary { cursor: pointer; font-size: 12px; }
+.connection-badge { float: right; font-size: 10px; color: var(--muted); }
+.fused-connection > p { line-height: 1.6; margin: 12px 0; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+@media (max-width: 600px) {
+  .project-select-row > .harnest-select { display: none; }
+  .topbar > .harnest-select { display: block; width: 140px; margin-left: auto; }
+  .topbar .harnest-select-trigger { font-size: 10px; height: 32px; }
+}
+
+/* Native folder disclosures keep the source hierarchy compact and keyboard accessible. */
+.file-tree{list-style:none;padding:0;margin:6px 0;font:11px/1.5 ui-monospace,SFMono-Regular,monospace}
+.file-tree .file-tree{margin:0 0 3px 12px;padding-left:7px;border-left:1px solid var(--line)}
+.file-tree li{min-width:0}
+.file-folder>summary,.file-tree-file{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;padding:6px;border:0;border-radius:5px;background:transparent;color:#a6afbd;text-align:left;cursor:pointer;font:inherit}
+.file-folder>summary{list-style:none;color:#c1c8d2}
+.file-folder>summary::-webkit-details-marker{display:none}
+.file-folder>summary::before{content:"";width:5px;height:5px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;transform:rotate(-45deg);flex:none;margin:0 3px 0 1px}
+.file-folder[open]>summary::before{transform:rotate(45deg)}
+.file-tree-file{padding-left:20px}
+.file-folder>summary:hover,.file-tree-file:hover{background:var(--soft);color:var(--text)}
+.file-tree-file[aria-current]{background:#b8f34a12;color:var(--accent)}
+.file-tree-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-folder-icon{position:relative;width:13px;height:10px;border:1px solid currentColor;border-radius:2px;flex:none}
+.file-folder-icon::before{content:"";position:absolute;left:0;top:-4px;width:6px;height:3px;border:1px solid currentColor;border-bottom:0;border-radius:2px 2px 0 0}
+.file-document-icon{width:10px;height:13px;border:1px solid currentColor;border-radius:2px;flex:none;opacity:.7}
+@media(max-width:600px){.library-scroll:has(>.file-tree){overflow-x:auto}.library-scroll>.file-tree{min-width:180px}}
+
+/* CodeMirror owns scrolling, selection, gutters, and inline diagnostics. */
+#source-editor{width:100%;height:100%;min-width:0;overflow:hidden}
+#source-editor .cm-editor.cm-focused{outline:none}
+#source-editor .cm-panel.cm-panel-lint{max-height:140px}
+#lint-status{margin-left:auto;font-size:10px;opacity:1}
+#lint-status:not(:disabled){color:#e7bc78}
+#source-editor .cm-editor{background:#101217}
+#source-editor .cm-gutters{background:#0e1014}
+.code-footer{align-items:center;gap:12px;flex-wrap:wrap;min-height:32px}
+
+.pack-resources{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;max-height:55vh;overflow:auto}
+.pack-resource{border:1px solid var(--line);border-radius:9px;padding:16px}
+.pack-resource h3{margin:0;font-size:15px}.pack-resource p{font-size:12px;line-height:1.6}
+
+/* Pack reviews size to their content and keep generated receipts secondary to agent source. */
+dialog.pack-review-dialog{width:min(880px,calc(100vw - 28px))}
+.pack-review-dialog .dialog-form{gap:12px}
+.pack-review-dialog .dialog-description{margin:0 0 16px}
+.pack-review-dialog .review-tabs{margin:0}
+.pack-review-dialog .diff-summary{margin:0 0 10px}
+.pack-review-dialog .dialog-actions,.pack-current-dialog .dialog-actions{margin-top:0;padding-top:14px}
+.pack-review-note{margin:0;color:var(--muted);font-size:12px;line-height:1.7}
+.pack-receipt{border-top:1px solid var(--line);padding-top:12px;min-width:0}
+.pack-receipt summary{cursor:pointer;color:var(--muted);font-size:11px}
+.pack-receipt[open] summary{margin-bottom:12px}
+.pack-current-dialog .dialog-description{margin-bottom:14px}

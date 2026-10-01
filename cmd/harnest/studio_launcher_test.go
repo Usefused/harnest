@@ -31,11 +31,23 @@ func TestStudioDefaultsToCallerDirectory(t *testing.T) {
 	if err := os.Mkdir(selected, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940")
+	if err := os.WriteFile(filepath.Join(selected, "studio-pack.yaml"), []byte("name: company"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940", "--pack", selected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940"})
+	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940", "--pack\n" + selected})
+	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "pack", "validate", selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "pack validation", invocation, []string{"harnest_builder\npack\nvalidate\n" + selected})
+	if strings.Contains(invocation, "--python") {
+		t.Fatal("inherited Python option leaked into pack arguments")
+	}
 }
 
 // TestStudioRejectsInvalidLaunchBeforeBootstrapping protects unrelated directories and avoids unnecessary installs.

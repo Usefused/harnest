@@ -1,0 +1,16 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: retail-demo
+  displayName: Retail agent
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: '3.12'
+    dependencyFile: pyproject.toml
+server:
+  agui: true

@@ -35,6 +35,60 @@ export function button(label, action, className = "button secondary") {
   on(node, "click", action); return node;
 }
 
+/** Retain matching files and their ancestors, with folders first at every level. */
+export function buildFileTree(paths, search = "") {
+  const root = new Map(), query = search.toLowerCase().trim();
+  for (const path of paths) {
+    if (!path.toLowerCase().includes(query)) continue;
+    let siblings = root, prefix = "";
+    const parts = path.split("/");
+    parts.forEach((name, index) => {
+      prefix = prefix ? `${prefix}/${name}` : name;
+      if (!siblings.has(name)) siblings.set(name, {name, path: prefix, children: index < parts.length - 1 ? new Map() : null});
+      siblings = siblings.get(name).children;
+    });
+  }
+  return sortedFileNodes(root);
+}
+
+/** Sort each directory independently so nested names never flatten into path order. */
+function sortedFileNodes(nodes) {
+  return [...nodes.values()].sort((a,b) => Number(Boolean(b.children)) - Number(Boolean(a.children)) || a.name.localeCompare(b.name, undefined, {numeric:true}))
+    .map(node => ({...node, children: node.children ? sortedFileNodes(node.children) : null}));
+}
+
+/** Native disclosure controls provide keyboard expansion without a custom tree widget. */
+export function renderFileTree(host, nodes, {collapsed, selected, search, open}) {
+  const list = el("ul", "", "file-tree");
+  for (const node of nodes) {
+    const row = el("li");
+    if (node.children) {
+      const folder = el("details", "", "file-folder"), label = el("summary");
+      label.title = node.path;
+      label.append(el("span", "", "file-folder-icon"), el("span", node.name, "file-tree-name"));
+      // Search temporarily reveals matching descendants without changing saved expansion.
+      folder.open = Boolean(search) || !collapsed.has(node.path);
+      folder.addEventListener("toggle", () => {
+        if (!search && folder.isConnected) {
+          if (folder.open) collapsed.delete(node.path); else collapsed.add(node.path);
+        }
+      });
+      folder.append(label);
+      renderFileTree(folder, node.children, {collapsed, selected, search, open});
+      row.append(folder);
+    } else {
+      const item = button("", () => open(node.path), "file-tree-file");
+      item.title = node.path;
+      item.setAttribute("aria-label", node.path);
+      if (selected === node.path) item.setAttribute("aria-current", "page");
+      item.append(el("span", "", "file-document-icon"), el("span", node.name, "file-tree-name"));
+      row.append(item);
+    }
+    list.append(row);
+  }
+  host.append(list);
+}
+
 /** Associate every modal field with its label and native validation contract. */
 export function field(host, label, value = "", options = {}) {
   const wrapper = el("label", "", "dialog-field");
@@ -49,21 +103,22 @@ export function field(host, label, value = "", options = {}) {
 /** Keep native select elements as the value and accessibility source of truth. */
 export function select(host, label, choices, value) {
   const wrapper = el("label", "", "dialog-field"); wrapper.append(el("span", label));
-  const input = el("select");
+  const input = el("select"); input.setAttribute("aria-label", label);
   for (const [key, title] of choices) { const option = el("option", title); option.value = key; input.append(option); }
   if (value !== undefined) input.value = value;
   wrapper.append(input); host.append(wrapper); return input;
 }
 
 /** Native dialogs trap focus; rejected submissions keep the user's completed form intact. */
-export function modal(title, description, label, submit, wide = false) {
+export function modal(title, description, label, submit, wide = false, {cancel = true} = {}) {
   const dialog = $("dialog"); dialog.replaceChildren(); dialog.className = wide ? "wide" : "";
   const heading = el("h2", title); heading.id = "dialog-title";
   const form = el("form", "", "dialog-form"), content = el("div", "", "dialog-form");
   const failure = el("p", "", "dialog-error"); failure.setAttribute("role", "alert");
   const actions = el("div", "", "dialog-actions");
   const save = el("button", label, "button primary"); save.type = "submit";
-  actions.append(button("Cancel", () => dialog.close()), save);
+  if(cancel) actions.append(button("Cancel", () => dialog.close()));
+  actions.append(save);
   form.append(content, failure, actions); dialog.append(heading, el("p", description, "dialog-description"), form);
   form.addEventListener("submit", async event => {
     event.preventDefault(); save.disabled = true; failure.textContent = "";

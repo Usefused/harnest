@@ -1,6 +1,6 @@
 .DS_Store
 .env
-.venv/
+.venv
 .python_packages/
 site-packages/
 *.egg-info/
@@ -35,3 +35,6 @@ bin/
 /tests/python/test_studio_*.py
 
 internal/agentlauncher/assets/agent_*
+
+# Studio's checked-in browser bundle is built from the locked frontend packages.
+/agent-builder/frontend/node_modules/

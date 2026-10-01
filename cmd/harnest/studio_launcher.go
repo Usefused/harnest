@@ -15,11 +15,16 @@ import (
 // newStudioCommand starts the bundled local server against the caller's workspace.
 func (a *application) newStudioCommand() *cobra.Command {
 	var workspace string
+	var packs []string
 	var port int
 	command := &cobra.Command{
 		Use: "studio", Short: "Start Harnest Studio in the current folder or a selected workspace", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			directory, err := studioWorkspace(workspace, port)
+			if err != nil {
+				return err
+			}
+			packArguments, err := studioPackArguments(packs)
 			if err != nil {
 				return err
 			}
@@ -32,6 +37,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 				return fmt.Errorf("resolve Harnest executable for Studio: %w", err)
 			}
 			arguments := []string{"-m", "harnest_builder", "--workspace", directory, "--port", strconv.Itoa(port), "--cli", executable}
+			arguments = append(arguments, packArguments...)
 			if python.Source == "Studio environment" {
 				arguments = append([]string{"-I"}, arguments...)
 			}
@@ -60,6 +66,8 @@ func (a *application) newStudioCommand() *cobra.Command {
 	}
 	command.Flags().StringVar(&workspace, "workspace", ".", "existing workspace folder (default: current working directory)")
 	command.Flags().IntVar(&port, "port", 1940, "local Studio port (1024-65535)")
+	command.Flags().StringArrayVar(&packs, "pack", nil, "local Studio Pack folder (repeatable)")
+	command.AddCommand(a.newStudioPackCommand())
 	return command
 }
 
@@ -77,4 +85,70 @@ func studioWorkspace(workspace string, port int) (string, error) {
 		return "", fmt.Errorf("--workspace must be an existing directory: %s", directory)
 	}
 	return directory, nil
+}
+
+// studioPackArguments resolves company packs before bootstrapping the Studio environment.
+func studioPackArguments(packs []string) ([]string, error) {
+	var arguments []string
+	for _, path := range packs {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(filepath.Join(absolute, "studio-pack.yaml"))
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("Studio pack must contain studio-pack.yaml: %s", path)
+		}
+		arguments = append(arguments, "--pack", absolute)
+	}
+	return arguments, nil
+}
+
+// newStudioPackCommand keeps inherited CLI options separate from pack arguments.
+func (a *application) newStudioPackCommand() *cobra.Command {
+	command := &cobra.Command{Use: "pack", Short: "Validate or package company Studio Packs"}
+	validate := &cobra.Command{Use: "validate PACK...", Short: "Validate local Studio Packs", Args: cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			return a.runStudioPack(command, append([]string{"validate"}, args...))
+		},
+	}
+	command.AddCommand(validate, a.newStudioPackPackageCommand())
+	return command
+}
+
+// newStudioPackPackageCommand exposes only the options supported by the distribution contract.
+func (a *application) newStudioPackPackageCommand() *cobra.Command {
+	var packs []string
+	var name, version, output string
+	command := &cobra.Command{Use: "package", Short: "Build a company launcher wheel with embedded packs", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			arguments := []string{"package", "--name", name, "--version", version, "--output", output}
+			for _, pack := range packs {
+				arguments = append(arguments, "--pack", pack)
+			}
+			return a.runStudioPack(command, arguments)
+		},
+	}
+	command.Flags().StringArrayVar(&packs, "pack", nil, "Studio Pack folder (repeatable)")
+	command.Flags().StringVar(&name, "name", "", "Company distribution name")
+	command.Flags().StringVar(&version, "version", "", "Company distribution version")
+	command.Flags().StringVar(&output, "output", "dist", "Output directory")
+	for _, flag := range []string{"pack", "name", "version"} {
+		_ = command.MarkFlagRequired(flag)
+	}
+	return command
+}
+
+// runStudioPack uses the same installed Studio runtime as the local server.
+func (a *application) runStudioPack(command *cobra.Command, args []string) error {
+	python, err := a.studioPython(command)
+	if err != nil {
+		return err
+	}
+	arguments := append([]string{"-m", "harnest_builder", "pack"}, args...)
+	if python.Source == "Studio environment" {
+		arguments = append([]string{"-I"}, arguments...)
+	}
+	process := a.system.commandContext(command.Context(), python.Executable, arguments...)
+	return runCommand(process, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
 }

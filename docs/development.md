@@ -104,3 +104,21 @@ make quality
 for complexity above 10, verifies Go formatting, runs `go vet`, and exercises the
 offline Python-to-Go plan/compile/deploy contract. The same gate runs for pull
 requests and before a release is published from `main`.
+
+## Studio editor assets
+
+Studio ships the local CodeMirror bundle in
+`agent-builder/src/harnest_builder/static/editor.js`; browsers never fetch editor
+code from a CDN. After changing `agent-builder/frontend/`, run `npm ci` and
+`npm run build` there and commit the regenerated bundle and license notices.
+Ruff runs in the Studio Python environment on unsaved stdin with isolated
+correctness rules; diagnostics never execute source or apply fixes.
+
+## Studio Pack implementation contract
+
+Studio Pack manifests and source snapshots are parsed without importing pack
+code. The UI and builder consume the same catalog. Pack reviews retain exact
+source revisions and installation receipts; upgrades must not overwrite locally
+modified installed files. Company wheels include only manifest-referenced pack
+files and depend on an exact Studio package version. They do not vendor Python,
+the Harnest CLI, credentials, or third-party runtime dependencies.

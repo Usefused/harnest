@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add local Studio Packs for company components, extensions, templates, skills, services, configuration profiles, and bundles. Load packs with `harnest studio --pack`, review native source changes before applying, protect local edits during upgrades, and package embedded catalogs as company launcher wheels with `harnest studio pack package`. Example templates include an agent card and local session and checkpoint storage so created agents compile and run; bundled tools export their required module names. Add a retail pack with pricing, inventory, and shipping tools verified with GPT-5.5 agents. Reinstalling unchanged resources shows an up-to-date confirmation; reviews show only changed files with generated installation records collapsed.
+
+- Studio uses a locally bundled code editor with Python syntax highlighting, indentation, undo, and live Ruff diagnostics on unsaved drafts, including inline markers and a navigable problems panel.
+
 - Add `harnest add cron` for fixed UTC schedules and dynamic targets, with
   automatic queued tasks in both frameworks and authoring modes.
 - Constrain desktop example setup and dependency installation to the ADK
@@ -9,6 +13,13 @@
 
 - Update generated cron folder guidance and `harnest init --example` to use a
   single `@cron` function that creates its own queued task.
+
+- Studio streams builder activity over AG-UI with cancellation, supports conversational clarification, and repairs invalid code proposals once before review. Applied proposals leave a confirmation in the conversation and follow-up context; source-sharing controls collapse into one compact row. Workspace view tabs and actions occupy separate wrapping rows to keep labels readable. MCP connection setup uses a compact dialog, dropdowns share Harnest’s inset-arrow controls, and “Recently deleted” clearly exposes component recovery. A focused Checks menu replaces duplicate run, chat, and extension commands; dependency profiles are selected from Extensions. Workspace actions use aligned navigation rows, with the agent path kept in the folder picker instead of a truncated sidebar label. Files use an expandable folder tree with project-specific expansion, matching folder paths during search, and active-file highlighting.
+
+- Guide Studio from an agent description through Fused connections to a local
+  Run and Try conversation, with server readiness, inspectable results, and
+  handoffs to source refinement or test authoring. Preserve builder and test
+  conversations separately when switching projects.
 
 - Add owner-scoped live task and cron management in Playground, linked from
   Studio, with bounded metadata queries, cancellation, and audited schedule

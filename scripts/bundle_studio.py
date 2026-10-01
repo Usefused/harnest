@@ -28,7 +28,7 @@ def bundle_studio(root: Path, staged: Path, version: str) -> None:
     project = staged / "pyproject.toml"
     text = project.read_text()
     requirement = "google-adk==" + manifest["framework"]["version"]
-    text = text.replace('studio = ["google-adk>=2.8,<3"]', "studio = " + json.dumps([requirement]))
+    text = text.replace('studio = ["google-adk>=2.8,<3", "ruff>=0.14,<1"]', "studio = " + json.dumps([requirement, "ruff>=0.14,<1"]))
     text += '\n[tool.hatch.build.targets.wheel.force-include]\n"src/harnest_builder" = "harnest_builder"\n'
     project.write_text(text)
 

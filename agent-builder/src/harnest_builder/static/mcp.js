@@ -15,23 +15,38 @@ export function reviewMCP(api, proposal, applied) {
   for(const file of proposal.files){form.append(el('h3',file.path));const diff=el('div','','review-diff');renderDiff(diff,file);form.append(diff);}
 }
 
-/** Expose project configuration in the builder while keeping OAuth tokens on the host. */
+/** Offer a compact choice between a direct endpoint and Fused-managed connections. */
 export async function mcpPanel(api, project, applied) {
   const connection=await api('mcp/status');
-  const form=modal('MCP connections', 'Connect an existing HTTP endpoint or create an Engine-hosted MCP with Fused. All source and provisioning changes are reviewed before applying.', 'Done', async()=>{},true);
-  form.append(el('p',connection.connected?'Connected to Fused':'Fused workspace is not connected.'));
-  const engine=field(form,'Fused Engine URL',connection.engine_url,{type:'url',placeholder:'https://your-fused-engine'});
-  form.append(button(connection.connected?'Reconnect Fused':'Connect Fused',async()=>{
+  const form=modal('MCP connections', 'Give your agent tools from an MCP server. Review every connection before applying it.', 'Close', async()=>{},false,{cancel:false});
+  form.closest('dialog').classList.add('connections-dialog');
+  const endpoint=el('section','','connection-choice');
+  endpoint.append(el('h3','Connect a server'),el('p','Already have an MCP URL? Add it directly.','small muted'),button('Add MCP endpoint',()=>httpForm(api,project,applied),'button primary'));
+  form.append(endpoint);
+  const fused=el('details','','fused-connection');
+  const heading=el('summary','Use Fused');heading.append(el('span',connection.connected?'Connected':'Not connected','connection-badge'));
+  fused.append(heading,el('p','Browse or create MCP servers in your Fused workspace.','small muted'));
+  form.append(fused);
+  fusedSettings(fused,api,connection,project,applied);
+  if(connection.connected) {
+    fused.open=true;
+    const actions=el('div','','connection-actions');
+    actions.append(button('Choose existing server',()=>existingForm(api,project,applied)),button('Create server',()=>createForm(api,project,applied)));
+    fused.append(actions);
+  }
+}
+
+/** Keep sign-in settings behind an explicit disclosure without changing credential ownership. */
+function fusedSettings(host,api,connection,project,applied) {
+  const engine=field(host,'Fused Engine URL',connection.engine_url,{type:'url',placeholder:'https://your-fused-engine'});
+  const actions=el('div','','connection-actions');
+  actions.append(button(connection.connected?'Reconnect Fused':'Connect Fused',async()=>{
     const result=await api('mcp/connect','POST',{engine_url:engine.value.trim()});
     const link=el('a','Continue to Fused sign-in');link.href=result.url;link.target='_blank';link.rel='noopener noreferrer';link.className='button primary';
-    form.append(link,el('p','After signing in, close this dialog and reopen MCP connections to refresh.'));
+    host.append(link,el('p','After signing in, reopen MCP connections to refresh.','small muted'));
   }));
-  if(connection.connected)form.append(button('Disconnect Fused',async()=>{await api('mcp/disconnect','POST');await mcpPanel(api,project,applied);}));
-  form.append(button('Add HTTP MCP endpoint',()=>httpForm(api,project,applied)));
-  if(connection.connected){
-    form.append(button('Add existing Fused MCP',()=>existingForm(api,project,applied)));
-    form.append(button('Create MCP with Fused',()=>createForm(api,project,applied)));
-  }
+  if(connection.connected)actions.append(button('Disconnect',async()=>{await api('mcp/disconnect','POST');await mcpPanel(api,project,applied);}));
+  host.append(actions);
 }
 
 /** Keep destination ownership and deployment target explicit for multi-agent projects. */

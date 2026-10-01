@@ -123,7 +123,50 @@ class AgentBuilderTests(_BuilderFixture):
             response = self.client.get("/api/workspace", headers=headers)
             self.assertIn(response.status_code, (401, 403))
         self.assertEqual(self.client.get("/assets/files.py").status_code, 404)
+        from importlib.resources import files
+        for filename in ("selects.js", "selects.css"):
+            asset = self.client.get("/assets/" + filename)
+            self.assertEqual(asset.status_code, 200)
+            self.assertEqual(asset.content, files("harnest").joinpath("_playground", filename).read_bytes())
         self.assertIn("frame-ancestors 'none'", self.client.get("/").headers["content-security-policy"])
+        page = self.client.get("/")
+        nonce = page.text.split('name="editor-style-nonce" content="')[1].split('"')[0]
+        self.assertIn(f"'nonce-{nonce}'", page.headers["content-security-policy"])
+        self.assertNotIn("unsafe-inline", page.headers["content-security-policy"])
+        self.assertEqual(self.client.get("/assets/editor.js").status_code, 200)
+
+    def test_python_draft_diagnostics_never_save_or_execute_source(self):
+        """Lint incomplete buffers and correctness errors without touching the saved agent."""
+        original = (self.project / "agent.py").read_text()
+        marker = self.project / "must-not-exist"
+        draft = f"import os\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\nprint(missing_name)\n"
+        response = self.client.post("/api/diagnostics", json={"project": "sample", "path": "agent.py", "text": draft})
+        self.assertEqual(response.status_code, 200, response.text)
+        diagnostics = response.json()["diagnostics"]
+        undefined = next(item for item in diagnostics if item["code"] == "F821")
+        self.assertEqual(undefined["start"], {"row": 4, "column": 7})
+        self.assertIn("F401", {item["code"] for item in diagnostics})
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.project / "agent.py").read_text(), original)
+        invalid = self.client.post("/api/diagnostics", json={"project": "sample", "path": "agent.py", "text": "def broken(:\n"})
+        self.assertEqual(invalid.status_code, 200, invalid.text)
+        self.assertTrue(invalid.json()["diagnostics"])
+        valid = self.client.post("/api/diagnostics", json={"project": "sample", "path": "agent.py", "text": "answer = 42\n"})
+        self.assertEqual(valid.json(), {"diagnostics": [], "truncated": False})
+        config = self.project / "config.yaml"
+        config.write_text(config.read_text() + "  runtime:\n    version: '3.12'\n")
+        modern = self.client.post("/api/diagnostics", json={"project": "sample", "path": "agent.py", "text": "type CustomerId = str\n"})
+        self.assertEqual(modern.json()["diagnostics"], [])
+
+    def test_diagnostics_enforce_paths_and_surface_linter_failure(self):
+        """Draft analysis retains source ownership and reports unavailable checks honestly."""
+        body = {"project": "sample", "path": "../outside.py", "text": "print(missing)"}
+        self.assertEqual(self.client.post("/api/diagnostics", json=body).status_code, 422)
+        body["path"] = "agent.py"
+        with patch("harnest_builder.diagnostics.subprocess.run", side_effect=subprocess.TimeoutExpired("ruff", 5)):
+            self.assertEqual(self.client.post("/api/diagnostics", json=body).status_code, 503)
+        body["path"] = "instructions.md"
+        self.assertEqual(self.client.post("/api/diagnostics", json=body).json()["diagnostics"], [])
 
     def test_browser_session_survives_refresh_without_launch_token(self):
         """An authenticated browser can reopen the plain URL and initialize its first agent."""
@@ -483,6 +526,52 @@ class AgentBuilderFolderTests(_BuilderFixture):
 
 class AgentBuilderPromptTests(_BuilderFixture):
     """Verify proposal/provider boundaries without requiring a paid model request."""
+
+    def test_invalid_code_is_repaired_once_without_writing_source(self):
+        """Feed syntax diagnostics back to the model while retaining original revisions."""
+        calls = []
+        async def complete(**options):
+            """Correct the candidate only after receiving host validation feedback."""
+            calls.append(json.loads(options["messages"][1]["content"]))
+            text = "def broken(" if len(calls) == 1 else "answer = 42\n"
+            return self.response({"summary": "Added implementation", "files": [{"path": "lib/answer.py", "text": text}]})
+        result = self.expanding_proposal(complete)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Invalid answer.py", calls[1]["validation"]["error"])
+        self.assertEqual(calls[0]["files"], calls[1]["files"])
+        self.assertEqual(result["files"][0]["text"], "answer = 42\n")
+        self.assertFalse((self.project / "lib/answer.py").exists())
+        calls.clear()
+        async def broken(**options):
+            """Remain invalid so the host must enforce its repair budget."""
+            calls.append(options)
+            return self.response({"files": [{"path": "lib/answer.py", "text": "def broken("}]})
+        with self.assertRaises(HTTPException):
+            self.expanding_proposal(broken)
+        self.assertEqual(len(calls), 2)
+
+    def test_builder_can_ask_a_question_without_proposing_files(self):
+        """A missing requirement must not force a fabricated implementation."""
+        async def complete(**options):
+            """Return a normal clarification through the same model boundary."""
+            return self.response({"kind": "message", "summary": "Which news source should the agent use?", "files": []})
+        result = self.expanding_proposal(complete)
+        self.assertEqual(result["kind"], "message")
+        self.assertEqual(result["files"], [])
+
+    def test_followup_context_is_bounded_and_does_not_authorize_unseen_source(self):
+        """Recent conversation informs follow-ups while current file revisions own edits."""
+        from pydantic import ValidationError
+        history = [{"role": "user", "text": "Help with orders"}, {"role": "assistant", "text": "Proposed order instructions"}]
+        body = Prompt(project="sample", prompt="Make that more concise", model="test", paths=["instructions.md"], history=history)
+        asyncio.run(propose(Workspace(self.root), body, self.completion([{"path": "instructions.md", "text": "Help with orders."}])))
+        context = json.loads(self.provider_options["messages"][1]["content"])
+        self.assertEqual(context["conversation"], history)
+        self.assertEqual(context["files"][0]["text"], "Be useful.\n")
+        with self.assertRaises(HTTPException):
+            asyncio.run(propose(Workspace(self.root), body, self.completion([{"path": "agent.py", "text": GRAPH}])))
+        with self.assertRaises(ValidationError):
+            Prompt(project="sample", prompt="x", history=history * 4)
 
     def completion(self, files):
         """Capture the actual provider request and return deterministic complete source."""
@@ -1027,3 +1116,94 @@ class AgentBuilderOwnershipTests(_BuilderFixture):
         self.assertEqual(self.assign("skills/research", "subagents/helper/agent.py").status_code, 409)
         self.assertTrue(skill.exists())
         self.assertEqual((destination / "SKILL.md").read_text(), "Keep this package.")
+
+
+class AgentBuilderPreviewTests(_BuilderFixture):
+    """Exercise preview ownership and conversation continuity over real local HTTP."""
+
+    def start_preview(self):
+        """Launch a deterministic native-protocol fixture through the real job supervisor."""
+        runner = self.root / "preview-cli"
+        runner.write_text(f"#!{sys.executable}\n" + '''
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+sessions = {}
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+    def reply(self, value):
+        data = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def do_GET(self):
+        self.reply({"name": "preview"})
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/sessions":
+            sessions[body["id"]] = 0
+            return self.reply(body)
+        sessions[body["sessionId"]] += 1
+        self.reply({"status": "completed", "outputText": str(sessions[body["sessionId"]]), "output": [{"type": "tool_result", "name": "lookup", "output": {"found": True}}]})
+server = HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler)
+print("Uvicorn running on preview fixture", flush=True)
+server.serve_forever()
+''')
+        runner.chmod(0o700)
+        self.app.state.jobs.cli = str(runner)
+        response = self.client.post("/api/preview/start", json={"project": "sample"})
+        self.assertEqual(response.status_code, 200, response.text)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = self.client.get("/api/preview?project=sample").json()
+            if state["status"] == "ready":
+                return response.json()
+            time.sleep(.03)
+        self.fail(f"Preview did not become ready: {state}")
+
+    def test_preview_keeps_native_sessions_and_reuses_owned_server(self):
+        """Two turns retain agent state; explicit new conversations start independently."""
+        job = self.start_preview()
+        again = self.client.post("/api/preview/start", json={"project": "sample"}).json()
+        self.assertEqual(again["id"], job["id"])
+        with self.app.state.jobs.lock:
+            self.app.state.jobs.items[job["id"]]["output"] = "Recent output after startup logs rolled over"
+        self.assertEqual(self.client.get("/api/preview?project=sample").json()["status"], "ready")
+        body = {"project": "sample", "conversation": "a" * 36, "input": "Look up my order"}
+        first = self.client.post("/api/preview/message", json=body)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["response"]["outputText"], "1")
+        second = self.client.post("/api/preview/message", json=body).json()
+        self.assertEqual(second["response"]["outputText"], "2")
+        self.assertEqual(first.json()["session_id"], second["session_id"])
+        self.assertEqual(second["response"]["output"][0]["name"], "lookup")
+        body["conversation"] = "b" * 36
+        self.assertEqual(self.client.post("/api/preview/message", json=body).json()["response"]["outputText"], "1")
+        self.client.post(f"/api/jobs/{job['id']}/stop")
+        self.assertEqual(self.client.get("/api/preview?project=sample").json()["status"], "stopped")
+        self.assertEqual(self.client.post("/api/preview/message", json=body).status_code, 409)
+
+    def test_preview_boundary_and_start_failure_are_actionable(self):
+        """Never accept upstream addresses or claim a missing executable is ready."""
+        self.assertEqual(self.client.get("/api/preview?project=sample").json()["status"], "idle")
+        self.assertEqual(self.client.post("/api/preview/start", json={"project": "sample", "url": "http://example.com"}).status_code, 422)
+        job = self.client.post("/api/preview/start", json={"project": "sample"}).json()
+        self.wait_job(job["id"])
+        self.assertEqual(self.client.get("/api/preview?project=sample").json()["status"], "failed")
+        del self.client.headers["Authorization"]
+        self.assertEqual(self.client.post("/api/preview/start", json={"project": "sample"}).status_code, 401)
+
+    def test_preview_rejects_switching_agents(self):
+        """A second project cannot commandeer an active preview or its conversation."""
+        self.start_preview()
+        other = self.root / "other"
+        other.mkdir()
+        (other / "config.yaml").write_text((self.project / "config.yaml").read_text())
+        (other / "agent.py").write_text(GRAPH)
+        self.assertEqual(self.client.post("/api/preview/start", json={"project": "other"}).status_code, 409)
+        body = {"project": "other", "conversation": "a" * 36, "input": "Hello"}
+        self.assertEqual(self.client.post("/api/preview/message", json=body).status_code, 409)
+        state = self.client.get("/api/preview?project=other").json()
+        self.assertEqual(state["active_job"]["project"], "sample")

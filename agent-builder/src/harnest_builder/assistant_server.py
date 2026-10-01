@@ -99,6 +99,8 @@ class AssistantServer:
         """Translate the existing proposal boundary into the native Harnest response protocol."""
         user = [item["content"] for item in messages if item["role"] == "user"]
         payload = json.dumps({"context": json.loads(user[-2]), "request": user[-1]})
+        from .agui import progress
+        await progress("Waiting for the builder")
         async with self.lock:
             limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **{key: value for key, value in {"timeout": timeout, "max_tokens": max_tokens}.items() if value is not None}})
             content = await self.request(model, payload, limits)
@@ -106,8 +108,10 @@ class AssistantServer:
 
     async def request(self, model: str, payload: str, limits: AssistantLimits | None = None) -> str:
         """Retry a read-only proposal once for transient failures, using a fresh owned server."""
+        from .agui import progress
         reference = uuid.uuid4().hex[:12]
         for attempt in range(2):
+            await progress("Starting the Harnest builder" if self.model != model else "Preparing the next authoring step")
             await self.ensure_running(model, limits)
             try:
                 return await self.invoke(payload)
@@ -127,6 +131,7 @@ class AssistantServer:
                     raise HTTPException(502, MESSAGES[category] + f" Reference: {reference}.") from error
                 # A proposal cannot execute project code or apply edits, so retrying
                 # this private request cannot duplicate user-visible mutations.
+                await progress("Retrying a temporary model failure")
                 await asyncio.sleep(1)
 
     def runtime_trace(self) -> dict:
@@ -227,6 +232,9 @@ class AssistantServer:
         created = await self.client.post("/sessions", json={"id": session})
         created.raise_for_status()
         try:
+            from .agui import SINK
+            if SINK.get():
+                return await self.invoke_agui(prompt, session)
             response = await self.client.post("/responses", json={"input": prompt, "sessionId": session, "stream": False})
             response.raise_for_status()
             result = response.json()
@@ -236,6 +244,17 @@ class AssistantServer:
         finally:
             with suppress(httpx.HTTPError):
                 await self.client.delete(f"/sessions/{session}", timeout=5)
+
+    async def invoke_agui(self, prompt: str, session: str) -> str:
+        """Use the runtime's AG-UI transport while preserving the proposal tool boundary."""
+        from .agui import NativeEvents, progress
+        await progress("Model is working on the request")
+        body = {"threadId": session, "runId": uuid.uuid4().hex,
+                "messages": [{"id": uuid.uuid4().hex, "role": "user", "content": prompt}]}
+        async with self.client.stream("POST", "/agui", json=body) as response:
+            response.raise_for_status()
+            result = await NativeEvents().read(response)
+        return final_reply(result)
 
     async def stop(self) -> None:
         """Release sockets and the full subprocess group before replacing its model or exiting."""

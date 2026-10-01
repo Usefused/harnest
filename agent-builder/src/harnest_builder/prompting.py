@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+from typing import Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +17,14 @@ from .files import inventory, read, source_path, validate
 from harnest.provisioner_config import Deployment
 
 SYSTEM = "Propose Harnest source edits as JSON for explicit user review."
+
+
+class ConversationTurn(BaseModel):
+    """Carry bounded authoring context without granting source or execution authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=8000)
 
 
 class Prompt(BaseModel):
@@ -29,6 +38,7 @@ class Prompt(BaseModel):
     paths: list[str] = Field(default_factory=list, max_length=24)
     allow_related_source: bool = False
     allow_fused_discovery: bool = False
+    history: list[ConversationTurn] = Field(default_factory=list, max_length=6)
 
 
 def settings() -> dict:
@@ -38,9 +48,7 @@ def settings() -> dict:
 
 async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session="") -> dict:
     """Ask the configured provider for source changes and validate them before review."""
-    model = body.model.strip() or settings()["model"]
-    if not model:
-        raise HTTPException(422, "Set HARNEST_BUILDER_MODEL or enter a LiteLLM model identifier, such as openai/your-model.")
+    model = _builder_model(body)
     limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **body.model_dump(include={"timeout", "max_tokens"}, exclude_none=True)})
     root = workspace.project(body.project)
     with workspace.lock:
@@ -48,9 +56,10 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
         known = inventory(root)
     fused = {"available": bool(mcp), "connected": bool(mcp and mcp.connector.connected(session)),
              "discovery_allowed": body.allow_fused_discovery, "results": []}
+    from .agui import progress
     source_rounds = 0
     for attempt in range(9):
-        context = _context(documents, known, body.allow_related_source, fused)
+        context = _context(documents, known, body.allow_related_source, fused, body.history, getattr(workspace, "packs", None))
         content = await _complete(model, body.prompt, context, completion, limits)
         payload = _payload(content)
         handled = await _fused_reply(payload, mcp, session, body, fused)
@@ -58,13 +67,38 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
             if handled:
                 return handled
             continue
+        pack_request = _payload(content).get("pack_resources")
+        if pack_request:
+            return _pack_proposal(workspace, body, content, pack_request)
         missing = _requested_source(content, documents, known)
         if not missing:
-            result = _proposal(root, content, documents, known)
+            result = await _reviewed_proposal(root, content, documents, known, model, body.prompt, context, completion, limits)
             return {**result, "context_paths": [doc["path"] for doc in documents]}
+        await progress("Reading related source: " + ", ".join(missing))
         _expand_source(workspace, root, documents, missing, body.allow_related_source, source_rounds)
         source_rounds += 1
     raise HTTPException(422, "The model needs too many source-reading rounds. Select the relevant files and retry.")
+
+
+async def _reviewed_proposal(root, content, documents, known, model, prompt, context, completion, limits):
+    """Repair invalid source once against the same authorized snapshot before review."""
+    from .agui import progress
+    await progress("Checking proposed paths, revisions and source syntax")
+    try:
+        return _proposal(root, content, documents, known)
+    except HTTPException as error:
+        if error.status_code != 422:
+            raise
+        repair = {**json.loads(context), "validation": {
+            "error": str(error.detail), "candidate": content,
+            "instruction": "Correct the proposal using only the supplied source. Return complete corrected files."}}
+        encoded = json.dumps(repair)
+        if len(encoded.encode()) > 160000:
+            raise
+    await progress("Repairing the proposal after validation")
+    corrected = await _complete(model, prompt, encoded, completion, limits)
+    await progress("Checking the corrected proposal")
+    return _proposal(root, corrected, documents, known)
 
 
 async def _fused_reply(payload, service, session, body, fused):
@@ -92,11 +126,12 @@ async def _fused_reply(payload, service, session, body, fused):
     return await asyncio.to_thread(service.prepare, session, plan)
 
 
-def _context(documents: list[dict], known: list[str], allow_related_source: bool, fused=None) -> str:
+def _context(documents: list[dict], known: list[str], allow_related_source: bool, fused=None, history=(), packs=None) -> str:
     """Apply the same total context limit before every provider call, including expanded reads."""
     context = json.dumps({"files": documents, "project_files": known, "capabilities": catalog(),
                           "allow_related_source": allow_related_source,
-                          "deployment_schema": Deployment.model_json_schema(), "fused": fused})
+                          "deployment_schema": Deployment.model_json_schema(), "fused": fused,
+                          "conversation": [turn.model_dump() for turn in history], "studio_packs": packs.context() if packs else None})
     if len(context.encode()) > 160000:
         raise HTTPException(413, "Select fewer source files; prompt context is limited to 160 KiB.")
     return context
@@ -192,6 +227,8 @@ def _proposal(root, content: str, documents: list[dict], known: list[str]) -> di
     """Bind proposed edits to the revisions actually shared with the model."""
     try:
         payload = _payload(content)
+        if payload.get("kind") == "message":
+            return _conversation_reply(payload)
         candidates = payload["files"]
         if not isinstance(candidates, list) or not 1 <= len(candidates) <= 24:
             raise ValueError("Expected 1–24 files")
@@ -204,6 +241,14 @@ def _proposal(root, content: str, documents: list[dict], known: list[str]) -> di
         raise HTTPException(422, "The model did not return a valid source proposal. Try a smaller, more specific request.") from error
 
 
+def _conversation_reply(payload: dict) -> dict:
+    """Allow useful clarification without manufacturing a file edit for every reply."""
+    summary = payload.get("summary")
+    if not isinstance(summary, str) or not summary.strip() or payload.get("files"):
+        raise ValueError("A conversational reply requires text and no file changes")
+    return {"kind": "message", "summary": summary[:8000], "files": []}
+
+
 def _change(root, item: dict, selected: dict, known: list[str]) -> dict:
     """Never let model output overwrite unseen source or bypass path and syntax checks."""
     path, text = item["path"], item["text"]
@@ -214,3 +259,30 @@ def _change(root, item: dict, selected: dict, known: list[str]) -> dict:
     before = selected.get(path, {"text": "", "revision": ""})
     validate(source_path(root, path), text)
     return {"path": path, "text": text, "revision": before["revision"], "before": before["text"]}
+
+
+def _pack_proposal(workspace, body, content, identities):
+    """Resolve catalog selections to exact files instead of trusting generated component copies."""
+    if not isinstance(identities, list) or not 1 <= len(identities) <= 32 or not all(isinstance(item, str) for item in identities):
+        raise HTTPException(422, "Select at most 32 Studio Pack resource IDs")
+    if _payload(content).get("files"):
+        raise HTTPException(422, "Install pack resources separately from generated file edits")
+    from .pack_routes import translated
+    with workspace.lock, translated():
+        packs = getattr(workspace, "packs", None)
+        if packs is None:
+            raise HTTPException(422, "No Studio Packs are available")
+        proposal = packs.preview(workspace.project(body.project), identities)
+        proposal["model"] = body.model
+        reviewed = packs.remember(proposal, project=body.project)
+        if "review" in reviewed:
+            reviewed["pack_review"] = reviewed["review"]
+        return reviewed
+
+
+def _builder_model(body):
+    """Require an explicit provider before starting any source or catalog discovery."""
+    model = body.model.strip() or settings()["model"]
+    if not model:
+        raise HTTPException(422, "Set HARNEST_BUILDER_MODEL or enter a LiteLLM model identifier, such as openai/your-model.")
+    return model

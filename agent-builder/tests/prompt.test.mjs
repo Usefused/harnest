@@ -48,3 +48,24 @@ test('failure does not restore a draft into another project',async()=>{
   await assert.rejects(sendDraft(input,async()=>{throw new Error('offline');},()=>false),/offline/);
   assert.equal(input.value,'');
 });
+
+const {agentName,responseText,refinement}=await import('../src/harnest_builder/static/experience.js');
+
+test('onboarding suggests bounded portable agent names',()=>{
+  assert.equal(agentName('Support orders'), 'support-orders');
+  assert.equal(agentName('123 !!!'), 'my-agent');
+  assert.equal(agentName('a'.repeat(100)).length,63);
+});
+
+test('preview answers preserve tool evidence separately and expose pending actions',()=>{
+  assert.equal(responseText({outputText:'Ready',output:[{type:'tool_result',output:'private'}]}),'Ready');
+  assert.equal(responseText({output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'Hello'}]}]}),'Hello');
+  assert.match(responseText({status:'requires_action'}),/approval/);
+  assert.match(responseText({result:{count:2}}),/"count": 2/);
+});
+
+test('refinement is visible bounded evidence and never treats actual output as expected behavior',()=>{
+  assert.match(refinement('Refund order 42',{error:'Unavailable'}),/Refund order 42/);
+  assert.match(refinement('hello',{outputText:'wrong'},true),/do not assume the actual response is correct/);
+  assert.ok(refinement('x'.repeat(32000),{outputText:'y'.repeat(50000)}).length<=16000);
+});
