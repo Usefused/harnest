@@ -105,11 +105,18 @@ for complexity above 10, verifies Go formatting, runs `go vet`, and exercises th
 offline Python-to-Go plan/compile/deploy contract. The same gate runs for pull
 requests and before a release is published from `main`.
 
+## Internal orchestration validation
+
+`make dry-run` runs `internal/devtools/orchestrator` to exercise the Python-to-Go
+compile/deploy contract. This driver is repository development tooling and is
+not a released command. Keep its deployment opt-in and engine validation in
+the quality gate; `cmd/` contains the public CLI and the embedded agent launcher.
+
 ## Studio editor assets
 
 Studio ships the local CodeMirror bundle in
-`agent-builder/src/harnest_builder/static/editor.js`; browsers never fetch editor
-code from a CDN. After changing `agent-builder/frontend/`, run `npm ci` and
+`studio/src/harnest_builder/static/editor.js`; browsers never fetch editor
+code from a CDN. After changing `studio/frontend/`, run `npm ci` and
 `npm run build` there and commit the regenerated bundle and license notices.
 Ruff runs in the Studio Python environment on unsaved stdin with isolated
 correctness rules; diagnostics never execute source or apply fixes.
@@ -122,3 +129,11 @@ source revisions and installation receipts; upgrades must not overwrite locally
 modified installed files. Company wheels include only manifest-referenced pack
 files and depend on an exact Studio package version. They do not vendor Python,
 the Harnest CLI, credentials, or third-party runtime dependencies.
+
+Builder defaults are app-scoped: loaded packs overlay fields in launch order,
+then explicit `HARNEST_BUILDER_*` environment settings override them. Request
+model/budget selections override those defaults. Pack CA files are bounded,
+unlinked PEM certificate snapshots included in wheel integrity records; private
+keys are rejected. Resolve credential environment references only at launch.
+Never mutate process-wide environment or place provider settings in model
+context. Test TLS through the compiled assistant, not only a mocked completion.

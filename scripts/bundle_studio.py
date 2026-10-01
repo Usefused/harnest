@@ -9,7 +9,7 @@ import shutil
 def bundle_studio(root: Path, staged: Path, version: str) -> None:
     """Compile against staged release sources and pin the assistant's tested framework."""
     package = staged / "src" / "harnest_builder"
-    shutil.copytree(root / "agent-builder/src/harnest_builder", package,
+    shutil.copytree(root / "studio/src/harnest_builder", package,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "_assistant"))
     builder = _builder(root)
     # The compiler reads installed distribution metadata. A private metadata entry
@@ -35,7 +35,7 @@ def bundle_studio(root: Path, staged: Path, version: str) -> None:
 
 def _builder(root: Path):
     """Load the existing compiler entrypoint without importing the Studio web application."""
-    path = root / "agent-builder/src/harnest_builder/assistant_build.py"
+    path = root / "studio/src/harnest_builder/assistant_build.py"
     spec = importlib.util.spec_from_file_location("harnest_studio_build", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

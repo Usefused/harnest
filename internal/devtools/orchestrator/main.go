@@ -1,3 +1,5 @@
+// Command orchestrator exercises the compile/deploy engine for repository development.
+// It is invoked by make dry-run and is not part of the released CLI surface.
 package main
 
 import (
@@ -28,7 +30,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var deployCommand string
 	var deployArgs string
 	var compiledRoot string
-	flags := flag.NewFlagSet("harnest-runtime", flag.ContinueOnError)
+	flags := flag.NewFlagSet("orchestrator", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&orchestratorPath, "orchestrator", "", "Python orchestrator.py to execute")
 	flags.StringVar(&planPath, "plan", "", "pre-rendered plan JSON, or - for stdin")
@@ -40,17 +42,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "harnest-runtime: unexpected positional arguments: %s\n", strings.Join(flags.Args(), " "))
+		fmt.Fprintf(stderr, "orchestrator: unexpected positional arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
 
 	if err := features.RequireDeployment(); err != nil {
-		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		fmt.Fprintln(stderr, "orchestrator:", err)
 		return 1
 	}
 	reader, closer, err := planReader(orchestratorPath, planPath, python, stdin, stderr)
 	if err != nil {
-		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		fmt.Fprintln(stderr, "orchestrator:", err)
 		return 2
 	}
 	if closer != nil {
@@ -58,7 +60,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	plan, err := engine.DecodePlan(reader)
 	if err != nil {
-		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		fmt.Fprintln(stderr, "orchestrator:", err)
 		return 2
 	}
 
@@ -70,7 +72,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	compilerRoot, cleanup, err := prepareCompilerRoot(compiledRoot)
 	if err != nil {
-		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		fmt.Fprintln(stderr, "orchestrator:", err)
 		return 2
 	}
 	defer cleanup()
@@ -78,12 +80,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := engine.CompileAndDeployAll(ctx, plan, compiler, deployer); err != nil {
-		fmt.Fprintln(stderr, "harnest-runtime:", err)
+		fmt.Fprintln(stderr, "orchestrator:", err)
 		return 1
 	}
 	return 0
 }
 
+// prepareCompilerRoot owns temporary artifacts but preserves an explicitly selected output directory.
 func prepareCompilerRoot(configured string) (string, func(), error) {
 	if configured == "" {
 		directory, err := os.MkdirTemp("", "harnest-compiled-")
@@ -102,6 +105,7 @@ func prepareCompilerRoot(configured string) (string, func(), error) {
 	return absolute, func() {}, nil
 }
 
+// planReader accepts one plan source and renders authored orchestrators only after the deployment gate.
 func planReader(orchestratorPath, planPath, python string, stdin io.Reader, stderr io.Writer) (io.Reader, io.Closer, error) {
 	if (orchestratorPath == "") == (planPath == "") {
 		return nil, nil, fmt.Errorf("provide exactly one of -orchestrator or -plan")

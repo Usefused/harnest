@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 import yaml
 
 from .files import LIMIT, read, source_path, validate
+from .builder_config import BuilderDefaults, read_ca
 
 STUDIO_VERSION = "0.1.0"
 MAX_PACK_BYTES = 8 * LIMIT
@@ -64,7 +65,8 @@ class Manifest(Contract):
     title: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=4000)
     requires: Compatibility = Field(default_factory=Compatibility)
-    resources: list[Resource] = Field(min_length=1, max_length=100)
+    builder: BuilderDefaults = Field(default_factory=BuilderDefaults)
+    resources: list[Resource] = Field(default_factory=list, max_length=100)
 
 
 def runtime_version() -> str:
@@ -95,7 +97,8 @@ def load_pack(root: Path) -> dict:
         payload = {**resource.model_dump(), "files": texts}
         payload["digest"] = digest(payload)
         entries[resource.id] = payload
-    pack = {"manifest": manifest.model_dump(), "resources": entries}
+    ca = read_ca(root, manifest.builder.ca_bundle) if manifest.builder.ca_bundle else None
+    pack = {"manifest": manifest.model_dump(), "resources": entries, "builder_ca": ca}
     pack["digest"] = digest(pack)
     return pack
 

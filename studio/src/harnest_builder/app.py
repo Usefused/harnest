@@ -79,7 +79,10 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
     credentials = credentials or CredentialStore()
     jobs = Jobs(cli, workspace, credentials)
     mcp = MCPService(workspace, jobs, credentials, connector)
-    assistant = AssistantServer()
+    from .builder_config import BuilderConfiguration
+    builder = BuilderConfiguration(workspace.packs)
+    workspace.builder_environment = builder.environment
+    assistant = AssistantServer(environment=builder.environment)
     token = token or secrets.token_urlsafe(32)
 
     @asynccontextmanager
@@ -89,7 +92,10 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
             yield
         finally:
             jobs.close()
-            await assistant.close()
+            try:
+                await assistant.close()
+            finally:
+                builder.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.token, app.state.jobs = token, jobs
@@ -212,7 +218,7 @@ def _install_reads(app, workspace, jobs) -> None:
     def workspace_info():
         """List projects alongside available capabilities and provider configuration."""
         with workspace.lock:
-            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "packs": workspace.packs.catalog(), "llm": settings(), "features": {"deployment": deployment_enabled()}}
+            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "packs": workspace.packs.catalog(), "llm": settings(workspace.builder_environment), "features": {"deployment": deployment_enabled()}}
 
     @app.get("/api/project")
     def project_info(project: str):

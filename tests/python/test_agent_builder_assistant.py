@@ -15,7 +15,7 @@ from unittest.mock import patch, AsyncMock
 import httpx
 from _test_context import enter_context
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agent-builder" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "studio" / "src"))
 from harnest_builder.app import create_app
 from harnest_builder.assistant_build import compile_assistant, skill_sources
 from harnest_builder.assistant_server import AssistantServer, final_reply, traceback_summary
@@ -86,6 +86,29 @@ class Provider(BaseHTTPRequestHandler):
         """Keep test prompts and authorization headers out of test logs."""
 
 
+
+def make_provider_certificate(directory):
+    """Issue a short-lived loopback certificate for a real local TLS handshake."""
+    from datetime import datetime, timedelta, timezone
+    from ipaddress import ip_address
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Studio test CA")])
+    now = datetime.now(timezone.utc)
+    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                   .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
+                   .not_valid_after(now + timedelta(days=1))
+                   .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                   .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ip_address("127.0.0.1"))]), critical=False)
+                   .sign(key, hashes.SHA256()))
+    cert_path, key_path = directory / "ca.pem", directory / "server.key"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return cert_path, key_path
+
 class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
     """Use real compiled artifacts and native HTTP, without requiring external model access."""
 
@@ -152,6 +175,52 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Improve instructions", request)
             self.assertNotIn("test-only-key", request)
         self.assertIsNotNone(process.returncode)
+
+
+    async def test_company_pack_ca_reaches_compiled_builder_transport(self):
+        """A packaged CA must enable a verified TLS request through the actual compiled agent."""
+        import ssl
+        import yaml
+        from harnest_builder.packs import Packs
+        root = Path(self.temp.name) / "tls-workspace"
+        root.mkdir(exist_ok=True)
+        (root / "config.yaml").write_text("metadata:\n  name: tls\n")
+        (root / "instructions.md").write_text("Be useful.\n")
+        pack = Path(self.temp.name) / "tls-pack"
+        pack.mkdir(exist_ok=True)
+        cert, key = make_provider_certificate(pack)
+        self.provider.shutdown()
+        self.thread.join()
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        self.provider.socket = context.wrap_socket(self.provider.socket, server_side=True)
+        self.thread = threading.Thread(target=self.provider.serve_forever, daemon=True)
+        self.thread.start()
+        endpoint = f"https://127.0.0.1:{self.provider.server_port}/v1"
+        (pack / "studio-pack.yaml").write_text(yaml.safe_dump({
+            "apiVersion": "harnest.dev/studio-pack/v1", "name": "company", "title": "Company", "version": "1.0.0",
+            "builder": {"model": "openai/company", "api_base": endpoint, "ca_bundle": "ca.pem", "max_tokens": 2048}}))
+        # Prove this server cannot be reached with ordinary public trust roots.
+        async with httpx.AsyncClient(trust_env=False) as client:
+            with self.assertRaises(httpx.ConnectError):
+                await client.post(endpoint + "/chat/completions", json={})
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("HARNEST_BUILDER_")}
+        environment.update(HARNEST_BUILDER_API_KEY="test-only", HARNEST_BUILDER_ARTIFACT=str(self.artifact))
+        with patch.dict(os.environ, environment, clear=True):
+            app = create_app(root, "/missing/harnest", token="test", packs=Packs([pack]))
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+                                            base_url="http://127.0.0.1", headers={"Authorization": "Bearer test"}) as client:
+                    metadata = (await client.get("/api/workspace")).json()["llm"]
+                    self.assertEqual(metadata["model"], "openai/company")
+                    self.assertTrue(metadata["custom_ca"])
+                    response = await client.post("/api/propose", json={"project": ".", "prompt": "Improve instructions", "paths": ["instructions.md"]})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(Provider.requests[-1]["model"], "company")
+                    self.assertEqual(Provider.requests[-1]["max_tokens"], 2048)
+                    self.assertNotIn("ssl_verify", Provider.requests[-1])
+                    self.assertNotIn("test-only", response.text)
 
     async def test_agui_streams_native_tool_activity_and_validated_proposal(self):
         """Exercise both AG-UI boundaries against a real native runtime and local provider."""

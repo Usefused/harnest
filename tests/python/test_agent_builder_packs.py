@@ -13,6 +13,9 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+
+import certifi
 from zipfile import ZipFile
 
 from fastapi import HTTPException
@@ -20,7 +23,7 @@ from fastapi.testclient import TestClient
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "agent-builder/src"))
+sys.path.insert(0, str(ROOT / "studio/src"))
 from harnest_builder.app import create_app
 from harnest_builder.pack_distribution import package_packs
 from harnest_builder.packs import Packs
@@ -207,3 +210,83 @@ class StudioPackTests(unittest.TestCase):
         embedded = Packs([target / "acme_studio_studio/packs/company-support"])
         self.assertEqual(embedded.catalog(), self.packs.catalog())
         self.assertTrue((target / "bin/acme-studio").exists())
+
+
+class StudioBuilderConfigurationTests(unittest.TestCase):
+    """Verify company defaults, immutable certificate delivery, and local precedence."""
+
+    def setUp(self):
+        """Reuse the pack fixture with an isolated host builder environment."""
+        self.enterContext(patch.dict(os.environ, {key: value for key, value in os.environ.items()
+                                                if not key.startswith("HARNEST_BUILDER_")}, clear=True))
+        StudioPackTests.setUp(self)
+        self.ca = Path(certifi.where()).read_text()
+        # certifi includes descriptive comments; company bundles accept certificates only.
+        import re
+        self.ca = "\n".join(re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", self.ca, re.DOTALL)) + "\n"
+        (self.pack / "ca.pem").write_text(self.ca)
+
+    change_manifest = StudioPackTests.change_manifest
+
+    def test_pack_defaults_survive_wheel_relocation_without_shipping_credentials(self):
+        """Deliver provider settings and trust while resolving employee secrets only on launch."""
+        from harnest_builder.builder_config import BuilderConfiguration
+        from harnest_builder.prompting import settings
+        self.change_manifest(lambda manifest: manifest.update(builder={
+            "model": "openai/company-model", "api_base": "https://ai.example.test/v1",
+            "api_key_env": "COMPANY_TEST_KEY", "ca_bundle": "ca.pem", "timeout": 240, "max_tokens": 8192}))
+        with patch.dict(os.environ, {"COMPANY_TEST_KEY": "never-embed-this-secret"}):
+            wheel = package_packs([self.pack], self.root / "dist", "configured-studio", "1.0.0")
+            with ZipFile(wheel) as archive:
+                self.assertFalse(any(b"never-embed-this-secret" in archive.read(name) for name in archive.namelist()))
+                archive.extractall(self.root / "relocated")
+            shutil.rmtree(self.pack)
+            packs = Packs([self.root / "relocated/configured_studio_studio/packs/company-support"])
+            config = BuilderConfiguration(packs)
+            self.addCleanup(config.close)
+            environment = config.environment
+            self.assertEqual(environment["HARNEST_BUILDER_API_KEY"], "never-embed-this-secret")
+            self.assertEqual(environment["HARNEST_BUILDER_API_BASE"], "https://ai.example.test/v1")
+            self.assertEqual(Path(environment["HARNEST_BUILDER_CA_BUNDLE"]).read_text(), self.ca)
+            self.assertEqual(settings(environment), {"model": "openai/company-model", "configured": True,
+                                                   "custom_ca": True, "timeout": 240, "max_tokens": 8192})
+            self.assertNotIn("never-embed-this-secret", json.dumps(packs.context()))
+            self.assertNotIn("HARNEST_BUILDER_MODEL", os.environ)
+            config.close()
+            self.assertFalse(Path(environment["HARNEST_BUILDER_CA_BUNDLE"]).exists())
+
+    def test_partial_defaults_and_explicit_local_overrides_are_app_scoped(self):
+        """One settings-only company pack is sufficient; optional team packs overlay selected fields."""
+        from harnest_builder.builder_config import BuilderConfiguration
+        self.change_manifest(lambda manifest: manifest.update(resources=[], builder={
+            "model": "openai/company", "api_base": "https://company.example/v1", "ca_bundle": "ca.pem"}))
+        team = self.root / "team"
+        team.mkdir()
+        (team / "studio-pack.yaml").write_text(yaml.safe_dump({"apiVersion": "harnest.dev/studio-pack/v1",
+            "name": "team", "title": "Team", "version": "1.0.0", "builder": {"max_tokens": 2048}}))
+        packs = Packs([self.pack, team])
+        with patch.dict(os.environ, {"HARNEST_BUILDER_MODEL": "openai/local", "HARNEST_BUILDER_TIMEOUT_SECONDS": "300",
+                                    "HARNEST_BUILDER_CA_BUNDLE": str(self.pack / "ca.pem")}):
+            config = BuilderConfiguration(packs)
+            self.addCleanup(config.close)
+        self.assertEqual(config.environment["HARNEST_BUILDER_MODEL"], "openai/local")
+        self.assertEqual(config.environment["HARNEST_BUILDER_MAX_TOKENS"], "2048")
+        self.assertEqual(config.environment["HARNEST_BUILDER_TIMEOUT_SECONDS"], "300")
+        self.assertEqual(config.environment["HARNEST_BUILDER_API_BASE"], "https://company.example/v1")
+        self.assertEqual(config.environment["HARNEST_BUILDER_CA_BUNDLE"], str((self.pack / "ca.pem").resolve()))
+        other = BuilderConfiguration(Packs())
+        self.addCleanup(other.close)
+        self.assertNotIn("HARNEST_BUILDER_MODEL", other.environment)
+
+    def test_ca_and_builder_manifest_reject_invalid_or_secret_inputs(self):
+        """Never package private keys, traversal, linked trust files, or misspelled configuration."""
+        cases = [{"api_key": "secret"}, {"api_base": "https://user:secret@example.test/v1"},
+                 {"timeout": 0}, {"ca_bundle": "../outside.pem"}, {"ca_bundle": "bad.pem"},
+                 {"ca_bundle": "linked.pem"}]
+        (self.pack / "bad.pem").write_text(self.ca + "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----")
+        (self.pack / "linked.pem").symlink_to(self.pack / "ca.pem")
+        for settings in cases:
+            with self.subTest(settings=settings):
+                self.change_manifest(lambda manifest: manifest.update(builder=settings))
+                with self.assertRaises((ValueError, HTTPException)):
+                    Packs([self.pack])

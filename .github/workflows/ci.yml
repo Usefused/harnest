@@ -97,7 +97,7 @@ jobs:
         run: python -m pip install ".[adk,quality]" -c requirements/frameworks.txt
       - name: Test Studio frontend
         shell: bash
-        run: node --test agent-builder/tests/*.test.mjs
+        run: node --test studio/tests/*.test.mjs
       - name: Test executable storage and native process behavior
         run: go test ./internal/agentpack ./cmd/harnest-agent
       - name: Test compiler executable packaging

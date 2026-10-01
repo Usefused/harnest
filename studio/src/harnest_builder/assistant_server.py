@@ -80,9 +80,10 @@ def final_model_text(result: dict, events: list[dict]) -> str:
 class AssistantServer:
     """Own one model-bound Harnest process, serialized to prevent cross-request restarts."""
 
-    def __init__(self, artifact: Path | None = None):
+    def __init__(self, artifact: Path | None = None, *, environment=None):
         """Defer compilation and process startup until the first Build with AI request."""
-        configured = os.getenv("HARNEST_BUILDER_ARTIFACT")
+        self.environment = dict(os.environ if environment is None else environment)
+        configured = self.environment.get("HARNEST_BUILDER_ARTIFACT")
         self.artifact = artifact or (Path(configured) if configured else PACKAGE / "_assistant")
         self.explicit_artifact = artifact is not None or bool(configured)
         self.process = None
@@ -102,7 +103,7 @@ class AssistantServer:
         from .agui import progress
         await progress("Waiting for the builder")
         async with self.lock:
-            limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **{key: value for key, value in {"timeout": timeout, "max_tokens": max_tokens}.items() if value is not None}})
+            limits = AssistantLimits.model_validate({**AssistantLimits.from_environment(self.environment).model_dump(), **{key: value for key, value in {"timeout": timeout, "max_tokens": max_tokens}.items() if value is not None}})
             content = await self.request(model, payload, limits)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
@@ -188,15 +189,20 @@ class AssistantServer:
 
     async def ensure_running(self, model: str, limits: AssistantLimits | None = None) -> None:
         """Restart after model changes or process exits, never changing global provider settings."""
-        limits = limits or AssistantLimits.from_environment()
+        limits = limits or AssistantLimits.from_environment(self.environment)
         if self.process is not None and self.process.returncode is None and (self.model, self.limits) == (model, limits):
             return
         await self.stop()
         await self.prepare()
         token, port = secrets.token_urlsafe(32), free_port()
         self.diagnostics = tempfile.TemporaryDirectory(prefix="harnest-builder-diagnostics-")
-        environment = {**os.environ, **limits.environment(), "HARNEST_BUILDER_MODEL": model, "HARNEST_BUILDER_SERVICE_TOKEN": token,
+        environment = {**os.environ, **self.environment, **limits.environment(), "HARNEST_BUILDER_MODEL": model, "HARNEST_BUILDER_SERVICE_TOKEN": token,
                        "HARNEST_BUILDER_DIAGNOSTICS": str(Path(self.diagnostics.name) / "failure.json")}
+        if environment.get("HARNEST_BUILDER_CA_BUNDLE"):
+            # Some LiteLLM adapters send per-call ssl_verify as a model option.
+            # Set trust only in this owned process, never in the provider payload.
+            environment["SSL_CERT_FILE"] = environment["HARNEST_BUILDER_CA_BUNDLE"]
+            environment["SSL_VERIFY"] = environment["HARNEST_BUILDER_CA_BUNDLE"]
         self.log = tempfile.TemporaryFile()
         try:
             self.process = await asyncio.create_subprocess_exec(

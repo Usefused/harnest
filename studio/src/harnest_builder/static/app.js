@@ -858,11 +858,11 @@ function assistantLimits() {
 /** Configure bounded provider budgets for subsequent proposals. */
 function providerHelp() {
   let timeout,tokens;
-  const form=modal("Connect your model","Build with AI runs a compiled Harnest agent grounded in the bundled Harnest authoring skills. It uses your chosen model through LiteLLM. Set provider credentials in the terminal that starts Studio, then restart Studio.","Save",async()=>{preference("ai-timeout",timeout.value);preference("ai-max-tokens",tokens.value);});
+  const form=modal("Connect your model","Build with AI runs a compiled Harnest agent grounded in the bundled Harnest authoring skills. It uses your chosen model through LiteLLM. Your company pack can supply model, endpoint, budgets, and CA trust defaults. Local environment settings override these defaults. Set credentials in the terminal that starts Studio, then restart Studio.","Save",async()=>{preference("ai-timeout",timeout.value);preference("ai-max-tokens",tokens.value);});
   const limits=assistantLimits();
   timeout=field(form,"Model timeout (seconds)",limits.timeout,{type:"number",min:1,max:1800,step:1,required:true,hint:"Per provider call. Range: 1–1800 seconds."});
   tokens=field(form,"Maximum output tokens",limits.max_tokens,{type:"number",min:1,max:131072,step:1,required:true,hint:"Your provider may impose a lower limit."});
-  form.append(el("pre","export HARNEST_BUILDER_MODEL=provider/model\n\n# Use your provider's standard key environment variable,\n# or a builder-specific key:\nexport HARNEST_BUILDER_API_KEY=...\n\n# Optional compatible endpoint:\nexport HARNEST_BUILDER_API_BASE=https://your-endpoint/v1","command-preview"));
+  form.append(el("pre","export HARNEST_BUILDER_MODEL=provider/model\n\n# Use your provider's standard key environment variable,\n# or a builder-specific key:\nexport HARNEST_BUILDER_API_KEY=...\n\n# Optional compatible endpoint:\nexport HARNEST_BUILDER_API_BASE=https://your-endpoint/v1\n\n# Optional company CA certificates:\nexport HARNEST_BUILDER_CA_BUNDLE=/path/to/company-ca.pem","command-preview"));
   form.append(el("p","Provider requests include your prompt and selected source files. Credentials are read only by the local server.","empty-note"));
 }
 

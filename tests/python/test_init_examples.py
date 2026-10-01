@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import yaml
 
+from _test_sources import authored_files
+
 from harnest.bundle import compile_application, discover_evals
 from harnest.extensions import release_extensions
 
@@ -235,7 +237,7 @@ class ExampleContractTests(unittest.TestCase):
 
     def test_mcp_example_uses_explicit_compatible_model_configuration(self):
         """Import the committed MCP example and build its real model adapter offline."""
-        root = _ROOT / "mcp-agent"
+        root = _ROOT / "examples" / "mcp-agent"
         config = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
         environment = {key: str(value) for key, value in config["spec"]["environment"].items()}
         environment.update(
@@ -256,7 +258,7 @@ class ExampleContractTests(unittest.TestCase):
     def test_managed_examples_pin_their_selected_framework(self):
         """Prevent examples from silently resolving a different framework release."""
         examples = _ROOT / "examples"
-        configs = sorted(examples.rglob("config.yaml"))
+        configs = authored_files(examples, "config.yaml")
         self.assertGreater(len(configs), 0)
         for config_path in configs:
             with self.subTest(example=config_path.parent.relative_to(examples)):
@@ -272,4 +274,4 @@ class ExampleContractTests(unittest.TestCase):
 
     def test_examples_author_server_overrides_in_project_config(self):
         """Keep examples on the single-file server configuration introduced in 0.12."""
-        self.assertEqual(list((_ROOT / "examples").rglob("server.yaml")), [])
+        self.assertEqual(authored_files(_ROOT / "examples", "server.yaml"), [])

@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .assistant_settings import AssistantLimits
+from .assistant_settings import AssistantLimits, provider_options
 from .catalog import catalog
 from .files import inventory, read, source_path, validate
 from harnest.provisioner_config import Deployment
@@ -41,15 +41,18 @@ class Prompt(BaseModel):
     history: list[ConversationTurn] = Field(default_factory=list, max_length=6)
 
 
-def settings() -> dict:
+def settings(environment=None) -> dict:
     """Expose model identifiers and readiness without returning any credential values."""
-    return {"model": os.getenv("HARNEST_BUILDER_MODEL", ""), "configured": bool(os.getenv("HARNEST_BUILDER_MODEL")), **AssistantLimits.from_environment().model_dump()}
+    environment = os.environ if environment is None else environment
+    model = environment.get("HARNEST_BUILDER_MODEL", "")
+    return {"model": model, "configured": bool(model), "custom_ca": bool(environment.get("HARNEST_BUILDER_CA_BUNDLE")), **AssistantLimits.from_environment(environment).model_dump()}
 
 
 async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session="") -> dict:
     """Ask the configured provider for source changes and validate them before review."""
-    model = _builder_model(body)
-    limits = AssistantLimits.model_validate({**AssistantLimits.from_environment().model_dump(), **body.model_dump(include={"timeout", "max_tokens"}, exclude_none=True)})
+    environment = getattr(workspace, "builder_environment", None)
+    model = _builder_model(body, environment)
+    limits = AssistantLimits.model_validate({**AssistantLimits.from_environment(environment).model_dump(), **body.model_dump(include={"timeout", "max_tokens"}, exclude_none=True)})
     root = workspace.project(body.project)
     with workspace.lock:
         documents = [read(root, p) for p in dict.fromkeys(body.paths)]
@@ -60,7 +63,7 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
     source_rounds = 0
     for attempt in range(9):
         context = _context(documents, known, body.allow_related_source, fused, body.history, getattr(workspace, "packs", None))
-        content = await _complete(model, body.prompt, context, completion, limits)
+        content = await _complete(model, body.prompt, context, completion, limits, environment)
         payload = _payload(content)
         handled = await _fused_reply(payload, mcp, session, body, fused)
         if handled is not None:
@@ -72,7 +75,7 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
             return _pack_proposal(workspace, body, content, pack_request)
         missing = _requested_source(content, documents, known)
         if not missing:
-            result = await _reviewed_proposal(root, content, documents, known, model, body.prompt, context, completion, limits)
+            result = await _reviewed_proposal(root, content, documents, known, model, body.prompt, context, completion, limits, environment)
             return {**result, "context_paths": [doc["path"] for doc in documents]}
         await progress("Reading related source: " + ", ".join(missing))
         _expand_source(workspace, root, documents, missing, body.allow_related_source, source_rounds)
@@ -80,7 +83,7 @@ async def propose(workspace, body: Prompt, completion=None, *, mcp=None, session
     raise HTTPException(422, "The model needs too many source-reading rounds. Select the relevant files and retry.")
 
 
-async def _reviewed_proposal(root, content, documents, known, model, prompt, context, completion, limits):
+async def _reviewed_proposal(root, content, documents, known, model, prompt, context, completion, limits, environment=None):
     """Repair invalid source once against the same authorized snapshot before review."""
     from .agui import progress
     await progress("Checking proposed paths, revisions and source syntax")
@@ -96,7 +99,7 @@ async def _reviewed_proposal(root, content, documents, known, model, prompt, con
         if len(encoded.encode()) > 160000:
             raise
     await progress("Repairing the proposal after validation")
-    corrected = await _complete(model, prompt, encoded, completion, limits)
+    corrected = await _complete(model, prompt, encoded, completion, limits, environment)
     await progress("Checking the corrected proposal")
     return _proposal(root, corrected, documents, known)
 
@@ -193,15 +196,12 @@ def _expand_source(workspace, root, documents: list[dict], missing: list[str], a
         documents.extend(read(root, path) for path in missing)
 
 
-async def _complete(model: str, prompt: str, context: str, completion, limits: AssistantLimits | None = None) -> str:
+async def _complete(model: str, prompt: str, context: str, completion, limits: AssistantLimits | None = None, environment=None) -> str:
     """Call the compiled agent boundary and keep diagnostics from exposing credentials."""
     if completion is None:
         raise HTTPException(503, "The Harnest builder agent is not configured.")
     options = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": context}, {"role": "user", "content": prompt}], **(limits or AssistantLimits.from_environment()).model_dump()}
-    if os.getenv("HARNEST_BUILDER_API_BASE"):
-        options["api_base"] = os.environ["HARNEST_BUILDER_API_BASE"]
-    if os.getenv("HARNEST_BUILDER_API_KEY"):
-        options["api_key"] = os.environ["HARNEST_BUILDER_API_KEY"]
+    options.update(provider_options(environment))
     try:
         response = await completion(**options)
         return response.choices[0].message.content or ""
@@ -280,9 +280,9 @@ def _pack_proposal(workspace, body, content, identities):
         return reviewed
 
 
-def _builder_model(body):
+def _builder_model(body, environment=None):
     """Require an explicit provider before starting any source or catalog discovery."""
-    model = body.model.strip() or settings()["model"]
+    model = body.model.strip() or settings(environment)["model"]
     if not model:
         raise HTTPException(422, "Set HARNEST_BUILDER_MODEL or enter a LiteLLM model identifier, such as openai/your-model.")
     return model

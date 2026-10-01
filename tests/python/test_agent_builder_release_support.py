@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agent-builder/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "studio/src"))
 from harnest_builder.processes import terminate_tree
 from harnest.provisioner_config import ProvisionError
 from harnest.provisioner_lock import _lock, exclusive_lock, private_file

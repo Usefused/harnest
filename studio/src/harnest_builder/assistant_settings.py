@@ -13,13 +13,21 @@ class AssistantLimits(BaseModel):
     max_tokens: int = Field(default=12000, ge=1, le=131072)
 
     @classmethod
-    def from_environment(cls):
+    def from_environment(cls, environment=None):
         """Reject malformed host configuration before starting a model process."""
-        return cls(timeout=int(os.getenv("HARNEST_BUILDER_TIMEOUT_SECONDS", "120")),
-                   max_tokens=int(os.getenv("HARNEST_BUILDER_MAX_TOKENS", "12000")))
+        environment = os.environ if environment is None else environment
+        return cls(timeout=int(environment.get("HARNEST_BUILDER_TIMEOUT_SECONDS", "120")),
+                   max_tokens=int(environment.get("HARNEST_BUILDER_MAX_TOKENS", "12000")))
 
     def environment(self) -> dict[str, str]:
         """Keep outer deadlines longer than the selected provider deadline."""
         return {"HARNEST_BUILDER_TIMEOUT_SECONDS": str(self.timeout),
                 "HARNEST_BUILDER_MAX_TOKENS": str(self.max_tokens),
                 "HARNEST_BUILDER_REQUEST_TIMEOUT_SECONDS": str(self.timeout + 60)}
+
+
+def provider_options(environment=None) -> dict:
+    """Share endpoint and credential resolution without leaking transport options into requests."""
+    environment = os.environ if environment is None else environment
+    fields = {"api_base": "HARNEST_BUILDER_API_BASE", "api_key": "HARNEST_BUILDER_API_KEY"}
+    return {key: environment[name] for key, name in fields.items() if environment.get(name)}

@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from _test_context import enter_context
 
-BUILDER_SOURCE = Path(__file__).resolve().parents[2] / "agent-builder" / "src"
+BUILDER_SOURCE = Path(__file__).resolve().parents[2] / "studio" / "src"
 sys.path.insert(0, str(BUILDER_SOURCE))
 
 from harnest_builder.app import create_app

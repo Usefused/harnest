@@ -10,6 +10,8 @@ import subprocess
 import sys
 import unittest
 
+from _test_sources import authored_files
+
 
 CONTRACTS = {
     "agent": {
@@ -398,7 +400,7 @@ for name in sys.argv[1:]:
     def test_authored_examples_do_not_recommend_helper_module_imports(self):
         """Keep public authoring examples on domain imports as new guides are added."""
         root = Path(__file__).resolve().parents[2]
-        paths = list((root / "examples").rglob("*.py"))
+        paths = authored_files(root / "examples", "*.py")
         paths += list((root / "cmd/harnest/authoring_skill").rglob("*.md"))
         pattern = re.compile(r"(?:from|import) harnest\.[a-z]+_[a-z_]+\b")
         for path in paths:

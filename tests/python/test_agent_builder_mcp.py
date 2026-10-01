@@ -14,7 +14,7 @@ import httpx
 from fastapi.testclient import TestClient
 from _test_context import enter_context
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'agent-builder/src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'studio/src'))
 from harnest_builder.app import create_app
 from harnest_builder.mcp_credentials import CredentialStore
 from harnest_builder.jobs import Jobs

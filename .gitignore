@@ -26,8 +26,7 @@ bin/
 /.claude/settings.json
 /.fused/.state/
 
-# Retired Studio prototype; the released Studio is maintained in agent-builder/.
-/studio/
+# Retired Studio prototype source paths; the released package lives in studio/.
 /cmd/harnest/studio.go
 /cmd/harnest/studio_test.go
 /src/harnest/_studio/
@@ -37,4 +36,4 @@ bin/
 internal/agentlauncher/assets/agent_*
 
 # Studio's checked-in browser bundle is built from the locked frontend packages.
-/agent-builder/frontend/node_modules/
+/studio/frontend/node_modules/

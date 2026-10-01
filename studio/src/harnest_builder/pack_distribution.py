@@ -59,6 +59,9 @@ def _embed(contents, module, identity, pack):
             contents[f"{module}/packs/{identity}/{relative}"] = text.encode()
         resources.append(resource)
     manifest["resources"] = resources
+    if pack["builder_ca"] is not None:
+        manifest["builder"]["ca_bundle"] = "certificates/builder-ca.pem"
+        contents[f"{module}/packs/{identity}/certificates/builder-ca.pem"] = pack["builder_ca"].encode()
     contents[f"{module}/packs/{identity}/studio-pack.yaml"] = yaml.safe_dump(manifest, sort_keys=False).encode()
 
 
