@@ -128,8 +128,8 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
 
     @app.get("/")
     def index():
-        """Serve the independent builder entrypoint."""
-        return Response((STATIC / "index.html").read_text().replace("__EDITOR_STYLE_NONCE__", style_nonce), media_type="text/html")
+        """Decode the bundled UTF-8 entrypoint independently of the host's locale."""
+        return Response((STATIC / "index.html").read_text(encoding="utf-8").replace("__EDITOR_STYLE_NONCE__", style_nonce), media_type="text/html")
 
     @app.get("/assets/{filename}")
     def asset(filename: str):

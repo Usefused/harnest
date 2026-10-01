@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
+
 - Move the RAG and MCP sample agents into `examples/rag-agent` and `examples/mcp-agent`; update the MCP example to the current project schema. Rename the Studio source directory from `agent-builder/` to `studio/` and update build, release, and CI paths. Move the unreleased orchestration driver from `cmd/harnest-runtime` to internal development tooling, retaining `make dry-run` validation.
 
 - Add local Studio Packs for company components, extensions, templates, skills, services, configuration profiles, and bundles. Load packs with `harnest studio --pack`, review native source changes before applying, protect local edits during upgrades, and package embedded catalogs as company launcher wheels with `harnest studio pack package`. Company packs can supply builder model, endpoint, credential environment-variable references, budgets, and bundled CA trust, with local environment overrides and app-isolated settings. Example templates include an agent card and local session and checkpoint storage so created agents compile and run; bundled tools export their required module names. Add a retail pack with pricing, inventory, and shipping tools verified with GPT-5.5 agents. Reinstalling unchanged resources shows an up-to-date confirmation; reviews show only changed files with generated installation records collapsed.

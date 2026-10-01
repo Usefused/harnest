@@ -158,6 +158,19 @@ class AgentBuilderTests(_BuilderFixture):
         modern = self.client.post("/api/diagnostics", json={"project": "sample", "path": "agent.py", "text": "type CustomerId = str\n"})
         self.assertEqual(modern.json()["diagnostics"], [])
 
+    def test_index_preserves_utf8_when_the_host_defaults_to_windows_encoding(self):
+        """Serve the shipped HTML and nonce even on a non-UTF-8 Windows locale."""
+        from harnest_builder.app import STATIC
+
+        # Path.read_text consults this resolver when no encoding was supplied.
+        with patch("pathlib.io.text_encoding", side_effect=lambda encoding: encoding or "cp1252"):
+            page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        nonce = page.text.split('name="editor-style-nonce" content="')[1].split('"')[0]
+        expected = (STATIC / "index.html").read_bytes().decode("utf-8").replace("__EDITOR_STYLE_NONCE__", nonce)
+        self.assertEqual(page.content, expected.encode("utf-8"))
+        self.assertIn(f"'nonce-{nonce}'", page.headers["content-security-policy"])
+
     def test_diagnostics_enforce_paths_and_surface_linter_failure(self):
         """Draft analysis retains source ownership and reports unavailable checks honestly."""
         body = {"project": "sample", "path": "../outside.py", "text": "print(missing)"}
