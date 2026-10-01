@@ -1,0 +1,25 @@
+apiVersion: harnest.dev/v1alpha1
+kind: Agent
+metadata:
+  name: contract-refund
+  displayName: Contract Refund
+spec:
+  enabled: true
+  entrypoint: agent:root_agent
+  framework:
+    name: adk
+    mode: managed
+  runtime:
+    version: "3.12"
+    dependencyFile: pyproject.toml
+  secrets:
+    - environmentVariable: OPENAI_API_KEY
+      secretRef: projects/example/secrets/openai-api-key/latest
+    - environmentVariable: THREADIFY_API_KEY
+      secretRef: projects/example/secrets/threadify-api-key/latest
+    - environmentVariable: REFUND_API_TOKEN
+      secretRef: projects/example/secrets/refund-api-token/latest
+server:
+  live: false
+  http:
+    port: 1907

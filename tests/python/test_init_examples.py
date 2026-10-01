@@ -35,13 +35,13 @@ class InitExampleTests(unittest.TestCase):
             cwd=_ROOT, env=environment, check=True, capture_output=True, timeout=120,
         )
 
-    def _scaffold(self, framework):
+    def _scaffold(self, framework, mode="managed"):
         """Create a fresh project with only the explicit example flag enabled."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "sample-agent"
         subprocess.run(
-            [str(self.binary), "init", str(root), "--framework", framework, "--example"],
+            [str(self.binary), "init", str(root), "--framework", framework, "--mode", mode, "--example"],
             check=True, capture_output=True, timeout=30,
         )
         return root
@@ -97,7 +97,8 @@ class InitExampleTests(unittest.TestCase):
         config = yaml.safe_load((root / "config.yaml").read_text())
         environment = {key: str(value) for key, value in config["spec"]["environment"].items()}
         with patch.dict(os.environ, environment):
-            return compile_application(root, entrypoint="agent:root_agent", framework=framework)
+            return compile_application(root, entrypoint="agent:root_agent", framework=framework,
+                                       mode=config["spec"]["framework"].get("mode", "managed"))
 
     def test_samples_are_valid_source_but_never_imported_by_default(self):
         """Ignored examples cannot activate tools, tasks, extensions, or evals."""
@@ -138,14 +139,62 @@ class InitExampleTests(unittest.TestCase):
                     # with the same process-owned extension namespace.
                     release_extensions(tuple(extension.descriptor for extension in application.extensions))
 
+    def test_cron_guide_and_example_compile_without_a_separate_task(self):
+        """Both generated entrypoints register their own queued task on each backend."""
+        for framework in ("adk", "langgraph"):
+            for source in ("_README.md", "_example.py"):
+                with self.subTest(framework=framework, source=source):
+                    root = self._scaffold(framework)
+                    text = (root / "cron" / source).read_text()
+                    if source.endswith(".md"):
+                        text = text.split("```python\n", 1)[1].split("```", 1)[0]
+                    (root / "cron" / "daily_report.py").write_text(text)
+                    application = self._compile_scaffold(root, framework)
+                    self.assertEqual(len(application.tasks), 1)
+                    self.assertEqual(len(application.crons), 1)
+                    scheduled = application.crons[0]
+                    self.assertIs(scheduled.task, application.tasks[0])
+                    self.assertEqual(scheduled.schedule, "0 9 * * 1-5")
+                    self.assertEqual(scheduled.task.queue, "reports")
+                    self.assertEqual(scheduled.task.max_retries, 3)
+                    self.assertEqual(
+                        asyncio.run(scheduled.task.authored(**scheduled.arguments)),
+                        {"subject": "daily", "status": "ready"},
+                    )
+
+    def test_add_cron_compiles_fixed_and_dynamic_targets_in_both_modes(self):
+        """The real CLI creates independent cron tasks across both frameworks and modes."""
+        for framework in ("adk", "langgraph"):
+            for mode in ("managed", "advanced"):
+                with self.subTest(framework=framework, mode=mode):
+                    root = self._scaffold(framework, mode)
+                    for name, flags in (("daily-report", ["--schedule", "0 9 * * 1-5"]),
+                                        ("reminder", ["--dynamic"])):
+                        subprocess.run(
+                            [str(self.binary), "add", "cron", name, "--project", str(root), *flags],
+                            check=True, capture_output=True, timeout=30,
+                        )
+                    application = self._compile_scaffold(root, framework)
+                    self.assertEqual(len(application.tasks), 2)
+                    self.assertEqual(len(application.crons), 1)
+                    self.assertEqual(application.crons[0].schedule, "0 9 * * 1-5")
+                    self.assertEqual(
+                        {task.source for task in application.tasks},
+                        {"cron/daily_report.py", "cron/reminder.py"},
+                    )
+                    self.assertEqual(
+                        asyncio.run(application.crons[0].task.authored()),
+                        {"status": "completed"},
+                    )
+
     def _assert_activated_samples(self, root, application):
         """Check actual task linkage and runtime-extension/eval discovery."""
         self.assertEqual(len(application.extensions), 2)
-        self.assertEqual(len(application.tasks), 1)
+        self.assertEqual(len(application.tasks), 2)
         self.assertEqual(len(application.crons), 1)
-        self.assertIs(application.crons[0].task, application.tasks[0])
+        self.assertIn(application.crons[0].task, application.tasks)
         self.assertEqual(
-            asyncio.run(application.tasks[0].authored(subject="daily")),
+            asyncio.run(application.crons[0].task.authored(subject="daily")),
             {"subject": "daily", "status": "ready"},
         )
         self.assertEqual(len(discover_evals(root / "agent.py").eval_sets), 1)

@@ -59,8 +59,10 @@ def _prepare() -> tuple[list[str], Path, Path | None]:
         # checked-out Go command against its matching editable Python runtime.
         # Install this example's own SDKs there before the application resources
         # start, so a fresh checkout also has Jev and desktop dependencies.
+        # Request the pin explicitly to repair drift in a reused checkout environment.
         subprocess.run(
             ["uv", "pip", "install", "--python", str(development_python),
+             "-r", str(ROOT / "framework-constraints.txt"),
              "-r", str(ROOT / "pyproject.toml")],
             check=True,
         )

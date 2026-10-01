@@ -239,6 +239,32 @@ class Threadify:
         active = context.current()
         return await self.session(user_id=active.user_id, session_id=active.session_id)
 
+    async def workflow(
+        self, key: str, *, contract: str, role: str,
+        label: str | None = None, refs: Mapping[str, str] | None = None,
+    ) -> ThreadInstance:
+        """Open a shared contract thread for an application-verified business key.
+
+        This path is strict: an unavailable Engine must stop a governed action,
+        even though passive session telemetry remains best effort.
+        """
+        if not all(isinstance(value, str) and value.strip() for value in (key, contract, role)):
+            raise ValueError("workflow key, contract, and role must be non-empty strings")
+        options: dict[str, Any] = {"contract": contract, "role": role}
+        if label is not None:
+            options["label"] = label
+        if refs is not None:
+            options["refs"] = dict(refs)
+        return await asyncio.wait_for(self.native.thread(key, options), timeout=self.timeout)
+
+    async def join_workflow(self, thread_id: str, *, role: str) -> ThreadInstance:
+        """Join an authorized business thread whose ID came from a trusted service."""
+        if not all(isinstance(value, str) and value.strip() for value in (thread_id, role)):
+            raise ValueError("workflow thread ID and role must be non-empty strings")
+        return await asyncio.wait_for(
+            self.native.join(thread_id=thread_id, role=role), timeout=self.timeout,
+        )
+
     @contextmanager
     def step(self, name: str, *, attributes: Mapping[str, Any] | None = None) -> Iterator[Span]:
         """Record an explicit business step with the destination's attribute policy."""

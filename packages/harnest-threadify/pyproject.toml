@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "harnest-threadify"
 version = "0.1.0"
-description = "Optional business-focused Threadify telemetry for Harnest"
+description = "Optional Threadify workflow and telemetry integration for Harnest"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Fused" }]
-dependencies = ["harnest>=1.0.0,<2", "threadify-sdk==0.2.10"]
+dependencies = ["harnest>=1.0.0,<2", "threadify-sdk>=0.4.0,<0.5"]
 
 [project.urls]
 Documentation = "https://usefused.com/docs/harnest/runtime/telemetry/threadify"

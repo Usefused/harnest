@@ -169,6 +169,7 @@
       "test_threadify",
       "test_eval_custom_service",
       "test_playground_work",
+      "test_threadify_refund_example",
       "test_ui_events"
     ],
     "e2e": [

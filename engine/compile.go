@@ -423,6 +423,12 @@ func validateCompiledCronIdentity(application string, cron CompiledCron) error {
 // validateCompiledCronSchedule mirrors the compiler's numeric five-column MVP
 // grammar before a schedule reaches the durable task backend.
 func validateCompiledCronSchedule(schedule string) error {
+	return ValidateCronSchedule(schedule)
+}
+
+// ValidateCronSchedule validates the shared numeric five-column UTC contract.
+// CLI scaffolding uses the same parser as compiled schedule validation.
+func ValidateCronSchedule(schedule string) error {
 	if schedule == "" || schedule != strings.TrimSpace(schedule) {
 		return fmt.Errorf("must be non-empty text without outer whitespace")
 	}

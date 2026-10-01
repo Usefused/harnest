@@ -23,6 +23,7 @@ func TestAddResourcesBuildsUpMinimalAgent(t *testing.T) {
 		{"tool", "customer-lookup", "tools/customer_lookup.py", "@tool"},
 		{"subagent", "researcher", "subagents/researcher.py", "researcher = Agent("},
 		{"task", "prepare-report", "tasks/prepare_report.py", "@task(queue=\"default\""},
+		{"cron", "daily-report", "cron/daily_report.py", "@cron(\"0 9 * * *\""},
 		{"lifecycle", "audit", "lifecycle/audit.py", "@lifecycle.agent.after"},
 		{"context", "request-cache", "lifecycle/request_cache.py", "@context.provider(\"request_cache\")"},
 	}

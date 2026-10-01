@@ -1,0 +1,11 @@
+[project]
+name = "threadify-refund-example"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["harnest-threadify>=0.1.0,<1"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+harnest-threadify = { path = "../../packages/harnest-threadify" }

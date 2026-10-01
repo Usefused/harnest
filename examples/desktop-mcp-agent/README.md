@@ -24,12 +24,15 @@ From the repository root, prepare the source checkout once:
 
 ```sh
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e '.[all]'
+uv pip install --python .venv/bin/python \
+  --constraint examples/desktop-mcp-agent/framework-constraints.txt -e '.[adk]'
 ```
 
-If you already have a working root `.venv` with Harnest and ADK installed, keep
-it. The provisioner installs this example's extra dependencies into that
-environment. It uses `go run ./cmd/harnest` so the CLI matches this checkout.
+The constraint pins ADK to the version committed in `harnest.lock`. If you
+already have a root `.venv`, run the same install command to align it. The
+provisioner applies this constraint again when installing the example's extra
+dependencies, so they cannot silently select another ADK version. It uses
+`go run ./cmd/harnest` so the CLI matches this checkout.
 
 ## Start an agent
 

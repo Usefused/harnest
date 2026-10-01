@@ -77,6 +77,7 @@ class SDK:
         self.get_thread_by_ref = AsyncMock(side_effect=self.lookup)
         self.start = AsyncMock(side_effect=self.create)
         self.join = AsyncMock(side_effect=self.resume)
+        self.thread = AsyncMock(return_value=NativeThread('business-1'))
 
     async def lookup(self, key, value):
         """Match the native SDK's archived thread identity response."""
@@ -176,6 +177,33 @@ class ThreadifyTests(unittest.IsolatedAsyncioTestCase):
         self.sdk.get_thread_by_ref.side_effect = RuntimeError('private detail')
         self.assertIsNone(await self.client.session(user_id='u', session_id='s'))
         self.sdk.start.assert_not_awaited()
+
+    async def test_contract_workflow_is_shared_and_fails_closed(self):
+        """A governed operation uses the SDK's atomic key and never degrades to telemetry."""
+        workflow = await self.client.workflow(
+            'refund:order-1', contract='agent_refund:1', role='processor',
+            refs={'order': 'order-1'},
+        )
+        self.assertEqual(workflow.thread_id, 'business-1')
+        self.sdk.thread.assert_awaited_once_with(
+            'refund:order-1', {
+                'contract': 'agent_refund:1', 'role': 'processor',
+                'refs': {'order': 'order-1'},
+            },
+        )
+        self.client._native = None
+        with self.assertRaisesRegex(RuntimeError, 'not connected'):
+            await self.client.workflow('refund:order-1', contract='agent_refund:1', role='processor')
+
+    async def test_join_workflow_uses_trusted_thread_identity(self):
+        """A second service joins an existing thread with an explicit role."""
+        self.sdk.threads['thread-1'] = NativeThread('thread-1')
+        joined = await self.client.join_workflow('thread-1', role='processor')
+        self.assertEqual(joined.thread_id, 'thread-1')
+        self.sdk.join.assert_awaited_once_with(thread_id='thread-1', role='processor')
+        self.client._native = None
+        with self.assertRaisesRegex(RuntimeError, 'not connected'):
+            await self.client.join_workflow('thread-1', role='processor')
 
     async def test_both_frameworks_link_decisions_and_filter_noise(self):
         """The common driver supplies ownership before nested framework work."""

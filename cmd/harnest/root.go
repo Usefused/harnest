@@ -29,7 +29,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     models/              Pydantic contracts imported as harnest.models.*
     tools/               discovered Python tools
     tasks/               durable Python tasks
-    cron/                UTC schedules targeting durable tasks
+    cron/                scheduled functions with automatic queued tasks
     plugins/             Agent Plugins 1.0: plugin.json, optional skills/ and mcp.json
     extensions/          reusable Harnest Extension packages
     lifecycle/           application lifecycle hooks and resource factories
@@ -53,6 +53,7 @@ Typical workflow:
   harnest add mcp catalog --url https://mcp.example.com/mcp --token-env CATALOG_MCP_TOKEN --project minimal-agent
   harnest mcp inspect catalog --project minimal-agent
   harnest add subagent researcher --project minimal-agent
+  harnest add cron daily-report --schedule "0 9 * * 1-5" --project minimal-agent
   harnest add tool search --project minimal-agent
   harnest init my-agent --framework adk
   harnest init my-graph --framework langgraph

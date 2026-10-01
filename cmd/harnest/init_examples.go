@@ -61,22 +61,13 @@ async def prepare_report(subject: str) -> dict[str, str]:
     """Prepare a deterministic result without external side effects."""
     return {"subject": subject, "status": "ready"}
 `,
-		"cron/_example.py": `"""Copy to daily_report.py after activating tasks/prepare_report.py.
+		"cron/_example.py": `"""Copy to daily_report.py to register this scheduled function.
 
-Harnest owns scheduling; enabling this file requires the task runtime and store.
+Harnest creates its queued task automatically; no separate tasks/ file is needed.
+Serving requires task and cron storage backed by the same provider instance.
 """
 
-from harnest.cron import Cron
-from tasks.prepare_report import prepare_report
-
-
-# Schedules use UTC, independent of the host machine's local timezone.
-daily_report = Cron(
-    "0 9 * * 1-5",
-    task=prepare_report,
-    arguments={"subject": "daily"},
-)
-`,
+` + scaffoldCronExample(),
 		"subagents/_example.py": `"""Copy to helper.py and reference helper explicitly in the root Graph.
 
 Import with from subagents.helper import helper, then add it to Graph.nodes
@@ -222,4 +213,18 @@ Replace guide_agent with the name exported by agent.py when copying this
 inline shape; the generated _example file already uses the scaffolded name.
 `,
 	}
+}
+
+// scaffoldCronExample keeps the folder guide and opt-in sample on the same
+// single-function contract, including the queued task's explicit policy.
+func scaffoldCronExample() string {
+	return `from harnest.cron import cron
+
+
+# Schedules use UTC, independent of the host machine's local timezone.
+@cron("0 9 * * 1-5", arguments={"subject": "daily"}, queue="reports", max_retries=3)
+async def daily_report(subject: str) -> dict[str, str]:
+    """Prepare a deterministic report without external side effects."""
+    return {"subject": subject, "status": "ready"}
+`
 }

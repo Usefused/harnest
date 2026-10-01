@@ -180,7 +180,7 @@ application-owned helpers rather than packaging the application as a plugin.
 
 - Missing, empty, ignored-only folders are skipped.
 - `harnest init --minimal` omits optional folders. Recreate one safely with
-  `harnest add tool|subagent|task|lifecycle|context NAME` from the agent root;
+  `harnest add tool|subagent|task|cron|lifecycle|context NAME` from the agent root;
   existing public files are never replaced. Use `--project AGENT_DIR` elsewhere.
 - Default `harnest init` fills optional folders with ignored `_README.md`
   guides. In managed mode, `--example` adds ignored `_example.py` templates

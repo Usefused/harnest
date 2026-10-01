@@ -173,23 +173,22 @@ an active runtime with the required task storage configured.
 
 Optional: Yes. Delete this folder if the application has no schedules.
 
-Add one UTC Cron declaration per public Python file.
-Harnest owns scheduling in both authoring modes. After adding the task above,
+Create a starter with ` + "`harnest add cron daily-report`" + `.
+Add one @cron function per public Python file; the function and filename must
+match. Harnest creates its queued task automatically in both authoring modes.
+No separate tasks/ file or @task decorator is needed. For example,
 ` + "`cron/daily_report.py`" + ` can contain:
 
-` + "```python" + `
-from harnest.cron import Cron
-from tasks.prepare_report import prepare_report
+` + "```python\n" + scaffoldCronExample() + "```" + `
 
+Schedules use UTC. Serving requires task and cron storage backed by the same
+provider instance. Use @cron() without an expression for a dynamic target;
+create its schedule at runtime with harnest.cron.create.
 
-daily_report = Cron(
-    "0 9 * * 1-5",
-    task=prepare_report,
-    arguments={"subject": "daily"},
-)
-` + "```" + `
+Existing Cron(..., task=...) declarations remain supported for scheduling a
+reusable task. See [scheduled tasks](https://usefused.com/docs/harnest/build/scheduled-tasks)
+and [task storage](https://usefused.com/docs/harnest/runtime/task-storage).
 
-Schedules use UTC and must target a root ` + "`tasks/`" + ` export.
 `,
 		"subagents": `# Subagents
 

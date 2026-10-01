@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `harnest add cron` for fixed UTC schedules and dynamic targets, with
+  automatic queued tasks in both frameworks and authoring modes.
+- Constrain desktop example setup and dependency installation to the ADK
+  version recorded in its committed framework lock.
+
+- Update generated cron folder guidance and `harnest init --example` to use a
+  single `@cron` function that creates its own queued task.
+
 - Add owner-scoped live task and cron management in Playground, linked from
   Studio, with bounded metadata queries, cancellation, and audited schedule
   changes. Fixed schedules remain source-controlled.
@@ -24,6 +32,10 @@
 - Make `harnest upgrade` identify existing `Cron(...)` declarations and show
   optional decorator migration guidance without rewriting working schedules
   or changing their persisted task identities.
+
+- Add an opt-in Threadify shared-workflow API for contract-gated agent actions,
+  update its SDK requirement for permission waits, and include a refund example
+  that combines Harnest human approval with a Threadify grant before payment.
 
 ## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
 

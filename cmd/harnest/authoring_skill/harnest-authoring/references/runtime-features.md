@@ -6,6 +6,10 @@ wiring in advanced mode.
 
 ## Scheduled tasks
 
+Scaffold a fixed schedule with `harnest add cron daily-report --schedule "0 9 * * 1-5"`,
+or a dynamic target with `harnest add cron reminder --dynamic`. Both create only
+`cron/<name>.py`; configure shared task/cron storage before serving.
+
 For new work, put one same-named function in `cron/daily_report.py`:
 
 ```python

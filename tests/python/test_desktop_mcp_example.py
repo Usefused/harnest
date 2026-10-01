@@ -88,6 +88,34 @@ class DesktopExampleTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("TYPESAFE_AI_KEY", result.stderr)
 
+    def test_checkout_installs_preserve_the_committed_framework_pin(self):
+        """Initial setup and later SDK installs constrain ADK to the example's lock."""
+        from harnest.project_lock import framework_pin, read_project_lock
+
+        pin = framework_pin(read_project_lock(ROOT))
+        requirement = f"{pin['distribution']}=={pin['version']}"
+        constraints = (ROOT / "framework-constraints.txt").read_text().splitlines()
+        self.assertEqual([line for line in constraints if line and not line.startswith("#")], [requirement])
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("--constraint examples/desktop-mcp-agent/framework-constraints.txt", readme)
+        self.assertNotIn(".[all]", readme)
+        module = load("desktop_example_provision_pinned", ROOT / "provision.py")
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            example = checkout / "examples" / "desktop-mcp-agent"
+            example.mkdir(parents=True)
+            (checkout / "go.mod").touch()
+            interpreter = checkout / ".venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.touch()
+            with patch.object(module, "ROOT", example), patch.object(module.subprocess, "run") as run:
+                run.return_value = SimpleNamespace(returncode=0, stdout="amd64")
+                _, actual_python, _ = module._prepare()
+            self.assertEqual(actual_python, interpreter)
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("-r") + 1], str(example / "framework-constraints.txt"))
+            self.assertEqual(command[command.index("--python") + 1], str(interpreter))
+
     def test_each_instance_card_uses_its_live_port(self):
         """Avoid advertising the example port for dynamically provisioned agents."""
         module = load("desktop_example_provision", ROOT / "provision.py")

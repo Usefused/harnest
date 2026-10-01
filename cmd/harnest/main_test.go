@@ -111,7 +111,7 @@ func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 		"lifecycle/storage.py":   "@lifecycle.storage.checkpoints",
 		"tools/_README.md":       "Add one @tool callable",
 		"tasks/_README.md":       "durable @task callable",
-		"cron/_README.md":        "UTC Cron declaration",
+		"cron/_README.md":        "Add one @cron function",
 		"plugins/_README.md":     "Agent Plugin folders",
 		"lifecycle/_README.md":   "@lifecycle-decorated hooks",
 		"extensions/_README.md":  "extension.yaml and extension.py",
@@ -199,7 +199,7 @@ func assertManagedFolderExamples(t *testing.T, target string) {
 		"models/_example.py":                                      "class Message(BaseModel)",
 		"tools/_example.py":                                       "from harnest.agent import tool",
 		"tasks/_example.py":                                       "@task(queue=",
-		"cron/_example.py":                                        "daily_report = Cron(",
+		"cron/_example.py":                                        "async def daily_report(",
 		"subagents/_example.py":                                   "helper = Agent(",
 		"mcp/_example.py":                                         "def client():",
 		"extensions/_example/extension.py":                        "class StarterExtension(Extension)",
@@ -445,7 +445,7 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"models/_README.md":    "from harnest.models.support import",
 		"tools/_README.md":     "Advanced mode owns framework wiring",
 		"tasks/_README.md":     "Harnest discovers tasks in both authoring modes",
-		"cron/_README.md":      "Harnest owns scheduling in both authoring modes",
+		"cron/_README.md":      "Harnest creates its queued task automatically in both authoring modes",
 	})
 	assertOnlyPlaceholderResources(t, directory)
 }
