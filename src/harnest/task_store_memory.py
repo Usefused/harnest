@@ -9,7 +9,7 @@ from typing import Any
 import uuid
 
 from ._cron_storage import CronRecord, CronStoreConflictError, cron_fingerprint
-from .task_storage import TaskRecord, TaskStoreConflictError, task_fingerprint
+from ._task_storage import TaskRecord, TaskStoreConflictError, task_fingerprint
 
 
 class MemoryTaskStore:

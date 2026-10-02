@@ -17,7 +17,7 @@ from harnest.runtime_auth import AuthPrincipal, AuthenticationError
 from harnest.runtime_task import TaskRuntimeDriver
 from harnest.runtime_task_store import ProviderTaskRuntimeManager
 from harnest.task import CompiledTask, registration_for
-from harnest.task_storage import TaskRecord
+from harnest.task import TaskRecord
 from harnest.task_store_memory import MemoryTaskStore
 from harnest.task_store_postgres import PostgresTaskStore
 from harnest.task_store_redis import RedisTaskStore, _task_dump

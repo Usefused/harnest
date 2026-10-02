@@ -13,7 +13,7 @@ import uuid
 from ._cron_storage import CronRecord, CronStore, CronStoreConflictError, cron_fingerprint
 from .logging import get_logger
 from .store_postgres import _create_pool
-from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError, task_fingerprint
+from ._task_storage import TaskRecord, TaskStore, TaskStoreConflictError, task_fingerprint
 from .task_store_postgres_schema import CLAIM_SQL, ENQUEUE_SQL, EXPIRE_SQL, FINISH_SQL, SCHEMA_SQL
 
 

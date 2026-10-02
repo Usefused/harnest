@@ -1080,6 +1080,7 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
     edits = _retired_tool_import_edits(source, module)
     edits.extend(_retired_approval_import_edits(source, module))
     edits.extend(_retired_extension_import_edits(source, module))
+    edits.extend(_retired_task_storage_edits(path, source, module))
     edits.extend(_flat_root_import_edits(path, source, module))
     edits.extend(_namespace_import_edits(source, module, "lifecycle"))
     edits.extend(_namespace_import_edits(source, module, "context"))
@@ -1089,6 +1090,128 @@ def _authoring_namespace_source(path: Path, source: str) -> str | None:
     edits.extend(_context_provider_edits(source, module, context_prefixes))
     edits.extend(_context_extension_edits(source, module, context_prefixes))
     return _apply_text_edits(source, edits) if edits else None
+
+
+def _retired_task_storage_edits(
+    path: Path, source: str, module: ast.Module,
+) -> list[tuple[int, int, str]]:
+    """Move provider imports to harnest.task without changing local bindings."""
+
+    _check_task_storage_module_accesses(path, module)
+    edits: list[tuple[int, int, str]] = []
+    rewrite_qualified = False
+    for item in module.body:
+        if isinstance(item, ast.ImportFrom):
+            edit = _task_storage_from_import_edit(path, source, item)
+            if edit is not None:
+                edits.append(edit)
+        elif isinstance(item, ast.Import):
+            edit, unaliased = _task_storage_import_edit(source, item)
+            if edit is not None:
+                edits.append(edit)
+                rewrite_qualified = rewrite_qualified or unaliased
+    if rewrite_qualified:
+        edits.extend(_retired_task_storage_attribute_edits(source, module))
+    return edits
+
+
+def _check_task_storage_module_accesses(path: Path, module: ast.Module) -> None:
+    """Block accesses to helpers that have no public task-domain equivalent."""
+
+    prefixes = _task_storage_module_prefixes(module)
+    public = {"TaskRecord", "TaskStore", "TaskStoreConflictError"}
+    for node in ast.walk(module):
+        dotted = _dotted_name(node)
+        if dotted is None:
+            continue
+        for prefix in prefixes:
+            if not dotted.startswith(prefix + "."):
+                continue
+            member = dotted[len(prefix) + 1:].split(".", 1)[0]
+            if member not in public:
+                raise UpgradeError(
+                    f"{path}:{node.lineno}: review harnest.task_storage "
+                    f"attribute {member} manually"
+                )
+
+
+def _task_storage_module_prefixes(module: ast.Module) -> set[str]:
+    """Find local bindings that refer to the removed storage module."""
+
+    prefixes: set[str] = set()
+    for item in module.body:
+        prefixes.update(_task_storage_aliases(item))
+    return prefixes
+
+
+def _task_storage_aliases(item: ast.stmt) -> set[str]:
+    """Return bindings from one direct or root module import."""
+
+    if isinstance(item, ast.Import):
+        return {name.asname or name.name for name in item.names
+                if name.name == "harnest.task_storage"}
+    if isinstance(item, ast.ImportFrom) and item.module == "harnest":
+        return {name.asname or name.name for name in item.names
+                if name.name == "task_storage"}
+    return set()
+
+
+def _task_storage_from_import_edit(
+    path: Path, source: str, item: ast.ImportFrom,
+) -> tuple[int, int, str] | None:
+    """Rewrite supported storage contracts and block private helper imports."""
+
+    if item.module != "harnest.task_storage":
+        return None
+    public = {"TaskRecord", "TaskStore", "TaskStoreConflictError"}
+    unsupported = [name.name for name in item.names if name.name not in public]
+    if unsupported:
+        raise UpgradeError(
+            f"{path}:{item.lineno}: review harnest.task_storage import "
+            f"{', '.join(unsupported)} manually"
+        )
+    names = ", ".join(_render_import_alias(name) for name in item.names)
+    return _node_edit(source, item, f"from harnest.task import {names}")
+
+
+def _task_storage_import_edit(
+    source: str, item: ast.Import,
+) -> tuple[tuple[int, int, str] | None, bool]:
+    """Preserve aliases on direct module imports and identify qualified uses."""
+
+    changed = any(name.name == "harnest.task_storage" for name in item.names)
+    if not changed:
+        return None, False
+    names = ", ".join(
+        ("harnest.task" if name.name == "harnest.task_storage" else name.name)
+        + (f" as {name.asname}" if name.asname else "")
+        for name in item.names
+    )
+    unaliased = any(name.name == "harnest.task_storage" and name.asname is None
+                    for name in item.names)
+    return _node_edit(source, item, f"import {names}"), unaliased
+
+
+def _retired_task_storage_attribute_edits(
+    source: str, module: ast.Module,
+) -> list[tuple[int, int, str]]:
+    """Update qualified accesses after an unaliased module import."""
+
+    nested = {
+        id(node.value) for node in ast.walk(module)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+    }
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Attribute) or id(node) in nested:
+            continue
+        dotted = _dotted_name(node)
+        if dotted is None or not (dotted == "harnest.task_storage"
+                              or dotted.startswith("harnest.task_storage.")):
+            continue
+        replacement = "harnest.task" + dotted[len("harnest.task_storage"):]
+        edits.append(_node_edit(source, node, replacement))
+    return edits
 
 
 def _check_retired_model_imports(path: Path, module: ast.Module) -> None:
@@ -1393,12 +1516,17 @@ def _flat_root_import_replacement(item: ast.ImportFrom) -> str | None:
 
     grouped: dict[str, list[ast.alias]] = {}
     root_names: list[ast.alias] = []
+    module_imports: list[str] = []
     renamed_module = False
     for name in item.names:
         if name.name == "plugins":
             root_names.append(
                 ast.alias(name="extensions", asname=name.asname or "plugins")
             )
+            renamed_module = True
+            continue
+        if name.name == "task_storage":
+            module_imports.append(f"import harnest.task as {name.asname or 'task_storage'}")
             renamed_module = True
             continue
         domain = _FLAT_ROOT_IMPORTS.get(name.name)
@@ -1409,7 +1537,7 @@ def _flat_root_import_replacement(item: ast.ImportFrom) -> str | None:
     if not grouped and not renamed_module:
         return None
     lines = _render_grouped_domain_imports(root_names, grouped)
-    return "\n".join(lines)
+    return "\n".join((*lines, *module_imports))
 
 
 def _render_grouped_domain_imports(

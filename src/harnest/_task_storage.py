@@ -1,4 +1,4 @@
-"""Public atomic persistence contract for Harnest's durable task workers."""
+"""Task persistence contracts exposed to providers through ``harnest.task``."""
 
 from __future__ import annotations
 

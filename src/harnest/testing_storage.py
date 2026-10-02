@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from ._cron_storage import CronRecord, CronStoreConflictError
-from .task_storage import TaskRecord, TaskStoreConflictError
+from ._task_storage import TaskRecord, TaskStoreConflictError
 
 
 class TaskStoreConformanceMixin:

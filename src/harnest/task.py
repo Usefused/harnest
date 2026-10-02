@@ -9,7 +9,7 @@ import re
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Generic, Mapping, TypeVar, overload
 
-from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError
+from ._task_storage import TaskRecord, TaskStore, TaskStoreConflictError
 from .task_store_memory import MemoryTaskStore
 from .task_store_postgres import PostgresTaskStore
 

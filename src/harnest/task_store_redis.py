@@ -12,7 +12,7 @@ from typing import Any
 
 from ._cron_storage import CronRecord, CronStore, CronStoreConflictError, cron_fingerprint
 from .store_redis import RedisStore
-from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError, plain_json, task_fingerprint
+from ._task_storage import TaskRecord, TaskStore, TaskStoreConflictError, plain_json, task_fingerprint
 from . import task_store_redis_scripts as scripts
 
 

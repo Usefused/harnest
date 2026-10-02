@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .task_storage import TaskRecord
+    from ._task_storage import TaskRecord
 
 CRON_FIELDS = ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision")
 

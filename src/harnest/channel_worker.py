@@ -13,7 +13,7 @@ from typing import Any, TYPE_CHECKING
 from .channel_storage import ChannelEvent, ChannelReply
 if TYPE_CHECKING:
     from .channels import ChannelBinding
-from .task_storage import TaskRecord, TaskStore
+from ._task_storage import TaskRecord, TaskStore
 
 
 def channel_identity(*parts: str) -> str:

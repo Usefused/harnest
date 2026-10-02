@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ._cron_storage import CronRecord
     from .runtime_contract import RuntimeDriver
-    from .task_storage import TaskRecord
+    from ._task_storage import TaskRecord
 
 from contextlib import asynccontextmanager
 from dataclasses import replace

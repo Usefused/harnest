@@ -22,7 +22,7 @@ from .runtime_task import (
     _validated_agent_permissions,
 )
 from .task import TaskHandle, bind_task_runtime, release_task_runtime, safe_task_arguments, safe_task_result
-from .task_storage import TaskRecord, TaskStoreConflictError
+from ._task_storage import TaskRecord, TaskStoreConflictError
 
 
 _AUDIT = get_logger("task.audit")

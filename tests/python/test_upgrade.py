@@ -13,6 +13,55 @@ from harnest.upgrade import UpgradeError, apply_upgrade, plan_upgrade
 
 
 class RepositoryUpgradeTests(unittest.TestCase):
+    def test_task_storage_imports_upgrade_to_public_task_domain(self):
+        """Move retired provider imports while preserving aliases and source text."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            path = root / "lib" / "provider.py"
+            self.write(path,
+                "from harnest.task_storage import TaskRecord as Job, TaskStore\n"
+                "import harnest.task_storage\n"
+                "import harnest.task_storage as records\n"
+                "from harnest import task_storage as storage\n"
+                "# harnest.task_storage remains literal in this comment\n"
+                "record_type = harnest.task_storage.TaskRecord\n"
+                "aliased_type = records.TaskRecord\n"
+                "root_type = storage.TaskRecord\n",
+            )
+            plan = plan_upgrade(root)
+            self.assertFalse(plan.blockers)
+            apply_upgrade(plan)
+            migrated = path.read_text(encoding="utf-8")
+            self.assertIn("from harnest.task import TaskRecord as Job, TaskStore", migrated)
+            self.assertIn("import harnest.task\n", migrated)
+            self.assertIn("import harnest.task as records", migrated)
+            self.assertIn("import harnest.task as storage", migrated)
+            self.assertIn("record_type = harnest.task.TaskRecord", migrated)
+            self.assertIn("# harnest.task_storage remains literal", migrated)
+            self.assertEqual(plan_upgrade(root).actions, ())
+
+    def test_task_storage_private_helpers_require_manual_upgrade(self):
+        """Do not map an internal helper to a nonexistent public task export."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            self.write(root / "lib" / "provider.py",
+                       "from harnest.task_storage import task_fingerprint\n")
+            plan = plan_upgrade(root)
+            self.assertTrue(any("review harnest.task_storage import task_fingerprint manually"
+                                in blocker for blocker in plan.blockers))
+            self.write(root / "lib" / "provider.py",
+                       "import harnest.task_storage as storage\n"
+                       "fingerprint = storage.task_fingerprint\n")
+            plan = plan_upgrade(root)
+            self.assertTrue(any("review harnest.task_storage attribute task_fingerprint manually"
+                                in blocker for blocker in plan.blockers))
+
     def test_cron_migration_advice_preserves_supported_declarations(self):
         """Alias-aware guidance stays read-only, non-blocking, and free of arguments."""
 

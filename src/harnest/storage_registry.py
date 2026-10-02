@@ -10,7 +10,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 from .assets import AssetStore
 from .checkpoint import ADKStore, CheckpointAuthority
 from .session import SessionStore
-from .task_storage import TaskStore
+from ._task_storage import TaskStore
 from ._cron_storage import CronStore
 from .memory import MemoryStore
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Move the task persistence implementation to private `_task_storage`; import provider contracts from `harnest.task`. `harnest upgrade` rewrites supported `harnest.task_storage` imports, and the old module path is removed.
+
 - Remove the implementation import path `harnest.context_agent`; use `harnest.context` for agent invocation contracts and `context.agent` for task-scoped operations. The implementation now lives in the private `_context_agent` module.
 
 - Improve IDE completion and type inference for lazy public Harnest domains and invocation context, including session, agent, MCP, storage, skills, and memory access. Typed resource and extension lookups retain the caller's expected type without changing runtime loading or context isolation. Extend signature annotations across the core package, preserve authored types through task and lifecycle decorators, and add package-wide static consumer checks for public classes, inherited methods, and properties.

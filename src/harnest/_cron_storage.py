@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Protocol, runtime_checkable
 
-from .task_storage import TaskRecord, plain_json
+from ._task_storage import TaskRecord, plain_json
 
 
 class CronStoreConflictError(RuntimeError):

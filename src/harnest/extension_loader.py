@@ -36,7 +36,7 @@ from .output import OutputPolicy
 from .session import SessionStore
 from .skills import SkillSource
 from .storage_registry import CustomStorage, StorageRegistry
-from .task_storage import TaskStore
+from ._task_storage import TaskStore
 from ._cron_storage import CronStore
 from .memory import MemoryStore
 

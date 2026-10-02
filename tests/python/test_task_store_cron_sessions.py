@@ -11,7 +11,7 @@ from harnest.cron import CronRecord
 from harnest.runtime_task_store import ProviderTaskRuntimeManager
 from harnest.session import InMemorySessionStore
 from harnest.task import MemoryTaskStore
-from harnest.task_storage import TaskRecord
+from harnest.task import TaskRecord
 from test_task_store_runtime import application_for
 
 

@@ -308,6 +308,20 @@ class PublicImportTests(unittest.TestCase):
         self.assertIs(cron_storage.cron_fingerprint, _cron_storage.cron_fingerprint)
         self.assertEqual(cron_storage.__all__, _cron_storage.__all__)
 
+    def test_task_storage_implementation_has_no_public_module_path(self):
+        """Provider contracts stay public while their source module is private."""
+
+        import harnest
+        from harnest import _task_storage, task
+
+        self.assertIs(task.TaskRecord, _task_storage.TaskRecord)
+        self.assertIs(task.TaskStore, _task_storage.TaskStore)
+        self.assertIs(task.TaskStoreConflictError, _task_storage.TaskStoreConflictError)
+        self.assertNotIn("task_storage", harnest.__all__)
+        self.assertFalse(hasattr(harnest, "task_storage"))
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("harnest.task_storage")
+
     def test_cron_storage_import_orders_do_not_create_cycles(self):
         """Task providers load private contracts without depending on the legacy shim."""
 
