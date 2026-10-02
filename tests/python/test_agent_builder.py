@@ -133,7 +133,7 @@ class AgentBuilderTests(_BuilderFixture):
         nonce = page.text.split('name="editor-style-nonce" content="')[1].split('"')[0]
         self.assertIn(f"'nonce-{nonce}'", page.headers["content-security-policy"])
         self.assertNotIn("unsafe-inline", page.headers["content-security-policy"])
-        self.assertEqual(self.client.get("/assets/editor.js").status_code, 200)
+        self.assertEqual(self.client.get(next(item["base"] for item in self.client.get("/api/ui").json()["contributions"] if item["slot"] == "shell") + "assets/editor.js").status_code, 200)
 
     def test_python_draft_diagnostics_never_save_or_execute_source(self):
         """Lint incomplete buffers and correctness errors without touching the saved agent."""

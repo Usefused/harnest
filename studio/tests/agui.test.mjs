@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readEvents,runBuilder} from '../src/harnest_builder/static/agui.js';
+import {readEvents,runBuilder} from '../src/harnest_builder/ui_packs/default/assets/agui.js';
 
 function response(text,split=1) {
   const bytes=new TextEncoder().encode(text);

@@ -22,15 +22,31 @@ func TestSkillsShowPrintsEmbeddedAuthoringSkill(t *testing.T) {
 	}
 }
 
-func TestSkillsShowPrintsEmbeddedAuthenticationSkill(t *testing.T) {
-	stdout, _, err := executeForTest(
-		t, defaultSystem(), "skills", "show", authenticationSkillName,
-	)
-	if err != nil {
-		t.Fatal(err)
+// TestSkillsShowPrintsNamedSkills covers the public selection path for every shipped guide.
+func TestSkillsShowPrintsNamedSkills(t *testing.T) {
+	for _, name := range []string{authenticationSkillName, studioSkillName, studioUISkillName} {
+		t.Run(name, func(t *testing.T) {
+			stdout, _, err := executeForTest(t, defaultSystem(), "skills", "show", name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(stdout, "name: "+name) {
+				t.Fatalf("unexpected skill output:\n%s", stdout)
+			}
+		})
 	}
-	if !strings.Contains(stdout, "name: harnest-authentication") {
-		t.Fatalf("unexpected authentication skill output:\n%s", stdout)
+}
+
+// TestSkillsShowUnknownListsStudioSkills keeps discovery errors useful as the bundle grows.
+func TestSkillsShowUnknownListsStudioSkills(t *testing.T) {
+	_, _, err := executeForTest(t, defaultSystem(), "skills", "show", "missing")
+	if err == nil {
+		t.Fatal("unknown skill was accepted")
+	}
+	for _, name := range []string{authoringSkillName, authenticationSkillName, studioSkillName, studioUISkillName} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("unknown-skill error omits %s: %v", name, err)
+		}
 	}
 }
 

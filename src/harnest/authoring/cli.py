@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from enum import Enum
 import json
+import subprocess
 from pathlib import Path
 import sys
 from typing import Any, Callable, Sequence, TextIO
@@ -65,6 +66,7 @@ class ProjectCLI:
         self.planner = ProjectPlanner(packs, harnest_command=harnest_command)
         self.parser = argparse.ArgumentParser(prog=name)
         self._commands = self.parser.add_subparsers(dest='command', required=True)
+        self._studio = None
         for command in ('init', 'upgrade'):
             parser = self._commands.add_parser(command)
             parser.add_argument('directory', type=Path)
@@ -79,6 +81,8 @@ class ProjectCLI:
             # None distinguishes an omitted framework from an explicit conflicting flag.
             parser.add_argument('--framework', choices=('adk', 'langgraph'), help='scaffold framework (default: adk)')
             parser.add_argument('--minimal', action='store_true')
+            parser.add_argument('--example', action='store_true')
+            parser.add_argument('--mode', choices=('managed', 'advanced'))
             parser.add_argument('--template', help='Harnest template project, slug, or HTTPS wheel URL')
             parser.add_argument('--template-sha256', help='expected SHA-256 of an HTTPS template wheel')
         else:
@@ -90,10 +94,28 @@ class ProjectCLI:
         parser.set_defaults(handler=handler)
         return parser
 
+    def add_studio(self, *, command: Sequence[str], packs: Sequence[Path] = (),
+                   trusted_ui: Sequence[str] = (), init_args: Sequence[str] = ()) -> None:
+        """Expose Studio and core commands through an explicit company executable argv."""
+        from .studio import StudioLauncher
+        if self._studio is not None:
+            raise ProjectError('Studio is already registered')
+        launcher = StudioLauncher(command, packs, trusted_ui, init_args)
+        self._commands.add_parser('studio', help='Launch the company Studio', add_help=False)
+        for name in launcher.commands:
+            if name not in self._commands.choices:
+                self._commands.add_parser(name, help=f'Forward {name} to Harnest', add_help=False)
+                launcher.forwarded.add(name)
+        self._studio = launcher
+
     def run(self, arguments: Sequence[str] | None = None, *, stdout: TextIO | None = None,
             stderr: TextIO | None = None) -> int:
         """Execute one command and return a process exit code; never exit the caller."""
         output, errors = stdout or sys.stdout, stderr or sys.stderr
+        arguments = list(sys.argv[1:] if arguments is None else arguments)
+        dispatched = self._run_studio_command(arguments, errors)
+        if dispatched is not None:
+            return dispatched
         args = self.parser.parse_args(arguments)
         if hasattr(args, 'handler'):
             return args.handler(args)
@@ -103,11 +125,26 @@ class ProjectCLI:
             print(f'{self.parser.prog}: {exc}', file=errors)
             return 1
 
+    def _run_studio_command(self, arguments: list[str], errors: TextIO) -> int | None:
+        """Preserve native help, argument boundaries and exit codes for delegated commands."""
+        if self._studio is None or not arguments:
+            return None
+        try:
+            if arguments[0] == 'studio':
+                return self._studio.run(arguments[1:])
+            if arguments[0] in self._studio.forwarded:
+                return subprocess.call([*self.planner.harnest_command, *arguments])
+        except (ProjectError, OSError) as exc:
+            print(f'{self.parser.prog}: {exc}', file=errors)
+            return 1
+        return None
+
     def _run_project(self, args: argparse.Namespace, output: TextIO) -> int:
         """Forward initialization choices and print the combined plan before applying it."""
         if args.command == 'init':
             plan = self.planner.plan_init(args.directory, options=_options(args),
                                           framework=args.framework, minimal=args.minimal,
+                                          mode=args.mode, example=args.example,
                                           template=args.template, template_sha256=args.template_sha256)
             applying = not args.dry_run
         else:

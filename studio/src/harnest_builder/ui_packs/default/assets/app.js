@@ -1,20 +1,27 @@
 import {StudioEditor} from "./editor.js";
 import {runBuilder, activityCard} from "./agui.js";
 import {AgentExperience, agentName} from "./experience.js";
-import {runtimeFields, evaluationFields, executionFields, activeField} from "./components.js";
+import {runtimeFields, evaluationFields, executionFields} from "./components.js";
 import {mcpPanel,reviewMCP} from "./mcp.js";
 import {$, el, on, error, status, button, field, select, modal, preference, sendDraft, renderDiff, renderCommandOutput, commandOutputText, copyCommandText, buildFileTree, renderFileTree} from "./ui.js";
-import {deploymentEnabled,renderDeploymentControl} from "./features.js";
+import {renderDeploymentControl} from "./features.js";
 import {Canvas, ICONS, kindOf} from "./canvas.js";
+import {attachDrawer} from "./drawer.js";
+import {commandText, initCommand, jobCommand} from "./commands.js";
 
+/** Mount the default workspace through the public Studio host contract. */
+export async function activate(studio, host) {
+await studio.mountHTML(host, "index.html");
+const lifecycle=new AbortController();
+const rightPanel=attachDrawer({panel:$("studio-assistant-panel"),toggle:$("assistant-toggle"),dialog:$("assistant-drawer"),body:$("assistant-drawer-body"),close:$("assistant-drawer-close")});
 const state = {workspace:null, project:null, document:null, dirty:false, library:"components", view:"canvas", context:new Set(), jobs:[], jobId:null, observed:new Set(), callbacks:new Map(), projectRequest:0, fileRequest:0, inspectorRequest:0, prompting:false};
 const canvas = new Canvas($("canvas-host"), {drop:(kind,point)=>addComponent(kind,point).catch(error), open:path=>openFile(path).catch(error), select:node=>inspect(node).catch(error), connect:(source,target)=>editConnection({source,target}), edge:edge=>editConnection(edge), assign:(resource,owner)=>editOwnership(resource,owner).catch(error), reconnect:(edge,endpoint,target)=>reconnectEdge(edge,endpoint,target).catch(error), hint:status, zoom:value=>{$("zoom-label").textContent=value+"%";}});
-let token = "";
 let pollTimer;
 let connecting = false;
 let connected = false;
 const sourceEditor=new StudioEditor({host:$("source-editor"),textarea:$("code-editor"),status:$("lint-status"),request:body=>api("diagnostics","POST",body),changed:editorChanged});
 const conversations=new Map();
+const modViews=new Map();
 const collapsedFolders=new Map();
 const conversationTemplate=$("conversation").cloneNode(true);
 const experience=new AgentExperience({api,project:()=>state.project,dirty:()=>state.dirty,view:setView,
@@ -35,28 +42,10 @@ function selectConversation(previous,identity) {
   $("conversation").replaceWith(conversation.host);$("prompt").value=conversation.draft;
 }
 
-/** Read legacy tab credentials without depending on browser storage availability. */
-function storedToken(value) {
-  try {
-    if(value===undefined) return sessionStorage.getItem("harnest-builder-token") || "";
-    if(value) sessionStorage.setItem("harnest-builder-token",value);
-    else sessionStorage.removeItem("harnest-builder-token");
-  } catch { /* The server cookie also supports browsers with unavailable tab storage. */ }
-  return "";
-}
-
-/** Consume launch links even when navigation changes only the current tab's fragment. */
-function authorize() {
-  const fragment = new URLSearchParams(location.hash.slice(1));
-  token = fragment.get("token") || storedToken();
-  if(token) storedToken(token);
-  if(fragment.has("token")) history.replaceState(null,"",location.pathname+location.search);
-}
-
 /** Keep workspace actions unavailable until the authenticated workspace has loaded. */
 function connectionState(ready, message="") {
-  connected=ready;
-  for(const id of ["new-project","welcome-create","open-project","project-select","mobile-project-select","refresh","studio-packs"]) $(id).disabled=!ready;
+  connected=ready;studio.state.publish("connection",{ready,message});
+  for(const id of ["new-project","open-project","project-select","mobile-project-select","refresh","studio-packs"]) $(id).disabled=!ready;
   $("connection-panel").hidden=ready;
   $("connection-message").textContent=message || "Connecting to your local workspace…";
   $("connection-form").hidden=ready || !message;
@@ -73,38 +62,28 @@ async function connect() {
   finally {connecting=false;}
 }
 
-/** Accept only this builder's launch URL, without navigating to a pasted destination. */
+/** Let the host consume replacement launch credentials without exposing them to packs. */
 async function reconnect(event) {
   event.preventDefault();
-  const value=$("launch-url").value.trim();
-  if(value) {
-    const url=new URL(value);
-    if(url.origin!==location.origin) throw new Error("Paste the launch URL for this Studio address.");
-    const credential=new URLSearchParams(url.hash.slice(1)).get("token");
-    if(!credential) throw new Error("The launch URL must include its #token value.");
-    token=credential;storedToken(token);$("launch-url").value="";
-  }
+  studio.authorize($("launch-url").value.trim());
+  $("launch-url").value="";
   await connect();
 }
 
-/** Parse errors from real backend operations; never replace failed requests with demo state. */
+/** Delegate authenticated transport to the host shared by all trusted UI packs. */
 async function api(path, method="GET", body) {
-  const response=await fetch("/api/"+path,{method,headers:{...(token?{Authorization:"Bearer "+token}:{}),...(body?{"Content-Type":"application/json"}:{})},...(body?{body:JSON.stringify(body)}:{})});
-  const payload=await response.json();
-  if(!response.ok) {
-    const detail=Array.isArray(payload.detail)?payload.detail.map(v=>v.msg).join("; "):payload.detail;
-    const problem=new Error(detail || `Request failed (${response.status}).`);
-    problem.status=response.status;
-    if(response.status===401) {token="";storedToken("");connectionState(false,problem.message);}
+  try {
+    const value=await studio.request(path, method, body);
+    lifecycle.signal.throwIfAborted();return value;
+  } catch(problem) {
+    if(!lifecycle.signal.aborted&&problem.status===401)connectionState(false,problem.message);
     throw problem;
   }
-  return payload;
 }
 
 /** Load independent app state, then restore a project only if it still exists on disk. */
 async function start() {
   await refreshWorkspace();
-  token="";storedToken(""); // Subsequent requests use the HttpOnly browser session.
   const saved=preference("project"), projects=state.workspace.projects;
   let selected=projects.find(p=>p.id===saved);
   if(!selected && saved?.startsWith("@") && preference("last-folder")) {
@@ -145,7 +124,7 @@ async function openProject(identity, force=false) {
   const changed=state.project?.id!==identity;
   const previous=state.project?.id;
   if(changed)selectConversation(previous,identity);
-  state.project=project; preference("project",identity); preference("last-folder",project.path); $("project-select").value=identity;$("mobile-project-select").value=identity;
+  state.project=project; studio.state.publish("project",{id:project.id,name:project.config.name,framework:project.config.framework}); preference("project",identity); preference("last-folder",project.path); $("project-select").value=identity;$("mobile-project-select").value=identity;
   if(changed) { state.fileRequest++; state.inspectorRequest++; state.document=null; state.context=new Set(["agent.py","instructions.md","config.yaml","pyproject.toml","harnest-deployment.yaml"].filter(p=>project.files.includes(p))); resetEditor(); setView("canvas"); }
   $("project-title").textContent=project.config.name;
   $("framework-tag").textContent=project.config.framework.toUpperCase(); $("framework-tag").hidden=false;
@@ -221,6 +200,8 @@ function setLibrary(name) {
 /** Keep editor buffers alive while viewing the canvas. */
 function setView(name) {
   state.view=name;
+  for(const [id,view] of modViews){view.host.hidden=name!==id;view.tab.classList.toggle("active",name===id);view.tab.setAttribute("aria-selected",String(name===id));}
+  document.querySelector('[data-studio-slot="workspace.tabs"]').hidden=!modViews.has(name);
   for(const key of ["canvas","code","try"]) { $(key+"-tab").classList.toggle("active",name===key);$(key+"-tab").setAttribute("aria-selected",String(name===key));$(key+"-pane").hidden=name!==key; }
   $("canvas-mode").hidden=name!=="canvas";
   $("create-workflow").hidden=name!=="canvas"||!state.project||state.project.graph.available||state.project.config.mode!=="managed";
@@ -251,7 +232,7 @@ function createProject(draft={}) {
     return chooseFolder("Choose save location",saved.directory,path=>{createProject({...saved,directory:path});return false;},()=>createProject(saved));
   }));
   const preview=el("pre","","command-preview");optionsHost.append(preview);
-  const update=()=>{preview.textContent=`harnest init "${directory.value}/${name.value||"my-agent"}" --framework ${framework.value} --mode ${mode.value}${profile.value==="guided"?"":" --"+profile.value}`;};
+  const update=()=>{preview.textContent=initCommand(state.workspace.cli,snapshot());};
   content.addEventListener("input",update);content.addEventListener("change",update);update();
   const form=modal("What will your agent do?","Create an editable Harnest project. Your description and initial source will be sent to the configured builder model to draft changes for review.","Create agent",async()=>{
     // Jobs outlive the dialog, so completion must never read mutable form controls.
@@ -505,6 +486,7 @@ async function inspect(node) {
 /** Keep prompt history available while inspecting graph components. */
 function showSide(name) {
   for(const key of ["assistant","inspector"]) {$(key+"-tab").classList.toggle("active",name===key);$(key+"-tab").setAttribute("aria-selected",String(name===key));$(key+"-content").hidden=name!==key;}
+  rightPanel.open();
 }
 
 /** Preview the full source package and possible references before archiving a capability. */
@@ -655,7 +637,7 @@ async function saveEdges(project,edges) {
 async function command(body) {
   const job=await api("command","POST",{project:state.project?.id||".",...body});
   state.jobId=job.id;state.jobs.push(job);$("terminal").hidden=false;renderJobs();
-  status(`Running harnest ${job.argv.slice(1,3).join(" ")}…`);return job;
+  status(`Running ${jobCommand(job)}…`);return job;
 }
 
 /** Keep validation in one place; serving, chat and extensions have dedicated screens. */
@@ -680,72 +662,35 @@ function syncDependencies(project) {
   options=executionFields(form,{value:"sync"});
 }
 
-/** Open the guided review, deployment progress, and agent access screen. */
-async function deploymentMenu() {
-  if(!deploymentEnabled(state.workspace) || !state.project)return;
-  const {showDeployment}=await import("./deployment.js");
-  const project=state.project.id;
-  const inspection=await api("deployment/inspect?project="+encodeURIComponent(project));
-  if(!inspection.existing) {configureDeployment(inspection);return;}
-  await showDeployment({project,api,run:command,isDirty:()=>state.dirty,notice:status,
-    edit:async()=>{$("dialog").close();await openFile("harnest-deployment.yaml");},
-    watch:(job,success,failed)=>{success.failed=failed;state.callbacks.set(job.id,success);}});
-}
-
-/** Turn discovered dependencies into a reviewable manifest without applying infrastructure. */
-function configureDeployment(inspection) {
-  const project=state.project.id;
-  let name,image,backend,context,namespace,port,memory,cpus,variables,services,network;
-  const form=modal("Configure deployment","Studio detects runtime inputs from your agent source. Choose what to run and what to connect to, then review the generated files.","Generate configuration",async()=>{
-    if(state.dirty)throw new Error("Save your source edits before generating deployment configuration.");
-    const proposal=await api("deployment/propose","POST",{project,name:name.value,image:image.value,backend:backend.value,context:context.value,namespace:namespace.value,port:Number(port.value),memory:memory.value,cpus:Number(cpus.value),variables:variables.value.split(/[\s,]+/).filter(Boolean),services_yaml:services.value,network_yaml:network.value});
-    showSide("assistant");proposalCard(project,proposal);
-    status("Deployment files generated. Review and apply the source changes before previewing deployment.");
-  },true);
-  name=field(form,"Deployment name",inspection.name,{required:true});
-  backend=select(form,"Target",[["local","Local · Docker Compose"],["kubernetes","Kubernetes"]],"local");
-  image=field(form,"Agent container image",inspection.name+":local",{required:true,hint:"Build this image with the compiled agent, dependencies and any stdio MCP executables. Its entrypoint must start the server on 0.0.0.0 and the port below."});
-  context=field(form,"Kubernetes context","",{placeholder:"Your kubeconfig context"});
-  namespace=field(form,"Existing namespace","",{placeholder:"Your Kubernetes namespace"});
-  port=field(form,"Agent HTTP port","1907",{type:"number",min:1024,max:65535,required:true});
-  memory=field(form,"Agent memory",inspection.resources.memory||"512Mi",{required:true,placeholder:"512Mi or 1Gi"});
-  cpus=field(form,"Agent CPUs",inspection.resources.cpu||"1",{type:"number",min:0.01,max:128,step:0.01,required:true});
-  variables=field(form,"Runtime environment variables",inspection.variables.join("\n"),{multiline:true,rows:5,hint:"One name per line. Values are supplied by the Studio/CLI environment; no credentials are copied into YAML."});
-  services=field(form,"Services",inspection.services_yaml,{multiline:true,rows:12,hint:"mode: connect keeps an external endpoint; mode: provision runs an image. provides injects settings into the agent. Delete optional services you do not want."});
-  form.append(button("Add Redis service example",()=>{const current=services.value.trim();if(/^  ?cache:/m.test(current)||/^cache:/m.test(current))throw new Error("A cache service is already defined.");services.value=(current==="{}"?"":current+"\n")+"cache:\n  mode: provision\n  type: redis\n  image: redis:7.4\n  ports: {redis: 6379}\n  healthcheck: {command: [redis-cli, ping]}\n  persistence: {mount: /data, size: 5Gi}\n  provides:\n    REDIS_URL: redis://${services.cache.host}:${services.cache.ports.redis}/0\n";}));
-  network=field(form,"Agent network settings","{}",{multiline:true,rows:3,hint:"Optional YAML: hosts: {host.docker.internal: host-gateway} for local host access, or hostname-to-IP mappings. dns: [IP] replaces default DNS; omit it to retain service discovery."});
-  for(const note of inspection.warnings)form.append(el("p",note,"empty-note"));
-  const update=()=>{const kube=backend.value==="kubernetes";activeField(context,kube,true);activeField(namespace,kube,true);};
-  backend.addEventListener("change",update);update();
-}
-
-/** Poll with backoff on disconnection and process completions exactly once. */
+/** Poll with backoff while mounted and process completions exactly once. */
 async function pollJobs() {
+  if(lifecycle.signal.aborted)return;
   let delay=1000;
   try {
     state.jobs=(await api("jobs")).jobs;
+    studio.state.publish("jobs",state.jobs);
     for(const job of state.jobs) {
       if(job.status==="running"||state.observed.has(job.id)) continue;
       state.observed.add(job.id);
       const callback=state.callbacks.get(job.id);state.callbacks.delete(job.id);
       if(job.status==="succeeded") {if(callback) await callback(job);else if(state.project?.id===job.project) await refreshProject();}
       if(job.status!=="succeeded"&&callback?.failed)callback.failed(job);
-      if(job.id===state.jobId) status(job.status==="succeeded"?"Harnest command completed successfully.":`Harnest command ${job.status}. Check command output.`);
+      if(job.id===state.jobId) status(job.status==="succeeded"?"Command completed successfully.":`Command ${job.status}. Check command output.`);
     }
     renderJobs();await experience.poll();
-  } catch(problem) {if(problem.status===401)return;delay=4000;$("connection-label").textContent="Reconnecting";status(problem.message);}
-  pollTimer=setTimeout(pollJobs,delay);
+  } catch(problem) {if(lifecycle.signal.aborted||problem.status===401)return;delay=4000;$("connection-label").textContent="Reconnecting";status(problem.message);}
+  if(!lifecycle.signal.aborted)pollTimer=setTimeout(pollJobs,delay);
 }
 
 /** Preserve terminal selection and follow output only when the reader is near the end. */
 function renderJobs() {
   const selector=$("job-select"), old=state.jobId;
   selector.replaceChildren();
-  for(const job of state.jobs) {const option=el("option",`harnest ${job.argv.slice(1,3).map(v=>v.split("/").at(-1)).join(" ")} · ${job.status}`);option.value=job.id;selector.append(option);}
+  for(const job of state.jobs) {const option=el("option",`${jobCommand(job)} · ${job.status}`);option.value=job.id;selector.append(option);}
   state.jobId=state.jobs.some(j=>j.id===old)?old:state.jobs.at(-1)?.id;
   if(state.jobId) selector.value=state.jobId;
   const job=state.jobs.find(j=>j.id===state.jobId), output=$("job-output");
-  renderCommandOutput(output,job?`$ ${job.argv.join(" ")}\n\n${job.output||"Starting command…"}`:"Run a Harnest command to see output here.",job?.id);
+  renderCommandOutput(output,job?`$ ${commandText(job.argv)}\n\n${job.output||"Starting command…"}`:"Run a command to see output here.",job?.id);
   let workLink=$("open-runtime-work");
   if(!workLink) {workLink=el("a","Tasks & schedules ↗","button secondary");workLink.id="open-runtime-work";workLink.target="_blank";workLink.rel="noopener noreferrer";$("job-status").parentElement.append(workLink);}
   const portIndex=job?.argv.indexOf("--port")??-1, port=portIndex>=0?Number(job.argv[portIndex+1]):0;
@@ -789,7 +734,7 @@ async function sendPrompt(event) {
   const pending=message("Harnest builder agent is reading source and preparing a code proposal…");pending.classList.add("pending");
   const controller=new AbortController(),activity=activityCard(pending,()=>controller.abort());
   try {
-    const proposal=await sendDraft($("prompt"),submitted=>runBuilder({project,prompt:submitted,model,history,...assistantLimits(),paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked},{signal:controller.signal,activity:text=>activity.update(text),token}),()=>state.project?.id===project);
+    const proposal=await sendDraft($("prompt"),submitted=>runBuilder({project,prompt:submitted,model,history,...assistantLimits(),paths:[...state.context],allow_related_source:$("allow-related-source").checked,allow_fused_discovery:$("allow-fused-discovery").checked},{signal:controller.signal,activity:text=>activity.update(text),transport:studio.transport}),()=>state.project?.id===project);
     conversation.history.push({role:"assistant",text:proposal.summary.slice(0,8000)});
     conversation.history=conversation.history.slice(-6);
     activity.finish(proposal.kind==="message"?"Builder replied":"Proposal ready for review");
@@ -869,13 +814,14 @@ function providerHelp() {
 /** Bind single-instance controls once; source and job refreshes replace only their own content. */
 function bind() {
   bindNavigation();bindEditor();bindJobs();bindAssistant();
-  on($("new-project"),"click",()=>createProject());on($("idea-form"),"submit",()=>createProject({prompt:$("agent-idea").value}));
+  on($("new-project"),"click",()=>studio.commands.execute("studio.project.create"));
+  on($("appearance"),"click",()=>studio.commands.execute("studio.appearance"));
   on($("step-build"),"click",()=>{setView("canvas");showSide("assistant");$("prompt").focus();});
   on($("step-connect"),"click",()=>{requireSavedForMCP();return mcpPanel(api,state.project,refreshProject);});
   on($("step-run"),"click",()=>setView("try"));
   on($("studio-packs"),"click",showPacks);
   on($("open-project"),"click",openFolder);on($("extensions"),"click",extensionPanel);
-  on($("deployment"),"click",deploymentMenu);
+  on($("deployment"),"click",()=>studio.commands.execute("studio.deployment.open"));
   on($("mcp-connections"),"click",()=>{requireSavedForMCP();return mcpPanel(api,state.project,refreshProject);});
   on($("compile"),"click",()=>command({action:"compile"}));on($("run-menu"),"click",checksMenu);
   on($("deleted-capabilities"),"click",deletedCapabilities);
@@ -889,17 +835,28 @@ function bind() {
 
 /** Tabs expose their selection to both the visual styling and assistive technology. */
 function bindNavigation() {
+  on($("workspace-focus"),"click",toggleWorkspaceFocus);
+  on($("journey"),"click",event=>{if(event.target.closest("button:not(:disabled)"))$("workspace-guide").open=false;});
+  on($("workspace-guide"),"keydown",event=>{if(event.key==="Escape"){$("workspace-guide").open=false;$("workspace-guide").querySelector("summary").focus();}});
   for(const key of ["components","files"]) $(key+"-tab").addEventListener("click",()=>setLibrary(key));
   for(const key of ["canvas","code","try"]) $(key+"-tab").addEventListener("click",()=>setView(key));
   for(const key of ["assistant","inspector"]) $(key+"-tab").addEventListener("click",()=>showSide(key));
+}
+
+/** Reclaim vertical space without remounting the editor or hiding view and panel navigation. */
+function toggleWorkspaceFocus() {
+  const focused=document.querySelector('.workspace').classList.toggle('is-focused');
+  $("workspace-focus").setAttribute("aria-pressed",String(focused));
+  $("workspace-focus").textContent=focused?"Exit focus":"Focus";
+  $("workspace-focus").title=focused?"Show workspace headers and tools":"Hide workspace headers and tools";
+  $("workspace-guide").open=false;
 }
 
 /** Keyboard save and indentation operate on real textarea source, preserving browser undo. */
 function bindEditor() {
   $("code-editor").addEventListener("input",editorChanged);
   on($("save-file"),"click",saveFile);on($("reload-file"),"click",()=>openFile(state.document.path));
-  window.addEventListener("keydown",event=>{if((event.metaKey||event.ctrlKey)&&event.key==="s"){event.preventDefault();saveFile().catch(error);}});
-  window.addEventListener("beforeunload",event=>{if(state.dirty){event.preventDefault();event.returnValue="";}});
+  window.addEventListener("keydown",event=>{if((event.metaKey||event.ctrlKey)&&event.key==="s"){event.preventDefault();saveFile().catch(error);}},{signal:lifecycle.signal});
 }
 
 /** Terminal visibility does not affect subprocess lifetime; Stop explicitly cancels ownership. */
@@ -914,13 +871,35 @@ function bindJobs() {
 /** Suggested prompts populate editable input; they never silently send workspace source. */
 function bindAssistant() {
   on($("prompt-form"),"submit",sendPrompt);on($("provider-help"),"click",providerHelp);
-  document.addEventListener("click",event=>{const node=event.target.closest("[data-prompt]");if(node){if(!state.project){createProject({prompt:node.dataset.prompt});return;}$("prompt").value=node.dataset.prompt;$("prompt").focus();}});
+  document.addEventListener("click",event=>{const node=event.target.closest("[data-prompt]");if(node){if(!state.project){createProject({prompt:node.dataset.prompt});return;}$("prompt").value=node.dataset.prompt;$("prompt").focus();}},{signal:lifecycle.signal});
 }
 
-authorize();bind();
+const releases=[
+  studio.commands.register("studio.project.create",options=>createProject(options)),
+  studio.commands.register("studio.project.refresh",refreshProject),
+  studio.commands.register("studio.file.open",path=>openFile(path)),
+  studio.commands.register("studio.editor.isDirty",()=>state.dirty),
+  studio.commands.register("studio.jobs.run",command),
+  studio.commands.register("studio.notice",status),
+  studio.commands.register("studio.proposal.review",(project,proposal)=>{showSide("assistant");proposalCard(project,proposal);}),
+  studio.navigation.guard(()=>!state.dirty),
+  studio.slots.register("workspace.tabs",registerView),
+];
+bind();
 on($("connection-form"),"submit",reconnect);
-window.addEventListener("hashchange",()=>{authorize();connect();});
-connect();
+window.addEventListener("hashchange",()=>{studio.authorize();connect();},{signal:lifecycle.signal});
+await connect();
+
+/** Present contributed workspace views as native tabs without exposing default feature state. */
+function registerView(host,item) {
+  const tab=button(item.title,()=>setView(item.id),"");
+  tab.setAttribute("role","tab");tab.setAttribute("aria-selected","false");
+  host.id="view-"+item.id.replaceAll("/","-");host.setAttribute("role","tabpanel");
+  tab.id=host.id+"-tab";tab.setAttribute("aria-controls",host.id);host.setAttribute("aria-labelledby",tab.id);host.hidden=true;
+  document.querySelector('.view-tabs').append(tab);modViews.set(item.id,{host,tab});
+  document.querySelector('[data-studio-slot="workspace.tabs"]').hidden=true;
+  return ()=>{tab.remove();modViews.delete(item.id);};
+}
 
 
 /** Present installed company catalogs without exposing arbitrary executable UI plugins. */
@@ -1004,4 +983,7 @@ function renderPackLibrary(host,search) {
     card.title=item.description;card.disabled=!item.creates_agent&&!state.project;
     card.append(el("span","▧","palette-icon"),el("strong",item.title));groups.get(item.pack).append(card);
   }
+}
+
+return ()=>{lifecycle.abort();clearTimeout(pollTimer);clearTimeout(sourceEditor.timer);sourceEditor.generation++;sourceEditor.view.destroy();rightPanel.dispose();releases.forEach(release=>release());};
 }

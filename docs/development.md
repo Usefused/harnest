@@ -130,13 +130,24 @@ the quality gate; `cmd/` contains the public CLI and the embedded agent launcher
 ## Studio editor assets
 
 Studio ships the local CodeMirror bundle in
-`studio/src/harnest_builder/static/editor.js`; browsers never fetch editor
+`studio/src/harnest_builder/ui_packs/default/assets/editor.js`; browsers never fetch editor
 code from a CDN. After changing `studio/frontend/`, run `npm ci` and
 `npm run build` there and commit the regenerated bundle and license notices.
 Ruff runs in the Studio Python environment on unsaved stdin with isolated
 correctness rules; diagnostics never execute source or apply fixes.
 
 ## Studio Pack implementation contract
+
+The browser host owns authentication, composition, state/command boundaries,
+and recovery. The bundled `ui_packs/default/studio-pack.yaml` uses the ordinary
+pack loader; UI feature code and styling belong to that pack. Trusted modules
+receive the same host context as the default UI. Never add default-pack-only
+transport or composition shortcuts. UI assets are immutable declared snapshots
+under `assets/`, separate from installed project resources. Frame entries always
+receive sandbox policy, including direct navigation. Test composition conflicts,
+explicit code trust, default recovery, and company-wheel round trips when changing
+these boundaries. Public authoring documentation belongs in the canonical
+Mintlify `harnest/studio/mods.mdx` page.
 
 Studio Pack manifests and source snapshots are parsed without importing pack
 code. The UI and builder consume the same catalog. Pack reviews retain exact

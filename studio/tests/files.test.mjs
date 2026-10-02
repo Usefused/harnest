@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {buildFileTree} from '../src/harnest_builder/static/ui.js';
+import {buildFileTree} from '../src/harnest_builder/ui_packs/default/assets/ui.js';
 
 test('source files retain their hierarchy, exact paths, and folders-first natural ordering',()=>{
   const tree=buildFileTree(['agent.py','tools/task10.py','tools/nested/check.py','tools/task2.py','config.yaml','lib/check.py']);

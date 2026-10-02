@@ -12,6 +12,7 @@ import yaml
 
 from .files import LIMIT, read, source_path, validate
 from .builder_config import BuilderDefaults, read_ca
+from .ui_manifest import UI, snapshot_ui
 
 STUDIO_VERSION = "0.1.0"
 MAX_PACK_BYTES = 8 * LIMIT
@@ -66,6 +67,7 @@ class Manifest(Contract):
     description: str = Field(default="", max_length=4000)
     requires: Compatibility = Field(default_factory=Compatibility)
     builder: BuilderDefaults = Field(default_factory=BuilderDefaults)
+    ui: UI | None = None
     resources: list[Resource] = Field(default_factory=list, max_length=100)
 
 
@@ -98,7 +100,7 @@ def load_pack(root: Path) -> dict:
         payload["digest"] = digest(payload)
         entries[resource.id] = payload
     ca = read_ca(root, manifest.builder.ca_bundle) if manifest.builder.ca_bundle else None
-    pack = {"manifest": manifest.model_dump(), "resources": entries, "builder_ca": ca}
+    pack = {"manifest": manifest.model_dump(), "resources": entries, "builder_ca": ca, "ui_assets": snapshot_ui(root, manifest.ui)}
     pack["digest"] = digest(pack)
     return pack
 

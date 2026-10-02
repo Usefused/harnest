@@ -628,7 +628,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def _assert_studio_bundle(self, archived_paths, assistant, snapshot_version, metadata_text):
         """Verify release assets, compiled version identity, and the assistant framework pin."""
         self.assertIn("harnest_builder/__main__.py", archived_paths)
-        self.assertIn("harnest_builder/static/deployment.js", archived_paths)
+        self.assertIn("harnest_builder/ui_packs/default/assets/deployment.js", archived_paths)
         self.assertIn("harnest_builder/_assistant/__main__.py", archived_paths)
         self.assertNotIn("harnest_builder/assistant_source/agent.py", archived_paths)
         self.assertEqual(assistant["harnestVersion"], snapshot_version)

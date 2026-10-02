@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tailwind welcome</title>
+  <style>/* STUDIO_TAILWIND_CSS */</style>
+</head>
+<body class="min-h-screen bg-slate-950 p-4 font-sans text-slate-100 sm:p-5">
+  <main class="w-full">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <span class="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-wide text-cyan-300">TEAM WORKSPACE</span>
+      <span id="connection" role="status" class="text-xs text-slate-400">Connecting to Studio…</span>
+    </div>
+    <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Build something your team can use.</h1>
+    <p class="mt-2 max-w-xl text-sm leading-6 text-slate-400">Create a project or open an existing agent from the sidebar. Your team’s tools and source stay in the same workspace.</p>
+    <div class="mt-4 grid gap-3 sm:grid-cols-2">
+      <section class="rounded-2xl border border-slate-800 bg-slate-900 p-3">
+        <span class="text-xs font-semibold text-cyan-300">01 / START</span>
+        <h2 class="mt-1 text-base font-semibold">Create an agent</h2>
+        <p class="mt-1 text-xs leading-5 text-slate-400">Use + beside the project selector to give your agent a purpose and a place to live.</p>
+      </section>
+      <section class="rounded-2xl border border-slate-800 bg-slate-900 p-3">
+        <span class="text-xs font-semibold text-cyan-300">02 / CONTINUE</span>
+        <h2 class="mt-1 text-base font-semibold">Open your workspace</h2>
+        <p class="mt-1 text-xs leading-5 text-slate-400">Choose Open folder to bring an existing agent into Studio.</p>
+      </section>
+    </div>
+    <details class="mt-4 rounded-xl border border-slate-800 p-3 text-xs text-slate-400">
+      <summary class="cursor-pointer font-medium text-slate-200 focus-visible:outline-2 focus-visible:outline-cyan-300">About this welcome panel</summary>
+      <p class="mt-3 leading-6">This section uses locally compiled Tailwind CSS. The rest of Studio keeps its default interface. The panel receives connection status through Studio's declared state permission.</p>
+    </details>
+  </main>
+  <script>
+    // A private port supplies only the state declared in this pack's manifest.
+    window.addEventListener('message', event => {
+      if (event.source !== parent || event.data?.type !== 'studio:init') return;
+      const port = event.ports[0];
+      if (!port) return;
+      port.onmessage = event => {
+        if (event.data.name !== 'connection') return;
+        document.getElementById('connection').textContent =
+          event.data.value.ready ? 'Connected to Studio' : 'Studio disconnected';
+      };
+    });
+  </script>
+</body>
+</html>

@@ -16,6 +16,8 @@ const (
 	authoringSkillName      = "harnest-authoring"
 	authenticationSkillRoot = "authoring_skill/harnest-authentication"
 	authenticationSkillName = "harnest-authentication"
+	studioSkillName         = "harnest-studio"
+	studioUISkillName       = "harnest-studio-ui"
 )
 
 type bundledCodingAgentSkill struct {
@@ -26,12 +28,14 @@ type bundledCodingAgentSkill struct {
 var bundledCodingAgentSkills = []bundledCodingAgentSkill{
 	{name: authoringSkillName, root: authoringSkillRoot},
 	{name: authenticationSkillName, root: authenticationSkillRoot},
+	{name: studioSkillName, root: "authoring_skill/" + studioSkillName},
+	{name: studioUISkillName, root: "authoring_skill/" + studioUISkillName},
 }
 
 // authoringSkill contains focused guidance for coding agents that modify
 // Harnest projects. It is installed outside an agent's runtime skills/.
 //
-//go:embed authoring_skill/harnest-authoring authoring_skill/harnest-authentication
+//go:embed authoring_skill/harnest-authoring authoring_skill/harnest-authentication authoring_skill/harnest-studio authoring_skill/harnest-studio-ui
 var authoringSkill embed.FS
 
 type codingAgentTarget struct {
@@ -54,7 +58,7 @@ func (a *application) newSkillsCommand() *cobra.Command {
 		Short: "Show or install Harnest guidance for coding agents",
 		Long: `Show or install the bundled Harnest coding-agent skills.
 
-These skills cover general authoring and authentication/credential boundaries.
+These skills cover agent authoring, authentication, Studio configuration, and UI packs.
 They are separate from the runtime skills/ directory compiled into an agent.`,
 	}
 	command.AddCommand(a.newSkillsShowCommand(), a.newSkillsInstallCommand())
@@ -173,17 +177,18 @@ func skillDestinations(project string, target codingAgentTarget) []skillDestinat
 
 // bundledSkill resolves only declared skill names from the embedded filesystem.
 func bundledSkill(name string) (bundledCodingAgentSkill, error) {
+	names := make([]string, 0, len(bundledCodingAgentSkills))
 	// Selection is explicit so `show` cannot read arbitrary embedded files.
 	for _, skill := range bundledCodingAgentSkills {
+		names = append(names, skill.name)
 		if name == skill.name {
 			return skill, nil
 		}
 	}
 	return bundledCodingAgentSkill{}, fmt.Errorf(
-		"unknown Harnest skill %q; choose %s or %s",
+		"unknown Harnest skill %q; choose %s",
 		name,
-		authoringSkillName,
-		authenticationSkillName,
+		strings.Join(names, ", "),
 	)
 }
 

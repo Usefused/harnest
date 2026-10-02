@@ -24,10 +24,10 @@ export async function readEvents(response, receive) {
 }
 
 /** Require a completed run before making a streamed proposal reviewable. */
-export async function runBuilder(options, {signal,activity,token=""}={}) {
+export async function runBuilder(options, {signal,activity,transport=fetch}={}) {
   const {prompt,...forwardedProps}=options;
-  const response=await fetch("/api/agui",{method:"POST",signal,
-    headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},
+  const response=await transport("/api/agui",{method:"POST",signal,
+    headers:{"Content-Type":"application/json"},
     body:JSON.stringify({threadId:crypto.randomUUID(),runId:crypto.randomUUID(),
       messages:[{id:crypto.randomUUID(),role:"user",content:prompt}],state:{},tools:[],context:[],forwardedProps})});
   let proposal,finished=false;

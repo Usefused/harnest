@@ -15,7 +15,8 @@ import (
 // newStudioCommand starts the bundled local server against the caller's workspace.
 func (a *application) newStudioCommand() *cobra.Command {
 	var workspace string
-	var packs []string
+	var packs, trustedUI []string
+	var safeUI bool
 	var port int
 	command := &cobra.Command{
 		Use: "studio", Short: "Start Harnest Studio in the current folder or a selected workspace", Args: cobra.NoArgs,
@@ -24,7 +25,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			packArguments, err := studioPackArguments(packs)
+			packArguments, err := studioPackArguments(studioPackRoots(packs, safeUI))
 			if err != nil {
 				return err
 			}
@@ -38,6 +39,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 			}
 			arguments := []string{"-m", "harnest_builder", "--workspace", directory, "--port", strconv.Itoa(port), "--cli", executable}
 			arguments = append(arguments, packArguments...)
+			arguments = append(arguments, studioUIArguments(trustedUI, safeUI)...)
 			if python.Source == "Studio environment" {
 				arguments = append([]string{"-I"}, arguments...)
 			}
@@ -67,6 +69,8 @@ func (a *application) newStudioCommand() *cobra.Command {
 	command.Flags().StringVar(&workspace, "workspace", ".", "existing workspace folder (default: current working directory)")
 	command.Flags().IntVar(&port, "port", 1940, "local Studio port (1024-65535)")
 	command.Flags().StringArrayVar(&packs, "pack", nil, "local Studio Pack folder (repeatable)")
+	command.Flags().BoolVar(&safeUI, "safe-ui", false, "start with only the bundled default Studio pack")
+	command.Flags().StringArrayVar(&trustedUI, "trust-ui-pack", nil, "allow a named UI pack full Studio JavaScript access (repeatable)")
 	command.AddCommand(a.newStudioPackCommand())
 	return command
 }
@@ -151,4 +155,24 @@ func (a *application) runStudioPack(command *cobra.Command, args []string) error
 	}
 	process := a.system.commandContext(command.Context(), python.Executable, arguments...)
 	return runCommand(process, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
+}
+
+// studioUIArguments keeps code trust explicit while recovery bypasses custom UI modules.
+func studioUIArguments(trusted []string, safe bool) []string {
+	if safe {
+		return []string{"--safe-ui"}
+	}
+	var arguments []string
+	for _, identity := range trusted {
+		arguments = append(arguments, "--trust-ui-pack", identity)
+	}
+	return arguments
+}
+
+// studioPackRoots avoids touching missing mod folders during recovery.
+func studioPackRoots(packs []string, safe bool) []string {
+	if safe {
+		return nil
+	}
+	return packs
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {diffLines,contextRows} from '../src/harnest_builder/static/ui.js';
+import {diffLines,contextRows} from '../src/harnest_builder/ui_packs/default/assets/ui.js';
 
 function reconstruct(rows,type) {return rows.filter(row=>row.type!==type).map(row=>row.text).join('');}
 for(const [name,before,after] of [

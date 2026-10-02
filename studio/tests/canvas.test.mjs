@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {architectureNodes, resourcesForNode, Canvas} from '../src/harnest_builder/static/canvas.js';
+import {architectureNodes, resourcesForNode, Canvas} from '../src/harnest_builder/ui_packs/default/assets/canvas.js';
 
 const project = {
   id:'sample', config:{name:'Sample'},

@@ -34,11 +34,11 @@ func TestStudioDefaultsToCallerDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(selected, "studio-pack.yaml"), []byte("name: company"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940", "--pack", selected)
+	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940", "--pack", selected, "--trust-ui-pack", "company")
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940", "--pack\n" + selected})
+	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940", "--pack\n" + selected, "--trust-ui-pack\ncompany"})
 	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "pack", "validate", selected)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +47,21 @@ func TestStudioDefaultsToCallerDirectory(t *testing.T) {
 	assertContainsAll(t, "pack validation", invocation, []string{"harnest_builder\npack\nvalidate\n" + selected})
 	if strings.Contains(invocation, "--python") {
 		t.Fatal("inherited Python option leaked into pack arguments")
+	}
+}
+
+// TestStudioSafeModeBypassesMissingPacks keeps recovery independent of publisher directories.
+func TestStudioSafeModeBypassesMissingPacks(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("HARNEST_STUDIO_TEST_RECORD", record)
+	python := writeExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HARNEST_STUDIO_TEST_RECORD\"\n")
+	_, _, err := executeForTest(t, defaultSystem(), "--python", python, "studio", "--safe-ui", "--pack", filepath.Join(t.TempDir(), "missing"), "--trust-ui-pack", "company")
+	if err != nil {
+		t.Fatal(err)
+	}
+	safe := string(mustReadTestFile(t, record))
+	if !strings.Contains(safe, "--safe-ui") || strings.Contains(safe, "--pack") || strings.Contains(safe, "--trust-ui-pack") {
+		t.Fatalf("safe launch did not bypass external packs: %s", safe)
 	}
 }
 

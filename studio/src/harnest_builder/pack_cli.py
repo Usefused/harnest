@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from .packs import Packs
 from .pack_distribution import package_packs
+from .ui_packs import UIPacks
 
 
 def main(arguments=None):
@@ -24,7 +25,10 @@ def main(arguments=None):
     options = parser.parse_args(arguments)
     try:
         if options.action == "validate":
-            print(json.dumps({"resources": Packs(options.packs).catalog()}, indent=2))
+            catalog = Packs(options.packs)
+            # Validation inspects all module declarations without executing or trusting their code.
+            ui = UIPacks(catalog, trusted=catalog.packs).catalog()
+            print(json.dumps({"resources": catalog.catalog(), "ui": ui}, indent=2))
         else:
             print(package_packs(options.pack, options.output, options.name, options.version))
     except (ValueError, OSError, HTTPException) as error:

@@ -1,0 +1,36 @@
+apiVersion: harnest.dev/studio-pack/v1
+name: blueprint-ui
+version: 1.0.0
+title: Blueprint Studio
+resources: []
+ui:
+  apiVersion: harnest.dev/studio-ui/v1
+  assets: [assets/welcome.html, assets/notes.html]
+  themes:
+  - id: blueprint
+    title: Blueprint blue
+    tokens:
+      accent: '#76b7ff'
+      accent-ink: '#081729'
+      bg: '#0c1424'
+      panel: '#142238'
+      soft: '#1a2b43'
+      line: '#355171'
+  layouts:
+  - id: assistant-first
+    title: Assistant on the left
+    order: [inspector, workspace, sidebar]
+  contributions:
+  - id: welcome
+    title: Blueprint workspace
+    slot: welcome
+    mode: frame
+    entry: assets/welcome.html
+    replaces: fused-studio/welcome
+    permissions: [state.connection]
+  - id: notes
+    title: Team notes
+    slot: workspace.tabs
+    mode: frame
+    entry: assets/notes.html
+    permissions: [state.project]

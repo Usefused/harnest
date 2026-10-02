@@ -13,6 +13,7 @@ from packaging.version import Version
 
 from .pack_manifest import STUDIO_VERSION
 from .packs import Packs
+from .ui_packs import UIPacks
 
 
 def package_packs(roots, output: Path, distribution: str, version: str) -> Path:
@@ -21,6 +22,8 @@ def package_packs(roots, output: Path, distribution: str, version: str) -> Path:
         raise ValueError("Distribution names must be lowercase words separated by hyphens")
     version = str(Version(version))
     catalog = Packs(roots)
+    # Resolve all declarations before distributing them; this never executes publisher code.
+    UIPacks(catalog, trusted=catalog.packs).catalog()
     module = distribution.replace("-", "_") + "_studio"
     contents = {f"{module}/__init__.py": b""}
     embedded = []
@@ -59,6 +62,8 @@ def _embed(contents, module, identity, pack):
             contents[f"{module}/packs/{identity}/{relative}"] = text.encode()
         resources.append(resource)
     manifest["resources"] = resources
+    for relative, text in pack["ui_assets"].items():
+        contents[f"{module}/packs/{identity}/{relative}"] = text.encode()
     if pack["builder_ca"] is not None:
         manifest["builder"]["ca_bundle"] = "certificates/builder-ca.pem"
         contents[f"{module}/packs/{identity}/certificates/builder-ca.pem"] = pack["builder_ca"].encode()

@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Team notes</title>
+<style>body{font:16px system-ui;color:#dcecff;background:#142238;padding:24px}h1{color:#76b7ff}p{line-height:1.6}</style>
+<h1>Team notes</h1><p id="project">Open a project to see its name here.</p><p>This tab is supplied by the Blueprint pack. It receives project metadata through the host's isolated message channel.</p>
+<script>
+window.addEventListener('message',event=>{
+  if(event.source!==parent||event.data?.type!=='studio:init'||!event.ports[0])return;
+  event.ports[0].onmessage=event=>{
+    if(event.data.name==='project')document.getElementById('project').textContent=event.data.value?.name||'No project selected';
+  };
+});
+</script></html>

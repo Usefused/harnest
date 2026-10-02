@@ -110,9 +110,10 @@ export function select(host, label, choices, value) {
 }
 
 /** Native dialogs trap focus; rejected submissions keep the user's completed form intact. */
-export function modal(title, description, label, submit, wide = false, {cancel = true} = {}) {
-  const dialog = $("dialog"); dialog.replaceChildren(); dialog.className = wide ? "wide" : "";
-  const heading = el("h2", title); heading.id = "dialog-title";
+export function modal(title, description, label, submit, wide = false, {cancel = true, dialog = $("dialog")} = {}) {
+  dialog.replaceChildren(); dialog.className = wide ? "wide" : "";
+  const heading = el("h2", title); heading.id = (dialog.id || "dialog") + "-title";
+  dialog.setAttribute("aria-labelledby",heading.id);
   const form = el("form", "", "dialog-form"), content = el("div", "", "dialog-form");
   const failure = el("p", "", "dialog-error"); failure.setAttribute("role", "alert");
   const actions = el("div", "", "dialog-actions");

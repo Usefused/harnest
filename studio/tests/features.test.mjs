@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {deploymentEnabled,renderDeploymentControl} from '../src/harnest_builder/static/features.js';
+import {deploymentEnabled,renderDeploymentControl} from '../src/harnest_builder/ui_packs/default/assets/features.js';
 
 test('deployment stays invisible before metadata and without an explicit server boolean',()=>{
   for(const workspace of [null,{}, {features:{}}, {features:{deployment:false}}, {features:{deployment:'true'}}]) {
@@ -25,8 +25,8 @@ test('enabled deployment requires a selected project and can be hidden again',()
 });
 
 test('initial HTML hides Deploy and generic source review does not advertise it',()=>{
-  const html=readFileSync(new URL('../src/harnest_builder/static/index.html',import.meta.url),'utf8');
-  const source=readFileSync(new URL('../src/harnest_builder/static/app.js',import.meta.url),'utf8');
+  const html=readFileSync(new URL('../src/harnest_builder/ui_packs/default/assets/index.html',import.meta.url),'utf8');
+  const source=readFileSync(new URL('../src/harnest_builder/ui_packs/default/assets/app.js',import.meta.url),'utf8');
   assert.match(html,/<button id="deployment"[^>]*\bhidden\b/);
   assert.ok(!source.includes('Changes applied. Preview the deployment plan'));
   assert.ok(!source.includes('import {showDeployment} from'));

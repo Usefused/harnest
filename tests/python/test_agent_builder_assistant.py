@@ -17,7 +17,7 @@ from _test_context import enter_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "studio" / "src"))
 from harnest_builder.app import create_app
-from harnest_builder.assistant_build import compile_assistant, skill_sources
+from harnest_builder.assistant_build import SKILL_NAMES, compile_assistant, skill_sources
 from harnest_builder.assistant_server import AssistantServer, final_reply, traceback_summary
 from harnest_builder.prompting import _payload
 from harnest_builder.assistant_errors import failure_category
@@ -139,10 +139,13 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.server.close)
 
     def test_compiled_guidance_matches_canonical_release_skills(self):
-        """Do not replace shipped user guidance with a separately maintained system prompt."""
-        for source in skill_sources().rglob("*.md"):
-            target = self.artifact / "source" / "skills" / source.relative_to(skill_sources())
-            self.assertEqual(target.read_bytes(), source.read_bytes())
+        """Verify selected authoring guidance; Studio configuration skills belong to coding agents."""
+        installed = self.artifact / "source" / "skills"
+        self.assertEqual({path.name for path in installed.iterdir() if path.is_dir()}, set(SKILL_NAMES))
+        for name in SKILL_NAMES:
+            for source in (skill_sources() / name).rglob("*.md"):
+                target = installed / source.relative_to(skill_sources())
+                self.assertEqual(target.read_bytes(), source.read_bytes())
         manifest = json.loads((self.artifact / "harnest-manifest.json").read_text())
         self.assertEqual(manifest["framework"]["name"], "adk")
 

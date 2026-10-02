@@ -8,6 +8,15 @@
 
 - Improve IDE completion and type inference for lazy public Harnest domains and invocation context, including session, agent, MCP, storage, skills, and memory access. Typed resource and extension lookups retain the caller's expected type without changing runtime loading or context isolation. Extend signature annotations across the core package, preserve authored types through task and lifecycle decorators, and add package-wide static consumer checks for public classes, inherited methods, and properties.
 
+- Company CLIs can register `ProjectCLI.add_studio` to launch bundled Studio packs and route Studio jobs through their own executable. Agent creation applies company initialization hooks, accepts Studio's mode and scaffold choices, and displays the configured CLI in command previews and output. Studio remains an optional dependency for ordinary company CLI use.
+
+- Studio now loads its bundled Fused interface through Studio Packs, with workspace theme and layout preferences, explicit view replacement, isolated custom panels, trusted shell modules, and default-UI recovery. On smaller screens, the assistant and inspector collapse into an expandable side panel instead of stacking below the workspace.
+  A reproducible Tailwind example replaces only the welcome section with locally compiled, isolated styles through the ordinary pack contract.
+  Framed welcome views fill the available workspace instead of sitting in a short centered box.
+  Compact workspace controls, an expandable Steps menu, and a Focus view give the canvas and editor more vertical room while keeping view and side-panel navigation available.
+  Deployment is a replaceable `fused-studio/deployment` service contribution. Trusted packs can own the modal, options, and actions behind `studio.deployment.open`; the bundled flow and team example use shared shell commands while backend deployment gates remain enforced.
+  Bundled `harnest-studio` and `harnest-studio-ui` coding-agent skills cover launch settings, company packs, builder configuration, themes, layouts, and section replacements; install them with `harnest skills install`.
+
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
 
 - Move the RAG and MCP sample agents into `examples/rag-agent` and `examples/mcp-agent`; update the MCP example to the current project schema. Rename the Studio source directory from `agent-builder/` to `studio/` and update build, release, and CI paths. Move the unreleased orchestration driver from `cmd/harnest-runtime` to internal development tooling, retaining `make dry-run` validation.

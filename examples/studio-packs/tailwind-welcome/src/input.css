@@ -1,0 +1,3 @@
+/* Scan only this section; the surrounding Studio UI has its own styling. */
+@import "tailwindcss" source(none);
+@source "./welcome.html";

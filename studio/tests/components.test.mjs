@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {cronFields,evaluationFields,runtimeFields,executionFields} from '../src/harnest_builder/static/components.js';
+import {cronFields,evaluationFields,runtimeFields,executionFields} from '../src/harnest_builder/ui_packs/default/assets/components.js';
 
 class Element extends EventTarget {
   children=[];value='';hidden=false;

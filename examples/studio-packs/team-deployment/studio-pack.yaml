@@ -1,0 +1,15 @@
+apiVersion: harnest.dev/studio-pack/v1
+name: team-deployment
+version: 1.0.0
+title: Team deployment workflow
+resources: []
+ui:
+  apiVersion: harnest.dev/studio-ui/v1
+  assets: [assets/deployment.js]
+  contributions:
+    - id: deployment
+      title: Team deployment
+      slot: service
+      mode: module
+      entry: assets/deployment.js
+      replaces: fused-studio/deployment

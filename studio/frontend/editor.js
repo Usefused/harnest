@@ -34,7 +34,7 @@ export class StudioEditor {
       keymap.of([indentWithTab,...lintKeymap]),EditorState.readOnly.of(disabled),EditorView.editable.of(!disabled),
       EditorView.cspNonce.of(document.querySelector('meta[name="editor-style-nonce"]').content),
       EditorView.contentAttributes.of({'aria-label':'Source code editor','spellcheck':'false'}),
-      EditorView.theme({'&':{height:'100%',backgroundColor:'#101217'},'.cm-scroller':{fontFamily:'ui-monospace,SFMono-Regular,monospace',fontSize:'12px',lineHeight:'1.8'},'.cm-gutters':{backgroundColor:'#0e1014'},'.cm-content':{padding:'18px 0'},'.cm-line':{padding:'0 16px'}}),
+      EditorView.theme({'&':{height:'100%',backgroundColor:'var(--editor-bg)'},'.cm-scroller':{fontFamily:'var(--font-code)',fontSize:'var(--editor-size)',lineHeight:'1.8'},'.cm-gutters':{backgroundColor:'var(--editor-gutter)'},'.cm-content':{padding:'18px 0'},'.cm-line':{padding:'0 16px'}}),
       EditorView.updateListener.of(update=>{
         if(!update.docChanged||this.syncing)return;
         this.textarea.value=update.state.doc.toString();this.changed();this.schedule();

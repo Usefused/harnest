@@ -1,4 +1,4 @@
-import {el,button,field,modal,preference} from './ui.js';
+import {el,button,field,preference} from './ui.js';
 
 /** Decode the final CLI result while tolerating audit lines before the JSON document. */
 export function deploymentResult(output) {
@@ -34,7 +34,7 @@ class DeploymentView {
   /** Keep callbacks bound to the project and dialog that initiated the operation. */
   constructor(options) {
     Object.assign(this,options);this.live=null;this.busy=false;this.target=null;this.confirmation=null;
-    this.form=modal('Deploy your agent','Review what will run, deploy it, then use the access details below.','Close',async()=>{},true);
+    this.form=this.modal('Deploy your agent','Review what will run, deploy it, then use the access details below.','Close',async()=>{},true);
     this.form.parentElement.querySelector('.dialog-actions').firstElementChild.remove();
     this.form.classList.add('deployment-panel');
     this.environment=field(this.form,'Environment',preference('deployment-environment:'+this.project)||'local',{placeholder:'local or a manifest environment'});

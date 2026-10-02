@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {deploymentResult,deploymentState,accessURL} from '../src/harnest_builder/static/deployment.js';
+import {deploymentResult,deploymentState,accessURL} from '../src/harnest_builder/ui_packs/default/assets/deployment.js';
 
 test('a successful plan or recorded revision never claims the agent is running',()=>{
   assert.equal(deploymentState({status:'not-deployed'},null).ready,false);

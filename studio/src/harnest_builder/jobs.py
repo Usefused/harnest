@@ -17,22 +17,29 @@ from .processes import terminate_tree
 class Jobs:
     """Track CLI output, serialize mutations, and terminate child process groups on shutdown."""
 
-    def __init__(self, cli: str, workspace, credentials=None):
+    def __init__(self, cli, workspace, credentials=None, *, init_args=()):
         """Bind the executable and workspace outside the HTTP command surface."""
         self.credentials = credentials
         self.cli = cli
+        self.init_args = tuple(init_args)
         self.workspace = workspace
         self.lock = RLock()
         self.items = {}
         self.processes = {}
         self.closed = False
 
+    @property
+    def command(self) -> tuple[str, ...]:
+        """Normalize the current server-owned CLI without caching a stale executable."""
+        return (self.cli,) if isinstance(self.cli, str) else tuple(self.cli)
+
     def start(self, args: list[str], project: str, *, serving: bool = False) -> dict:
         """Allow one finite command per workspace and a separate long-running preview."""
         with self.lock:
             self.ensure_idle(serving=serving)
             self._prune()
-            job = {"id": uuid.uuid4().hex, "project": project, "argv": [self.cli, *args], "status": "running", "exit_code": None, "output": "", "serving": serving, "started": time.time()}
+            arguments = [*args, *(self.init_args if args[:1] == ['init'] else ())]
+            job = {"id": uuid.uuid4().hex, "project": project, "argv": [*self.command, *arguments], "command": list(self.command), "args": arguments, "status": "running", "exit_code": None, "output": "", "serving": serving, "started": time.time()}
             self.items[job["id"]] = job
             Thread(target=self._run, args=(job,), daemon=True).start()
             return dict(job)

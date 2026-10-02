@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harnest Studio"
+  short_description: "Configure Studio workspaces, packs, and builder settings"
+  default_prompt: "Use $harnest-studio to configure this team’s Studio workspace and company packs."

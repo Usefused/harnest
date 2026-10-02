@@ -55,15 +55,30 @@ def _changes(before: Mapping[str, _File], after: Mapping[str, _File], owners: di
 
 
 def _init_arguments(framework: str | None, minimal: bool, template: str | None,
-                    template_sha256: str | None) -> list[str]:
+                    template_sha256: str | None, mode: str | None, example: bool) -> list[str]:
     """Keep explicit scaffold choices separate from template-owned framework and mode."""
     if template is not None:
+        if mode is not None or example:
+            raise ProjectError('--template cannot be combined with --mode or --example')
         return _template_arguments(template, template_sha256, framework, minimal)
     if template_sha256 is not None:
         raise ProjectError('template_sha256 requires a template (--template)')
     arguments = ['--framework', framework if framework is not None else 'adk']
     if minimal:
         arguments.append('--minimal')
+    arguments.extend(_profile_arguments(mode, minimal, example))
+    return arguments
+
+
+def _profile_arguments(mode: str | None, minimal: bool, example: bool) -> list[str]:
+    """Match Studio's scaffold choices without silently dropping incompatible flags."""
+    if minimal and example:
+        raise ProjectError('--minimal cannot be combined with --example')
+    if mode is not None and mode not in {'managed', 'advanced'}:
+        raise ProjectError('mode must be managed or advanced')
+    arguments = ['--mode', mode] if mode is not None else []
+    if example:
+        arguments.append('--example')
     return arguments
 
 
@@ -192,9 +207,10 @@ class ProjectPlanner:
 
     def plan_init(self, directory: str | Path, *, options: Mapping[str, Mapping[str, Any]] | None = None,
                   framework: str | None = None, minimal: bool = False,
-                  template: str | None = None, template_sha256: str | None = None) -> ProjectPlan:
+                  template: str | None = None, template_sha256: str | None = None,
+                  mode: str | None = None, example: bool = False) -> ProjectPlan:
         """Prepare a scaffold or template, then apply pack hooks in a disposable project."""
-        arguments = _init_arguments(framework, minimal, template, template_sha256)
+        arguments = _init_arguments(framework, minimal, template, template_sha256, mode, example)
         root = project_root(directory)
         if root.exists() and any(root.iterdir()):
             raise ProjectError("init requires an absent or empty directory")

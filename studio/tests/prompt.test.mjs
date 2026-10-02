@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {sendDraft} from '../src/harnest_builder/static/ui.js';
+import {sendDraft} from '../src/harnest_builder/ui_packs/default/assets/ui.js';
 
 class Composer extends EventTarget {
   value='  Original prompt\n';
@@ -49,7 +49,7 @@ test('failure does not restore a draft into another project',async()=>{
   assert.equal(input.value,'');
 });
 
-const {agentName,responseText,refinement}=await import('../src/harnest_builder/static/experience.js');
+const {agentName,responseText,refinement}=await import('../src/harnest_builder/ui_packs/default/assets/experience.js');
 
 test('onboarding suggests bounded portable agent names',()=>{
   assert.equal(agentName('Support orders'), 'support-orders');

@@ -60,9 +60,10 @@ def launch(cli: Path, cwd: Path, workspace: Path, environment: dict, explicit: b
             with request(origin + "/api/workspace", token) as response:
                 result = json.load(response)
             assert Path(result["path"]).resolve() == workspace.resolve(), result
-            for path in ["/", "/assets/app.js", "/assets/canvas.js", "/assets/ui.js", "/assets/style.css", "/assets/deployment.js"]:
+            for path in ["/", "/assets/host.js", "/assets/host-api.js", "/assets/host.css"]:
                 with request(origin + path) as response:
                     assert response.status == 200 and response.read(), path
+            check_ui_pack(origin, token)
             try:
                 request(origin + "/api/jobs")
             except urllib.error.HTTPError as error:
@@ -73,6 +74,17 @@ def launch(cli: Path, cwd: Path, workspace: Path, environment: dict, explicit: b
             stop(process)
     if explicit:
         assert "Preparing the bundled Studio runtime" not in log.read_text(), "cached launch reinstalled Studio"
+
+
+def check_ui_pack(origin: str, token: str) -> None:
+    """Verify the released default pack's offline assets are actually bundled."""
+    with request(origin + "/api/ui", token) as response:
+        catalog = json.load(response)
+    shell = next(item for item in catalog["contributions"] if item["slot"] == "shell")
+    assert shell["id"] == "fused-studio/shell", shell
+    for name in ("app.js", "index.html", "style.css", "canvas.js", "editor.js", "welcome.js", "appearance.js", "drawer.js", "deployment-service.js", "deployment-config.js", "deployment.js"):
+        with request(origin + shell["base"] + "assets/" + name) as response:
+            assert response.status == 200 and response.read(), name
 
 
 def compiled_server(environment: dict, cwd: Path) -> None:

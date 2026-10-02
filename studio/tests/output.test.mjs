@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {renderCommandOutput,commandOutputText} from '../src/harnest_builder/static/ui.js';
+import {renderCommandOutput,commandOutputText} from '../src/harnest_builder/ui_packs/default/assets/ui.js';
 
 function element() {
   return {children:[],textContent:'',scrollHeight:100,scrollTop:0,clientHeight:100,
@@ -59,7 +59,7 @@ test('clipboard receives exact output text, without controls or wrapping',async(
   globalThis.document={getElementById:()=>messages};
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}});
   try {
-    const {copyCommandText}=await import('../src/harnest_builder/static/ui.js');
+    const {copyCommandText}=await import('../src/harnest_builder/ui_packs/default/assets/ui.js');
     const line='  exact <source> text\twith spacing';
     await copyCommandText(line);
     await copyCommandText('$ command\n\n'+line+'\n');

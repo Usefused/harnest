@@ -25,9 +25,10 @@ from .features import deployment_enabled, require_deployment
 from .mcp_credentials import CredentialStore
 from .mcp_service import MCPService
 from . import mcp_routes
+from .ui_packs import UIPacks
 
 STATIC = Path(__file__).parent / "static"
-ASSETS = {"index.html", "app.js", "canvas.js", "ui.js", "style.css", "deployment.js", "features.js", "mcp.js", "components.js", "experience.js", "agui.js", "editor.js", "editor.LICENSE.txt"}
+ASSETS = {"host.js", "host-api.js", "host.css"}
 SECURITY = {"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
 
@@ -70,14 +71,15 @@ class Conversion(BaseModel):
     revision: str
 
 
-def create_app(root: Path, cli: str, *, token: str | None = None, completion=None, connector=None, credentials=None, packs=None) -> FastAPI:
-    """Compose a standalone app with no dependency on Harnest's existing browser UIs."""
+def create_app(root: Path, cli, *, token: str | None = None, completion=None, connector=None, credentials=None, packs=None, trusted_ui=(), safe_ui=False, init_args=()) -> FastAPI:
+    """Compose workspace services and the shared host for bundled and custom UI packs."""
     style_nonce = secrets.token_urlsafe(24)
     from .packs import Packs
     workspace = Workspace(root)
-    workspace.packs = packs or Packs()
+    workspace.packs = Packs() if safe_ui else packs or Packs()
+    ui_packs = UIPacks(workspace.packs, () if safe_ui else trusted_ui)
     credentials = credentials or CredentialStore()
-    jobs = Jobs(cli, workspace, credentials)
+    jobs = Jobs(cli, workspace, credentials, init_args=init_args)
     mcp = MCPService(workspace, jobs, credentials, connector)
     from .builder_config import BuilderConfiguration
     builder = BuilderConfiguration(workspace.packs)
@@ -112,8 +114,12 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
         except HTTPException as error:
             return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=SECURITY)
         response = await call_next(request)
+        frame_policy = response.headers.get("Content-Security-Policy")
         response.headers.update(SECURITY)
         response.headers["Content-Security-Policy"] = SECURITY["Content-Security-Policy"].replace("style-src 'self'", f"style-src 'self' 'nonce-{style_nonce}'")
+        if frame_policy is not None:
+            # Panel HTML keeps its opaque sandbox even when opened outside the host page.
+            response.headers["Content-Security-Policy"] = frame_policy
         if request.url.path == "/api/workspace" and response.status_code == 200:
             # Cookies survive tab recreation; bind them to this launch and port so
             # another local builder cannot accidentally replace this connection.
@@ -140,6 +146,19 @@ def create_app(root: Path, cli: str, *, token: str | None = None, completion=Non
         if filename not in ASSETS:
             raise HTTPException(404, "Asset not found.")
         return FileResponse(STATIC / filename)
+
+    @app.get("/api/ui")
+    def ui_catalog(safe: bool = False):
+        """Expose validated composition only after workspace authentication."""
+        try:
+            return ui_packs.catalog(safe or safe_ui)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get("/ui-assets/{identity}/{revision}/{relative:path}")
+    def ui_asset(identity: str, revision: str, relative: str):
+        """Serve immutable pack snapshots under their content revision."""
+        return ui_packs.asset(identity, revision, relative)
 
     mcp_routes.install_routes(app, mcp)
     folders.install_routes(app, workspace)
@@ -218,7 +237,7 @@ def _install_reads(app, workspace, jobs) -> None:
     def workspace_info():
         """List projects alongside available capabilities and provider configuration."""
         with workspace.lock:
-            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "packs": workspace.packs.catalog(), "llm": settings(workspace.builder_environment), "features": {"deployment": deployment_enabled()}}
+            return {"name": workspace.root.name, "path": str(workspace.root), "projects": workspace.projects(), "catalog": catalog(), "packs": workspace.packs.catalog(), "llm": settings(workspace.builder_environment), "features": {"deployment": deployment_enabled()}, "cli": {"command": list(jobs.command), "init_args": list(jobs.init_args)}}
 
     @app.get("/api/project")
     def project_info(project: str):
@@ -244,7 +263,7 @@ def _install_reads(app, workspace, jobs) -> None:
     @app.get("/api/evaluation-metrics")
     def evaluation_metrics():
         """Use the installed CLI as the authoritative evaluation authoring catalog."""
-        return {"metrics": presets(jobs.cli, workspace.root)}
+        return {"metrics": presets(jobs.command, workspace.root)}
 
     @app.get("/api/jobs")
     def job_list():

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harnest Studio UI"
+  short_description: "Customize Studio themes, layouts, and UI sections"
+  default_prompt: "Use $harnest-studio-ui to build and verify this Studio UI customization as a pack."
