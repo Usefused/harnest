@@ -29,6 +29,8 @@
 
 - Let queued tasks reopen an existing owner-scoped agent session with `context.agent.open_session(session_id)` and invoke a later turn in that conversation.
 
+## [1.6.0](https://github.com/Usefused/harnest/compare/v1.5.0...v1.6.0) (2026-10-01)
+
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
 
 - Move the RAG and MCP sample agents into `examples/rag-agent` and `examples/mcp-agent`; update the MCP example to the current project schema. Rename the Studio source directory from `agent-builder/` to `studio/` and update build, release, and CI paths. Move the unreleased orchestration driver from `cmd/harnest-runtime` to internal development tooling, retaining `make dry-run` validation.
@@ -78,6 +80,19 @@
 - Add an opt-in Threadify shared-workflow API for contract-gated agent actions,
   update its SDK requirement for permission waits, and include a refund example
   that combines Harnest human approval with a Threadify grant before payment.
+
+### Features
+
+* add cron scaffolding and Threadify workflows ([b751b22](https://github.com/Usefused/harnest/commit/b751b22cc8d0a0a79fa2394e1e59381d396da801))
+* **studio:** add AG-UI authoring and live work management ([fda08b5](https://github.com/Usefused/harnest/commit/fda08b5a25dd7f6252d65f0e98fd45ebb122ddcd))
+* **studio:** add company builder defaults and CA trust ([12f0b9d](https://github.com/Usefused/harnest/commit/12f0b9d6193fe35a11bdcf74eae70beb9a0051e8))
+* **studio:** add company packs and improve agent building experience ([708c007](https://github.com/Usefused/harnest/commit/708c00765f700ff631dc159a8c7ed20cb4f49221))
+* **upgrade:** explain optional Cron decorator migrations ([1b923b1](https://github.com/Usefused/harnest/commit/1b923b19a18731383f912a7759ca1a36560d8f6c))
+
+
+### Fixes
+
+* **studio:** decode homepage as UTF-8 on Windows ([9700767](https://github.com/Usefused/harnest/commit/970076736a365178c95ace7d3a0d45ec6b9d404d))
 
 ## [1.5.0](https://github.com/Usefused/harnest/compare/v1.4.1...v1.5.0) (2026-09-29)
 
