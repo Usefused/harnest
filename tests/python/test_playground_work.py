@@ -11,6 +11,7 @@ import fakeredis.aioredis
 import httpx
 
 from harnest.application import CompiledApplication
+from harnest._cron_storage import cron_fingerprint
 from harnest.cron import cron, CronRecord
 from harnest.neutral_runtime import create_neutral_app
 from harnest.runtime_auth import AuthPrincipal, AuthenticationError
@@ -127,6 +128,57 @@ class PlaygroundWorkTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_redis_legacy_schedule_retry_keeps_its_identity(self):
+        """New optional limits cannot break idempotency of persisted schedules."""
+
+        client = fakeredis.aioredis.FakeRedis()
+        self.addAsyncCleanup(client.aclose)
+        store = RedisTaskStore("redis://unused", _client=client)
+        record = CronRecord(schedule_id="old", application_id="work_test", user_id="alice",
+                            key="old", expression="* * * * *", task_name=job("a").task_name,
+                            arguments=job("a").arguments, next_run_at=10)
+        await store.create_cron(record)
+        cron_key = store._durable_key("work_test", "crons")
+        raw = json.loads(await client.hget(cron_key, "old"))
+        for name in ("max_runs", "max_consecutive_failures", "run_count", "consecutive_failures"):
+            raw.pop(name)
+        raw["_fingerprint"] = cron_fingerprint(record, legacy=True)
+        await client.hset(cron_key, "old", json.dumps(raw))
+        replay = await store.create_cron(replace(record, schedule_id="new"))
+        self.assertEqual((replay.schedule_id, replay.run_count), ("old", 0))
+
+    async def test_redis_cron_limits_survive_terminal_task_outcomes(self):
+        """Run caps and the resettable failure streak execute in one Lua state."""
+
+        client = fakeredis.aioredis.FakeRedis()
+        self.addAsyncCleanup(client.aclose)
+        store = RedisTaskStore("redis://unused", _client=client)
+        await store.create_cron(CronRecord(
+            schedule_id="limited", application_id="work_test", user_id="alice",
+            key="limited", expression="* * * * *", task_name=job("a").task_name,
+            arguments=job("a").arguments, next_run_at=10,
+            max_runs=4, max_consecutive_failures=2,
+        ))
+        for index, outcome in enumerate(("failed", "completed", "failed", "failed")):
+            current = await store.get_cron(application_id="work_test", user_id="alice",
+                                           schedule_id="limited")
+            due = current.next_run_at
+            task = replace(job(f"limited-{index}"), scheduled_at=due,
+                           cron_schedule_id="limited", max_retries=0)
+            await store.commit_cron_occurrence(
+                application_id="work_test", user_id="alice", schedule_id="limited",
+                expected_revision=current.revision, due_at=due, next_run_at=due + 60,
+                task=task,
+            )
+            claimed, = await store.claim_tasks(application_id="work_test", queues=("default",),
+                                               now=due, lease_seconds=5)
+            await store.finish_task(application_id="work_test", job_id=claimed.job_id,
+                                    lease_token=claimed.lease_token, now=due + 1, status=outcome)
+        current = await store.get_cron(application_id="work_test", user_id="alice",
+                                       schedule_id="limited")
+        self.assertEqual((current.run_count, current.consecutive_failures, current.status),
+                         (4, 2, "cancelled"))
+
     async def test_redis_lua_backfills_legacy_jobs_and_indexes_new_occurrences(self):
         """Execute actual Lua over legacy and new records, checking page scope and privacy."""
         client = fakeredis.aioredis.FakeRedis()
@@ -144,7 +196,7 @@ class WorkStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await store.list_task_metadata(application_id="work_test", user_id="alice", after="a"))["items"][0]["job_id"], "b")
         schedule = CronRecord(schedule_id="schedule", application_id="work_test", user_id="alice", key="scheduled", expression="* * * * *", task_name=legacy.task_name, arguments=legacy.arguments, next_run_at=10)
         await store.create_cron(schedule)
-        await store.commit_cron_occurrence(application_id="work_test", user_id="alice", schedule_id="schedule", expected_revision=0, due_at=10, next_run_at=70, task=replace(job("c"), scheduled_at=10))
+        await store.commit_cron_occurrence(application_id="work_test", user_id="alice", schedule_id="schedule", expected_revision=0, due_at=10, next_run_at=70, task=replace(job("c"), scheduled_at=10, cron_schedule_id="schedule"))
         self.assertEqual([row["job_id"] for row in (await store.list_task_metadata(application_id="work_test", user_id="alice", after="b"))["items"]], ["c"])
         page = await store.list_cron_metadata(application_id="work_test", user_id="alice", limit=1)
         self.assertEqual(page["items"][0]["schedule_id"], "schedule")

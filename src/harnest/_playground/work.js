@@ -77,6 +77,9 @@ const harnestWork = (() => {
     card.append(node("strong", item.task_name), node("code", identity), node("p", resource === "tasks"
       ? `${item.status} · queue ${item.queue} · attempt ${item.attempt}/${item.max_retries + 1}`
       : `${item.key} · ${item.expression} UTC · ${item.status} · next ${new Date(item.next_run_at * 1000).toLocaleString()}`));
+    if (resource === "crons" && (item.max_runs || item.max_consecutive_failures)) {
+      card.append(node("p", `Runs ${item.run_count}${item.max_runs ? `/${item.max_runs}` : ""} · consecutive failures ${item.consecutive_failures}${item.max_consecutive_failures ? `/${item.max_consecutive_failures}` : ""}`));
+    }
     const mutate = async (suffix, method, body) => { await request(`/${resource}/${encodeURIComponent(identity)}${suffix}`, method, body, selectedScope); await open(api); };
     if (resource === "tasks" && ["pending", "running"].includes(item.status)) card.append(button("Cancel task", () => mutate("/cancel", "POST")));
     if (resource === "crons" && !item.read_only) {
@@ -100,6 +103,8 @@ const harnestWork = (() => {
     target.disabled = Boolean(identity); label.append(target); if (!identity) form.append(label);
     const expression = field(form, "Schedule (UTC, five columns)", record?.expression || "0 9 * * *");
     const args = field(form, "Arguments (JSON object)", JSON.stringify(record?.arguments || {}, null, 2), true);
+    const maxRuns = identity ? null : optionalLimit(form, "Maximum runs (optional)");
+    const maxFailures = identity ? null : optionalLimit(form, "Consecutive failures before stopping (optional)");
     const save = node("button", identity ? "Save schedule" : "Create schedule"); save.className = "secondary-button";
     form.append(error, save, button("Close", () => dialog.close())); dialog.append(form); document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove()); dialog.showModal();
@@ -109,7 +114,9 @@ const harnestWork = (() => {
         const argumentsValue = JSON.parse(args.value);
         await request(identity ? `/crons/${encodeURIComponent(identity)}` : "/crons", identity ? "PATCH" : "POST", identity
           ? {expression:expression.value, arguments:argumentsValue, revision:record.revision}
-          : {key:key.value, task:target.value, expression:expression.value, arguments:argumentsValue}, selectedScope);
+          : {key:key.value, task:target.value, expression:expression.value, arguments:argumentsValue,
+             max_runs:maxRuns.value ? Number(maxRuns.value) : null,
+             max_consecutive_failures:maxFailures.value ? Number(maxFailures.value) : null}, selectedScope);
         dialog.close(); await open(api);
       } catch (failure) { error.textContent = failure instanceof SyntaxError ? "Arguments must be valid JSON." : failure.message; }
       finally { save.disabled = false; }
@@ -118,6 +125,12 @@ const harnestWork = (() => {
   function field(form, title, value, multiline = false) {
     const label = node("label", title), input = node(multiline ? "textarea" : "input"); input.value = value; input.required = true;
     if (multiline) input.rows = 6;
+    label.append(input); form.append(label); return input;
+  }
+  /** Keep limits optional while native number controls enforce the API bounds. */
+  function optionalLimit(form, title) {
+    const label = node("label", title), input = node("input");
+    input.type = "number"; input.min = "1"; input.max = "1000000"; input.step = "1";
     label.append(input); form.append(label); return input;
   }
   return {open};

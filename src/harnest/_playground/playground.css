@@ -259,7 +259,8 @@ h1, h2, h3, p { margin-top: 0; }
   top: calc(100% + 7px);
   right: 0;
   left: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
   max-height: min(280px, 50vh);
   padding: 6px;
@@ -271,7 +272,7 @@ h1, h2, h3, p { margin-top: 0; }
   backdrop-filter: blur(18px);
 }
 .session-search { flex: 0 0 auto; height: 36px; border-radius: 10px; font-size: 11px; }
-.session-options { display: grid; gap: 4px; min-height: 0; overflow-y: auto; }
+.session-options { display: grid; align-content: start; flex: 1 1 auto; gap: 4px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .session-search-empty { padding: 12px 9px; color: var(--muted); text-align: center; font-size: 10px; }
 .session-option-copy { display: grid; min-width: 0; gap: 4px; }
 .session-option-copy strong { font: 800 11px/1 var(--font-display); }

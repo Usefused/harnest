@@ -210,12 +210,55 @@ class TaskStoreConformanceMixin:
         await self.store.create_cron(self.cron_record())
         options = dict(application_id=self.application_id, user_id="alice", schedule_id="cron",
                        expected_revision=0, due_at=60.0, next_run_at=120.0,
-                       task=self.task_record("occurrence", idempotency_key="cron:60"))
+                       task=self.task_record("occurrence", idempotency_key="cron:60", cron_schedule_id="cron"))
         results = await asyncio.gather(*(self.store.commit_cron_occurrence(**options) for _ in range(8)))
         self.assertEqual(sum(item is not None for item in results), 1)
         current = await self.store.get_cron(application_id=self.application_id, user_id="alice", schedule_id="cron")
         self.assertEqual((current.revision, current.next_run_at), (1, 120.0))
         self.assertIsNotNone(await self.read_task("occurrence"))
+
+    async def test_cron_max_runs_caps_atomic_handoffs(self) -> None:
+        """A schedule cannot enqueue more occurrences than its run cap."""
+
+        await self.store.create_cron(self.cron_record(max_runs=2))
+        for index in range(2):
+            current = await self.store.get_cron(application_id=self.application_id,
+                                                user_id="alice", schedule_id="cron")
+            task = self.task_record(f"occurrence-{index}", cron_schedule_id="cron",
+                                    scheduled_at=current.next_run_at)
+            committed = await self.store.commit_cron_occurrence(
+                application_id=self.application_id, user_id="alice", schedule_id="cron",
+                expected_revision=current.revision, due_at=current.next_run_at,
+                next_run_at=current.next_run_at + 60, task=task,
+            )
+            self.assertIsNotNone(committed)
+        current = await self.store.get_cron(application_id=self.application_id,
+                                            user_id="alice", schedule_id="cron")
+        self.assertEqual((current.run_count, current.status), (2, "cancelled"))
+        self.assertEqual(len(await self.store.list_due_crons(application_id=self.application_id,
+                                                              now=1000)), 0)
+
+    async def test_cron_failure_streak_resets_after_success(self) -> None:
+        """Only consecutive terminal failures stop later occurrences."""
+
+        await self.store.create_cron(self.cron_record(max_consecutive_failures=2))
+        for index, outcome in enumerate(("failed", "completed", "failed", "failed")):
+            current = await self.store.get_cron(application_id=self.application_id,
+                                                user_id="alice", schedule_id="cron")
+            due = current.next_run_at
+            task = self.task_record(f"occurrence-{index}", cron_schedule_id="cron",
+                                    scheduled_at=due, max_retries=0)
+            await self.store.commit_cron_occurrence(
+                application_id=self.application_id, user_id="alice", schedule_id="cron",
+                expected_revision=current.revision, due_at=due, next_run_at=due + 60,
+                task=task,
+            )
+            claimed, = await self.claim(now=due)
+            self.assertTrue(await self.finish(claimed, now=due + 1, status=outcome))
+            updated = await self.store.get_cron(application_id=self.application_id,
+                                                user_id="alice", schedule_id="cron")
+            self.assertEqual(updated.consecutive_failures, (1, 0, 1, 2)[index])
+            self.assertEqual(updated.status, "cancelled" if index == 3 else "active")
 
     async def test_cancelled_cron_cannot_commit_and_conflict_rolls_back_cursor(self) -> None:
         """A cancelled/stale schedule or failed enqueue leaves no partial handoff."""
@@ -224,7 +267,7 @@ class TaskStoreConformanceMixin:
         await self.store.enqueue_task(self.task_record("collision", arguments={"different": True}))
         options = dict(application_id=self.application_id, user_id="alice", schedule_id="cron",
                        expected_revision=0, due_at=60.0, next_run_at=120.0,
-                       task=self.task_record("collision"))
+                       task=self.task_record("collision", cron_schedule_id="cron"))
         with self.assertRaises(TaskStoreConflictError):
             await self.store.commit_cron_occurrence(**options)
         unchanged = await self.store.get_cron(application_id=self.application_id, user_id="alice", schedule_id="cron")

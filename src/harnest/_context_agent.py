@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Iterator, Literal, Mapping
 import uuid
 
 from ._json import json_value
+from . import context
 from .agent_principal import AgentRuntimePrincipal, resolve_nested_agent_principal
 from .agent.approval import InMemoryApprovalStore
 from .client_tool import InMemoryClientToolStore
@@ -31,6 +32,7 @@ from .runtime_contract import (
     SessionConflictError,
     require_customer_facing_output,
 )
+from .context_session import current_session_lease, nested_session_context
 from .tracing import get_tracer
 
 
@@ -347,6 +349,17 @@ class LocalAgentRuntime:
 
         timeout = self._timeout(request_timeout)
         request = self._request(session, value, metadata, agent_principal)
+        with nested_session_context(
+            user_id=self._user_id, session_id=session.id,
+            invocation_id=request.invocation_id,
+        ):
+            return await self._invoke_owned(request, timeout)
+
+    async def _invoke_owned(
+        self, request: InvocationRequest, timeout: float
+    ) -> AgentResponse | AgentPendingResponse:
+        """Keep a borrowed session lease live until the local turn finishes."""
+
         run = self._start_run(request, stream=False)
         join_terminal = False
         try:
@@ -390,6 +403,19 @@ class LocalAgentRuntime:
 
         timeout = self._timeout(request_timeout)
         request = self._request(session, value, metadata, agent_principal)
+        with nested_session_context(
+            user_id=self._user_id, session_id=session.id,
+            invocation_id=request.invocation_id,
+        ):
+            async with aclosing(self._stream_owned(request, timeout)) as source:
+                async for item in source:
+                    yield item
+
+    async def _stream_owned(
+        self, request: InvocationRequest, timeout: float
+    ) -> AsyncIterator[AgentStreamItem]:
+        """Keep a borrowed session lease live throughout streaming cleanup."""
+
         run = self._start_run(request, stream=True)
         sequence = 0
         deadline = asyncio.get_running_loop().time() + timeout
@@ -579,6 +605,31 @@ class _ContextAgentAccess:
         )
         session._lifetime = binding.lifetime
         session._identity_namespace = f"{binding.namespace}:session:{identity}"
+        return session
+
+    async def open_session(self, session_id: str) -> AgentSession:
+        """Open an existing session owned by this task's original user."""
+
+        binding = _active_binding()
+        _validate_text(session_id, "context.agent session_id")
+        active = context.optional_active_context()
+        leased = (
+            None if active is None else current_session_lease(
+                user_id=binding.runtime.user_id, session_id=session_id,
+                invocation_id=active.invocation_id,
+            )
+        )
+        # Reading through the driver could reacquire this task's exclusive
+        # lease; the held record already proves owner and existence.
+        session = (
+            binding.runtime._session(session_id)
+            if leased is not None
+            else await binding.runtime.open_session(session_id)
+        )
+        session._lifetime = binding.lifetime
+        # Stable task and destination identities keep a reclaimed attempt from
+        # minting a different local invocation for the same later turn.
+        session._identity_namespace = f"{binding.namespace}:existing:{session_id}"
         return session
 
 

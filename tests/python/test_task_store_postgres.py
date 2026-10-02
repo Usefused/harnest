@@ -177,7 +177,7 @@ class PostgresTaskStoreIntegrationTests(unittest.IsolatedAsyncioTestCase):
         """A failed handoff neither advances the schedule nor loses due work."""
 
         schedule = await self.store.create_cron(self.schedule())
-        task = self.job(idempotency_key="occurrence")
+        task = replace(self.job(idempotency_key="occurrence"), cron_schedule_id=schedule.schedule_id)
         await self.store.enqueue_task(replace(task, arguments={"unrelated": True}))
         with self.assertRaises(TaskStoreConflictError):
             await self.store.commit_cron_occurrence(
@@ -201,7 +201,8 @@ class PostgresTaskStoreIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return await self.store.commit_cron_occurrence(
                 application_id=self.application_id, user_id="alice", schedule_id=schedule.schedule_id,
                 expected_revision=0, due_at=10, next_run_at=70,
-                task=self.job(str(number), idempotency_key="same-occurrence"),
+                task=replace(self.job(str(number), idempotency_key="same-occurrence"),
+                             cron_schedule_id=schedule.schedule_id),
             )
 
         results = await asyncio.gather(*(commit(i) for i in range(6)))

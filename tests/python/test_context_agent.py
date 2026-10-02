@@ -15,11 +15,14 @@ from harnest._context_agent import (
     AgentInvocationUnavailableError,
     AgentPendingResponse,
     AgentResponse,
+    AgentSessionNotFoundError,
     LocalAgentRuntime,
     activate_context_agent,
 )
+from harnest.context_session import invocation_session_context
 from harnest.external_continuation import PendingExternalContinuation
 from harnest.output import TokenUsage
+from harnest.session import InMemorySessionStore
 from harnest.runtime_contract import (
     AgentInfo,
     InvocationRequest,
@@ -28,7 +31,9 @@ from harnest.runtime_contract import (
     SessionRecord,
 )
 from harnest.runtime_task import TaskExecutionRuntime
+from harnest.runtime_task_store import ProviderTaskRuntimeManager
 from harnest.task import CompiledTask, registration_for, task
+from harnest.task_store_memory import MemoryTaskStore
 
 
 @client_tool
@@ -299,7 +304,8 @@ class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             """Invoke one root-agent turn from durable task execution."""
 
             session = await context.agent.create_session(state={"kind": "cron"})
-            response = await session.invoke("scheduled")
+            reopened = await context.agent.open_session(session.id)
+            response = await reopened.invoke("scheduled")
             observed.append((session.user_id, response.output_text))
             return response.output_text
 
@@ -357,6 +363,69 @@ class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             driver.requests[0].metadata,
             {"tenant": "acme", "child": True},
         )
+
+    async def test_task_opens_and_invokes_existing_owner_session(self):
+        """A delayed task can resume its source session under its held lease."""
+
+        store = InMemorySessionStore()
+        await store.create(session_id="source", user_id="owner", state={})
+        await store.create(session_id="other", user_id="owner", state={})
+        await store.create(session_id="foreign", user_id="someone-else", state={})
+
+        class LeasedDriver(_FakeDriver):
+            async def get_session(self, *, session_id, user_id):
+                return await store.get(session_id=session_id, user_id=user_id)
+
+            async def invoke(self, request):
+                async with invocation_session_context(
+                    store, framework="langgraph", user_id=request.user_id,
+                    session_id=request.session_id,
+                    invocation_id=request.invocation_id,
+                ) as lease:
+                    assert lease is not None
+                    await lease.replace_state({"last": request.input})
+                    return await super().invoke(request)
+
+        async def remind():
+            """Choose an existing conversation explicitly for a later turn."""
+
+            source = await context.agent.open_session(context.session_id)
+            response = await source.invoke("Remember the meeting")
+            other = await context.agent.open_session("other")
+            await other.invoke("Another conversation")
+            with self.assertRaises(AgentSessionNotFoundError):
+                await context.agent.open_session("foreign")
+            return response.session_id
+
+        compiled, application = _compiled_task(remind)
+        application = replace(
+            application, session_store=store, task_store=MemoryTaskStore(),
+        )
+        driver = LeasedDriver()
+        manager = ProviderTaskRuntimeManager(application)
+        manager.bind_agent_driver(driver)
+        active = context.create_agent_context(
+            framework="langgraph", agent_name="fixture",
+            invocation_id="request-1", user_id="owner",
+            session_id="source", metadata={}, resources={},
+        )
+        try:
+            await manager.start()
+            with context.activate_context(active):
+                handle = await compiled.authored.defer(schedule_in=0.05)
+            for _ in range(30):
+                if await handle.status() == "succeeded":
+                    break
+                await asyncio.sleep(0.05)
+            result = await handle.result()
+        finally:
+            context.revoke_context(active)
+            await manager.close()
+
+        self.assertEqual(result, "source")
+        self.assertEqual((await store.get(session_id="source", user_id="owner")).state["last"], "Remember the meeting")
+        self.assertEqual((await store.get(session_id="other", user_id="owner")).state["last"], "Another conversation")
+        self.assertEqual([(item.user_id, item.session_id) for item in driver.requests], [("owner", "source"), ("owner", "other")])
 
     async def test_audit_never_contains_input_or_output_payload(self):
         driver = _FakeDriver()

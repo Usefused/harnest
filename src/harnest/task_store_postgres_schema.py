@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS harnest_durable_tasks (
     fingerprint text NOT NULL,
     created_at double precision NOT NULL,
     updated_at double precision NOT NULL,
+    cron_schedule_id text,
     PRIMARY KEY(application_id, job_id),
     UNIQUE(application_id, user_id, task_name, idempotency_key)
 );
@@ -48,6 +49,10 @@ CREATE TABLE IF NOT EXISTS harnest_durable_crons (
     revision integer NOT NULL DEFAULT 0,
     created_at double precision NOT NULL,
     updated_at double precision NOT NULL,
+    max_runs integer CHECK(max_runs > 0),
+    max_consecutive_failures integer CHECK(max_consecutive_failures > 0),
+    run_count integer NOT NULL DEFAULT 0,
+    consecutive_failures integer NOT NULL DEFAULT 0,
     PRIMARY KEY(application_id,schedule_id),
     UNIQUE(application_id,user_id,schedule_key)
 );
@@ -56,6 +61,11 @@ ON harnest_durable_crons(application_id,user_id,schedule_id);
 CREATE INDEX IF NOT EXISTS harnest_durable_crons_due
 ON harnest_durable_crons(application_id,next_run_at,schedule_id)
 WHERE status='active';
+ALTER TABLE harnest_durable_tasks ADD COLUMN IF NOT EXISTS cron_schedule_id text;
+ALTER TABLE harnest_durable_crons ADD COLUMN IF NOT EXISTS max_runs integer CHECK(max_runs > 0);
+ALTER TABLE harnest_durable_crons ADD COLUMN IF NOT EXISTS max_consecutive_failures integer CHECK(max_consecutive_failures > 0);
+ALTER TABLE harnest_durable_crons ADD COLUMN IF NOT EXISTS run_count integer NOT NULL DEFAULT 0;
+ALTER TABLE harnest_durable_crons ADD COLUMN IF NOT EXISTS consecutive_failures integer NOT NULL DEFAULT 0;
 """
 
 ENQUEUE_SQL = """
@@ -63,9 +73,9 @@ INSERT INTO harnest_durable_tasks (
     application_id,job_id,user_id,task_name,queue,arguments,invocation,
     agent_permissions,trigger,status,scheduled_at,max_retries,attempt,
     lease_token,lease_expires_at,result,failure_code,idempotency_key,
-    fingerprint,created_at,updated_at
+    fingerprint,created_at,updated_at,cron_schedule_id
 ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,
-          $14,$15,$16::jsonb,$17,$18,$19,$20,$21)
+          $14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22)
 ON CONFLICT DO NOTHING
 RETURNING *
 """
@@ -84,6 +94,7 @@ SET status='failed',failure_code='task_failed',result=NULL,arguments='{}'::jsonb
     lease_expires_at=NULL,updated_at=$3
 FROM exhausted
 WHERE jobs.application_id=exhausted.application_id AND jobs.job_id=exhausted.job_id
+RETURNING jobs.user_id,jobs.cron_schedule_id
 """
 
 CLAIM_SQL = """
@@ -120,5 +131,5 @@ SET status=CASE WHEN $5='pending' AND attempt>=max_retries+1 THEN 'failed' ELSE 
     agent_permissions=CASE WHEN $5='pending' AND attempt<max_retries+1 THEN agent_permissions ELSE NULL END
 WHERE application_id=$1 AND job_id=$2 AND lease_token=$3
   AND status='running' AND lease_expires_at>$4
-RETURNING job_id
+RETURNING job_id,user_id,cron_schedule_id,status
 """

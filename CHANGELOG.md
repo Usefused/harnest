@@ -4,6 +4,10 @@
 
 - Move the task persistence implementation to private `_task_storage`; import provider contracts from `harnest.task`. `harnest upgrade` rewrites supported `harnest.task_storage` imports, and the old module path is removed.
 
+- Let dynamic `cron.create` schedules stop after an optional number of queued runs or consecutive failed occurrences, with the failure count reset by a successful occurrence. Expose limits and counts on cron jobs and in Playground schedule controls.
+
+- Make the Playground session picker scroll through long session lists while keeping its search field visible.
+
 - Remove the implementation import path `harnest.context_agent`; use `harnest.context` for agent invocation contracts and `context.agent` for task-scoped operations. The implementation now lives in the private `_context_agent` module.
 
 - Improve IDE completion and type inference for lazy public Harnest domains and invocation context, including session, agent, MCP, storage, skills, and memory access. Typed resource and extension lookups retain the caller's expected type without changing runtime loading or context isolation. Extend signature annotations across the core package, preserve authored types through task and lifecycle decorators, and add package-wide static consumer checks for public classes, inherited methods, and properties.
@@ -16,6 +20,8 @@
   Compact workspace controls, an expandable Steps menu, and a Focus view give the canvas and editor more vertical room while keeping view and side-panel navigation available.
   Deployment is a replaceable `fused-studio/deployment` service contribution. Trusted packs can own the modal, options, and actions behind `studio.deployment.open`; the bundled flow and team example use shared shell commands while backend deployment gates remain enforced.
   Bundled `harnest-studio` and `harnest-studio-ui` coding-agent skills cover launch settings, company packs, builder configuration, themes, layouts, and section replacements; install them with `harnest skills install`.
+
+- Let queued tasks reopen an existing owner-scoped agent session with `context.agent.open_session(session_id)` and invoke a later turn in that conversation.
 
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
 

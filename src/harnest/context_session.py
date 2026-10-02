@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -229,6 +229,25 @@ def current_session_lease(
     same_scope = (record.user_id, record.id) == (user_id, session_id)
     same_invocation = binding.invocation_id in {None, invocation_id}
     return binding.lease if same_scope and same_invocation else None
+
+
+def nested_session_context(
+    *, user_id: str, session_id: str, invocation_id: str
+) -> Any:
+    """Reuse a task's held lease for a nested turn in its own session."""
+
+    binding = _ACTIVE_SESSION.get()
+    if binding is None or not binding.lifetime.active:
+        return nullcontext()
+    record = binding.lease.record
+    if (record.user_id, record.id) != (user_id, session_id):
+        return nullcontext()
+    # A task already holds this exclusive lease. Give the nested invocation its
+    # own binding so framework hooks can reuse it without a second acquisition.
+    return activate_session_context(
+        binding.lease, store=binding.store, framework=binding.framework,
+        invocation_id=invocation_id, trigger=binding.trigger,
+    )
 
 
 @asynccontextmanager

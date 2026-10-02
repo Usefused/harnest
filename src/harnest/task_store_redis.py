@@ -73,6 +73,8 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
             keys.extend(self._queue_keys(application_id, queue))
         if len(keys) == 1:
             return ()
+        keys.extend((self._durable_key(application_id, "crons"),
+                     self._durable_key(application_id, "due")))
         records = await self._eval(
             scripts.CLAIM, keys, (now, now + lease_seconds, limit, secrets.token_hex(16))
         )
@@ -106,7 +108,9 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         if record is None:
             return False
         keys = (self._durable_key(application_id, "jobs"),
-                *self._queue_keys(application_id, record.queue))
+                *self._queue_keys(application_id, record.queue),
+                self._durable_key(application_id, "crons"),
+                self._durable_key(application_id, "due"))
         return bool(await self._eval(
             scripts.FINISH, keys,
             (job_id, lease_token, now, status, _json(result), _json(failure_code),
@@ -133,7 +137,9 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         result = await self._eval(
             scripts.CREATE_CRON, self._cron_keys(record.application_id, record.user_id),
             (_cron_dump(record), _identity(record.user_id, record.key),
-             cron_fingerprint(record), _due_member(record.next_run_at, record.schedule_id)),
+             cron_fingerprint(record), _due_member(record.next_run_at, record.schedule_id),
+             (cron_fingerprint(record, legacy=True) if record.max_runs is None
+              and record.max_consecutive_failures is None else "")),
         )
         return _cron_outcome(result)
 

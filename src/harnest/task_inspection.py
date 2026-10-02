@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ._task_storage import TaskRecord
 
-CRON_FIELDS = ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision")
+CRON_FIELDS = ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision",
+               "max_runs", "max_consecutive_failures", "run_count", "consecutive_failures")
 
 TASK_FIELDS = ("job_id", "task_name", "queue", "status", "scheduled_at", "attempt",
                "max_retries", "created_at", "updated_at", "failure_code")

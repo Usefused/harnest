@@ -125,7 +125,10 @@ class PostgresTaskStore(TaskStore, CronStore):
                 async with connection.transaction():
                     # Bound crash cleanup separately from runnable claims, and
                     # skip rows another replica is already retiring.
-                    await connection.execute(EXPIRE_SQL, application_id, list(queues), now, limit)
+                    expired = await connection.fetch(EXPIRE_SQL, application_id, list(queues), now, limit)
+                    # Expired final leases are terminal failures too; account
+                    # for them before the same transaction claims more work.
+                    await _record_cron_outcomes(connection, application_id, expired, "failed", now)
                     rows = await connection.fetch(
                         CLAIM_SQL, application_id, list(queues), now, limit,
                         uuid.uuid4().hex, lease_seconds,
@@ -159,10 +162,13 @@ class PostgresTaskStore(TaskStore, CronStore):
         _require_finish_options(status, now, retry_at)
         async with _mutation("task.finish", "worker"):
             async with self._connection() as connection:
-                row = await connection.fetchrow(
-                    FINISH_SQL, application_id, job_id, lease_token, now, status,
-                    _dump_optional(result), failure_code, retry_at,
-                )
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        FINISH_SQL, application_id, job_id, lease_token, now, status,
+                        _dump_optional(result), failure_code, retry_at,
+                    )
+                    if row is not None and row["status"] in {"completed", "failed"}:
+                        await _record_cron_outcomes(connection, application_id, (row,), row["status"], now)
         return row is not None
 
     async def cancel_task(
@@ -191,8 +197,8 @@ class PostgresTaskStore(TaskStore, CronStore):
                     row = await connection.fetchrow(
                         "INSERT INTO harnest_durable_crons(application_id,schedule_id,user_id,"
                         "schedule_key,expression,timezone,task_name,arguments,next_run_at,status,"
-                        "revision,created_at,updated_at) "
-                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13) "
+                        "revision,created_at,updated_at,max_runs,max_consecutive_failures,run_count,consecutive_failures) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17) "
                         "ON CONFLICT DO NOTHING RETURNING *", *_cron_values(record),
                     )
                     if row is not None:
@@ -254,11 +260,14 @@ class PostgresTaskStore(TaskStore, CronStore):
                     updated = _cron_update(row, record, expected_revision)
                     await connection.execute(
                         "UPDATE harnest_durable_crons SET expression=$4,arguments=$5::jsonb,"
-                        "next_run_at=$6,status=$7,revision=$8,updated_at=$9 "
+                        "next_run_at=$6,status=$7,revision=$8,updated_at=$9,"
+                        "max_runs=$10,max_consecutive_failures=$11,run_count=$12,consecutive_failures=$13 "
                         "WHERE application_id=$1 AND user_id=$2 AND schedule_id=$3",
                         updated.application_id, updated.user_id, updated.schedule_id,
                         updated.expression, _dump(updated.arguments), updated.next_run_at,
                         updated.status, updated.revision, updated.updated_at,
+                        updated.max_runs, updated.max_consecutive_failures,
+                        updated.run_count, updated.consecutive_failures,
                     )
         return updated
 
@@ -306,18 +315,50 @@ class PostgresTaskStore(TaskStore, CronStore):
                 async with connection.transaction():
                     row = await connection.fetchrow(
                         "UPDATE harnest_durable_crons SET next_run_at=$6,revision=revision+1,"
-                        "updated_at=$7 WHERE application_id=$1 AND user_id=$2 AND schedule_id=$3 "
-                        "AND revision=$4 AND next_run_at=$5 AND status='active' RETURNING *",
+                        "updated_at=$7,run_count=run_count+1,"
+                        "status=CASE WHEN max_runs IS NOT NULL AND run_count+1>=max_runs "
+                        "THEN 'cancelled' ELSE status END "
+                        "WHERE application_id=$1 AND user_id=$2 AND schedule_id=$3 "
+                        "AND revision=$4 AND next_run_at=$5 AND status='active' "
+                        "AND (max_runs IS NULL OR run_count<max_runs) "
+                        "AND (max_consecutive_failures IS NULL OR consecutive_failures<max_consecutive_failures) RETURNING *",
                         application_id, user_id, schedule_id, expected_revision, due_at,
                         next_run_at, task.created_at,
                     )
                     if row is None:
                         return None
-                    if row["task_name"] != task.task_name or _decode(row["arguments"]) != dict(task.arguments):
+                    if (row["task_name"] != task.task_name or _decode(row["arguments"]) != dict(task.arguments)
+                            or task.cron_schedule_id != schedule_id):
                         raise CronStoreConflictError("occurrence does not match its schedule")
                     # Any enqueue conflict aborts this transaction, restoring the
                     # original due time so durable work is never silently skipped.
                     return await _enqueue(connection, task)
+
+
+async def _record_cron_outcomes(
+    connection: Any, application_id: str, rows: Any, status: str, now: float,
+) -> None:
+    """Count terminal occurrences once with their task transitions."""
+
+    scoped = [(row["user_id"], row["cron_schedule_id"]) for row in rows
+              if row["cron_schedule_id"] is not None]
+    if not scoped:
+        return
+    await connection.execute(
+        "WITH outcomes AS (SELECT user_id,schedule_id,count(*)::integer AS failures "
+        "FROM unnest($2::text[],$3::text[]) AS item(user_id,schedule_id) "
+        "GROUP BY user_id,schedule_id) "
+        "UPDATE harnest_durable_crons AS cron SET "
+        "consecutive_failures=CASE WHEN $4='completed' THEN 0 "
+        "ELSE cron.consecutive_failures+outcomes.failures END, "
+        "status=CASE WHEN $4='failed' AND cron.max_consecutive_failures IS NOT NULL "
+        "AND cron.consecutive_failures+outcomes.failures>=cron.max_consecutive_failures "
+        "THEN 'cancelled' ELSE cron.status END, "
+        "revision=cron.revision+1,updated_at=$5 "
+        "FROM outcomes WHERE cron.application_id=$1 AND cron.user_id=outcomes.user_id "
+        "AND cron.schedule_id=outcomes.schedule_id",
+        application_id, [item[0] for item in scoped], [item[1] for item in scoped], status, now,
+    )
 
 
 async def _enqueue(connection: Any, record: TaskRecord) -> TaskRecord:
@@ -367,6 +408,7 @@ def _task_values(record: TaskRecord, fingerprint: str) -> tuple[Any, ...]:
         record.scheduled_at, record.max_retries, record.attempt, record.lease_token,
         record.lease_expires_at, _dump_optional(record.result), record.failure_code,
         record.idempotency_key, fingerprint, record.created_at, record.updated_at,
+        record.cron_schedule_id,
     )
 
 
@@ -377,6 +419,8 @@ def _cron_values(record: CronRecord) -> tuple[Any, ...]:
         record.application_id, record.schedule_id, record.user_id, record.key,
         record.expression, record.timezone, record.task_name, _dump(record.arguments),
         record.next_run_at, record.status, record.revision, record.created_at, record.updated_at,
+        record.max_runs, record.max_consecutive_failures, record.run_count,
+        record.consecutive_failures,
     )
 
 

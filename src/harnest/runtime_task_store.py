@@ -323,10 +323,10 @@ class ProviderTaskRuntimeManager(TaskExecutionRuntime):
             "invocation_id": occurrence, "session_id": occurrence,
             "user_id": record.user_id, "metadata": {},
         }
-        return self._task_record(
+        return replace(self._task_record(
             compiled, record.arguments, snapshot, (), trigger="cron",
             key=occurrence, scheduled_at=record.next_run_at,
-        )
+        ), cron_schedule_id=record.schedule_id)
 
     async def _register_static_schedules(self) -> None:
         """Reconcile compiled declarations without resetting durable next-run cursors."""

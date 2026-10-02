@@ -32,6 +32,8 @@ class CronCreate(BaseModel):
     task: str = Field(min_length=1, max_length=256)
     expression: str = Field(min_length=1, max_length=128)
     arguments: dict = Field(default_factory=dict)
+    max_runs: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_consecutive_failures: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class CronEdit(BaseModel):
@@ -110,7 +112,8 @@ def _cron(manager: ProviderTaskRuntimeManager, owner: str) -> StoredCronRuntime:
 def _schedule(record: CronRecord, *, include_arguments: bool=False) -> dict[str, Any]:
     """Project schedule metadata; arguments are read only for an explicit edit."""
     result = {name: getattr(record, name) for name in
-              ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision")}
+              ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision",
+               "max_runs", "max_consecutive_failures", "run_count", "consecutive_failures")}
     result["read_only"] = record.key.startswith("static:")
     if include_arguments:
         result["arguments"] = dict(record.arguments)

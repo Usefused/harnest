@@ -41,6 +41,7 @@ class TaskRecord:
     idempotency_key: str | None = field(default=None, repr=False)
     created_at: float = 0.0
     updated_at: float = 0.0
+    cron_schedule_id: str | None = None
 
 
 @runtime_checkable

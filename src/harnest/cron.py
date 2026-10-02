@@ -171,6 +171,10 @@ class CronJob:
     arguments: Mapping[str, Any] = field(repr=False, compare=False)
     status: str
     timezone: str = "UTC"
+    max_runs: int | None = None
+    max_consecutive_failures: int | None = None
+    run_count: int = 0
+    consecutive_failures: int = 0
     _runtime: Any = field(repr=False, compare=False, default=None)
 
     def __post_init__(self) -> None:
@@ -234,11 +238,15 @@ async def create(
     expression: str,
     task: TaskCallable[Any] | str,
     arguments: Mapping[str, Any] | None = None,
+    max_runs: int | None = None,
+    max_consecutive_failures: int | None = None,
 ) -> CronJob:
-    """Schedule a registered callable or a ``cron/`` function name for this user."""
+    """Schedule registered work with optional dispatch and failure limits."""
 
     _validate_schedule_key(key)
     _validate_schedule(expression)
+    _validate_positive_limit("max_runs", max_runs)
+    _validate_positive_limit("max_consecutive_failures", max_consecutive_failures)
     if not isinstance(task, str) and task_registration_for(task) is None:
         raise TypeError("dynamic cron task must be a Harnest @task or @cron callable, or a cron function name")
     normalized = safe_task_arguments({} if arguments is None else arguments)
@@ -247,7 +255,8 @@ async def create(
     if not isinstance(task, str):
         _validate_task_call(task, normalized)
     return await _schedule_runtime().create_dynamic_schedule(
-        key=key, expression=expression, task=task, arguments=normalized
+        key=key, expression=expression, task=task, arguments=normalized,
+        max_runs=max_runs, max_consecutive_failures=max_consecutive_failures,
     )
 
 
@@ -390,6 +399,13 @@ def _validate_schedule_key(value: Any) -> None:
             "cron schedule key must start with a letter or number and contain only "
             "letters, numbers, '.', '_', ':', '~', or '-'"
         )
+
+
+def _validate_positive_limit(name: str, value: int | None) -> None:
+    """Reject zero, booleans, and unbounded integers for schedule limits."""
+
+    if value is not None and (type(value) is not int or not 1 <= value <= 1_000_000):
+        raise ValueError(f"cron {name} must be an integer from 1 to 1000000")
 
 
 def _validate_schedule_id(value: Any) -> None:

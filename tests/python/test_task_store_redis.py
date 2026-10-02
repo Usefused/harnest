@@ -163,7 +163,8 @@ class LiveRedisTaskStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.schedule_id for r in await self.store.list_due_crons(application_id="app", now=10, after=(10, "a"), limit=1)], ["b"])
         outcomes = await asyncio.gather(*(self.store.commit_cron_occurrence(
             application_id="app", user_id="owner", schedule_id="a", expected_revision=0,
-            due_at=10, next_run_at=70, task=_job("occurrence-" + str(i), idempotency_key="a:10")
+            due_at=10, next_run_at=70, task=replace(_job("occurrence-" + str(i), idempotency_key="a:10"),
+                                                     cron_schedule_id="a")
         ) for i in range(8)))
         self.assertEqual(sum(item is not None for item in outcomes), 1)
         after = await self.store.get_cron(application_id="app", user_id="owner", schedule_id="a")

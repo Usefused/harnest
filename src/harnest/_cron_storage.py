@@ -31,6 +31,10 @@ class CronRecord:
     timezone: str = "UTC"
     created_at: float = 0.0
     updated_at: float = 0.0
+    max_runs: int | None = None
+    max_consecutive_failures: int | None = None
+    run_count: int = 0
+    consecutive_failures: int = 0
 
 
 @runtime_checkable
@@ -110,12 +114,16 @@ class CronStore(Protocol):
         ...
 
 
-def cron_fingerprint(record: CronRecord) -> str:
-    """Compare authored definitions without transient schedule lifecycle state."""
+def cron_fingerprint(record: CronRecord, *, legacy: bool = False) -> str:
+    """Compare authored definitions, including optional limits for new schedules."""
 
+    definition = {"expression": record.expression, "task_name": record.task_name,
+                  "arguments": record.arguments, "timezone": record.timezone}
+    if not legacy:
+        definition.update(max_runs=record.max_runs,
+                          max_consecutive_failures=record.max_consecutive_failures)
     encoded = json.dumps(
-        plain_json({"expression": record.expression, "task_name": record.task_name,
-                    "arguments": record.arguments, "timezone": record.timezone}),
+        plain_json(definition),
         sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

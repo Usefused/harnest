@@ -10,7 +10,7 @@ import uuid
 from . import context
 from .cron import (
     CronConflictError, CronJob, CronNotFoundError, CronRuntimeError, CronUnavailableError,
-    _UNSET, _validate_schedule, _validate_task_call,
+    _UNSET, _validate_positive_limit, _validate_schedule, _validate_task_call,
     _registration_for,
 )
 from ._cron_storage import CronRecord, CronStoreConflictError
@@ -63,6 +63,10 @@ class StoredCronRuntime:
             id=record.schedule_id, key=record.key, expression=record.expression,
             task_name=record.task_name, arguments=record.arguments,
             status=record.status, timezone=record.timezone, _runtime=self,
+            max_runs=record.max_runs,
+            max_consecutive_failures=record.max_consecutive_failures,
+            run_count=record.run_count,
+            consecutive_failures=record.consecutive_failures,
         )
 
     async def _record(self, schedule_id: str) -> CronRecord | None:
@@ -83,11 +87,14 @@ class StoredCronRuntime:
         return record
 
     async def create_dynamic_schedule(
-        self, *, key: str, expression: str, task: Any, arguments: Mapping[str, Any]
+        self, *, key: str, expression: str, task: Any, arguments: Mapping[str, Any],
+        max_runs: int | None = None, max_consecutive_failures: int | None = None,
     ) -> CronJob:
         """Validate a deployed target and persist its user-owned, idempotent schedule."""
 
         owner = self._owner()
+        _validate_positive_limit("max_runs", max_runs)
+        _validate_positive_limit("max_consecutive_failures", max_consecutive_failures)
         compiled = self._resolve_target(task)
         _validate_task_call(compiled.authored, arguments)
         now = time.time()
@@ -96,6 +103,7 @@ class StoredCronRuntime:
             user_id=owner, key=key, expression=expression, task_name=compiled.name,
             arguments=safe_task_arguments(arguments), next_run_at=next_occurrence(expression, now),
             created_at=now, updated_at=now,
+            max_runs=max_runs, max_consecutive_failures=max_consecutive_failures,
         )
         return self._job(await self._mutation("create", self._store.create_cron(record)))
 
@@ -158,6 +166,8 @@ class StoredCronRuntime:
             raise ValueError("invalid cron status")
         if current.status == "cancelled" and status != "cancelled":
             raise CronConflictError("cancelled cron jobs cannot be resumed or paused")
+        if status == "active" and _limit_reached(current):
+            raise CronConflictError("cron schedule has reached its run or failure limit")
         if current.status == status:
             return self._job(current)
         now = time.time()
@@ -228,6 +238,14 @@ class StoredCronRuntime:
             raise
         if result is not None:
             self._audit("enqueue", "committed")
+
+
+def _limit_reached(record: CronRecord) -> bool:
+    """Refuse resumed schedules whose durable limits have already been spent."""
+
+    return ((record.max_runs is not None and record.run_count >= record.max_runs)
+            or (record.max_consecutive_failures is not None
+                and record.consecutive_failures >= record.max_consecutive_failures))
 
 
 def _valid_call(compiled: Any, arguments: Mapping[str, Any]) -> bool:

@@ -107,6 +107,7 @@ class MemoryTaskStore:
             key = (record.application_id, record.job_id)
             if record.attempt >= record.max_retries + 1:
                 self._tasks[key] = _terminal(record, "failed", now, failure_code="task_failed")
+                self._record_cron_outcome(record, "failed", now)
                 continue
             record = replace(
                 record, status="running", attempt=record.attempt + 1,
@@ -147,8 +148,29 @@ class MemoryTaskStore:
             record = self._tasks.get(key)
             if not _owns_lease(record, lease_token, now):
                 return False
-            self._tasks[key] = _finish(record, status, now, result, failure_code, retry_at)
+            finished = _finish(record, status, now, result, failure_code, retry_at)
+            self._tasks[key] = finished
+            if finished.status in {"completed", "failed"}:
+                self._record_cron_outcome(record, finished.status, now)
             return True
+
+    def _record_cron_outcome(self, task: TaskRecord, status: str, now: float) -> None:
+        """Update the schedule streak in the same lock as terminal task state."""
+
+        if task.cron_schedule_id is None:
+            return
+        key = (task.application_id, task.cron_schedule_id)
+        record = self._crons.get(key)
+        if record is None or record.user_id != task.user_id:
+            return
+        failures = 0 if status == "completed" else record.consecutive_failures + 1
+        capped = (record.max_consecutive_failures is not None
+                  and failures >= record.max_consecutive_failures)
+        self._crons[key] = replace(
+            record, consecutive_failures=failures,
+            status="cancelled" if capped else record.status,
+            revision=record.revision + 1, updated_at=now,
+        )
 
     async def cancel_task(
         self, *, application_id: str, user_id: str, job_id: str, now: float
@@ -276,9 +298,11 @@ class MemoryTaskStore:
                 return None
             _validate_occurrence_task(record, task)
             queued = self._enqueue(task)
+            runs = record.run_count + 1
             self._crons[key] = replace(
                 record, next_run_at=next_run_at, revision=record.revision + 1,
-                updated_at=task.created_at,
+                updated_at=task.created_at, run_count=runs,
+                status="cancelled" if record.max_runs is not None and runs >= record.max_runs else record.status,
             )
             return _copy_record(queued)
 
@@ -413,7 +437,10 @@ def _matches_occurrence(
     """Recheck the complete claimed schedule identity before enqueueing."""
 
     return (record is not None and record.user_id == user_id and record.status == "active"
-            and record.revision == revision and record.next_run_at == due_at)
+            and record.revision == revision and record.next_run_at == due_at
+            and (record.max_runs is None or record.run_count < record.max_runs)
+            and (record.max_consecutive_failures is None
+                 or record.consecutive_failures < record.max_consecutive_failures))
 
 
 def _validate_occurrence_task(record: CronRecord, task: TaskRecord) -> None:
@@ -423,6 +450,8 @@ def _validate_occurrence_task(record: CronRecord, task: TaskRecord) -> None:
         raise CronStoreConflictError("cron occurrence task has different ownership")
     if record.arguments != task.arguments:
         raise CronStoreConflictError("cron occurrence task has different arguments")
+    if task.cron_schedule_id != record.schedule_id:
+        raise CronStoreConflictError("cron occurrence task has different schedule")
 
 
 __all__ = ["MemoryTaskStore"]

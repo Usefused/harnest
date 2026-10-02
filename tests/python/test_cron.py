@@ -36,7 +36,8 @@ class _DynamicCronRuntime:
         self._next_id = 1
         self._records: dict[tuple[str, str], dict[str, object]] = {}
 
-    async def create_dynamic_schedule(self, *, key, expression, task, arguments):
+    async def create_dynamic_schedule(self, *, key, expression, task, arguments,
+                                      max_runs=None, max_consecutive_failures=None):
         """Create one deterministic owner-scoped record for API contract tests."""
 
         owner = context.user_id
@@ -49,6 +50,8 @@ class _DynamicCronRuntime:
             "task_name": "harnest.demo.tasks.deliver",
             "arguments": dict(arguments),
             "status": "active",
+            "max_runs": max_runs,
+            "max_consecutive_failures": max_consecutive_failures,
         }
         self._records[(owner, schedule_id)] = record
         return self._job(record)
@@ -115,6 +118,8 @@ class _DynamicCronRuntime:
             task_name=str(record["task_name"]),
             arguments=record["arguments"],  # type: ignore[arg-type]
             status=str(record["status"]),
+            max_runs=record.get("max_runs"),  # type: ignore[arg-type]
+            max_consecutive_failures=record.get("max_consecutive_failures"),  # type: ignore[arg-type]
             _runtime=self,
         )
 
@@ -343,6 +348,17 @@ class DynamicCronTests(unittest.IsolatedAsyncioTestCase):
                     await cron.create(
                         key="bad-call", expression="0 9 * * *", task=deliver
                     )
+                limited = await cron.create(
+                    key="limited", expression="0 9 * * *", task=deliver,
+                    arguments={"value": "x"}, max_runs=4,
+                    max_consecutive_failures=2,
+                )
+                self.assertEqual((limited.max_runs, limited.max_consecutive_failures), (4, 2))
+                for option, value in (("max_runs", 0), ("max_runs", True),
+                                      ("max_consecutive_failures", -1)):
+                    with self.subTest(option=option, value=value), self.assertRaisesRegex(ValueError, option):
+                        await cron.create(key="invalid-limit", expression="0 9 * * *",
+                                          task=deliver, arguments={"value": "x"}, **{option: value})
                 with self.assertRaisesRegex(ValueError, "schedule id"):
                     await cron.get("other-user-schedule")
                 for invalid_limit in (0, 101, True):

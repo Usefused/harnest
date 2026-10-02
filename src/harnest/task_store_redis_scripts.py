@@ -41,14 +41,38 @@ local function enqueue(raw, identity, fingerprint, ready)
 end
 """
 
+_CRON_OUTCOME = """
+local function cron_outcome(job, status, now)
+  if not job.cron_schedule_id or job.cron_schedule_id == cjson.null then return end
+  local raw = redis.call('HGET', KEYS[#KEYS-1], job.cron_schedule_id)
+  if not raw then return end
+  local record = cjson.decode(raw)
+  if record.user_id ~= job.user_id then return end
+  if status == 'completed' then
+    record.consecutive_failures = 0
+  else
+    record.consecutive_failures = (record.consecutive_failures or 0) + 1
+    if record.max_consecutive_failures ~= cjson.null
+       and record.max_consecutive_failures ~= nil
+       and record.consecutive_failures >= record.max_consecutive_failures then
+      record.status = 'cancelled'
+      redis.call('ZREM', KEYS[#KEYS], record._due_member)
+    end
+  end
+  record.revision = record.revision + 1
+  record.updated_at = now
+  redis.call('HSET', KEYS[#KEYS-1], job.cron_schedule_id, cjson.encode(record))
+end
+"""
+
 ENQUEUE = _TASK_HELPERS + """
 return enqueue(ARGV[1], ARGV[2], ARGV[3], KEYS[3])
 """
 
-CLAIM = _TASK_HELPERS + """
+CLAIM = _TASK_HELPERS + _CRON_OUTCOME + """
 local now, expiry, limit = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
 local candidates, claimed = {}, {}
-for index=2,#KEYS,2 do
+for index=2,#KEYS-2,2 do
   local ready, leased = KEYS[index], KEYS[index+1]
   local expired = redis.call('ZRANGEBYSCORE', leased, '-inf', now, 'LIMIT', 0, limit)
   for _, id in ipairs(expired) do
@@ -57,6 +81,7 @@ for index=2,#KEYS,2 do
       local job = cjson.decode(raw)
       redis.call('ZREM', leased, id)
       if job.attempt >= job.max_retries + 1 then
+        cron_outcome(job, 'failed', now)
         job.status = 'failed'
         job.failure_code = 'task_failed'
         job.updated_at = now
@@ -111,7 +136,7 @@ redis.call('ZADD', KEYS[2], ARGV[4], ARGV[1])
 return 1
 """
 
-FINISH = _TASK_HELPERS + _OWNED_TASK + """
+FINISH = _TASK_HELPERS + _CRON_OUTCOME + _OWNED_TASK + """
 job.status = ARGV[4]
 job.result = ARGV[5]
 job.failure_code = cjson.decode(ARGV[6])
@@ -128,6 +153,7 @@ if job.status == 'pending' then
   job.scheduled_at = tonumber(ARGV[7])
   redis.call('ZADD', KEYS[2], ARGV[7], ARGV[1])
 else
+  cron_outcome(job, job.status, tonumber(ARGV[3]))
   scrub(job)
 end
 redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(job))
@@ -153,18 +179,22 @@ return 1
 
 CREATE_CRON = """
 local incoming = cjson.decode(ARGV[1])
+local function same_definition(record)
+  return record._fingerprint == ARGV[3]
+     or (ARGV[5] ~= '' and record._fingerprint == ARGV[5])
+end
 local collision = redis.call('HGET', KEYS[1], incoming.schedule_id)
 if collision then
   local record = cjson.decode(collision)
   if record.user_id ~= incoming.user_id or record.key ~= incoming.key
-     or record._fingerprint ~= ARGV[3] then return {'conflict'} end
+     or not same_definition(record) then return {'conflict'} end
 end
 local id = redis.call('HGET', KEYS[2], ARGV[2]) or incoming.schedule_id
 local existing = redis.call('HGET', KEYS[1], id)
 if existing then
   local record = cjson.decode(existing)
   if record.user_id ~= incoming.user_id or record.key ~= incoming.key
-     or record._fingerprint ~= ARGV[3] then return {'conflict'} end
+     or not same_definition(record) then return {'conflict'} end
   return {'ok', existing}
 end
 incoming._fingerprint = ARGV[3]
@@ -230,9 +260,13 @@ local record = cjson.decode(raw)
 if record.user_id ~= ARGV[2] or record.status ~= 'active'
    or record.revision ~= tonumber(ARGV[3])
    or record.next_run_at ~= tonumber(ARGV[4]) then return {'stale'} end
+if record.max_runs ~= cjson.null and record.max_runs ~= nil
+   and (record.run_count or 0) >= record.max_runs then return {'stale'} end
+if record.max_consecutive_failures ~= cjson.null and record.max_consecutive_failures ~= nil
+   and (record.consecutive_failures or 0) >= record.max_consecutive_failures then return {'stale'} end
 local task = cjson.decode(ARGV[7])
 if task.user_id ~= record.user_id or task.task_name ~= record.task_name
-   or task.arguments ~= record.arguments then
+   or task.arguments ~= record.arguments or task.cron_schedule_id ~= record.schedule_id then
   return {'cron-conflict'}
 end
 local result = enqueue(ARGV[7], ARGV[8], ARGV[9], KEYS[3])
@@ -241,9 +275,12 @@ redis.call('ZREM', KEYS[5], record._due_member)
 record.next_run_at = tonumber(ARGV[5])
 record.updated_at = task.created_at
 record.revision = record.revision + 1
+record.run_count = (record.run_count or 0) + 1
 record._due_member = ARGV[6]
+if record.max_runs ~= cjson.null and record.max_runs ~= nil
+   and record.run_count >= record.max_runs then record.status = 'cancelled' end
 redis.call('HSET', KEYS[4], ARGV[1], cjson.encode(record))
-redis.call('ZADD', KEYS[5], 0, ARGV[6])
+if record.status == 'active' then redis.call('ZADD', KEYS[5], 0, ARGV[6]) end
 return result
 """
 
