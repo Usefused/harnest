@@ -10,7 +10,7 @@ class StudioLauncher:
 
     commands = ('add', 'compile', 'test', 'env', 'serve', 'run', 'extensions', 'provision')
 
-    def __init__(self, command: Sequence[str], packs: Sequence[Path], trusted_ui: Sequence[str],
+    def __init__(self, command: list[str] | tuple[str, ...], packs: Sequence[Path], trusted_ui: Sequence[str],
                  init_args: Sequence[str]) -> None:
         """Snapshot launch arguments; resolve assets relative to the installed company package."""
         if isinstance(command, str) or not command or any(not isinstance(arg, str) or not arg for arg in command):

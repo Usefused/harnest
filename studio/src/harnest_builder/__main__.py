@@ -1,6 +1,7 @@
 """Launch the standalone builder against an explicitly selected local workspace."""
 
 import argparse
+from collections.abc import Sequence
 import os
 from pathlib import Path
 import secrets
@@ -12,7 +13,9 @@ import uvicorn
 from .app import create_app
 
 
-def main(*, arguments=None, embedded_packs=(), cli_command=None, trusted_ui=(), init_args=()) -> None:
+def main(*, arguments: Sequence[str] | None = None, embedded_packs: Sequence[Path] = (),
+         cli_command: list[str] | tuple[str, ...] | None = None,
+         trusted_ui: Sequence[str] = (), init_args: Sequence[str] = ()) -> None:
     """Launch standalone or company Studio with server-owned executable and pack bindings."""
     arguments = list(sys.argv[1:] if arguments is None else arguments)
     if arguments[:1] == ["pack"]:

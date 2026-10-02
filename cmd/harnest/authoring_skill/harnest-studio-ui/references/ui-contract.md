@@ -1,5 +1,19 @@
 # Studio UI pack contract
 
+## IDE types
+
+Export the matching type-only package with `harnest studio pack types --output ./types`,
+then install the emitted archive with `npm install --save-dev ./types/harnest-studio-ui-0.1.0.tgz`.
+Commit the archive and npm lockfile. Import `Activate`, `ViewActivate`, `ServiceActivate`,
+or `StudioContext` from `@harnest/studio-ui` with `import type`.
+For example, `export const activate: ViewActivate = (studio, host) => { ... }` gives
+React/TypeScript code a typed mount container and host API without a runtime dependency.
+Use `Activate` when handling both visual and service slots; its host is nullable.
+Augment `StudioCommandMap` and `StudioStateMap` for company names; built-in arguments
+remain checked. `request<T>(path, method, body)` defaults its response to `unknown`;
+`transport` uses a full `/api/...` path. Types do not grant capabilities or validate
+server responses. See https://usefused.com/docs/harnest/studio/mods for examples.
+
 ## Manifest and ownership
 
 Use a regular `harnest.dev/studio-pack/v1` manifest with a `ui` block:

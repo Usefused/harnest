@@ -1,16 +1,20 @@
 """Shared Studio Pack catalog and reviewed, source-preserving installations."""
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import secrets
 import shutil
 import tempfile
 import time
+from typing import Any
 
 from fastapi import HTTPException
 import yaml
 
-from .files import read, source_path, validate
+from .files import Workspace, read, source_path, validate
 from .pack_manifest import load_pack, text_digest
 
 LOCK = "studio-packs.lock"
@@ -19,7 +23,7 @@ LOCK = "studio-packs.lock"
 class Packs:
     """Snapshot local and embedded packs once so pending reviews cannot change underneath users."""
 
-    def __init__(self, roots=()):
+    def __init__(self, roots: Sequence[Path] = ()) -> None:
         """Resolve one deterministic catalog and reject ambiguous or cyclic contributions."""
         self.packs, self.resources, self.reviews = {}, {}, {}
         if len(roots) > 16:
@@ -35,12 +39,12 @@ class Packs:
         for key in self.resources:
             self.expand([key])
 
-    def catalog(self) -> list[dict]:
+    def catalog(self) -> list[dict[str, Any]]:
         """Use identical public metadata for the palette, pack library, and builder."""
         return [{key: value for key, value in resource.items() if key not in {"files", "config", "includes"}} | {"id": identity, "creates_agent": any(self.resources[key]["kind"] == "template" for key in self.expand([identity]))}
                 for identity, resource in self.resources.items()]
 
-    def context(self) -> dict:
+    def context(self) -> dict[str, Any]:
         """Share declared company guidance, never source credentials or automatic execution authority."""
         guidance = [{"id": key, "documents": item["files"]} for key, item in self.resources.items() if item["kind"] == "builder-skill"]
         if len(json.dumps(guidance).encode()) > 128 * 1024:
@@ -57,7 +61,7 @@ class Packs:
             raise ValueError("A pack installation may contain at most 64 resources")
         return ordered
 
-    def _expand(self, identity, visiting, ordered):
+    def _expand(self, identity: str, visiting: list[str], ordered: list[str]) -> None:
         """Resolve same-pack references while reporting cycles before startup completes."""
         if identity in visiting:
             raise ValueError("Studio pack bundle cycle: " + identity)
@@ -70,7 +74,7 @@ class Packs:
             self._expand(child if "/" in child else item["pack"] + "/" + child, visiting + [identity], ordered)
         ordered.append(identity)
 
-    def preview(self, root: Path, identities: list[str]) -> dict:
+    def preview(self, root: Path, identities: list[str]) -> dict[str, Any]:
         """Produce deterministic native files and receipts; local edits block destructive upgrades."""
         selected = self.expand(identities)
         lock = read(root, LOCK)
@@ -89,7 +93,7 @@ class Packs:
         changes[LOCK] = {**lock, "before": lock["text"], "text": text}
         return {"summary": "Install " + ", ".join(identities), "resources": selected, "files": list(changes.values())}
 
-    def _resource_changes(self, root, identity, receipt, changes, owners):
+    def _resource_changes(self, root: Path, identity: str, receipt: dict[str, Any], changes: dict[str, dict[str, str]], owners: dict[str, str]) -> None:
         """Merge profile overlays explicitly and retain provenance for every copied source file."""
         item = self.resources[identity]
         if item["kind"] == "builder-skill":
@@ -112,7 +116,7 @@ class Packs:
             installed[path] = text_digest(text)
         receipt["resources"][identity] = {"version": item["version"], "digest": item["digest"], "files": installed}
 
-    def remember(self, proposal, project=None, destination=None):
+    def remember(self, proposal: dict[str, Any], project: str | None = None, destination: Path | None = None) -> dict[str, Any]:
         """Keep bounded short-lived review capabilities with their exact project destination."""
         changed = [item for item in proposal["files"] if not item["revision"] or item["before"] != item["text"]]
         if not changed:
@@ -125,7 +129,7 @@ class Packs:
         self.reviews[identity] = {"proposal": proposal, "project": project, "destination": destination, "expires": time.monotonic() + 900}
         return {**proposal, "files": changed, "review": identity}
 
-    def apply(self, workspace, identity):
+    def apply(self, workspace: Workspace, identity: str) -> dict[str, Any]:
         """Apply only the reviewed snapshot, retaining revision checks across all project files."""
         review = self.reviews.get(identity)
         if not review or review["expires"] < time.monotonic():
@@ -140,7 +144,7 @@ class Packs:
         return {"project": project, "files": [item["path"] for item in changes]}
 
 
-def merge_config(current: dict, overlay: dict) -> dict:
+def merge_config(current: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Merge profile keys while leaving unrelated agent configuration intact."""
     if not isinstance(current, dict):
         raise ValueError("Agent configuration must be a mapping")
@@ -150,14 +154,14 @@ def merge_config(current: dict, overlay: dict) -> dict:
     return result
 
 
-def _check_upgrade(path, current, text, previous):
+def _check_upgrade(path: str, current: dict[str, str], text: str, previous: dict[str, Any]) -> None:
     """Preserve changed local files when updating a previously installed resource."""
     old = previous.get("files", {}).get(path)
     if old and current["revision"] != old and current["text"] != text:
         raise HTTPException(409, f"{path} has local edits. Merge the new resource manually before updating its receipt.")
 
 
-def _create_project(workspace, destination: Path, changes):
+def _create_project(workspace: Workspace, destination: Path, changes: list[dict[str, str]]) -> str:
     """Reserve a new template destination without overwriting an existing directory."""
     if destination.parent.resolve() != destination.parent:
         raise HTTPException(409, "The selected parent folder changed. Preview the template again.")
@@ -184,7 +188,7 @@ def _create_project(workspace, destination: Path, changes):
     return workspace.register(destination)
 
 
-def _finalize_receipts(receipt, selected, changes):
+def _finalize_receipts(receipt: dict[str, Any], selected: list[str], changes: dict[str, dict[str, str]]) -> None:
     """Record the final composed source when a profile overlays a template in the same review."""
     for identity in selected:
         files = receipt["resources"].get(identity, {}).get("files", {})
@@ -192,7 +196,7 @@ def _finalize_receipts(receipt, selected, changes):
             files[path] = text_digest(changes[path]["text"])
 
 
-def _previous_receipt(receipt, identity):
+def _previous_receipt(receipt: dict[str, Any], identity: str) -> dict[str, Any]:
     """Require a well-formed per-resource baseline before checking local changes."""
     previous = receipt["resources"].get(identity, {})
     if not isinstance(previous, dict) or not isinstance(previous.get("files", {}), dict):

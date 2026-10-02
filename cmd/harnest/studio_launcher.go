@@ -110,13 +110,25 @@ func studioPackArguments(packs []string) ([]string, error) {
 
 // newStudioPackCommand keeps inherited CLI options separate from pack arguments.
 func (a *application) newStudioPackCommand() *cobra.Command {
-	command := &cobra.Command{Use: "pack", Short: "Validate or package company Studio Packs"}
+	command := &cobra.Command{Use: "pack", Short: "Validate, package, or export types for Studio Packs"}
 	validate := &cobra.Command{Use: "validate PACK...", Short: "Validate local Studio Packs", Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			return a.runStudioPack(command, append([]string{"validate"}, args...))
 		},
 	}
-	command.AddCommand(validate, a.newStudioPackPackageCommand())
+	command.AddCommand(validate, a.newStudioPackPackageCommand(), a.newStudioPackTypesCommand())
+	return command
+}
+
+// newStudioPackTypesCommand exports the declarations from the selected Studio runtime.
+func (a *application) newStudioPackTypesCommand() *cobra.Command {
+	var output string
+	command := &cobra.Command{Use: "types", Short: "Export the matching Studio UI TypeScript package", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			return a.runStudioPack(command, []string{"types", "--output", output})
+		},
+	}
+	command.Flags().StringVar(&output, "output", "dist", "Output directory")
 	return command
 }
 

@@ -52,7 +52,10 @@ function applyAppearance(saved,persist=false) {
   return {...currentAppearance};
 }
 
-/** Give every trusted pack the same host API and scope relative asset access. */
+/** Give every trusted pack the same host API and scope relative asset access.
+ * @param {import('../ui_sdk/index.js').Contribution} item
+ * @returns {import('../ui_sdk/index.js').StudioContext}
+ */
 function context(item) {
   const moduleURL=new URL(item.base+item.entry,location.origin);
   return Object.freeze({

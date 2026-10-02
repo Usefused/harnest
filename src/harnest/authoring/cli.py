@@ -94,7 +94,7 @@ class ProjectCLI:
         parser.set_defaults(handler=handler)
         return parser
 
-    def add_studio(self, *, command: Sequence[str], packs: Sequence[Path] = (),
+    def add_studio(self, *, command: list[str] | tuple[str, ...], packs: Sequence[Path] = (),
                    trusted_ui: Sequence[str] = (), init_args: Sequence[str] = ()) -> None:
         """Expose Studio and core commands through an explicit company executable argv."""
         from .studio import StudioLauncher

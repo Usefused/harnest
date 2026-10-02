@@ -1,0 +1,10 @@
+{
+  "name": "@harnest/studio-ui",
+  "version": "0.1.0",
+  "description": "TypeScript contracts for Harnest Studio UI packs, built by Fused",
+  "type": "module",
+  "types": "./index.d.ts",
+  "exports": {".": {"types": "./index.d.ts"}},
+  "files": ["index.d.ts"],
+  "license": "Apache-2.0"
+}

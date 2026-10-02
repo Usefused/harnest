@@ -100,6 +100,17 @@ Use concrete contracts for known capabilities;
 reserve `Any` for genuinely dynamic payloads and untyped external boundaries.
 Pyright is included in the `quality` extra.
 
+Studio's supported Python embedding and pack-authoring modules are listed in
+`STUDIO_API` in `scripts/check_python_typing.py`. Their signatures are checked
+alongside the core SDK, and `tests/typing/studio_api.py` and its negative fixture
+check direct consumer imports. Studio ships `py.typed`; internal HTTP routes and
+process services outside that module inventory are not a supported Python SDK.
+The browser contract is the type-only `@harnest/studio-ui` package under
+`studio/src/harnest_builder/ui_sdk`. Keep it aligned with the host and bundled
+pack commands. `make studio-types` checks strict TypeScript consumers, including
+invalid arguments and company declaration merging; `make quality` includes it.
+This gate requires Node.js and npm in addition to Python and Go.
+
 - `make test-unit` runs isolated domain behavior without infrastructure boundaries.
 - `make test-integration` runs compiler, framework, process, transport, and local
   datastore boundaries.

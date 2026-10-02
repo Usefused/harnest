@@ -50,6 +50,23 @@ func TestStudioDefaultsToCallerDirectory(t *testing.T) {
 	}
 }
 
+// TestStudioPackTypes forwards archive output as one argument through the selected runtime.
+func TestStudioPackTypes(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("HARNEST_STUDIO_TEST_RECORD", record)
+	python := writeExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HARNEST_STUDIO_TEST_RECORD\"\n")
+	output := filepath.Join(t.TempDir(), "types with spaces")
+	_, _, err := executeForTest(t, defaultSystem(), "--python", python, "studio", "pack", "types", "--output", output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "type export", invocation, []string{"-m\nharnest_builder\npack\ntypes\n--output\n" + output})
+	if strings.Contains(invocation, "--python") {
+		t.Fatal("inherited Python option leaked into type export arguments")
+	}
+}
+
 // TestStudioSafeModeBypassesMissingPacks keeps recovery independent of publisher directories.
 func TestStudioSafeModeBypassesMissingPacks(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "argv")

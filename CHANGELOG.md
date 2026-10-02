@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add versioned TypeScript definitions for Studio UI pack activation, commands,
+  state, slots, requests, and appearance, exported with `harnest studio pack types`.
+  Studio now ships Python typing metadata and checked embedding signatures.
+  Company CLI `add_studio(command=...)` typing accepts argv lists or tuples and
+  rejects bare strings, matching the supported runtime contract.
+
 - Move the task persistence implementation to private `_task_storage`; import provider contracts from `harnest.task`. `harnest upgrade` rewrites supported `harnest.task_storage` imports, and the old module path is removed.
 
 - Let dynamic `cron.create` schedules stop after an optional number of queued runs or consecutive failed occurrences, with the failure count reset by a successful occurrence. Expose limits and counts on cron jobs and in Playground schedule controls.

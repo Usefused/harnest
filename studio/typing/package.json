@@ -1,0 +1,10 @@
+{
+  "name": "harnest-studio-type-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "tsc --project tsconfig.json"},
+  "devDependencies": {
+    "@harnest/studio-ui": "file:../src/harnest_builder/ui_sdk",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,10 +1,13 @@
 """Studio host composition, isolated assets, recovery, and distribution integration."""
 
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import tarfile
 import unittest
 from zipfile import ZipFile
 
@@ -16,8 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "studio/src"))
 from harnest_builder.app import create_app
 from harnest_builder.pack_distribution import package_packs
+from harnest_builder.pack_manifest import STUDIO_VERSION
 from harnest_builder.packs import Packs
 from harnest_builder.ui_packs import DEFAULT_ROOT, UIPacks
+from harnest_builder.pack_cli import main as pack_main
 
 
 class StudioUIPackTests(unittest.TestCase):
@@ -46,6 +51,24 @@ class StudioUIPackTests(unittest.TestCase):
         value = yaml.safe_load(path.read_text())
         change(value)
         path.write_text(yaml.safe_dump(value))
+
+    def test_types_export_is_an_installable_versioned_npm_archive(self):
+        """Authors get the declarations shipped by their host, without npm or network access."""
+        with redirect_stdout(StringIO()) as output:
+            pack_main(["types", "--output", str(self.root / "types")])
+        target = Path(output.getvalue().strip())
+        with tarfile.open(target) as archive:
+            self.assertEqual(set(archive.getnames()), {"package/package.json", "package/index.d.ts"})
+            package = json.load(archive.extractfile("package/package.json"))
+            self.assertEqual(package["name"], "@harnest/studio-ui")
+            self.assertEqual(package["version"], STUDIO_VERSION)
+            declarations = archive.extractfile("package/index.d.ts").read().decode()
+            self.assertIn("export interface StudioContext", declarations)
+            self.assertIn("export type Activate", declarations)
+        original = target.read_bytes()
+        with self.assertRaises(SystemExit), redirect_stdout(StringIO()):
+            pack_main(["types", "--output", str(target.parent)])
+        self.assertEqual(target.read_bytes(), original)
 
     def test_default_ui_is_an_ordinary_pack_and_host_stays_independent(self):
         """The shipped shell is loaded from the shared pack contract and immutable routes."""

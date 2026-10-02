@@ -1,5 +1,8 @@
 """Project-scoped execution credentials, outside source trees and model context."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -13,12 +16,12 @@ from .files import replace
 class CredentialStore:
     """Keep runtime bindings in owner-only local files, addressed by resolved project identity."""
 
-    def __init__(self, directory=None):
+    def __init__(self, directory: Path | None = None) -> None:
         """Allow a private directory override for packaged launchers and isolated tests."""
         self.directory = Path(directory or os.getenv("HARNEST_BUILDER_CREDENTIALS_DIR") or Path.home() / ".harnest" / "studio-credentials").resolve()
         self.lock = RLock()
 
-    def _path(self, project):
+    def _path(self, project: Path) -> Path:
         """Reject linked storage paths before reading or replacing credential files."""
         if self.directory.is_relative_to(project.resolve()):
             raise OSError("Credential storage must be outside the agent project")
@@ -30,7 +33,7 @@ class CredentialStore:
             raise OSError("Credential file cannot be a symbolic link")
         return path
 
-    def read(self, project):
+    def read(self, project: Path) -> dict[str, str]:
         """Read only bounded environment bindings; callers must never serialize them to models."""
         with self.lock:
             path = self._path(project)
@@ -43,7 +46,7 @@ class CredentialStore:
                 raise OSError("Invalid credential bindings")
             return data
 
-    def save(self, project, bindings):
+    def save(self, project: Path, bindings: Mapping[str, str]) -> None:
         """Atomically merge approved bindings without exposing plaintext to project files."""
         with self.lock:
             data = {**self.read(project), **bindings}

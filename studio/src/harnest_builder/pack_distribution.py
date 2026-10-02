@@ -1,11 +1,15 @@
 """Build a company launcher wheel containing validated, immutable Studio Packs."""
 
+from __future__ import annotations
+
 import base64
+from collections.abc import Sequence
 import csv
 from io import StringIO
 import hashlib
 from pathlib import Path
 import re
+from typing import Any
 from zipfile import ZipFile, ZIP_DEFLATED
 
 import yaml
@@ -16,7 +20,7 @@ from .packs import Packs
 from .ui_packs import UIPacks
 
 
-def package_packs(roots, output: Path, distribution: str, version: str) -> Path:
+def package_packs(roots: Sequence[Path], output: Path, distribution: str, version: str) -> Path:
     """Produce a portable wheel with pack assets, one launcher, and exact Studio dependency."""
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", distribution):
         raise ValueError("Distribution names must be lowercase words separated by hyphens")
@@ -32,7 +36,7 @@ def package_packs(roots, output: Path, distribution: str, version: str) -> Path:
         _embed(contents, module, identity, pack)
     source = ('"""Launch the company Studio distribution with its bundled packs."""\n'
               'from pathlib import Path\nfrom harnest_builder.__main__ import main as studio\n\n'
-              'def main():\n    """Keep packaged resources independent of the caller working directory."""\n'
+              'def main() -> None:\n    """Keep packaged resources independent of the caller working directory."""\n'
               f'    root = Path(__file__).parent / "packs"\n    studio(embedded_packs=[root / name for name in {embedded!r}])\n')
     contents[f"{module}/launcher.py"] = source.encode()
     normalized = distribution.replace("-", "_")
@@ -49,7 +53,7 @@ def package_packs(roots, output: Path, distribution: str, version: str) -> Path:
     return target
 
 
-def _embed(contents, module, identity, pack):
+def _embed(contents: dict[str, bytes], module: str, identity: str, pack: dict[str, Any]) -> None:
     """Materialize snapshot contents rather than rereading files that may have changed after validation."""
     manifest = dict(pack["manifest"])
     resources = []
@@ -70,7 +74,7 @@ def _embed(contents, module, identity, pack):
     contents[f"{module}/packs/{identity}/studio-pack.yaml"] = yaml.safe_dump(manifest, sort_keys=False).encode()
 
 
-def _record(contents, metadata):
+def _record(contents: dict[str, bytes], metadata: str) -> bytes:
     """Write wheel RECORD hashes using the standard URL-safe SHA-256 representation."""
     output = StringIO()
     writer = csv.writer(output, lineterminator="\n")

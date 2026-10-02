@@ -291,6 +291,16 @@ class PublicImportTests(unittest.TestCase):
             errors,
         )
 
+    def test_studio_embedding_types_accept_supported_calls_and_reject_bad_arguments(self):
+        """Check company launchers and direct Studio imports as an IDE consumer sees them."""
+        valid = _check_consumer_types("studio_api.py")
+        self.assertEqual(valid["summary"]["errorCount"], 0, valid["generalDiagnostics"])
+        invalid = _check_consumer_types("invalid_studio_api.py")
+        errors = [item for item in invalid["generalDiagnostics"] if item["severity"] == "error"]
+        self.assertEqual([item["rule"] for item in errors], ["reportArgumentType"] * 11, errors)
+        # Each invalid call has its own diagnostic; extra errors cannot mask a missed case.
+        self.assertEqual([item["range"]["start"]["line"] for item in errors], list(range(9, 20)))
+
     def test_cron_storage_legacy_pickles_and_helper_keep_working(self):
         """Existing serialized records and helper imports survive the private move."""
 

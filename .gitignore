@@ -37,3 +37,4 @@ internal/agentlauncher/assets/agent_*
 
 # Studio's checked-in browser bundle is built from the locked frontend packages.
 /studio/frontend/node_modules/
+/studio/typing/node_modules/
