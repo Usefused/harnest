@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from ._media_annotations import (
+    CONSTRAINT_TYPES as _CONSTRAINT_TYPES,
+    field_annotation as _field_annotation,
+    sequence_annotations as _sequence_annotations,
+)
+
 import base64
 import contextvars
 import secrets
@@ -17,17 +23,12 @@ from .asset_policy import Stored
 from .assets import AssetMediaMetadata, DEFAULT_MAX_TOTAL_ASSET_BYTES
 from .content import (
     Audio,
-    AudioConstraints,
     ContentConstraints,
     Data,
-    DataConstraints,
     File,
-    FileConstraints,
     Image,
-    ImageConstraints,
     Text,
     Video,
-    VideoConstraints,
 )
 from .content_validation import ContentValidationError, validate_inline_content
 from .stored_media import stored_reference_value
@@ -40,14 +41,7 @@ _BINDINGS: contextvars.ContextVar[
     dict[tuple[int, "TransientMediaScope"], tuple[str, ...]] | None
 ] = contextvars.ContextVar("harnest_transient_media_bindings", default=None)
 _MEDIA_TYPES = (Image, Audio, Video, File)
-_CONSTRAINT_TYPES = (
-    ImageConstraints,
-    AudioConstraints,
-    VideoConstraints,
-    FileConstraints,
-    DataConstraints,
-)
-_METADATA_TYPES = (*_CONSTRAINT_TYPES, Stored)
+
 
 
 class TransientMediaError(ValueError):
@@ -553,27 +547,6 @@ def _annotation_metadata(
     if len(policies) > 1:
         raise TransientMediaError("media field has multiple storage policies")
     return arguments[0], constraints, policies[0] if policies else None
-
-
-def _field_annotation(annotation: Any, metadata: list[Any]) -> Any:
-    """Restore metadata that Pydantic separates from field annotations."""
-
-    authored = tuple(item for item in metadata if isinstance(item, _METADATA_TYPES))
-    return annotation if not authored else Annotated[(annotation, *authored)]
-
-
-def _sequence_annotations(
-    origin: Any, arguments: tuple[Any, ...], size: int
-) -> tuple[Any, ...]:
-    """Map fixed, variadic, and homogeneous sequence annotations to values."""
-
-    if origin is tuple and len(arguments) == size:
-        return arguments
-    if origin is tuple and len(arguments) == 2 and arguments[1] is Ellipsis:
-        return (arguments[0],) * size
-    if origin in (list, tuple) and arguments:
-        return (arguments[0],) * size
-    return (Any,) * size
 
 
 __all__ = [

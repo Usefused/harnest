@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import base64
 import hashlib
 import re
@@ -17,7 +19,7 @@ _REFERENCE = re.compile(r"\$\{(services|agents)\.([a-z][a-z0-9-]*)\.(host|ports\
 class Plan:
     """Keep credentials out of previews; resolve them only in ephemeral apply payloads."""
 
-    def __init__(self, deployment: Deployment, environment: str, owner: str):
+    def __init__(self, deployment: Deployment, environment: str, owner: str) -> None:
         """Derive bounded resource names scoped to the project and selected environment."""
 
         self.deployment = deployment
@@ -54,7 +56,7 @@ class Plan:
             return {}
         return self.revision_metadata()
 
-    def resolve(self, value, secrets: Mapping[str, str] | None) -> str:
+    def resolve(self, value: str | SecretReference, secrets: Mapping[str, str] | None) -> str:
         """Resolve secret references and service DNS placeholders without evaluating expressions."""
 
         if isinstance(value, SecretReference):
@@ -226,7 +228,7 @@ class Plan:
             pod["dnsConfig"] = {"nameservers": list(node.network.dns)}
 
 
-def _escape_compose(value):
+def _escape_compose(value: Any) -> Any:
     """Escape only string values, preserving object keys used as stable identities."""
 
     if isinstance(value, str):

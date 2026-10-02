@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google.adk.models.llm_response import LlmResponse
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -185,7 +191,7 @@ def _register_proxy_model() -> type[Any]:
 
             return self._delegate.capabilities
 
-        async def generate_content_async(self, llm_request: Any, stream: bool = False):
+        async def generate_content_async(self, llm_request: Any, stream: bool = False) -> AsyncIterator[LlmResponse]:
             """Forward requests and expose only final, non-thought output to judges."""
 
             original, _, judge = self._scope.require(self._alias)

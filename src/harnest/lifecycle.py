@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Callable, Mapping, MutableMapping
+from typing import Any, Callable, Mapping, MutableMapping, TypeVar, overload
 
 from .lifecycle_transition import Finish, Next, TransitionContext
 from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
+
+
+_Hook = TypeVar("_Hook", bound=Callable[..., Any])
 
 
 _PHASES = frozenset(
@@ -194,12 +197,22 @@ class ModelLifecycleContext(TransitionContext):
 
 
 class _PhaseDecorator:
+    """Preserve authored hook signatures while attaching lifecycle metadata."""
+
     def __init__(self, phase: str) -> None:
+        """Bind a decorator to one validated lifecycle phase."""
         self._phase = phase
 
+    @overload
+    def __call__(self, function: _Hook, *, order: int = 0) -> _Hook: ...
+
+    @overload
+    def __call__(self, function: None = None, *, order: int = 0) -> Callable[[_Hook], _Hook]: ...
+
     def __call__(
-        self, function: Callable[..., Any] | None = None, *, order: int = 0
-    ) -> Any:
+        self, function: _Hook | None = None, *, order: int = 0
+    ) -> _Hook | Callable[[_Hook], _Hook]:
+        """Register the hook without erasing its arguments or return type."""
         decorator = _registration_decorator(self._phase, order=order)
         return decorator if function is None else decorator(function)
 
@@ -213,13 +226,13 @@ class _StorageDecorators:
     cron = _PhaseDecorator("cron_store")
     memory = _PhaseDecorator("memory_store")
 
-    def assets(self, name: str, *, order: int = 0) -> Any:
+    def assets(self, name: str, *, order: int = 0) -> Callable[[_Hook], _Hook]:
         """Declare one named asset authority assembled into the registry."""
 
         _validate_storage_name(name, kind="asset store")
         return _registration_decorator("asset_store", order=order, name=name)
 
-    def custom(self, name: str, *, order: int = 0) -> Any:
+    def custom(self, name: str, *, order: int = 0) -> Callable[[_Hook], _Hook]:
         """Declare lifecycle-owned application storage under an explicit name."""
 
         _validate_storage_name(name, kind="custom storage")
@@ -277,7 +290,7 @@ class _MCPDecorators:
 class _SkillDecorators:
     """Register named runtime catalogs independently of filesystem skills."""
 
-    def source(self, name: str, *, order: int = 0) -> Any:
+    def source(self, name: str, *, order: int = 0) -> Callable[[_Hook], _Hook]:
         """Declare one named provider queried only during managed execution."""
 
         _validate_storage_name(name, kind="skill source", identifier="source")
@@ -305,9 +318,17 @@ resource = _PhaseDecorator("resource")
 authenticate = _PhaseDecorator("authenticate")
 
 
+@overload
+def adk_plugin(function: _Hook, *, order: int = 0) -> _Hook: ...
+
+
+@overload
+def adk_plugin(function: None = None, *, order: int = 0) -> Callable[[_Hook], _Hook]: ...
+
+
 def adk_plugin(
-    function: Callable[..., Any] | None = None, *, order: int = 0
-) -> Any:
+    function: _Hook | None = None, *, order: int = 0
+) -> _Hook | Callable[[_Hook], _Hook]:
     """Register a native ADK plugin factory at the lifecycle boundary."""
 
     decorator = _registration_decorator(
@@ -316,9 +337,17 @@ def adk_plugin(
     return decorator if function is None else decorator(function)
 
 
+@overload
+def langgraph_middleware(function: _Hook, *, order: int = 0) -> _Hook: ...
+
+
+@overload
+def langgraph_middleware(function: None = None, *, order: int = 0) -> Callable[[_Hook], _Hook]: ...
+
+
 def langgraph_middleware(
-    function: Callable[..., Any] | None = None, *, order: int = 0
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    function: _Hook | None = None, *, order: int = 0
+) -> _Hook | Callable[[_Hook], _Hook]:
     """Register a native LangGraph middleware factory at the lifecycle boundary."""
 
     decorator = _registration_decorator(
@@ -333,13 +362,15 @@ def _registration_decorator(
     order: int,
     framework: str | None = None,
     name: str | None = None,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+) -> Callable[[_Hook], _Hook]:
+    """Attach validated discovery metadata and preserve the original callable."""
     if phase not in _PHASES | _FACTORY_PHASES:
         raise ValueError(f"unsupported lifecycle phase {phase!r}")
     if not isinstance(order, int) or isinstance(order, bool):
         raise TypeError("lifecycle order must be an integer")
 
-    def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+    def decorate(function: _Hook) -> _Hook:
+        """Retain callable identity so signature discovery agrees with execution."""
         if not callable(function):
             raise TypeError("lifecycle decorators require a callable")
         if getattr(function, "__harnest_tool__", False):

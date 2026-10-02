@@ -1,21 +1,30 @@
 """Credential-free access instructions derived from provisioned agent ports."""
 
+from __future__ import annotations
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .provisioner_config import Agent
+    from .provisioner_plan import Plan
+
 import shlex
 
 
-def agent_access(plan) -> list[dict]:
+def agent_access(plan: Plan) -> list[dict]:
     """Describe configured access without mistaking internal service DNS for a public endpoint."""
     return [_agent(plan, name, node) for name, node in plan.deployment.agents.items()]
 
 
-def _agent(plan, name, node) -> dict:
+def _agent(plan: Plan, name: str, node: Agent) -> dict:
     """Keep agents without published ports explicit instead of fabricating reachable links."""
     ports = [_port(plan, name, label, port, node.publish.get(label)) for label, port in node.ports.items()]
     return {"name": name, "ports": ports,
             "note": "No network ports configured. Add a port to expose this agent." if not ports else ""}
 
 
-def _port(plan, name, label, container_port, host_port) -> dict:
+def _port(plan: Plan, name: str, label: str, container_port: int, host_port: int | None) -> dict:
     """Expose loopback bindings locally and copyable port-forward instructions for Kubernetes."""
     protocol = label if label in {"http", "https"} else None
     result = {"name": label, "container_port": container_port, "protocol": protocol, "url": None,

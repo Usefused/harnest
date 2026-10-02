@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Self, Any
+from yaml.nodes import MappingNode
+
 from copy import deepcopy
 from graphlib import TopologicalSorter, CycleError
 from pathlib import Path
@@ -68,7 +71,7 @@ class Network(StrictModel):
     dns: list[str] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
-    def check_addresses(self):
+    def check_addresses(self) -> Self:
         """Accept IP addresses and Compose's explicit host-gateway alias only."""
         for value in self.hosts.values():
             if value != "host-gateway":
@@ -93,7 +96,7 @@ class Container(StrictModel):
     network: Network = Field(default_factory=Network)
 
     @model_validator(mode="after")
-    def check_ports(self):
+    def check_ports(self) -> Self:
         """A published port must refer to a declared port, never an arbitrary host binding."""
 
         if self.publish.keys() - self.ports.keys():
@@ -109,7 +112,7 @@ class Agent(Container):
     replicas: int = Field(default=1, ge=1, le=100)
 
     @model_validator(mode="after")
-    def check_replicas(self):
+    def check_replicas(self) -> Self:
         """Single-writer volumes and fixed host ports cannot safely share replicas."""
 
         if self.replicas > 1 and (self.persistence or self.publish):
@@ -135,7 +138,7 @@ class ConnectedService(StrictModel):
     variable: EnvironmentName | None = None
 
     @model_validator(mode="after")
-    def check_connection(self):
+    def check_connection(self) -> Self:
         """Support a single URL binding or the template-compatible provides mapping."""
 
         if (self.url is None) != (self.variable is None):
@@ -168,7 +171,7 @@ class Deployment(StrictModel):
     agents: dict[Name, Agent] = Field(default_factory=dict, max_length=32)
 
     @model_validator(mode="after")
-    def check_graph(self):
+    def check_graph(self) -> Self:
         """Reject target ambiguity, collisions, unknown dependencies, and cycles."""
 
         if self.backend == "kubernetes" and not (self.context and self.namespace):
@@ -207,7 +210,7 @@ class Deployment(StrictModel):
 class ManifestLoader(yaml.SafeLoader):
     """Reject duplicate YAML keys instead of silently selecting an unintended deployment."""
 
-    def construct_mapping(self, node, deep=False):
+    def construct_mapping(self, node: MappingNode, deep: bool=False) -> dict[Any, Any]:
         """Validate uniqueness before the safe loader constructs nested configuration."""
 
         keys = [self.construct_object(key, deep=deep) for key, _ in node.value]

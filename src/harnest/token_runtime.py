@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 from copy import deepcopy
 from dataclasses import dataclass
 import inspect
@@ -38,7 +40,7 @@ class PreparedCall:
         )
 
 
-def _steps(request: TokenRequest, policy: TokenPolicy):
+def _steps(request: TokenRequest, policy: TokenPolicy) -> Generator[Any, Any, tuple[TokenRequest, int, int]]:
     """Share strategy ordering across sync and async framework adapters."""
     counter = policy.count_tokens or estimate_tokens
     before = yield counter(deepcopy(request))

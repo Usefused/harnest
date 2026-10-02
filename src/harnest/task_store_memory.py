@@ -69,7 +69,7 @@ class MemoryTaskStore:
                 return None
             return _copy_record(record)
 
-    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Return a bounded owner-scoped metadata page without copying private payloads."""
         from .task_inspection import task_metadata, task_page, validate_page
 
@@ -205,7 +205,7 @@ class MemoryTaskStore:
             )
             return tuple(_copy_record(item) for item in records[:limit])
 
-    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Project an owner-scoped schedule page without copying task arguments."""
         from .task_inspection import CRON_FIELDS, cron_page, validate_page
 

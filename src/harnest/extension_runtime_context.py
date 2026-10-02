@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 import re
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Iterator, Literal, Mapping, Sequence
+from typing import Any, AsyncIterator, Iterator, Literal, Mapping, Sequence, TypeVar, overload
 
 from . import context
 from .context import ContextResourceError
@@ -87,8 +87,17 @@ class ExtensionInvocationBinding:
 _EMPTY_EXTENSION_BINDINGS: Mapping[str, ExtensionInvocationBinding] = MappingProxyType({})
 
 
+_ResourceT = TypeVar("_ResourceT")
+
+
 class ExtensionContextAccess:
     """Resolve one extension context without making installed names enumerable."""
+
+    @overload
+    def __call__(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def __call__(self, name: str, expected_type: None = None) -> Any: ...
 
     def __call__(
         self, name: str, expected_type: type[Any] | None = None

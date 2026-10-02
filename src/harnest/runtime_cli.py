@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, TextIO
 
-from .context_agent import AgentPendingResponse, AgentResponse, LocalAgentRuntime
+from ._context_agent import AgentPendingResponse, AgentResponse, LocalAgentRuntime
 
 
 async def run_local_cli(

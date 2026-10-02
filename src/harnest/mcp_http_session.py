@@ -1,5 +1,9 @@
 """A protocol-aware HTTP session projected into framework-compatible result models."""
 
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
@@ -10,7 +14,7 @@ from .mcp_resources import MCPResourceError
 
 
 @asynccontextmanager
-async def modern_session(configured: Any, framework: str):
+async def modern_session(configured: Any, framework: str) -> AsyncIterator[tuple[HTTPSession, SimpleNamespace] | None]:
     """Probe only HTTP; fall back solely on explicit unsupported-method/version errors."""
 
     if configured.transport != "streamable-http":

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from ._exception_notes import capture_cleanup_failure as _cleanup_failure
 
-from ._exception_notes import add_exception_note
+from ._exception_notes import merge_cleanup_failure as _merge_failure
+
+import asyncio
+from typing import Any, AsyncIterator, Mapping, Sequence
+
 from .extension_runtime_manager import ExtensionRuntimeManager
 from .runtime_contract import (
     AgentInfo,
@@ -162,7 +165,7 @@ class ExtensionHostRuntimeDriver(RuntimeDriver):
             self._state = "closed"
         failure = await _cleanup_failure(self._driver.close)
         cleanup = await _cleanup_failure(self._manager.close)
-        failure = _merge_failure(failure, cleanup)
+        failure = _merge_failure(failure, cleanup, label="extension runtime")
         if failure is not None:
             raise failure
 
@@ -173,34 +176,6 @@ async def _start_driver(driver: RuntimeDriver) -> None:
     starter = getattr(driver, "start", None)
     if callable(starter):
         await starter()
-
-
-async def _cleanup_failure(
-    callback: Callable[[], Awaitable[Any]],
-) -> BaseException | None:
-    """Detach cleanup sequencing from the first error's ownership."""
-
-    try:
-        await callback()
-    except BaseException as error:
-        return error
-    return None
-
-
-def _merge_failure(
-    primary: BaseException | None, cleanup: BaseException | None
-) -> BaseException | None:
-    """Preserve backend priority while recording only a cleanup error type."""
-
-    if cleanup is None:
-        return primary
-    if primary is None:
-        return cleanup
-    add_exception_note(
-        primary,
-        f"extension runtime cleanup also failed with {type(cleanup).__name__}"
-    )
-    return primary
 
 
 __all__ = ["ExtensionHostRuntimeDriver"]

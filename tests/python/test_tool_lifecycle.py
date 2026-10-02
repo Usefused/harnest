@@ -5,7 +5,7 @@ import unittest
 
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.lifecycle import LifecycleListener
-from harnest.tool_lifecycle import tool_lifecycle_scope, wrap_lifecycle_tool
+from harnest.tool_lifecycle import ToolLifecycleError, tool_lifecycle_scope, wrap_lifecycle_tool
 
 
 def _listener(phase, callback, *, order=0, name="hook"):
@@ -88,11 +88,12 @@ class ToolLifecycleTests(unittest.IsolatedAsyncioTestCase):
         wrapped = wrap_lifecycle_tool(implementation)
         active = _context()
         try:
-            with activate_context(active), tool_lifecycle_scope(
-                (_listener("before_tool", lambda _context, _request: None),)
-            ):
-                with self.assertRaisesRegex(TypeError, "context.next"):
-                    await wrapped()
+            for phase in ("before_tool", "after_tool"):
+                with self.subTest(phase=phase), activate_context(active), tool_lifecycle_scope(
+                    (_listener(phase, lambda _context, _request: None),)
+                ):
+                    with self.assertRaisesRegex(ToolLifecycleError, "tool listener .* must return context.next"):
+                        await wrapped()
         finally:
             revoke_context(active)
 

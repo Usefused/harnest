@@ -7,14 +7,43 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, TypeVar, overload
 
 from .decision_output import DecisionOutput
 from .ui_output import UIOutput
 
 if TYPE_CHECKING:
-    from .context_memory import MemoryContext
+    # Explicit aliases expose lazy public contracts without activating context or
+    # introducing the import cycles these implementations have with this module.
+    from ._context_agent import (
+        AgentContinuationUnsupportedError as AgentContinuationUnsupportedError,
+        AgentInvocationTimeout as AgentInvocationTimeout,
+        AgentInvocationUnavailableError as AgentInvocationUnavailableError,
+        AgentPendingResponse as AgentPendingResponse,
+        AgentResponse as AgentResponse,
+        AgentSession as AgentSession,
+        AgentSessionNotFoundError as AgentSessionNotFoundError,
+        AgentStreamItem as AgentStreamItem,
+        LocalAgentRuntime as LocalAgentRuntime,
+        _ContextAgentAccess,
+    )
+    from .context_assets import ScopedAssets as ScopedAssets
+    from .context_memory import MemoryContext as MemoryContext
+    from .context_sandboxes import ScopedSandboxes
+    from .context_session import (
+        SessionContext as SessionContext,
+        SessionDataError as SessionDataError,
+        _SessionAccess,
+    )
+    from .context_storage import StorageContext as StorageContext
+    from .credentials import CredentialContext
     from .decision_runtime import DecisionContext
+    from .extension_runtime_context import ExtensionContextAccess
+    from .mcp_context import MCPContext
+    from .skills import SkillAccess
+
+_ResourceT = TypeVar("_ResourceT")
+_ProviderT = TypeVar("_ProviderT", bound=Callable[..., Any])
 
 
 _CONTEXT_ATTRIBUTE = "__harnest_context_registration__"
@@ -87,6 +116,12 @@ class AgentContext:
     _decision_output: DecisionOutput = field(default_factory=DecisionOutput, repr=False, compare=False)
     _skill_selection_cache: dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
 
+    @overload
+    def resource(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def resource(self, name: str, expected_type: None = None) -> Any: ...
+
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
         """Return one named capability without exposing the whole registry."""
 
@@ -138,14 +173,15 @@ class _ContextAccess:
 
     def provider(
         self, name: str, *, order: int = 0
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    ) -> Callable[[_ProviderT], _ProviderT]:
         """Declare one invocation-scoped resource provider."""
 
         _validate_name(name)
         if not isinstance(order, int) or isinstance(order, bool):
             raise TypeError("context provider order must be an integer")
 
-        def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+        def decorate(function: _ProviderT) -> _ProviderT:
+            """Register the original provider while preserving its typed signature."""
             if not callable(function):
                 raise TypeError("@context.provider can only decorate callables")
             if getattr(function, "__harnest_tool__", False):
@@ -173,13 +209,19 @@ class _ContextAccess:
         active._require_active()
         return active
 
+    @overload
+    def resource(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def resource(self, name: str, expected_type: None = None) -> Any: ...
+
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
         """Resolve a resource explicitly published by a context provider."""
 
         return self.current().resource(name, expected_type)
 
     @property
-    def credentials(self) -> Any:
+    def credentials(self) -> CredentialContext:
         """Return the private credential resolver for the active invocation."""
 
         # Import lazily because credential resolution itself depends on this
@@ -190,7 +232,7 @@ class _ContextAccess:
         return credentials
 
     @property
-    def assets(self) -> Any:
+    def assets(self) -> ScopedAssets:
         """Return storage access scoped to the active user and session."""
 
         active = self.current()
@@ -203,7 +245,7 @@ class _ContextAccess:
         )
 
     @property
-    def session(self) -> Any:
+    def session(self) -> _SessionAccess:
         """Return application data for the current framework-owned session."""
 
         self.current()
@@ -212,7 +254,7 @@ class _ContextAccess:
         return session
 
     @property
-    def storage(self) -> Any:
+    def storage(self) -> StorageContext:
         """Return only explicitly named custom storage capabilities."""
 
         self.current()
@@ -234,7 +276,7 @@ class _ContextAccess:
         return DecisionContext(self.current())
 
     @property
-    def mcp(self) -> Any:
+    def mcp(self) -> MCPContext:
         """Return governed MCP access when the runtime installed a dispatcher."""
 
         self.current()
@@ -243,7 +285,7 @@ class _ContextAccess:
         return mcp
 
     @property
-    def extensions(self) -> Any:
+    def extensions(self) -> ExtensionContextAccess:
         """Resolve typed Harnest Extension context within a managed invocation."""
 
         self.current()
@@ -252,25 +294,25 @@ class _ContextAccess:
         return extensions
 
     @property
-    def skills(self) -> Any:
+    def skills(self) -> SkillAccess:
         """Return progressive skills scoped to the currently executing agent."""
 
         active = self.current()
         return active._skill_registry.access(active)
 
     @property
-    def sandboxes(self) -> Any:
+    def sandboxes(self) -> ScopedSandboxes:
         """Return only sandbox grants assigned to the currently executing agent."""
         active = self.current()
         return active._sandbox_registry.access(active)
 
     @property
-    def agent(self) -> Any:
+    def agent(self) -> _ContextAgentAccess:
         """Return task-scoped access to the compiled root agent runtime."""
 
         # A separate binding distinguishes durable task authority from ordinary
         # invocation context, where recursive root calls are not implicitly safe.
-        from .context_agent import agent
+        from ._context_agent import agent
 
         return agent
 
@@ -485,7 +527,7 @@ _access = _ContextAccess()
 
 def provider(
     name: str, *, order: int = 0
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+) -> Callable[[_ProviderT], _ProviderT]:
     """Declare one invocation-scoped resource on the public context namespace."""
 
     return _access.provider(name, order=order)
@@ -495,6 +537,13 @@ def current() -> AgentContext:
     """Return the active managed invocation context."""
 
     return _access.current()
+
+
+@overload
+def resource(name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+@overload
+def resource(name: str, expected_type: None = None) -> Any: ...
 
 
 def resource(name: str, expected_type: type[Any] | None = None) -> Any:
@@ -513,7 +562,7 @@ _PUBLIC_CONTRACTS = {
         "AgentContinuationUnsupportedError", "AgentInvocationTimeout",
         "AgentInvocationUnavailableError", "AgentPendingResponse", "AgentResponse",
         "AgentSession", "AgentSessionNotFoundError", "AgentStreamItem", "LocalAgentRuntime",
-    ), "context_agent"),
+    ), "_context_agent"),
 }
 _ACCESS_MEMBERS = frozenset(
     {
@@ -539,6 +588,30 @@ _ACCESS_MEMBERS = frozenset(
         "user_id",
     }
 )
+
+
+if TYPE_CHECKING:
+    # Derive static declarations from typed accessors; never cache live context.
+    agent = _access.agent
+    agent_name = _access.agent_name
+    assets = _access.assets
+    credentials = _access.credentials
+    decisions = _access.decisions
+    depth = _access.depth
+    extensions = _access.extensions
+    framework = _access.framework
+    invocation_id = _access.invocation_id
+    is_root = _access.is_root
+    mcp = _access.mcp
+    memory = _access.memory
+    metadata = _access.metadata
+    parent_agent_name = _access.parent_agent_name
+    sandboxes = _access.sandboxes
+    session = _access.session
+    session_id = _access.session_id
+    skills = _access.skills
+    storage = _access.storage
+    user_id = _access.user_id
 
 
 def __getattr__(name: str) -> Any:

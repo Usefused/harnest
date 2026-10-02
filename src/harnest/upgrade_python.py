@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from packaging.specifiers import Specifier
+
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -83,7 +85,7 @@ def _python_requirement(value: str) -> str:
     return str(result)
 
 
-def _updated_specifier(item) -> str:
+def _updated_specifier(item: Specifier) -> str:
     """Keep authored upper bounds and exclusions except the retired minor interval."""
     special = {"<3.11": "<3.12", "<3.11.0": "<3.12", "==3.10.*": "==3.11.*",
                "~=3.10": "~=3.11", "~=3.10.0": "~=3.11.0"}

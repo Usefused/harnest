@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from contextlib import contextmanager
 import json
 import os
@@ -35,7 +37,7 @@ def run_process(argv: list[str], payload: str = "") -> str:
 class Provisioner:
     """Journal resource ownership before applying so interrupted operations can be retried or removed."""
 
-    def __init__(self, root: Path, environment: str = "local", *, runner: Callable = run_process):
+    def __init__(self, root: Path, environment: str = "local", *, runner: Callable = run_process) -> None:
         """Bind operations to a trusted project and a bounded environment identifier."""
 
         import re
@@ -64,7 +66,7 @@ class Provisioner:
         return Plan(load_manifest(self.root, self.environment), self.environment, str(self.root))
 
     @contextmanager
-    def _locked(self):
+    def _locked(self) -> Iterator[None]:
         """Serialize CLI and Studio operations across processes and reject linked state paths."""
 
         require_deployment()
@@ -217,7 +219,7 @@ def _next_state(plan: Plan, previous: dict) -> dict:
             "active_revision": previous.get("active_revision")}
 
 
-def _recorded_backend(state: dict, runner: Callable):
+def _recorded_backend(state: dict, runner: Callable) -> Backend:
     """Recreate only target identity from the journal; source edits cannot redirect cleanup."""
 
     summary = state["summary"]
@@ -230,7 +232,7 @@ def _recorded_backend(state: dict, runner: Callable):
 class Backend:
     """Translate a validated plan into bounded backend operations with ownership checks."""
 
-    def __init__(self, plan: Plan, runner: Callable):
+    def __init__(self, plan: Plan, runner: Callable) -> None:
         """Inject process I/O so lifecycle tests exercise real serialization without a cluster."""
 
         self.plan = plan

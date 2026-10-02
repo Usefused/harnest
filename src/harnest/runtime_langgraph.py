@@ -7,6 +7,8 @@ the public Harnest session state authoritative.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import asyncio
 import base64
 import binascii
@@ -35,10 +37,8 @@ from .backends.langgraph import (
 from .checkpoint import CheckpointStore, HarnestStore, RunScope
 from .checkpoint_langgraph import managed_run_config
 from .client_tool import current_transient_media
-from .content import AssetRef, Audio, Data, File, Image, Text, Video
 from .context_session import current_session_lease, invocation_session_context
 from .durable import NativeDurableSuspended, NativeResumeInput
-from .graph import _model_input_text
 from .model_lifecycle import close_litellm_lifecycles
 from .mcp import (
     _invoke_governed_mcp_call,
@@ -66,6 +66,7 @@ from .runtime_contract import (
     SessionRecord,
 )
 from .runtime_session import durable_completion_deferred
+from .runtime_langgraph_content import portable_input_content as _portable_input_content
 from .output import (
     AgentMetadata,
     AgentMetadataMode,
@@ -78,10 +79,8 @@ from .structured import validate_runtime_output
 from .transient_media import (
     TransientMediaAccess,
     TransientMediaLease,
-    is_transient_media_placeholder,
     matching_transient_leases,
     sanitize_transient_media,
-    transient_media_lease_id,
     transient_media_placeholders,
 )
 from .stored_media import (
@@ -103,8 +102,6 @@ _MODEL_ASSET_SCOPE: contextvars.ContextVar[AssetScope | None] = (
 _MCP_NATIVE_CALL_SCOPE: contextvars.ContextVar[
     tuple[object, Any, Any, Mapping[str, Any]] | None
 ] = contextvars.ContextVar("harnest_langgraph_mcp_native_call", default=None)
-_CONTENT_PART_TYPES = (Text, Image, Audio, Video, File, Data, AssetRef)
-_NO_ORDINARY_CONTENT = object()
 
 
 @dataclass(slots=True)
@@ -583,7 +580,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         self._mcp_context_clients[public_name] = governed
 
     @contextmanager
-    def _mcp_invocation_scope(self):
+    def _mcp_invocation_scope(self) -> Iterator[None]:
         """Bind MCP authority only while an outer managed context is active."""
 
         if not self._mcp_context_clients or not _has_agent_context():
@@ -2152,115 +2149,6 @@ def _managed_authored_input(
     if schema is None or isinstance(value, schema):
         return value
     return schema.model_validate(value)
-
-
-def _portable_input_content(value: Any) -> Any:
-    """Preserve authored content order while retaining legacy text inputs."""
-
-    if isinstance(value, _CONTENT_PART_TYPES):
-        return [_portable_content_block(value)]
-    if _portable_content_sequence(value):
-        return [_portable_content_block(item) for item in value]
-    if isinstance(value, BaseModel):
-        blocks = _model_content_blocks(value)
-        return blocks or _model_input_text(value)
-    if isinstance(value, Mapping):
-        blocks = _mapping_content_blocks(value)
-        return blocks or _model_input_text(value)
-    return _model_input_text(value)
-
-
-def _portable_content_sequence(value: Any) -> bool:
-    """Recognize a non-empty authored content sequence."""
-
-    return isinstance(value, (list, tuple)) and bool(value) and all(
-        isinstance(item, _CONTENT_PART_TYPES) for item in value
-    )
-
-
-def _mapping_content_blocks(value: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Project one structured mapping into ordered model input blocks."""
-
-    ordinary, blocks = _extract_content(value)
-    if not blocks:
-        return []
-    if ordinary is not _NO_ORDINARY_CONTENT:
-        blocks.insert(
-            0, {"type": "text", "text": _model_input_text(ordinary)}
-        )
-    return blocks
-
-
-def _model_content_blocks(value: BaseModel) -> list[dict[str, Any]]:
-    """Project content fields and serialize remaining structured input as text."""
-
-    ordinary, blocks = _extract_content(value)
-    if not blocks:
-        return []
-    if ordinary is not _NO_ORDINARY_CONTENT:
-        blocks.insert(
-            0,
-            {"type": "text", "text": _model_input_text(ordinary)},
-        )
-    return blocks
-
-
-def _extract_content(value: Any) -> tuple[Any, list[dict[str, Any]]]:
-    """Separate nested authored content from its remaining JSON structure."""
-
-    if isinstance(value, _CONTENT_PART_TYPES):
-        return _NO_ORDINARY_CONTENT, [_portable_content_block(value)]
-    if (
-        transient_media_lease_id(value) is not None
-        or is_transient_media_placeholder(value)
-    ):
-        return _NO_ORDINARY_CONTENT, [dict(value)]
-    if stored_media_reference(value) is not None:
-        return _NO_ORDINARY_CONTENT, [dict(value)]
-    if isinstance(value, BaseModel):
-        fields = (
-            (name, getattr(value, name)) for name in type(value).model_fields
-        )
-        return _extract_content_mapping(fields)
-    if isinstance(value, Mapping):
-        return _extract_content_mapping(value.items())
-    if isinstance(value, (list, tuple)) and value:
-        return _extract_content_sequence(value)
-    return json_value(value), []
-
-
-def _extract_content_mapping(values: Any) -> tuple[Any, list[dict[str, Any]]]:
-    """Walk mapping fields in author order and retain their names in text data."""
-
-    ordinary: dict[str, Any] = {}
-    blocks: list[dict[str, Any]] = []
-    for name, value in values:
-        projected, nested = _extract_content(value)
-        if projected is not _NO_ORDINARY_CONTENT:
-            ordinary[str(name)] = projected
-        blocks.extend(nested)
-    return (ordinary if ordinary else _NO_ORDINARY_CONTENT), blocks
-
-
-def _extract_content_sequence(
-    values: Sequence[Any],
-) -> tuple[Any, list[dict[str, Any]]]:
-    """Walk nested sequences without changing the order of content parts."""
-
-    ordinary: list[Any] = []
-    blocks: list[dict[str, Any]] = []
-    for value in values:
-        projected, nested = _extract_content(value)
-        if projected is not _NO_ORDINARY_CONTENT:
-            ordinary.append(projected)
-        blocks.extend(nested)
-    return (ordinary if ordinary else _NO_ORDINARY_CONTENT), blocks
-
-
-def _portable_content_block(part: Any) -> dict[str, Any]:
-    """Serialize one authored part without introducing provider representations."""
-
-    return part.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _graph_output(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .lifecycle_transition import _after_transition
+
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -147,7 +149,10 @@ class MCPLifecyclePipeline:
         current = result
         for listener in self._phase("after_mcp"):
             transition = await _resolve(listener.callback(context, current))
-            current, finished = _after_transition(listener, current, transition)
+            current, finished = _after_transition(
+                current, transition, error_type=MCPLifecycleError,
+                listener=f"MCP listener {listener.identity}",
+            )
             if finished:
                 break
         return current
@@ -577,18 +582,6 @@ def _before_transition(
     if not isinstance(value.value, MCPToolCallRequest):
         raise _transition_error(listener, "context.next(MCPToolCallRequest)")
     return value.value, None
-
-
-def _after_transition(
-    listener: LifecycleListener, current: Any, value: Any
-) -> tuple[Any, bool]:
-    """Apply an explicit result replacement or stop remaining after hooks."""
-
-    if isinstance(value, Finish):
-        return value.result, True
-    if not isinstance(value, Next):
-        raise _transition_error(listener, "context.next(...) or context.finish(...)")
-    return (current if value.value is UNCHANGED else value.value), False
 
 
 def _error_transition(

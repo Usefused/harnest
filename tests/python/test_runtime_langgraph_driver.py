@@ -2153,6 +2153,28 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(store.closed)
 
 
+class LangGraphContentTests(unittest.TestCase):
+    def test_model_and_mapping_preserve_nested_content_order_and_plain_fields(self):
+        """Both structured input forms share projection without losing text or ordering."""
+        from harnest.runtime_langgraph_content import portable_input_content
+
+        class Request(BaseModel):
+            prompt: str
+            parts: list[Text]
+
+        values = [Text(text="first"), Text(text="second")]
+        expected = [
+            {"type": "text", "text": '{"prompt": "inspect"}'},
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        for value in (Request(prompt="inspect", parts=values), {"prompt": "inspect", "parts": values}):
+            with self.subTest(input_type=type(value).__name__):
+                self.assertEqual(portable_input_content(value), expected)
+        self.assertEqual(portable_input_content("legacy text"), "legacy text")
+        self.assertEqual(portable_input_content({"counter": 2}), '{"counter": 2}')
+
+
 class LangGraphStateDeltaTests(unittest.TestCase):
     """Unit-test the shallow-diff helper independent of a real graph run."""
 

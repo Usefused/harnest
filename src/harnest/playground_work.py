@@ -1,5 +1,15 @@
 """Owner-scoped development administration over the serving task runtime."""
 
+from __future__ import annotations
+
+from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._cron_storage import CronRecord
+    from .runtime_contract import RuntimeDriver
+    from .task_storage import TaskRecord
+
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Literal
@@ -38,7 +48,7 @@ class CronStatus(BaseModel):
     status: Literal["active", "paused", "cancelled"]
 
 
-def task_manager(driver):
+def task_manager(driver: RuntimeDriver) -> ProviderTaskRuntimeManager | None:
     """Discover the serving manager through trusted runtime wrappers only."""
     seen = set()
     while driver is not None and id(driver) not in seen:
@@ -49,7 +59,7 @@ def task_manager(driver):
     return None
 
 
-def _owner(request, manager, scope):
+def _owner(request: Request, manager: ProviderTaskRuntimeManager, scope: str) -> str:
     """Default to the verified principal; automation access requires a server-issued claim."""
     principal = principal_for(request)
     if scope == "automation":
@@ -59,7 +69,7 @@ def _owner(request, manager, scope):
     return principal.user_id
 
 
-def _same_origin(request):
+def _same_origin(request: Request) -> None:
     """Reject cross-origin browser mutations even for cookie or anonymous development auth."""
     origin = request.headers.get("origin")
     if request.headers.get("sec-fetch-site") == "cross-site" or (origin and origin != str(request.base_url).rstrip("/")):
@@ -67,7 +77,7 @@ def _same_origin(request):
 
 
 @asynccontextmanager
-async def _operation(request, manager, scope):
+async def _operation(request: Request, manager: ProviderTaskRuntimeManager | None, scope: str) -> AsyncIterator[str]:
     """Share readiness, ownership, and privacy-safe failures across administration routes."""
     if manager is None:
         raise HTTPException(503, "This agent has no durable task runtime. Configure task storage and serve a compiled task or cron function.")
@@ -91,13 +101,13 @@ async def _operation(request, manager, scope):
         raise HTTPException(503, "Work storage operation failed") from None
 
 
-def _cron(manager, owner):
+def _cron(manager: ProviderTaskRuntimeManager, owner: str) -> StoredCronRuntime:
     """Reuse runtime validation and audit while binding authority to the authenticated caller."""
     return StoredCronRuntime(manager, manager.application.runtime_capabilities.cron_store,
                              enabled=manager._enable_cron, owner=owner, trigger="user")
 
 
-def _schedule(record, *, include_arguments=False):
+def _schedule(record: CronRecord, *, include_arguments: bool=False) -> dict[str, Any]:
     """Project schedule metadata; arguments are read only for an explicit edit."""
     result = {name: getattr(record, name) for name in
               ("schedule_id", "key", "expression", "task_name", "status", "timezone", "next_run_at", "revision")}
@@ -107,7 +117,7 @@ def _schedule(record, *, include_arguments=False):
     return result
 
 
-async def _editable(runtime, identity):
+async def _editable(runtime: StoredCronRuntime, identity: str) -> CronRecord:
     """Keep application-owned declarations under source control across restarts."""
     record = await runtime._required(identity)
     if record.key.startswith("static:"):
@@ -115,7 +125,7 @@ async def _editable(runtime, identity):
     return record
 
 
-def create_work_router(driver) -> APIRouter:
+def create_work_router(driver: RuntimeDriver) -> APIRouter:
     """Mount development-only controls without adding administration to production APIs."""
     router = APIRouter(prefix="/_harnest/work", include_in_schema=False)
     manager = task_manager(driver)
@@ -123,7 +133,7 @@ def create_work_router(driver) -> APIRouter:
     _install_cron_routes(router, manager)
 
     @router.get("")
-    async def capabilities(request: Request):
+    async def capabilities(request: Request) -> dict[str, Any]:
         """Describe available storage and authored targets without exposing arguments."""
         if manager is None:
             return {"available": False, "message": "Configure task storage and serve an agent with tasks or cron functions."}
@@ -138,10 +148,10 @@ def create_work_router(driver) -> APIRouter:
     return router
 
 
-def _install_task_routes(router, manager):
+def _install_task_routes(router: APIRouter, manager: ProviderTaskRuntimeManager | None) -> None:
     """Support optional metadata listing plus lookup/cancel for existing custom providers."""
     @router.get("/tasks")
-    async def tasks(request: Request, scope: Literal["self", "automation"] = "self", after: str | None = Query(None, max_length=512), limit: int = Query(50, ge=1, le=100)):
+    async def tasks(request: Request, scope: Literal["self", "automation"] = "self", after: str | None = Query(None, max_length=512), limit: int = Query(50, ge=1, le=100)) -> dict[str, Any]:
         """Read one owner-scoped page using the provider's optional query capability."""
         async with _operation(request, manager, scope) as owner:
             listing = getattr(manager._store, "list_task_metadata", None)
@@ -150,13 +160,13 @@ def _install_task_routes(router, manager):
             return await listing(application_id=manager.application.name, user_id=owner, after=after, limit=limit)
 
     @router.get("/tasks/{identity}")
-    async def task(request: Request, identity: str, scope: Literal["self", "automation"] = "self"):
+    async def task(request: Request, identity: str, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Keep inaccessible and missing task identities indistinguishable."""
         async with _operation(request, manager, scope) as owner:
             return task_metadata(await _task_record(manager, owner, identity))
 
     @router.post("/tasks/{identity}/cancel")
-    async def cancel(request: Request, identity: str, scope: Literal["self", "automation"] = "self"):
+    async def cancel(request: Request, identity: str, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Fence leases, audit the committed cancellation, and wake durable waiters."""
         async with _operation(request, manager, scope) as owner:
             record = await _task_record(manager, owner, identity)
@@ -166,7 +176,7 @@ def _install_task_routes(router, manager):
             return {"cancelled": changed}
 
 
-async def _task_record(manager, owner, identity):
+async def _task_record(manager: ProviderTaskRuntimeManager, owner: str, identity: str) -> TaskRecord:
     """Always pass application and verified owner predicates to the provider."""
     record = await manager._store.get_task(application_id=manager.application.name, user_id=owner, job_id=identity)
     if record is None:
@@ -174,10 +184,10 @@ async def _task_record(manager, owner, identity):
     return record
 
 
-def _install_cron_routes(router, manager):
+def _install_cron_routes(router: APIRouter, manager: ProviderTaskRuntimeManager | None) -> None:
     """Route cron mutations through the same validation, concurrency, and audit as tools."""
     @router.get("/crons")
-    async def schedules(request: Request, scope: Literal["self", "automation"] = "self", after: str | None = Query(None, max_length=512), limit: int = Query(50, ge=1, le=100)):
+    async def schedules(request: Request, scope: Literal["self", "automation"] = "self", after: str | None = Query(None, max_length=512), limit: int = Query(50, ge=1, le=100)) -> dict[str, Any]:
         """Read a bounded owner page without returning stored task arguments."""
         async with _operation(request, manager, scope) as owner:
             runtime = _cron(manager, owner)
@@ -188,7 +198,7 @@ def _install_cron_routes(router, manager):
             return await listing(application_id=manager.application.name, user_id=owner, after=after, limit=limit)
 
     @router.post("/crons")
-    async def create(request: Request, body: CronCreate, scope: Literal["self", "automation"] = "self"):
+    async def create(request: Request, body: CronCreate, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Create only a compiler-discovered target using a stable user-selected key."""
         async with _operation(request, manager, scope) as owner:
             _validate_schedule_key(body.key)
@@ -198,13 +208,13 @@ def _install_cron_routes(router, manager):
             return {"id": result.id}
 
     @router.get("/crons/{identity}")
-    async def schedule(request: Request, identity: str, scope: Literal["self", "automation"] = "self"):
+    async def schedule(request: Request, identity: str, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Fetch the definition explicitly selected for review by its owner."""
         async with _operation(request, manager, scope) as owner:
             return _schedule(await _cron(manager, owner)._required(identity), include_arguments=True)
 
     @router.patch("/crons/{identity}")
-    async def edit(request: Request, identity: str, body: CronEdit, scope: Literal["self", "automation"] = "self"):
+    async def edit(request: Request, identity: str, body: CronEdit, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Reject stale edits and retain arguments when no replacement was supplied."""
         from .cron import _UNSET
         async with _operation(request, manager, scope) as owner:
@@ -215,7 +225,7 @@ def _install_cron_routes(router, manager):
             return {"updated": True}
 
     @router.post("/crons/{identity}/status")
-    async def status(request: Request, identity: str, body: CronStatus, scope: Literal["self", "automation"] = "self"):
+    async def status(request: Request, identity: str, body: CronStatus, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Pause, resume, or terminally cancel an owned dynamic schedule."""
         async with _operation(request, manager, scope) as owner:
             runtime = _cron(manager, owner)
@@ -224,7 +234,7 @@ def _install_cron_routes(router, manager):
             return {"status": body.status}
 
     @router.delete("/crons/{identity}")
-    async def delete(request: Request, identity: str, scope: Literal["self", "automation"] = "self"):
+    async def delete(request: Request, identity: str, scope: Literal["self", "automation"] = "self") -> dict[str, Any]:
         """Delete the schedule only; already enqueued task occurrences remain independent."""
         async with _operation(request, manager, scope) as owner:
             runtime = _cron(manager, owner)

@@ -35,7 +35,7 @@ from harnest.backends.langgraph import (
 from harnest.application import CompiledApplication
 from harnest.agent.approval import require_human_approval
 from harnest.client_tool import client_tool
-from harnest.context_agent import _resolve_invocation_agent_principal
+from harnest._context_agent import _resolve_invocation_agent_principal
 from harnest import context
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.mcp import MCPClient

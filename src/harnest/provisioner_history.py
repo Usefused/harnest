@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .provisioner_plan import Plan
+
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -23,13 +29,13 @@ def timestamp() -> str:
 class RevisionStore:
     """Commit active revision and attempt outcome together; never archive resolved credentials."""
 
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path) -> None:
         """Bind history to the already locked, private deployment state directory."""
 
         self.directory = directory
 
     @contextmanager
-    def connection(self):
+    def connection(self) -> Iterator[sqlite3.Connection]:
         """Keep database files private and reject links before opening the SQLite journal."""
 
         path = self.directory / "revisions.sqlite3"
@@ -48,7 +54,7 @@ class RevisionStore:
         finally:
             connection.close()
 
-    def _initialize(self, connection) -> None:
+    def _initialize(self, connection: sqlite3.Connection) -> None:
         """Create one source of truth and import an earlier credential-free JSON journal once."""
 
         version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -68,7 +74,7 @@ class RevisionStore:
             if connection.execute("SELECT 1 FROM state WHERE id = 1").fetchone() is None:
                 self._import_legacy(connection)
 
-    def _import_legacy(self, connection) -> None:
+    def _import_legacy(self, connection: sqlite3.Connection) -> None:
         """Preserve pre-versioning ownership without inventing a rollbackable revision."""
 
         path = self.directory / "state.json"
@@ -101,7 +107,7 @@ class RevisionStore:
             if state.get("status") == "applying":
                 self._save(connection, {**state, "status": "interrupted"})
 
-    def begin(self, plan, state: dict, operation: str, images: dict, rollback_of: int | None) -> dict:
+    def begin(self, plan: Plan, state: dict, operation: str, images: dict, rollback_of: int | None) -> dict:
         """Allocate a monotonic revision and record recovery ownership before the first backend write."""
 
         snapshot = json.dumps(plan.deployment.model_dump(mode="json"), sort_keys=True)
@@ -127,7 +133,7 @@ class RevisionStore:
                 connection.execute("UPDATE revisions SET status = ?, completed_at = ? WHERE revision = ?", (
                     outcome, timestamp(), state["attempt_revision"]))
 
-    def _save(self, connection, state: dict) -> None:
+    def _save(self, connection: sqlite3.Connection, state: dict) -> None:
         """Store current ownership once rather than duplicating it in the historical records."""
 
         connection.execute("INSERT OR REPLACE INTO state (id, document) VALUES (1, ?)", (json.dumps(state),))
@@ -158,7 +164,7 @@ class RevisionStore:
         return Deployment.model_validate_json(row["snapshot"])
 
 
-def _metadata(row) -> dict:
+def _metadata(row: sqlite3.Row) -> dict:
     """Expose release identity and image references, excluding authored connection values."""
 
     value = dict(row)

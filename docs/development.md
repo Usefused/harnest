@@ -85,6 +85,21 @@ method to a broader tier when a module contains both local and external-provider
 coverage. The suite runner rejects missing files, unclassified modules, duplicate
 assignments, and stale overrides.
 
+Public namespace changes must preserve IDE-visible types as well as runtime
+imports. The public-import tests run Pyright against `tests/typing/` consumer
+fixtures, checking inferred types and rejection of invalid calls. Keep lazy
+exports statically discoverable without eagerly loading optional frameworks or
+caching invocation-scoped values. Generated consumer probes cover every reviewed
+public export, inherited Harnest methods, properties, fields, and Python protocol
+methods. Decorator fixtures verify original argument and return types, including
+invalid calls. The `typing-quality` gate also requires parameter and return
+annotations on every core function and method, including private, nested, and
+optional-backend implementations. Its source inventory follows the wheel
+exclusions in `pyproject.toml`, keeping retired local prototypes out of the count.
+Use concrete contracts for known capabilities;
+reserve `Any` for genuinely dynamic payloads and untyped external boundaries.
+Pyright is included in the `quality` extra.
+
 - `make test-unit` runs isolated domain behavior without infrastructure boundaries.
 - `make test-integration` runs compiler, framework, process, transport, and local
   datastore boundaries.

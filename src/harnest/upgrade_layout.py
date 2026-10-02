@@ -1,5 +1,13 @@
 """Backed-up, collision-checked migration to lifecycle and extension packages."""
 
+from __future__ import annotations
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .extension_descriptors import ExtensionDescriptor
+
 import ast
 from pathlib import Path
 import re
@@ -40,7 +48,7 @@ def plan_application_layout(root: Path, actions: list, blockers: list[str]) -> N
         _plan_package(root, descriptor, actions, blockers, moving_root)
 
 
-def _plan_package(root: Path, descriptor, actions: list, blockers: list[str], moving_root: bool) -> None:
+def _plan_package(root: Path, descriptor: ExtensionDescriptor, actions: list, blockers: list[str], moving_root: bool) -> None:
     """Move one executable legacy package without touching Agent Plugins."""
 
     directory = descriptor.directory

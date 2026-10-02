@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import asyncio
 import sys
 from contextlib import asynccontextmanager
@@ -32,7 +34,7 @@ def _extension_runtime(driver: Any) -> LifecycleRuntimeDriver:
 
 
 @asynccontextmanager
-async def adk_evaluation_runtime(application: Any, driver: Any = None):
+async def adk_evaluation_runtime(application: Any, driver: Any = None) -> AsyncIterator[None]:
     """Own CLI capabilities or borrow the playground's existing resource owner."""
     if not isinstance(application, CompiledApplication) or application.framework != "adk":
         yield
@@ -91,7 +93,7 @@ def evaluation_context_plugins() -> tuple[Any, Any]:
     class Enter(BasePlugin):
         """Bind invocation resources before authored or identity callbacks run."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Reserve an internal plugin name independently of authored plugins."""
             super().__init__(name="_harnest_eval_context_enter")
 
@@ -120,7 +122,7 @@ def evaluation_context_plugins() -> tuple[Any, Any]:
     class Exit(BasePlugin):
         """Release evaluation-owned context after all native callbacks finish."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Keep cleanup last without relying on authored plugin names."""
             super().__init__(name="_harnest_eval_context_exit")
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import atexit
 import inspect
 import json
@@ -684,7 +686,9 @@ def _attach_telemetry_lifecycle(app: Any, state: TelemetryState) -> None:
         return
 
     @asynccontextmanager
-    async def lifespan(application: Any):
+    async def lifespan(application: Any) -> AsyncIterator[None]:
+        """Flush telemetry after the application and its resources shut down."""
+
         try:
             async with original(application):
                 yield

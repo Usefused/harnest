@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from langgraph.graph import StateGraph
+    from langgraph.pregel import Pregel
+
 import inspect
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -35,7 +42,9 @@ _AGENT_PRINCIPAL_PROJECTION_COMPLETE = (
 )
 
 
-def _langgraph_types():
+def _langgraph_types() -> tuple[str, str, type[StateGraph], Callable[..., Any], type[Pregel]]:
+    """Load optional graph types only when compiling the LangGraph backend."""
+
     try:
         from langgraph.graph import (
             END,
@@ -435,7 +444,7 @@ def _require_principal_tool(request: Any) -> None:
 
 
 @contextmanager
-def _managed_agent_scope(agent_name: str):
+def _managed_agent_scope(agent_name: str) -> Iterator[None]:
     """Derive nested identity while sharing the root's revocable capabilities."""
 
     from .. import context
@@ -777,7 +786,7 @@ def _merge_state(current: Any, update: Any) -> dict[str, Any]:
     return merged
 
 
-def _route_selector(edges: Sequence[Edge], end: str):
+def _route_selector(edges: Sequence[Edge], end: str) -> Callable[[Mapping[str, Any]], str | list[str]]:
     """Resolve portable route labels to validated LangGraph destinations."""
 
     def select(state: Mapping[str, Any]) -> str | list[str]:

@@ -1,5 +1,9 @@
 """Reference explicit-memory storage for tests, not durable deployments."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import asyncio
 from dataclasses import replace
 import time
@@ -71,7 +75,7 @@ class InMemoryStore(MemoryProvider):
         """Erase all namespaces without changing any other application or user."""
         return await self._erase(lambda owner: (owner.application_id, owner.user_id) == (scope.application_id, scope.user_id))
 
-    async def _erase(self, matches) -> int:
+    async def _erase(self, matches: Callable[[MemoryScope], bool]) -> int:
         """Serialize physical erasure with writes in the reference provider."""
         async with self._lock:
             identities = [identity for identity in self._records if matches(identity[0])]

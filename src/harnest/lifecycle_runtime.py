@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from ._exception_notes import capture_cleanup_failure as _cleanup_failure
+
+from ._exception_notes import merge_cleanup_failure as _merge_cleanup_failure
+
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
 import inspect
@@ -924,34 +928,6 @@ async def _start_wrapped_storage(driver: RuntimeDriver) -> None:
         # The explicit type boundary avoids invoking arbitrary backend methods
         # that happen to use the same internal lifecycle name.
         await driver.start_owned_resources()
-
-
-async def _cleanup_failure(callback: Any) -> BaseException | None:
-    """Capture one cleanup failure so callers can retain deterministic priority."""
-
-    try:
-        await callback()
-    except BaseException as failure:
-        return failure
-    return None
-
-
-def _merge_cleanup_failure(
-    primary: BaseException | None,
-    cleanup: BaseException | None,
-    *,
-    label: str,
-) -> BaseException | None:
-    """Retain the first failure and annotate it with later cleanup types."""
-
-    if cleanup is None:
-        return primary
-    if primary is None:
-        return cleanup
-    add_exception_note(
-        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
-    )
-    return primary
 
 
 async def _start_credential_provider(provider: CredentialProvider) -> None:

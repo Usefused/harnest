@@ -1,12 +1,17 @@
 """Private, nonblocking provisioner locks on POSIX and Windows hosts."""
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import BinaryIO, Iterator
+
 from contextlib import contextmanager
 import os
 
 from .provisioner_config import ProvisionError
 
 
-def private_file(path) -> int:
+def private_file(path: Path) -> int:
     """Reject linked state files and use the host's no-follow open flag where available."""
     if path.is_symlink():
         raise ProvisionError("Provisioner state cannot use symbolic links")
@@ -21,7 +26,7 @@ def private_file(path) -> int:
 
 
 @contextmanager
-def exclusive_lock(path):
+def exclusive_lock(path: Path) -> Iterator[None]:
     """Hold ownership until the descriptor closes, including after process interruption."""
     with os.fdopen(private_file(path), "r+b") as stream:
         try:
@@ -31,7 +36,7 @@ def exclusive_lock(path):
         yield
 
 
-def _lock(stream) -> None:
+def _lock(stream: BinaryIO) -> None:
     """Use native locks so Studio can import and launch on every released platform."""
     if os.name == "nt":
         import msvcrt

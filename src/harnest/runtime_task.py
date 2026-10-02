@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ._exception_notes import capture_cleanup_failure as _cleanup_failure
+
 import asyncio
 from contextlib import contextmanager, nullcontext
 import hashlib
@@ -26,7 +28,7 @@ from .context import (
 )
 from . import context
 from .context_session import invocation_session_context
-from .context_agent import LocalAgentRuntime, activate_context_agent
+from ._context_agent import LocalAgentRuntime, activate_context_agent
 from .continuation import (
     ContinuationConflictError,
     ProviderPendingContinuation,
@@ -819,16 +821,6 @@ def _validate_continuation_result(value: Any) -> Any:
     if not isinstance(value, Mapping) or set(value) != {"value"}:
         raise TypeError("task continuation result envelope is invalid")
     return safe_task_result(value["value"])
-
-
-async def _cleanup_failure(callback: Any) -> BaseException | None:
-    """Capture cleanup failures so all owners still receive their close call."""
-
-    try:
-        await callback()
-    except BaseException as error:
-        return error
-    return None
 
 
 __all__ = ["TaskRuntimeDriver", "TaskRuntimeError", "TaskExecutionRuntime"]

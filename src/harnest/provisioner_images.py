@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import json
 import re
 
@@ -11,7 +13,7 @@ from .provisioner_plan import Plan
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
-def pin_plan(plan: Plan, runner) -> tuple[Plan, dict]:
+def pin_plan(plan: Plan, runner: Callable[[list[str], str], str]) -> tuple[Plan, dict]:
     """Deploy exactly the image identities recorded in history, including locally built images."""
 
     deployment = plan.deployment.model_copy(deep=True)
@@ -28,7 +30,7 @@ def pin_plan(plan: Plan, runner) -> tuple[Plan, dict]:
     return pinned, images
 
 
-def pin_image(image: str, backend: str, runner) -> str:
+def pin_image(image: str, backend: str, runner: Callable[[list[str], str], str]) -> str:
     """Pinned references bypass lookups; tags resolve once through the selected backend tooling."""
 
     if "@" in image:
@@ -51,7 +53,7 @@ def pin_image(image: str, backend: str, runner) -> str:
     return image + "@" + digest
 
 
-def _local_image(image: str, runner) -> str:
+def _local_image(image: str, runner: Callable[[list[str], str], str]) -> str:
     """Use a local content ID so rebuilding the same tag cannot change a historical deployment."""
 
     args = ["docker", "image", "inspect", "--format", "{{json .Id}}", image]

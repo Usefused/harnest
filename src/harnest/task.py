@@ -7,7 +7,7 @@ import inspect
 import math
 import re
 from threading import RLock
-from typing import Any, Callable, Generic, Mapping, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Generic, Mapping, TypeVar, overload
 
 from .task_storage import TaskRecord, TaskStore, TaskStoreConflictError
 from .task_store_memory import MemoryTaskStore
@@ -105,10 +105,14 @@ class TaskCallable(Generic[F]):
         )
         self.__signature__ = inspect.signature(definition.function)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Execute inline when the author deliberately calls the task itself."""
+    if TYPE_CHECKING:
+        # The authored callable already carries its complete parameter and return types.
+        __call__: F
+    else:
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            """Execute inline when the author deliberately calls the task itself."""
 
-        return self.__wrapped__(*args, **kwargs)
+            return self.__wrapped__(*args, **kwargs)
 
     async def defer(
         self,

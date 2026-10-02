@@ -66,4 +66,15 @@ def is_transition(value: Any) -> bool:
     return isinstance(value, (Next, Finish))
 
 
+def _after_transition(
+    current: Any, value: Any, *, error_type: type[Exception], listener: str
+) -> tuple[Any, bool]:
+    """Share after-hook replacement rules while retaining domain-specific errors."""
+    if isinstance(value, Finish):
+        return value.result, True
+    if not isinstance(value, Next):
+        raise error_type(f"{listener} must return context.next(...) or context.finish(...)")
+    return (current if value.value is UNCHANGED else value.value), False
+
+
 __all__ = ["Finish", "Next", "TransitionContext", "UNCHANGED", "is_transition"]

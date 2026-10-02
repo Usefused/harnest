@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from starlette.types import Scope, Receive, Send
+
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -91,7 +93,7 @@ class HTTPLifecycleMiddleware:
                 await stack.enter_async_context(listener.callback(context, request))
             await self._dispatch(context, request, scope, receive, send)
 
-    async def _dispatch(self, context, request, scope, receive, send) -> None:
+    async def _dispatch(self, context: HTTPLifecycleContext, request: HTTPCallRequest, scope: Scope, receive: Receive, send: Send) -> None:
         """Run the existing transitions within all entered request scopes."""
         try:
             transformed, finished = await self._before(context, request)

@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Mapping, Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .mcp import MCPClient
+    from google.adk.agents.readonly_context import ReadonlyContext
+    from google.adk.tools.base_tool import BaseTool
+    from google.adk.tools.base_toolset import BaseToolset
+    import httpx
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -90,19 +100,19 @@ def _no_symlinks(path: Path) -> None:
             raise AgentPluginError("Agent Plugin data directory must not contain symlinks")
 
 
-def portable_http_factory(url: str):
+def portable_http_factory(url: str) -> Callable[..., httpx.AsyncClient]:
     """Block cross-origin redirects and SSE endpoints before forwarding headers."""
     import httpx
     endpoint = httpx.URL(url)
     origin = (endpoint.scheme, endpoint.host, endpoint.port)
 
-    async def same_origin(request):
+    async def same_origin(request: httpx.Request) -> None:
         """Never send package headers to a different server without authorization."""
         target = request.url
         if (target.scheme, target.host, target.port) != origin:
             raise AgentPluginError("Agent Plugin MCP request attempted a different origin")
 
-    def create_client(headers=None, timeout=None, auth=None):
+    def create_client(headers: Mapping[str, str] | None=None, timeout: httpx.Timeout | None=None, auth: httpx.Auth | None=None) -> httpx.AsyncClient:
         """Preserve MCP authentication and redact proxy construction failures."""
         options = {"headers": headers, "auth": auth, "follow_redirects": False,
                    "event_hooks": {"request": [same_origin]}}
@@ -123,12 +133,12 @@ def portable_http_factory(url: str):
     return create_client
 
 
-def portable_adk_toolset(base, client):
+def portable_adk_toolset(base: type[BaseToolset], client: MCPClient) -> type[BaseToolset]:
     """Make unavailable portable servers nonfatal to ADK's independent tools."""
     class PortableToolset(base):
         _portable_disabled = False
 
-        async def get_tools(self, readonly_context=None):
+        async def get_tools(self, readonly_context: ReadonlyContext | None=None) -> list[BaseTool]:
             """Defer writable state until discovery and contain connection failures."""
             if self._portable_disabled:
                 return []
@@ -144,16 +154,16 @@ def portable_adk_toolset(base, client):
     return PortableToolset
 
 
-def disabled_adk_toolset():
+def disabled_adk_toolset() -> BaseToolset:
     """Preserve native toolset lifecycle when a portable server cannot be configured."""
     from google.adk.tools.base_toolset import BaseToolset
 
     class DisabledToolset(BaseToolset):
-        async def get_tools(self, readonly_context=None):
+        async def get_tools(self, readonly_context: ReadonlyContext | None=None) -> list[BaseTool]:
             """Expose no tools without retrying invalid configuration each turn."""
             return []
 
-        async def close(self):
+        async def close(self) -> None:
             """No connection was opened, so there is no provider state to release."""
 
     return DisabledToolset()

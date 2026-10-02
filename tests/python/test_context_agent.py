@@ -10,7 +10,7 @@ from harnest.application import CompiledApplication
 from harnest.agent.approval import request_human_approval
 from harnest.client_tool import client_tool
 from harnest import context
-from harnest.context_agent import (
+from harnest._context_agent import (
     AgentContinuationUnsupportedError,
     AgentInvocationUnavailableError,
     AgentPendingResponse,
@@ -251,7 +251,7 @@ class LocalAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ("external_continuation", PendingExternalContinuation("opaque", "jobs"))
         )
 
-        with patch("harnest.context_agent.start_approval_run", return_value=run):
+        with patch("harnest._context_agent.start_approval_run", return_value=run):
             response = await session.invoke("hello")
 
         self.assertIsInstance(response, AgentPendingResponse)

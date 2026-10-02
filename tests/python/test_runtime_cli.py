@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from harnest.context_agent import AgentResponse
+from harnest.context import AgentResponse
 from harnest.bundle import compile_artifact
 from harnest.runtime import (
     _compiled_cli_enabled,

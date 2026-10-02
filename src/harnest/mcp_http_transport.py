@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
+
 from contextlib import asynccontextmanager
 import base64
 import json
@@ -58,7 +64,7 @@ def _request(method: str, params: dict[str, Any], request_id: str) -> dict[str, 
 
 
 @asynccontextmanager
-async def _client(configured: Any, framework: str):
+async def _client(configured: Any, framework: str) -> AsyncIterator[tuple[httpx.AsyncClient, str]]:
     """Reuse authored credential/certificate policy; never follow endpoint redirects."""
 
     import httpx
@@ -75,7 +81,7 @@ async def _client(configured: Any, framework: str):
         yield client, options["url"]
 
 
-async def _messages(response: Any, limit: int):
+async def _messages(response: Any, limit: int) -> AsyncIterator[dict[str, Any]]:
     """Bound each raw SSE frame before JSON decoding, including comment-only floods."""
 
     response.raise_for_status()

@@ -1,4 +1,4 @@
-"""In-process root-agent invocation for tasks and local adapters."""
+"""Private root-agent invocation implementation; public contracts live in harnest.context."""
 
 from __future__ import annotations
 

@@ -1,5 +1,10 @@
 """Bounded UI event delivery shared by tools, graph nodes, and child scopes."""
 
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Any
+
 import asyncio
 from contextlib import suppress
 import json
@@ -11,14 +16,14 @@ _RESERVED = {"agent_activity", "agent_metadata", "decision_result", "thinking"}
 
 class UIOutput:
     """Own transient display events, never model transcript or persistent state."""
-    def __init__(self):
+    def __init__(self) -> None:
         """Allocate one buffer per invocation; child contexts share the same budget."""
         self._buffer = []
         self._queue = None
         self._count = 0
         self._bytes = 0
 
-    async def emit(self, name, value, *, agent):
+    async def emit(self, name: str, value: Any, *, agent: str) -> None:
         """Validate and detach JSON before yielding authority to an asynchronous consumer."""
         event, size = _event(name, value, agent)
         if self._count >= 128 or self._bytes + size > 512 * 1024:
@@ -30,12 +35,12 @@ class UIOutput:
         else:
             await self._queue.put(("event", event))
 
-    def drain(self):
+    def drain(self) -> list[dict[str, Any]]:
         """Transfer buffered events once for non-streaming or short-circuited invocations."""
         events, self._buffer = self._buffer, []
         return events
 
-    async def stream(self, iterator):
+    async def stream(self, iterator: AsyncIterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         """Run the backend in one scoped task so UI events can arrive during a long tool call."""
         self._queue = asyncio.Queue(maxsize=1)
         # One producer keeps native generator ContextVar tokens on their original
@@ -62,7 +67,7 @@ class UIOutput:
                 await producer
             self._queue = None
 
-    async def _produce(self, iterator):
+    async def _produce(self, iterator: AsyncIterator[dict[str, Any]]) -> None:
         """Serialize native events and propagate failures while owning generator cleanup."""
         try:
             async for event in iterator:
@@ -82,7 +87,7 @@ class UIOutput:
                 await closer()
 
 
-def _event(name, value, agent):
+def _event(name: str, value: Any, agent: str) -> tuple[dict[str, Any], int]:
     """Disallow reserved control names, non-JSON values, and unbounded display payloads."""
     if not isinstance(name, str) or _NAME.fullmatch(name) is None:
         raise ValueError("UI event name must use 1–128 letters, numbers, dots, underscores, or hyphens")

@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google.adk.evaluation.evaluator import EvaluationResult
+
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import wraps
@@ -61,7 +67,7 @@ def metric(function: Callable[[MetricContext], Any]) -> Callable[..., Any]:
         raise TypeError("metric requires a callable scorer")
 
     @wraps(function)
-    async def evaluate(eval_metric, actual, expected=None, scenario=None):
+    async def evaluate(eval_metric: EvalMetric, actual: Sequence[Invocation], expected: Sequence[Invocation] | None=None, scenario: ConversationScenario | None=None) -> EvaluationResult:
         """Await authored service calls without owning their clients or credentials."""
         context = MetricContext(
             eval_metric,

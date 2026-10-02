@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
+
 import asyncio
 import inspect
 from collections.abc import Awaitable
@@ -134,7 +140,9 @@ class _MCPClientLifecycleController:
     def client_factory(self, context: MCPClientContext) -> Any:
         """Return the structural factory expected by both MCP adapters."""
 
-        def create_client(headers=None, timeout=None, auth=None):
+        def create_client(headers: Mapping[str, str] | None=None, timeout: httpx.Timeout | None=None, auth: httpx.Auth | None=None) -> httpx.AsyncClient:
+            """Resolve lifecycle HTTP overrides before constructing the MCP transport."""
+
             if self._state != "started":
                 raise RuntimeError("MCP client lifecycle has not started")
             self._require_context(context)

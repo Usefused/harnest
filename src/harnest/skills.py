@@ -11,12 +11,19 @@ import json
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence, TypeVar, overload
 
 import yaml
 
 from ._agent_tool import tool
 from .authoring_errors import authoring_guidance
+
+
+if TYPE_CHECKING:
+    from .credentials import CredentialContext
+    from .context_storage import StorageContext
+
+_ResourceT = TypeVar("_ResourceT")
 
 
 _SOURCE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
@@ -309,7 +316,7 @@ class SkillContext:
         return self._active.metadata
 
     @property
-    def credentials(self) -> Any:
+    def credentials(self) -> CredentialContext:
         """Return private credential resolution without copying secret values."""
 
         self._active._require_active()
@@ -318,13 +325,19 @@ class SkillContext:
         return credentials
 
     @property
-    def storage(self) -> Any:
+    def storage(self) -> StorageContext:
         """Return invocation-scoped access to named application storage."""
 
         self._active._require_active()
         from .context_storage import storage
 
         return storage
+
+    @overload
+    def resource(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def resource(self, name: str, expected_type: None = None) -> Any: ...
 
     def resource(self, name: str, expected_type: type[Any] | None = None) -> Any:
         """Resolve an explicitly exported application resource."""

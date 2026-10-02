@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -19,7 +21,7 @@ _DENIED: ContextVar[bool] = ContextVar("harnest_native_sandbox_authority_denied"
 
 
 @contextmanager
-def deny_sandbox_authority():
+def deny_sandbox_authority() -> Iterator[None]:
     """Keep unmanaged native components from inheriting managed parent grants."""
     token = _DENIED.set(True)
     try:

@@ -35,6 +35,7 @@ quality = [
   "fakeredis[lua]>=2.34,<3",
   "build>=1,<2",
   "hatchling>=1.25,<2",
+  "pyright>=1.1.414,<2",
   "radon>=6,<7",
   "ruff>=0.14,<1",
   "setuptools>=82,<85",

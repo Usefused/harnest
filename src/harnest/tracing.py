@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import functools
 import inspect
 import json
@@ -109,7 +111,9 @@ def traced(
         if inspect.isasyncgenfunction(function):
 
             @functools.wraps(function)
-            async def async_generator_wrapper(*args: Any, **kwargs: Any):
+            async def async_generator_wrapper(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+                """Keep the span active while the asynchronous stream is consumed."""
+
                 with span(span_name, **span_options):
                     async for item in function(*args, **kwargs):
                         yield item
@@ -127,7 +131,9 @@ def traced(
         if inspect.isgeneratorfunction(function):
 
             @functools.wraps(function)
-            def generator_wrapper(*args: Any, **kwargs: Any):
+            def generator_wrapper(*args: Any, **kwargs: Any) -> Iterator[Any]:
+                """Keep the span active through generator iteration and cleanup."""
+
                 with span(span_name, **span_options):
                     yield from function(*args, **kwargs)
 

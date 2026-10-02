@@ -6,6 +6,8 @@ session and event translation lives in the two runtime driver modules.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
@@ -573,7 +575,7 @@ def _create_adk_fastapi_app(
     (agents_dir / app_name).mkdir(parents=True)
 
     @asynccontextmanager
-    async def lifespan(_app: Any):
+    async def lifespan(_app: Any) -> AsyncIterator[None]:
         """Keep ADK host state inside the final runtime pipeline lifetime."""
 
         from .lifecycle_runtime import (
@@ -1068,7 +1070,9 @@ def _attach_driver_lifecycle(
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan(application: Any):
+    async def lifespan(application: Any) -> AsyncIterator[None]:
+        """Own pipeline startup and cleanup around the framework lifespan."""
+
         from .runtime_pipeline import start_runtime_pipeline
 
         try:
@@ -1140,7 +1144,9 @@ def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan(application: Any):
+    async def lifespan(application: Any) -> AsyncIterator[None]:
+        """Retain authored modules until application shutdown completes."""
+
         try:
             async with original_lifespan(application):
                 yield
@@ -1347,7 +1353,7 @@ async def _run_local_artifact(args: Any, message: str) -> None:
 async def _run_local_application(application: Any, args: Any, message: str) -> None:
     """Execute the shared local adapter with scheduling disabled for one-shot use."""
 
-    from .context_agent import LocalAgentRuntime
+    from ._context_agent import LocalAgentRuntime
     from .runtime_cli import run_local_cli
     from .telemetry import configure_observability
 

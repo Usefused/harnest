@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import inspect
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,7 +31,7 @@ _ACTIVE_MODEL_CONTEXT: ContextVar[ModelLifecycleContext | None] = ContextVar(
 
 
 @contextmanager
-def model_invocation_scope(context: Any):
+def model_invocation_scope(context: Any) -> Iterator[None]:
     """Bind neutral invocation identity to nested framework model callbacks."""
 
     value = ModelLifecycleContext(

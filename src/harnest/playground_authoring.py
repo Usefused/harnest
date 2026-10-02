@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import ast
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -28,7 +30,7 @@ _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
 
 
 @contextmanager
-def authoring_workspace(root: Path | None):
+def authoring_workspace(root: Path | None) -> Iterator[None]:
     """Lend a source directory only while the development app is constructed."""
 
     token = _authoring_root.set(root.resolve() if root else None)
@@ -45,7 +47,7 @@ def configured_workspace() -> Path | None:
 
 
 @contextmanager
-def authoring_audit(operation: str):
+def authoring_audit(operation: str) -> Iterator[None]:
     """Correlate committed source changes with failures without recording authored content."""
 
     try:
@@ -68,7 +70,7 @@ def require_name(value: str) -> str:
 class AuthoringStore:
     """Own bounded source writes and reject stale revisions before atomic replacement."""
 
-    def __init__(self, root: Path, studio: Any):
+    def __init__(self, root: Path, studio: Any) -> None:
         """Bind edits to a known source root and the served projection's ownership scopes."""
 
         self.root = root.resolve()

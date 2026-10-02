@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from ._media_annotations import (
+    CONSTRAINT_TYPES as _CONSTRAINT_TYPES,
+    field_annotation as _field_annotation,
+    sequence_annotations as _sequence_annotations,
+)
+
+from collections.abc import AsyncIterator
+
 import base64
 import asyncio
 from collections.abc import Mapping
@@ -15,31 +23,19 @@ from .asset_policy import Stored
 from .assets import AssetScope, AssetStorage
 from .content import (
     Audio,
-    AudioConstraints,
     ContentConstraints,
     Data,
-    DataConstraints,
     File,
-    FileConstraints,
     Image,
-    ImageConstraints,
     Text,
     Video,
-    VideoConstraints,
 )
 from .content_validation import ContentValidationError, validate_inline_content
 
 
 _POLICY_KEY = "harnestStored"
 _MEDIA_TYPES = (Image, Audio, Video, File)
-_CONSTRAINT_TYPES = (
-    ImageConstraints,
-    AudioConstraints,
-    VideoConstraints,
-    FileConstraints,
-    DataConstraints,
-)
-_METADATA_TYPES = (*_CONSTRAINT_TYPES, Stored)
+
 
 
 class StoredMediaError(ValueError):
@@ -370,7 +366,9 @@ def _stored_model(value: Any, policy: Stored, record: Any) -> Any:
     return type(value).model_validate(payload)
 
 
-async def _one_chunk(data: bytes):
+async def _one_chunk(data: bytes) -> AsyncIterator[bytes]:
+    """Adapt buffered media to the streaming response contract."""
+
     yield data
 
 
@@ -428,23 +426,6 @@ def _annotation_metadata(
     if len(policies) > 1:
         raise StoredMediaError("media field has multiple storage policies")
     return arguments[0], constraints, policies[0] if policies else None
-
-
-def _field_annotation(annotation: Any, metadata: list[Any]) -> Any:
-    authored = tuple(item for item in metadata if isinstance(item, _METADATA_TYPES))
-    return annotation if not authored else Annotated[(annotation, *authored)]
-
-
-def _sequence_annotations(
-    origin: Any, arguments: tuple[Any, ...], size: int
-) -> tuple[Any, ...]:
-    if origin is tuple and len(arguments) == size:
-        return arguments
-    if origin is tuple and len(arguments) == 2 and arguments[1] is Ellipsis:
-        return (arguments[0],) * size
-    if origin in (list, tuple) and arguments:
-        return (arguments[0],) * size
-    return (Any,) * size
 
 
 __all__ = [

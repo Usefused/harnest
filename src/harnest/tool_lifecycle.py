@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .lifecycle_transition import _after_transition
+
+from collections.abc import Iterator
+
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -127,7 +131,10 @@ class ToolLifecyclePipeline:
         current = result
         for listener in self._phase("after_tool"):
             transition = await _resolve(listener.callback(context, current))
-            current, finished = _after_transition(listener, current, transition)
+            current, finished = _after_transition(
+                current, transition, error_type=ToolLifecycleError,
+                listener=f"tool listener {listener.identity}",
+            )
             if finished:
                 break
         return current
@@ -136,7 +143,10 @@ class ToolLifecyclePipeline:
         current = result
         for listener in self._phase("after_tool"):
             transition = _sync(listener.callback(context, current), listener)
-            current, finished = _after_transition(listener, current, transition)
+            current, finished = _after_transition(
+                current, transition, error_type=ToolLifecycleError,
+                listener=f"tool listener {listener.identity}",
+            )
             if finished:
                 break
         return current
@@ -169,7 +179,7 @@ _ACTIVE_TOOL_PIPELINE: ContextVar[ToolLifecyclePipeline | None] = ContextVar(
 
 
 @contextmanager
-def tool_lifecycle_scope(listeners: Sequence[LifecycleListener]):
+def tool_lifecycle_scope(listeners: Sequence[LifecycleListener]) -> Iterator[None]:
     """Bind root lifecycle policy so nested managed tool calls inherit it."""
 
     with _tool_lifecycle_pipeline_scope(ToolLifecyclePipeline(listeners)):
@@ -177,7 +187,7 @@ def tool_lifecycle_scope(listeners: Sequence[LifecycleListener]):
 
 
 @contextmanager
-def _tool_lifecycle_pipeline_scope(pipeline: ToolLifecyclePipeline):
+def _tool_lifecycle_pipeline_scope(pipeline: ToolLifecyclePipeline) -> Iterator[None]:
     """Bind one prevalidated pipeline for repeated runtime invocations."""
 
     if not isinstance(pipeline, ToolLifecyclePipeline):
@@ -268,18 +278,6 @@ def _before_transition(
     if not isinstance(value.value, ToolCallRequest):
         raise _transition_error(listener, "context.next(ToolCallRequest)")
     return value.value, None
-
-
-def _after_transition(
-    listener: LifecycleListener, current: Any, value: Any
-) -> tuple[Any, bool]:
-    """Apply an explicit result replacement or stop the remaining after chain."""
-
-    if isinstance(value, Finish):
-        return value.result, True
-    if not isinstance(value, Next):
-        raise _transition_error(listener, "context.next(...) or context.finish(...)")
-    return (current if value.value is UNCHANGED else value.value), False
 
 
 def _transition_error(listener: LifecycleListener, expected: str) -> ToolLifecycleError:

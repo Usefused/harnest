@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ._exception_notes import merge_cleanup_failure as _merge_failure
+
 import asyncio
 import inspect
 from threading import RLock
@@ -414,24 +416,6 @@ def _annotate_cleanup(
             primary,
             "extension startup cleanup also failed with " f"{type(cleanup).__name__}"
         )
-
-
-def _merge_failure(
-    primary: BaseException | None,
-    cleanup: BaseException | None,
-    *,
-    label: str,
-) -> BaseException | None:
-    """Retain primary failure priority while recording cleanup type only."""
-
-    if cleanup is None:
-        return primary
-    if primary is None:
-        return cleanup
-    add_exception_note(
-        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
-    )
-    return primary
 
 
 def _require_text(value: Any, label: str) -> None:

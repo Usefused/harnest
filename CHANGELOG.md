@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the implementation import path `harnest.context_agent`; use `harnest.context` for agent invocation contracts and `context.agent` for task-scoped operations. The implementation now lives in the private `_context_agent` module.
+
+- Improve IDE completion and type inference for lazy public Harnest domains and invocation context, including session, agent, MCP, storage, skills, and memory access. Typed resource and extension lookups retain the caller's expected type without changing runtime loading or context isolation. Extend signature annotations across the core package, preserve authored types through task and lifecycle decorators, and add package-wide static consumer checks for public classes, inherited methods, and properties.
+
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
 
 - Move the RAG and MCP sample agents into `examples/rag-agent` and `examples/mcp-agent`; update the MCP example to the current project schema. Rename the Studio source directory from `agent-builder/` to `studio/` and update build, release, and CI paths. Move the unreleased orchestration driver from `cmd/harnest-runtime` to internal development tooling, retaining `make dry-run` validation.

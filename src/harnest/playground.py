@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib.resources import files
@@ -43,7 +45,7 @@ class _EvalRunRequest(BaseModel):
 
 
 @contextmanager
-def playground_assets(directory: Path | None):
+def playground_assets(directory: Path | None) -> Iterator[None]:
     """Scope CLI-owned assets to app construction, not global process state."""
 
     token = _asset_override.set(directory)

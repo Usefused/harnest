@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from ._exception_notes import merge_cleanup_failure as _merge_cleanup_failure
+
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, AsyncIterator, Iterator, Mapping, Sequence
 
-from ._exception_notes import add_exception_note
 from .checkpoint import HarnestStore, RunScope
 from .output import OutputPolicy
 from .runtime_contract import (
@@ -20,7 +21,7 @@ from .runtime_contract import (
     SessionRecord,
 )
 from .session import SessionStore
-from .storage_registry import StorageRegistry
+from .storage_registry import StorageRegistry, _unique_by_identity as _unique_resources
 
 
 _DURABLE_COMPLETION_OWNER: ContextVar[str | None] = ContextVar(
@@ -326,34 +327,6 @@ async def _close_resources(resources: Sequence[Any]) -> BaseException | None:
                 failure, error, label="storage"
             )
     return failure
-
-
-def _merge_cleanup_failure(
-    primary: BaseException | None,
-    cleanup: BaseException | None,
-    *,
-    label: str,
-) -> BaseException | None:
-    """Preserve primary failure priority and record only cleanup error type."""
-
-    if cleanup is None:
-        return primary
-    if primary is None:
-        return cleanup
-    add_exception_note(
-        primary, f"{label} cleanup also failed with {type(cleanup).__name__}"
-    )
-    return primary
-
-
-def _unique_resources(*values: Any) -> tuple[Any, ...]:
-    """Preserve ownership order while removing identical shared stores."""
-
-    result: list[Any] = []
-    for value in values:
-        if value is not None and all(value is not item for item in result):
-            result.append(value)
-    return tuple(result)
 
 
 def durable_completion_deferred(invocation_id: str) -> bool:

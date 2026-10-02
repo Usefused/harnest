@@ -98,7 +98,7 @@ class PostgresTaskStore(TaskStore, CronStore):
             )
         return None if row is None else _task(row)
 
-    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Push owner, cursor, projection, ordering, and limit into one database query."""
         from .task_inspection import TASK_FIELDS, task_page, validate_page
 
@@ -226,7 +226,7 @@ class PostgresTaskStore(TaskStore, CronStore):
             )
         return tuple(_cron(row) for row in rows)
 
-    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Read a bounded metadata projection with owner filtering in one SQL query."""
         from .task_inspection import CRON_FIELDS, cron_page, validate_page
 

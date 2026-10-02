@@ -7,6 +7,8 @@ It talks to the Engine's public OAuth endpoints over HTTPS.
 
 from __future__ import annotations
 
+from typing import Any
+
 import base64
 import hashlib
 import json
@@ -154,7 +156,7 @@ class FusedAuthClient:
         form.setdefault("client_id", self.client_id)
         return {}
 
-    def _post(self, path: str, form: dict, expect_json: bool):
+    def _post(self, path: str, form: dict, expect_json: bool) -> dict[str, Any] | None:
         """Performs one form-urlencoded POST and decodes the response."""
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         headers.update(self._auth_headers(form))
@@ -180,7 +182,7 @@ class FusedAuthClient:
                 error.code,
             ) from error
 
-    def _get_json(self, path: str):
+    def _get_json(self, path: str) -> dict[str, Any]:
         """Performs one unauthenticated GET and decodes its JSON body."""
         with urllib.request.urlopen(f"{self.issuer}{path}") as response:
             return json.loads(response.read().decode("utf-8"))

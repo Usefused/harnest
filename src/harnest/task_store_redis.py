@@ -46,7 +46,7 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         )
         return _task_load(raw) if raw else None
 
-    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Index legacy jobs incrementally and project one owner page inside Redis."""
         from .task_inspection import TASK_FIELDS, task_page, validate_page
 
@@ -162,7 +162,7 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         )
         return tuple(_cron_load(raw) for raw in rows)
 
-    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict:
+    async def list_cron_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Project one indexed owner page in Redis without transferring private arguments."""
         from .task_inspection import CRON_FIELDS, cron_page, validate_page
 

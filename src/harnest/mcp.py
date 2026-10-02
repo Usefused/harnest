@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google.adk.tools.base_toolset import BaseToolset
+
 import os
 import re
 from pathlib import Path
@@ -365,7 +371,7 @@ class MCPClient:
             attach_mcp_lifecycle(toolset, runtime_binding)
         return toolset
 
-    def _construct_adk_toolset(self, classes, binding):
+    def _construct_adk_toolset(self, classes: tuple[type[Any], ...], binding: _MCPClientLifecycleBinding | None) -> BaseToolset:
         """Keep portable parameter and constructor failures inside their component."""
         from .agent_plugin_runtime import disabled_adk_toolset, portable_adk_toolset
         try:

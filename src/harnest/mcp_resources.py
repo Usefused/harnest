@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .mcp_http_session import HTTPSession
+    from mcp import ClientSession
+    from mcp.types import InitializeResult
+
 from contextlib import asynccontextmanager
 from datetime import timedelta
 import json
@@ -37,7 +46,7 @@ async def tool_capabilities(tools: list[Any], configured: Any, framework: str, *
 
 
 @asynccontextmanager
-async def managed_resource_client(configured: Any, *, framework: str = "langgraph"):
+async def managed_resource_client(configured: Any, *, framework: str = "langgraph") -> AsyncIterator[MCPResourceClient]:
     """Acquire only this caller's lifecycle ownership and release it on every exit."""
 
     binding = configured._lifecycle_binding(framework)
@@ -61,7 +70,7 @@ def _bounded_result(value: Any, limit: int) -> dict[str, Any]:
 
 
 @asynccontextmanager
-async def resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None):
+async def resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult] | tuple[HTTPSession, SimpleNamespace]]:
     """Share discovery selection across CLI, playground, and model-facing reads."""
 
     from .mcp_http_session import modern_session
@@ -77,7 +86,7 @@ async def resource_session(configured: Any, framework: str = "langgraph", *, mes
 
 
 @asynccontextmanager
-async def sdk_resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None):
+async def sdk_resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult]]:
     """Own the SDK 1.x transport in one task for initialized-protocol servers."""
 
     from mcp import ClientSession, StdioServerParameters

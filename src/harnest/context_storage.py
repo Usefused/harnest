@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from . import context
 from .context import ContextResourceError
@@ -12,8 +12,17 @@ from .context import ContextResourceError
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 
 
+_ResourceT = TypeVar("_ResourceT")
+
+
 class StorageContext:
     """Resolve custom storage without exposing sessions or checkpoints."""
+
+    @overload
+    def __call__(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def __call__(self, name: str, expected_type: None = None) -> Any: ...
 
     def __call__(
         self, name: str, expected_type: type[Any] | None = None
@@ -21,6 +30,12 @@ class StorageContext:
         """Return one named custom resource for concise authored access."""
 
         return self.resource(name, expected_type)
+
+    @overload
+    def resource(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
+
+    @overload
+    def resource(self, name: str, expected_type: None = None) -> Any: ...
 
     def resource(
         self, name: str, expected_type: type[Any] | None = None

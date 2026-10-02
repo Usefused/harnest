@@ -1,5 +1,13 @@
 """Discover standard packages without importing Harnest-specific Python files."""
 
+from __future__ import annotations
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .plugin import PluginResources
+
 import hashlib
 from pathlib import Path
 import re
@@ -12,7 +20,7 @@ from .agent_plugin_runtime import PortableMCP
 from .mcp import MCPClient
 
 
-def discover_portable_plugin(root: Path):
+def discover_portable_plugin(root: Path) -> PluginResources | None:
     """Reject invalid manifests before inspecting any executable components."""
     from .plugin import PluginResources
     try:

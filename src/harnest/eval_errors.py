@@ -1,5 +1,9 @@
 """Privacy-safe distinction between native execution errors and scored failures."""
 
+from __future__ import annotations
+
+from collections.abc import Iterator
+
 from contextlib import contextmanager
 from typing import Any
 
@@ -61,7 +65,7 @@ def evaluation_error_plugin() -> Any:
     class EvaluationErrors(BasePlugin):
         """Keep only redacted diagnostics for one isolated evaluator app."""
 
-        def __init__(self):
+        def __init__(self) -> None:
             """Do not retain exception objects containing user code or credentials."""
             super().__init__(name="_harnest_eval_errors")
             self.message: str | None = None
@@ -74,7 +78,7 @@ def evaluation_error_plugin() -> Any:
 
 
 @contextmanager
-def evaluation_error_boundary(observer: Any):
+def evaluation_error_boundary(observer: Any) -> Iterator[None]:
     """Preserve genuine scored assertions but explain native execution failures."""
     try:
         yield

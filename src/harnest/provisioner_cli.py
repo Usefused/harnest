@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
+
 import argparse
 import json
 from pathlib import Path
@@ -83,7 +85,7 @@ def initialize(root: Path) -> dict:
     return {"created": MANIFEST}
 
 
-def dispatch(service: Provisioner, args) -> dict:
+def dispatch(service: Provisioner, args: Namespace) -> dict:
     """Validate revision selection before dispatch so unused options cannot imply a rollback."""
 
     if args.operation == "rollback" and args.revision is None:
@@ -95,7 +97,7 @@ def dispatch(service: Provisioner, args) -> dict:
     return _selected_operation(service, args)
 
 
-def _selected_operation(service: Provisioner, args) -> dict:
+def _selected_operation(service: Provisioner, args: Namespace) -> dict:
     """Share revision-aware operations across the native CLI and Builder jobs."""
 
     if args.operation == "init":

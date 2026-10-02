@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from .memory_local import InMemoryStore
+    from .memory_local import InMemoryStore as InMemoryStore
 
 
 class MemoryConflictError(RuntimeError):

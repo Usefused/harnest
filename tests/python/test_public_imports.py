@@ -8,9 +8,11 @@ import pickle
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from _test_sources import authored_files
+from _typing_probes import public_api_probes
 
 
 CONTRACTS = {
@@ -48,7 +50,7 @@ CONTRACTS = {
     "context": {
         "context_session": ["SessionContext", "SessionDataError"],
         "context_storage": ["StorageContext"],
-        "context_agent": ["AgentResponse", "AgentInvocationTimeout", "LocalAgentRuntime"],
+        "_context_agent": ["AgentResponse", "AgentInvocationTimeout", "LocalAgentRuntime"],
         "context_assets": ["ScopedAssets"],
     },
     "runtime": {
@@ -81,6 +83,20 @@ CONTRACTS = {
 
 
 PUBLIC_API_SNAPSHOT = Path(__file__).resolve().parents[1] / "fixtures/public-api.json"
+
+
+def _check_consumer_types(filename: str) -> dict:
+    """Type-check consumer code without executing invocation-bound expressions."""
+    root = Path(__file__).resolve().parents[2]
+    fixture = root / "tests/typing" / filename
+    result = subprocess.run(
+        [sys.executable, "-m", "pyright", "--project", str(root / "tests/typing/pyrightconfig.json"),
+         "--pythonpath", sys.executable, "--outputjson", str(fixture)],
+        cwd=root, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode not in {0, 1}:
+        raise AssertionError(f"Pyright failed to run: {result.stderr or result.stdout}")
+    return json.loads(result.stdout)
 
 
 def _public_api_snapshot() -> dict[str, list[str]]:
@@ -200,6 +216,81 @@ def _object_ide_gaps(owner: str, value: object) -> tuple[list[str], list[str]]:
 
 
 class PublicImportTests(unittest.TestCase):
+    def test_context_agent_implementation_has_no_public_module_path(self):
+        """Public context access must not recreate the removed helper namespace."""
+        import harnest
+        from harnest import context
+        from harnest._context_agent import AgentSession
+
+        self.assertIs(context.AgentSession, AgentSession)
+        self.assertIsNotNone(context.agent)
+        self.assertNotIn("context_agent", harnest.__all__)
+        self.assertNotIn("context_agent", dir(harnest))
+        self.assertFalse(hasattr(harnest, "context_agent"))
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("harnest.context_agent")
+
+    def test_public_namespaces_preserve_consumer_types(self):
+        """Use Pylance's checker to reject public access chains that degrade to Any."""
+        result = _check_consumer_types("public_api.py")
+        self.assertEqual(result["summary"]["errorCount"], 0, result["generalDiagnostics"])
+
+    def test_every_public_class_and_method_resolves_statically(self):
+        """Catch unknown exported types, including inherited and protocol members."""
+        source = public_api_probes(_public_api_snapshot())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "public_surface.py"
+            path.write_text(source, encoding="utf-8")
+            result = _check_consumer_types(str(path))
+        diagnostics = result["generalDiagnostics"]
+        self.assertEqual(result["summary"]["errorCount"], 0, diagnostics)
+        reveals = [item for item in diagnostics if item["severity"] == "information"]
+        self.assertEqual(len(reveals), source.count("reveal_type("))
+        self.assertGreater(len(reveals), 2000)
+        self.assertEqual([item["message"] for item in reveals if "Unknown" in item["message"]], [])
+        lines = source.splitlines()
+        erased = [item["message"] for item in reveals
+                  if lines[item["range"]["start"]["line"]].endswith("# callable-contract")
+                  and item["message"].endswith('is "Any"')]
+        self.assertEqual(erased, [])
+
+    def test_signature_audit_covers_private_nested_and_async_methods(self):
+        """The package gate must catch omissions beyond the exported namespace."""
+        from scripts.check_python_typing import audit, package_exclusions
+
+        source = "class _Private:\n    async def method(self, x, /, *args, y, **kwargs):\n        def nested(z):\n            return z\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "sample.py").write_text(source, encoding="utf-8")
+            (path / "retired").mkdir()
+            (path / "retired/prototype.py").write_text("def obsolete(x): return x\n", encoding="utf-8")
+            (path / "pyproject.toml").write_text(
+                '[tool.hatch.build.targets.wheel]\nexclude = ["./retired/**"]\n', encoding="utf-8")
+            classes, functions, gaps = audit(path, exclude=package_exclusions(path, path))
+        self.assertEqual((classes, functions), (1, 2))
+        self.assertEqual(len(gaps), 2)
+        self.assertIn("method: x, y, args, kwargs, return", gaps[0])
+        self.assertIn("nested: z, return", gaps[1])
+
+    def test_decorators_preserve_authored_argument_validation(self):
+        """Task and lifecycle wrappers must not erase their original signatures."""
+        result = _check_consumer_types("invalid_decorators.py")
+        errors = [item for item in result["generalDiagnostics"] if item["severity"] == "error"]
+        self.assertEqual([item["rule"] for item in errors], [
+            "reportArgumentType", "reportArgumentType", "reportCallIssue",
+            "reportArgumentType", "reportArgumentType", "reportArgumentType", "reportArgumentType",
+        ], errors)
+
+    def test_public_context_types_reject_invalid_calls(self):
+        """Concrete types must detect bad arguments and misspelled members."""
+        result = _check_consumer_types("invalid_api.py")
+        errors = [item for item in result["generalDiagnostics"] if item["severity"] == "error"]
+        self.assertEqual(
+            [item["rule"] for item in errors],
+            ["reportArgumentType", "reportAttributeAccessIssue", "reportAttributeAccessIssue"],
+            errors,
+        )
+
     def test_cron_storage_legacy_pickles_and_helper_keep_working(self):
         """Existing serialized records and helper imports survive the private move."""
 
