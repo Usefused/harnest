@@ -33,6 +33,26 @@
 
 - Let queued tasks reopen an existing owner-scoped agent session with `context.agent.open_session(session_id)` and invoke a later turn in that conversation.
 
+## [1.7.0](https://github.com/Usefused/harnest/compare/v1.6.0...v1.7.0) (2026-10-03)
+
+
+### Features
+
+* add cron limits and queued session continuation ([c43fb9e](https://github.com/Usefused/harnest/commit/c43fb9ebae8baf35526623b5effe579379589084))
+* improve Python IDE support and consolidate runtime helpers ([c391e01](https://github.com/Usefused/harnest/commit/c391e0157c82d128275bd327a56422ffb726e2a5))
+* **studio:** add UI packs and company CLI integration ([9496545](https://github.com/Usefused/harnest/commit/94965455a300fb5570be5ec0f82989f49a90976c))
+* **studio:** ship typed UI and Python embedding contracts ([e660377](https://github.com/Usefused/harnest/commit/e66037756c97940b6a4e0bb99e86536cfca71271))
+
+
+### Fixes
+
+* close ADK evaluation scopes on cancellation ([e9b8904](https://github.com/Usefused/harnest/commit/e9b89042b68304197397347cf935e5a769e06604))
+
+
+### Refactoring
+
+* make task storage implementation private ([21b3c05](https://github.com/Usefused/harnest/commit/21b3c052b4ed6a49b1ec1064d353e1b37f640edc))
+
 ## [1.6.0](https://github.com/Usefused/harnest/compare/v1.5.0...v1.6.0) (2026-10-01)
 
 - Fix Studio returning HTTP 500 when loading its homepage on Windows systems with a non-UTF-8 default encoding.
