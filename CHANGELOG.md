@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.7.0](https://github.com/Usefused/harnest/compare/v1.6.0...v1.7.0) (2026-10-03)
 
 - Fix ADK evaluation cancellation leaving invocation capabilities active when
   native completion callbacks are skipped. Close evaluation streams in their
@@ -32,9 +32,6 @@
   Bundled `harnest-studio` and `harnest-studio-ui` coding-agent skills cover launch settings, company packs, builder configuration, themes, layouts, and section replacements; install them with `harnest skills install`.
 
 - Let queued tasks reopen an existing owner-scoped agent session with `context.agent.open_session(session_id)` and invoke a later turn in that conversation.
-
-## [1.7.0](https://github.com/Usefused/harnest/compare/v1.6.0...v1.7.0) (2026-10-03)
-
 
 ### Features
 
