@@ -137,6 +137,10 @@ def evaluation_context_plugins() -> tuple[Any, Any]:
             scopes.set(pending[:-1])
             await scope.__aexit__(None, None, None)
 
+        def _depth(self) -> int:
+            """Identify scopes opened by a stream without taking ownership of its parent."""
+            return len(scopes.get())
+
         async def after_run_callback(self, *, invocation_context: Any) -> None:
             """Clean up successful runs and native early-stop/cancellation paths."""
             await self._close()

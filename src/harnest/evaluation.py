@@ -7,7 +7,7 @@ from functools import lru_cache
 import json
 import sys
 from types import ModuleType
-from typing import Any, Callable, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 import uuid
 
 from .eval_metrics import MetricContext, MetricScore, metric
@@ -260,7 +260,7 @@ def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
         return
     from .context_adk import adk_agent_context_plugins
     from .eval_adk import evaluation_context_plugins
-    from .eval_adk_cleanup import guarded_eval_plugins, guarded_eval_root
+    from .eval_adk_cleanup import guarded_eval_plugins, guarded_eval_app
     from .eval_errors import evaluation_error_boundary, evaluation_error_plugin
 
     enter, exit_plugin = adk_agent_context_plugins(app.root_agent.name)
@@ -268,11 +268,22 @@ def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
     observer = evaluation_error_plugin()
 
     async def close_scope() -> None:
-        """Unwind identity before capabilities when legacy ADK skips callbacks."""
+        """Unwind identity before capabilities when native ADK skips callbacks."""
         try:
             await exit_plugin.after_run_callback(invocation_context=None)
         finally:
             await eval_exit._close()
+
+    def cleanup_factory() -> Callable[[], Awaitable[None]]:
+        """Bound fallback cleanup to scopes opened by this particular stream."""
+        depth = eval_exit._depth()
+
+        async def close_pending() -> None:
+            """Leave inherited/nested scopes intact if native callbacks already unwound."""
+            if eval_exit._depth() > depth:
+                await close_scope()
+
+        return close_pending
     # Capability setup precedes authored callbacks; identity and resource
     # cleanup run last so after/error callbacks can still use session identity.
     plugins = [
@@ -280,9 +291,8 @@ def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
         *list(app.plugins), exit_plugin, eval_exit,
     ]
     with evaluation_error_boundary(observer):
-        root = guarded_eval_root(app.root_agent, close_scope)
         plugins = guarded_eval_plugins(app.root_agent, plugins, close_scope)
-        yield app.model_copy(update={"plugins": plugins, "root_agent": root})
+        yield guarded_eval_app(app.model_copy(update={"plugins": plugins}), cleanup_factory)
 
 
 def supported_metric_names() -> tuple[str, ...]:

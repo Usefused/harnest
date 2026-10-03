@@ -5,6 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from io import StringIO
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from google.adk.plugins import BasePlugin
 from google.adk.agents import SequentialAgent
@@ -168,7 +169,78 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
             with self.subTest(sequential=sequential):
                 self._cancel(sequential=sequential)
 
-    def _cancel(self, *, sequential):
+    def test_cancellation_without_native_completion_callback_revokes_context(self):
+        """Keep the ADK 2.11 cancellation regression covered on the locked version too."""
+        self._cancel(sequential=False, skip_completion=True)
+
+    def test_nested_stream_cleanup_preserves_parent_invocation(self):
+        """A completed inner stream must not pop the caller's still-active scope."""
+        @tool
+        def identity_tool() -> str:
+            """Use a real ADK tool while two consumer streams share one task."""
+            return context.session_id
+
+        application = _application(identity_tool)
+        plugin = _IdentityPlugin()
+        application.native_app.plugins.append(plugin)
+
+        async def run():
+            async with adk_evaluation_runtime(application):
+                with prepared_adk_eval_app(application.native_app) as app:
+                    runner, stream = await self._native_stream(app)
+                    try:
+                        await anext(stream)
+                        parent = context.current()
+                        inner_runner, inner_stream = await self._native_stream(app.model_copy(), session_id="inner-session")
+                        try:
+                            async for _ in inner_stream:
+                                pass
+                        finally:
+                            await inner_stream.aclose()
+                            await inner_runner.close()
+                        self.assertIs(context.current(), parent)
+                        parent._require_active()
+                    finally:
+                        await stream.aclose()
+                        await runner.close()
+
+        self._run(run())
+        self._assert_revoked(plugin)
+
+    def test_runner_guard_only_applies_to_prepared_apps(self):
+        """Installing the adapter must not grant managed authority to other ADK apps."""
+        seen = []
+
+        @tool
+        def probe_tool() -> str:
+            """Observe authority without requiring a managed invocation."""
+            seen.append(optional_active_context())
+            return "done"
+
+        application = _application(probe_tool)
+
+        async def run():
+            async with adk_evaluation_runtime(application):
+                with prepared_adk_eval_app(application.native_app) as app:
+                    for selected in (application.native_app, app, application.native_app):
+                        runner, stream = await self._native_stream(selected)
+                        try:
+                            async for _ in stream:
+                                pass
+                        finally:
+                            await stream.aclose()
+                            await runner.close()
+            self.assertIsNone(optional_active_context())
+
+        self._run(run())
+        self.assertEqual(len(seen), 3)
+        self.assertIsNone(seen[0])
+        self.assertIsNotNone(seen[1])
+        with self.assertRaises(ContextUnavailableError):
+            seen[1]._require_active()
+        self.assertIsNone(seen[2])
+
+    def _cancel(self, *, sequential, skip_completion=False):
         """Cancel while a native tool owns the managed invocation context."""
         entered = asyncio.Event()
         plugin = _IdentityPlugin()
@@ -187,6 +259,12 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
             async with adk_evaluation_runtime(application):
                 with prepared_adk_eval_app(application.native_app) as app:
                     runner, stream = await self._native_stream(app)
+                    if skip_completion:
+                        # ADK's newer node runner intentionally omits after_run
+                        # on cancellation. Reproduce that contract on older pins.
+                        self.enterContext(patch.object(
+                            runner.plugin_manager, "run_after_run_callback", new=AsyncMock(),
+                        ))
 
                     async def consume():
                         try:
@@ -218,8 +296,14 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
         return replace(application, name=root.name, target=root,
                        native_app=App(name=root.name, root_agent=root))
 
-    def test_sequential_before_run_cancellation_revokes_context(self):
+    def test_before_run_cancellation_revokes_context(self):
         """Cancellation can occur after context entry but before agent dispatch."""
+        for sequential in (False, True):
+            with self.subTest(sequential=sequential):
+                self._before_run_cancel(sequential)
+
+    def _before_run_cancel(self, sequential):
+        """The stream boundary must cover callback setup as well as tool dispatch."""
         class CancelBeforeRun(_IdentityPlugin):
             async def before_run_callback(self, *, invocation_context):
                 await super().before_run_callback(invocation_context=invocation_context)
@@ -231,7 +315,7 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
             self.fail("tool should not run after callback cancellation")
 
         plugin = CancelBeforeRun()
-        application = self._execution_application(identity_tool, sequential=True)
+        application = self._execution_application(identity_tool, sequential=sequential)
         application.native_app.plugins.append(plugin)
 
         async def run():
@@ -359,14 +443,14 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
         self._run(run())
         self.assertEqual([row[0] for row in plugin.seen], ["before", "error"])
 
-    async def _native_stream(self, app):
+    async def _native_stream(self, app, *, session_id="eval-session"):
         """Use the same copied evaluation app with ADK-owned sessions/events."""
         sessions = InMemorySessionService()
         await sessions.create_session(app_name=app.name, user_id="eval-user",
-                                      session_id="eval-session")
+                                      session_id=session_id)
         runner = Runner(app=app, session_service=sessions)
         stream = runner.run_async(
-            user_id="eval-user", session_id="eval-session",
+            user_id="eval-user", session_id=session_id,
             new_message=types.Content(role="user", parts=[types.Part(text="probe")]),
         )
         return runner, stream

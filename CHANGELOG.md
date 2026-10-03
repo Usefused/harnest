@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix ADK evaluation cancellation leaving invocation capabilities active when
+  native completion callbacks are skipped. Close evaluation streams in their
+  owning task to prevent deferred cleanup errors across Python contexts.
+
 - Add versioned TypeScript definitions for Studio UI pack activation, commands,
   state, slots, requests, and appearance, exported with `harnest studio pack types`.
   Studio now ships Python typing metadata and checked embedding signatures.
