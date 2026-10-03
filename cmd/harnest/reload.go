@@ -131,7 +131,7 @@ func (a *application) reloadBundleAndPython(
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
-	python, err := a.agentPython(command, bundle, developmentEnvironmentProfile)
+	python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
@@ -146,7 +146,7 @@ func (a *application) reloadBundleAndPython(
 	// Environment synchronization may update the shared framework pin. Resolve once more so
 	// the compiled generation and interpreter share the final dependency identity.
 	python.releaseLease()
-	python, err = a.agentPython(command, refreshed, developmentEnvironmentProfile)
+	python, err = a.agentPython(command, refreshed, runtimeEnvironmentProfile)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}

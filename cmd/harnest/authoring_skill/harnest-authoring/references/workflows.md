@@ -53,26 +53,29 @@ examples rather than Python placeholders. Select
 `--mode advanced` at initialization only for a new project that needs direct
 framework APIs.
 
-`env sync` uses the embedded `uv` and Harnest wheel to create isolated,
-fingerprinted environments below `.harnest/environments/`. The default production
+`env sync` uses the embedded `uv` and Harnest wheel to reuse at most two
+environments: `.harnest/environments/agent` for runtime and compile profiles,
+and `.harnest/environments/eval` for development tests and evaluations. The default production
 profile writes `harnest-runtime.lock`; `--profile development` and `--profile eval`
 write separate development and evaluation locks. Commit every profile used by CI. MCP and eval
 packages join only the profiles that need them. Do
 not activate the environment or add Harnest, ADK, LangGraph, or framework
 adapters as agent dependencies. The explicit sync command maintains a `.venv`
 link for IDE discovery when that path is absent or already Harnest-owned. It
-also adds `${workspaceFolder}/.venv/bin/python` to the shared
-`.vscode/settings.json` used by VS Code, Antigravity IDE, Windsurf, and the
-Codex IDE extension's host editor when no interpreter is selected there. It
-preserves existing editor choices and user-owned `.venv` paths, and prints the
-exact managed interpreter as a fallback. Codex desktop, Codex CLI, and
+also updates `python.defaultInterpreterPath` in `.vscode/settings.json` to the
+selected `.harnest/environments/agent` or `eval` interpreter, using a portable
+`${workspaceFolder}` path. It preserves other settings, comments, and user-owned
+`.venv` paths. VS Code may retain a previously selected interpreter internally;
+use Python: Select Interpreter with the printed path in that case. Codex desktop, Codex CLI, and
 Antigravity 2.0 can run `.venv/bin/python` directly. Upgrade Harnest to change
 framework versions.
 Harnest Extensions use this same interpreter and dependency set. Agent Plugin
 MCP servers may use separate runtimes; their mutable dependencies and caches
 belong in client-managed `PLUGIN_DATA`, not the immutable plugin source.
 Compile, test, run, and serve synchronize automatically. Compile selects the
-lean production profile; serve, run, and ordinary tests share development. In
+lean production profile by default; serve and run use runtime, while ordinary
+tests use development. Stop running commands before changing their environment
+dependencies. Legacy fingerprint environments are removed during synchronization. In
 CI, use `harnest env sync AGENT_DIR --profile development --frozen` before
 ordinary tests, or use the eval profile before `test --evals`, to reject lock drift.
 

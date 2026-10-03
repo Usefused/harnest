@@ -32,12 +32,20 @@ func parseEnvironmentProfile(value string) (environmentProfile, error) {
 	return "", fmt.Errorf("--profile must be runtime, compile, development, or eval")
 }
 
-// stateFile keeps the existing runtime pointer compatible while isolating tools.
+// directoryName maps dependency profiles onto the two reusable project environments.
+func (p environmentProfile) directoryName() string {
+	if p == developmentEnvironmentProfile || p == evalEnvironmentProfile {
+		return "eval"
+	}
+	return "agent"
+}
+
+// stateFile shares a publication pointer so switching profiles invalidates the old cache.
 func (p environmentProfile) stateFile() string {
-	if p == runtimeEnvironmentProfile {
+	if p.directoryName() == "agent" {
 		return environmentStateFile
 	}
-	return fmt.Sprintf("environment-%s.json", p)
+	return "environment-eval.json"
 }
 
 // requirementsLockFile keeps production resolution independent from development tools.

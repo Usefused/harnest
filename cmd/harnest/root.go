@@ -77,7 +77,8 @@ Typical workflow:
   harnest studio
   harnest studio --workspace my-agent
 
-Released commands select isolated production runtime, compile, development, or eval environments derived
+Released commands reuse at most two project environments: agent for runtime and
+compile profiles, and eval for development tests and evaluations. They derive
 from config.yaml, authored dependency metadata, the corresponding committed
 Harnest lock, and the embedded Harnest wheel. Framework MCP and evaluation
 dependencies are installed only when the source or command needs them.

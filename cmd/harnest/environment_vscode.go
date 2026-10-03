@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 const vscodeInterpreterKey = "python.defaultInterpreterPath"
 
-// syncVSCodeInterpreterSettings selects Harnest's stable link for VS Code-compatible editors.
-func syncVSCodeInterpreterSettings(project string) (string, error) {
+// syncVSCodeInterpreterSettings records the explicitly synchronized interpreter, independently of .venv.
+func syncVSCodeInterpreterSettings(project, python string) (string, error) {
 	directory := filepath.Join(project, ".vscode")
 	if err := ensureRegularPrivateDirectory(directory, "VS Code settings directory"); err != nil {
 		return "", err
@@ -22,11 +21,12 @@ func syncVSCodeInterpreterSettings(project string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	interpreter := "${workspaceFolder}/.venv/bin/python"
-	if runtime.GOOS == "windows" {
-		interpreter = "${workspaceFolder}/.venv/Scripts/python.exe"
+	relative, err := filepath.Rel(project, python)
+	if err != nil {
+		return "", fmt.Errorf("resolve VS Code interpreter: %w", err)
 	}
-	updated, changed, err := addVSCodeInterpreter(contents, interpreter)
+	interpreter := "${workspaceFolder}/" + filepath.ToSlash(relative)
+	updated, changed, err := setVSCodeInterpreter(contents, interpreter)
 	if err != nil {
 		return "", fmt.Errorf("read VS Code settings %s: %w", path, err)
 	}
@@ -57,8 +57,8 @@ func readVSCodeSettings(path string) ([]byte, os.FileMode, error) {
 	return contents, info.Mode().Perm(), nil
 }
 
-// addVSCodeInterpreter preserves JSONC comments, trailing commas, and existing preferences.
-func addVSCodeInterpreter(contents []byte, interpreter string) ([]byte, bool, error) {
+// setVSCodeInterpreter updates only the interpreter value, preserving unrelated JSONC settings.
+func setVSCodeInterpreter(contents []byte, interpreter string) ([]byte, bool, error) {
 	masked, err := maskVSCodeComments(contents)
 	if err != nil {
 		return nil, false, err
@@ -68,7 +68,7 @@ func addVSCodeInterpreter(contents []byte, interpreter string) ([]byte, bool, er
 		return nil, false, fmt.Errorf("settings.json must contain a JSON object")
 	}
 	if _, exists := settings[vscodeInterpreterKey]; exists {
-		return contents, false, nil
+		return replaceVSCodeInterpreter(contents, maskVSCodeTrailingCommas(masked), interpreter)
 	}
 	closing := bytes.LastIndexByte(masked, '}')
 	before := bytes.TrimSpace(masked[:closing])
@@ -80,6 +80,45 @@ func addVSCodeInterpreter(contents []byte, interpreter string) ([]byte, bool, er
 	addition := []byte(fmt.Sprintf("%s\n  %q: %s\n", separator, vscodeInterpreterKey, value))
 	updated := append(append(append([]byte{}, contents[:closing]...), addition...), contents[closing:]...)
 	return updated, true, nil
+}
+
+// replaceVSCodeInterpreter uses decoder offsets to preserve comments and unrelated settings verbatim.
+// Updating every duplicate top-level key prevents a later stale value from winning in VS Code.
+func replaceVSCodeInterpreter(contents, masked []byte, interpreter string) ([]byte, bool, error) {
+	decoder := json.NewDecoder(bytes.NewReader(masked))
+	if _, err := decoder.Token(); err != nil {
+		return nil, false, err
+	}
+	replacement, _ := json.Marshal(interpreter)
+	var output bytes.Buffer
+	copied := 0
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, false, err
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false, err
+		}
+		if key != vscodeInterpreterKey {
+			continue
+		}
+		var current string
+		if json.Unmarshal(value, &current) == nil && current == interpreter {
+			continue
+		}
+		end := int(decoder.InputOffset())
+		start := end - len(value)
+		output.Write(contents[copied:start])
+		output.Write(replacement)
+		copied = end
+	}
+	if copied == 0 {
+		return contents, false, nil
+	}
+	output.Write(contents[copied:])
+	return output.Bytes(), true, nil
 }
 
 // maskVSCodeComments blanks JSONC comments while retaining offsets and line breaks.

@@ -190,15 +190,22 @@ func assertTestEnvironmentRemoved(t *testing.T, project, name string) {
 	}
 }
 
-// assertVSCodeInterpreter checks the editor points through Harnest's stable link.
+// assertVSCodeInterpreter checks that the editor directly selects the synchronized agent environment.
 func assertVSCodeInterpreter(t *testing.T, agent string) {
+	t.Helper()
+	assertVSCodeProfileInterpreter(t, agent, runtimeEnvironmentProfile)
+}
+
+// assertVSCodeProfileInterpreter verifies that profile switches update the concrete interpreter path.
+func assertVSCodeProfileInterpreter(t *testing.T, agent string, profile environmentProfile) {
 	t.Helper()
 	contents := mustReadTestFile(t, filepath.Join(agent, ".vscode", "settings.json"))
 	var settings map[string]string
 	if err := json.Unmarshal(contents, &settings); err != nil {
 		t.Fatal(err)
 	}
-	if settings[vscodeInterpreterKey] != "${workspaceFolder}/.venv/bin/python" {
+	expected := "${workspaceFolder}/" + filepath.ToSlash(runtimePythonPath(filepath.Join(".harnest", "environments", profile.directoryName())))
+	if settings[vscodeInterpreterKey] != expected {
 		t.Fatalf("VS Code interpreter is %q", settings[vscodeInterpreterKey])
 	}
 }
@@ -242,21 +249,21 @@ func assertFrozenSyncPreservesIDEEnvironment(
 	}
 }
 
-// mustRetargetIDEEnvironment checks that editor discovery follows a new dependency resolution.
+// mustRetargetIDEEnvironment checks that dependency changes reuse the stable editor target.
 func mustRetargetIDEEnvironment(
 	t *testing.T, sys system, agent, idePath, firstTarget string,
 ) {
 	t.Helper()
 	mustSyncAgentEnvironment(t, sys, agent)
-	if updatedTarget := mustReadIDEEnvironmentLink(t, idePath); updatedTarget == firstTarget {
-		t.Fatalf("dependency change did not retarget IDE link %q", updatedTarget)
+	if updatedTarget := mustReadIDEEnvironmentLink(t, idePath); updatedTarget != firstTarget {
+		t.Fatalf("dependency change moved the stable IDE link %q", updatedTarget)
 	}
-	assertTestEnvironmentRemoved(t, agent, filepath.Base(firstTarget))
+	assertTestEnvironmentExists(t, agent, filepath.Base(firstTarget))
 	assertVSCodeInterpreter(t, agent)
 }
 
-// TestEnvironmentSyncPreservesVSCodeJSONCAndExistingInterpreter protects editor preferences.
-func TestEnvironmentSyncPreservesVSCodeJSONCAndExistingInterpreter(t *testing.T) {
+// TestEnvironmentSyncUpdatesInterpreterAndPreservesVSCodeJSONC refreshes stale interpreter choices.
+func TestEnvironmentSyncUpdatesInterpreterAndPreservesVSCodeJSONC(t *testing.T) {
 	root, agent := scaffoldIDEEnvironmentTestAgent(t)
 	settingsPath := filepath.Join(agent, ".vscode", "settings.json")
 	if err := os.Mkdir(filepath.Dir(settingsPath), 0o755); err != nil {
@@ -284,9 +291,7 @@ func TestEnvironmentSyncPreservesVSCodeJSONCAndExistingInterpreter(t *testing.T)
 	mustWriteEnvironmentFixture(t, settingsPath,
 		"{\n  \"python.defaultInterpreterPath\": \"/user/python\"\n}\n")
 	mustSyncAgentEnvironment(t, environmentTestSystem(t, root), agent)
-	if got := string(mustReadTestFile(t, settingsPath)); got != "{\n  \"python.defaultInterpreterPath\": \"/user/python\"\n}\n" {
-		t.Fatalf("sync replaced an explicit interpreter: %s", got)
-	}
+	assertVSCodeInterpreter(t, agent)
 }
 
 // mustSyncAgentEnvironment keeps command plumbing out of cache-policy assertions.
@@ -396,6 +401,7 @@ func mustSyncWithUserOwnedIDEEnvironment(t *testing.T, root, agent string) {
 		"select ",
 		" manually",
 	})
+	assertVSCodeInterpreter(t, agent)
 }
 
 func TestFrozenEnvironmentSyncRejectsMissingRuntimeLockBeforeUV(t *testing.T) {
@@ -583,7 +589,7 @@ func TestTestCommandSelectsDevelopmentAndEvalProfiles(t *testing.T) {
 	})
 }
 
-func TestServeSelectsDevelopmentProfile(t *testing.T) {
+func TestServeSelectsRuntimeProfile(t *testing.T) {
 	root := t.TempDir()
 	agent := filepath.Join(root, "serve-profile-agent")
 	if err := createScaffold(agent, "serve-profile-agent"); err != nil {
@@ -602,11 +608,11 @@ func TestServeSelectsDevelopmentProfile(t *testing.T) {
 		t.Fatal("serve dependency preparation returned an empty bundle")
 	}
 	assertFilesExist(t, agent, []string{
-		developmentEnvironmentProfile.requirementsLockFile(),
-		filepath.Join(".harnest", developmentEnvironmentProfile.stateFile()),
+		runtimeEnvironmentProfile.requirementsLockFile(),
+		filepath.Join(".harnest", runtimeEnvironmentProfile.stateFile()),
 	})
-	if _, err := os.Stat(filepath.Join(agent, runtimeRequirementsLockFile)); !os.IsNotExist(err) {
-		t.Fatalf("serve unexpectedly selected the production runtime profile: %v", err)
+	if _, err := os.Stat(filepath.Join(agent, developmentEnvironmentProfile.requirementsLockFile())); !os.IsNotExist(err) {
+		t.Fatalf("serve unexpectedly selected the test profile: %v", err)
 	}
 }
 

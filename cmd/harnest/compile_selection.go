@@ -128,7 +128,7 @@ func inspectProfileDependencyPlan(bundle engine.Bundle, profile environmentProfi
 	return inspectRuntimeDependencyPlan(bundle)
 }
 
-// compileProfile preserves the existing production environment when no optional packages are requested.
+// compileProfile avoids resynchronizing the agent slot when no compile extras are requested.
 func compileProfile(bundle engine.Bundle) (environmentProfile, error) {
 	plan, err := inspectCompileDependencyPlan(bundle)
 	if err != nil {

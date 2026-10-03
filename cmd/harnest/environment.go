@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,10 +68,10 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 				// The managed runtime is still usable when an editor convenience
 				// link cannot be published, especially when the user owns .venv.
 				fmt.Fprintf(command.ErrOrStderr(), "IDE environment unchanged: %v\n", err)
-				return nil
+			} else {
+				fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
 			}
-			fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
-			settingsPath, err := syncVSCodeInterpreterSettings(bundle.Directory)
+			settingsPath, err := syncVSCodeInterpreterSettings(bundle.Directory, selection.Executable)
 			if err != nil {
 				fmt.Fprintf(command.ErrOrStderr(), "VS Code-compatible editor settings unchanged: %v\n", err)
 				return nil
@@ -94,12 +95,17 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 	return command
 }
 
+// agentPython leases the selected interpreter before another command can replace it.
 func (a *application) agentPython(
 	command *cobra.Command, bundle engine.Bundle, profile environmentProfile,
 ) (pythonSelection, error) {
-	selection, err := a.syncAgentEnvironment(command, bundle, profile, false)
+	selection, err := a.prepareAgentEnvironment(command, bundle, profile, false, true)
 	if err == nil {
-		return leaseAgentPython(bundle.Directory, selection)
+		return selection, nil
+	}
+	var busy *environmentBusyError
+	if errors.As(err, &busy) {
+		return pythonSelection{}, err
 	}
 	if releaseVersionPattern.MatchString(a.version) {
 		return pythonSelection{}, err
@@ -109,12 +115,19 @@ func (a *application) agentPython(
 	return a.resolvePython()
 }
 
-// syncAgentEnvironment resolves the selected command profile without changing other environments.
+// syncAgentEnvironment synchronizes a profile into its reusable environment.
 func (a *application) syncAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
 	profile environmentProfile,
 	frozen bool,
+) (pythonSelection, error) {
+	return a.prepareAgentEnvironment(command, bundle, profile, frozen, false)
+}
+
+// prepareAgentEnvironment serializes cache selection, replacement, migration, and leasing.
+func (a *application) prepareAgentEnvironment(
+	command *cobra.Command, bundle engine.Bundle, profile environmentProfile, frozen, lease bool,
 ) (pythonSelection, error) {
 	if err := validateAgentDependencyPolicy(bundle); err != nil {
 		return pythonSelection{}, err
@@ -131,6 +144,14 @@ func (a *application) syncAgentEnvironment(
 	if err != nil {
 		return pythonSelection{}, fmt.Errorf("load embedded uv: %w", err)
 	}
+	return a.selectAgentEnvironment(command, bundle, profile, frozen, lease, wheel, uv, plan)
+}
+
+// selectAgentEnvironment holds the project lock through publication and lease acquisition.
+func (a *application) selectAgentEnvironment(
+	command *cobra.Command, bundle engine.Bundle, profile environmentProfile, frozen, lease bool,
+	wheel runtimewheel.Artifact, uv uvbootstrap.Artifact, plan runtimeDependencyPlan,
+) (pythonSelection, error) {
 	paths, err := inspectEnvironmentPaths(bundle, profile)
 	if err != nil {
 		return pythonSelection{}, err
@@ -139,18 +160,25 @@ func (a *application) syncAgentEnvironment(
 	if err != nil {
 		return pythonSelection{}, err
 	}
-	if selection, found := cachedAgentPython(paths, fingerprint); found {
-		return selection, nil
-	}
 	unlock, err := lockEnvironment(paths.lock)
 	if err != nil {
 		return pythonSelection{}, err
 	}
 	defer unlock()
-	if selection, found := cachedAgentPython(paths, fingerprint); found {
-		return selection, nil
+	selection, found := cachedAgentPython(paths, fingerprint)
+	if !found || filepath.Base(filepath.Dir(filepath.Dir(selection.Executable))) != profile.directoryName() {
+		selection, err = a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
+		if err != nil {
+			return pythonSelection{}, err
+		}
 	}
-	return a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
+	if err := migrateAgentEnvironments(bundle.Directory, selection); err != nil {
+		return pythonSelection{}, err
+	}
+	if lease {
+		return leaseAgentPythonLocked(bundle.Directory, selection)
+	}
+	return selection, nil
 }
 
 type environmentPaths struct {
@@ -391,10 +419,11 @@ func replaceIDEEnvironmentLink(path, target string) error {
 	return nil
 }
 
+// lockEnvironment serializes environment publication, replacement, leases, and cleanup.
 func lockEnvironment(path string) (func(), error) {
 	if err := os.Mkdir(path, 0o755); err != nil {
 		if os.IsExist(err) {
-			return nil, fmt.Errorf("another agent environment sync is in progress: %s", path)
+			return nil, &environmentBusyError{message: fmt.Sprintf("another agent environment sync is in progress: %s", path)}
 		}
 		return nil, fmt.Errorf("lock agent environment: %w", err)
 	}
@@ -413,17 +442,14 @@ func (a *application) installAgentEnvironment(
 	frozen bool,
 ) (pythonSelection, error) {
 	staged, cleanup, err := a.stageAgentEnvironment(
-		bundle, wheel, uvArtifact, paths, plan, profile,
+		bundle, wheel, uvArtifact, paths, profile,
 	)
 	if err != nil {
 		return pythonSelection{}, err
 	}
 	defer cleanup()
-	if frozen {
-		lockPath := filepath.Join(bundle.Directory, profile.requirementsLockFile())
-		if err := validateFrozenRuntimeLock(bundle, wheel, plan, profile, lockPath); err != nil {
-			return pythonSelection{}, err
-		}
+	if err := validateEnvironmentReplacement(bundle, wheel, plan, profile, frozen, paths, staged); err != nil {
+		return pythonSelection{}, err
 	}
 	if err := a.createAgentVirtualEnvironment(command, bundle, staged); err != nil {
 		return pythonSelection{}, err
@@ -454,19 +480,15 @@ type stagedAgentEnvironment struct {
 	environment                                    []string
 }
 
+// stageAgentEnvironment stages installer assets while keeping the venv at its final path.
 func (a *application) stageAgentEnvironment(
 	bundle engine.Bundle,
 	wheel runtimewheel.Artifact,
 	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
-	plan runtimeDependencyPlan,
 	profile environmentProfile,
 ) (stagedAgentEnvironment, func(), error) {
-	fingerprint, err := environmentFingerprint(bundle, wheel, plan, profile)
-	if err != nil {
-		return stagedAgentEnvironment{}, nil, err
-	}
-	relative := environmentRelativePath(fingerprint)
+	relative := filepath.ToSlash(filepath.Join("environments", profile.directoryName()))
 	directory := filepath.Join(paths.root, filepath.FromSlash(relative))
 	if info, statErr := os.Lstat(directory); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return stagedAgentEnvironment{}, nil, fmt.Errorf("agent environment cannot be a symlink: %s", directory)
@@ -509,7 +531,7 @@ func (a *application) createAgentVirtualEnvironment(
 		"venv",
 		"--python", bundle.Config.Spec.Runtime.Version,
 		"--managed-python",
-		// A failed unpublished attempt may leave this content-addressed path behind.
+		// Profiles share a stable path; clear packages left by the previous profile.
 		"--clear",
 		staged.directory,
 	}

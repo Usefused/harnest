@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reuse at most two agent environments: one for runtime/compile and one for tests/evaluations. Retire old fingerprinted caches during synchronization, keep the IDE path stable, and prevent dependency changes from replacing an interpreter in use. Run and serve now use the runtime profile without test dependencies. Explicit `env sync` refreshes VS Code's `python.defaultInterpreterPath` to the selected environment, including when a user-owned `.venv` prevents creating the convenience link.
+
 - Fix ADK evaluation cancellation leaving invocation capabilities active when
   native completion callbacks are skipped. Close evaluation streams in their
   owning task to prevent deferred cleanup errors across Python contexts.

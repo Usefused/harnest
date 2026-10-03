@@ -17,6 +17,19 @@ var environmentFingerprintPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 func leaseAgentPython(
 	project string, selection pythonSelection,
 ) (pythonSelection, error) {
+	if _, managed := managedAgentEnvironment(project, selection.Executable); !managed {
+		return selection, nil
+	}
+	unlock, err := lockEnvironment(filepath.Join(project, ".harnest", "environment.lock"))
+	if err != nil {
+		return pythonSelection{}, err
+	}
+	defer unlock()
+	return leaseAgentPythonLocked(project, selection)
+}
+
+// leaseAgentPythonLocked publishes a lease while the environment lock is held.
+func leaseAgentPythonLocked(project string, selection pythonSelection) (pythonSelection, error) {
 	name, managed := managedAgentEnvironment(project, selection.Executable)
 	if !managed {
 		return selection, nil
@@ -45,7 +58,7 @@ func leaseAgentPython(
 	}
 	// A lease is visible before pruning starts, so overlapping commands cannot
 	// lose dependencies after selecting an older but still valid interpreter.
-	pruneAgentEnvironments(project)
+	pruneAgentEnvironmentsLocked(project)
 	return selection, nil
 }
 
@@ -56,7 +69,7 @@ func managedAgentEnvironment(project, python string) (string, bool) {
 	name := filepath.Base(environment)
 	managed := runtimePythonPath(environment) == python &&
 		pathWithinDirectory(root, environment) &&
-		environmentFingerprintPattern.MatchString(name)
+		managedEnvironmentName(name)
 	return name, managed
 }
 
@@ -81,6 +94,16 @@ func ensureRegularLeaseDirectory(path string) error {
 
 // pruneAgentEnvironments removes stale fingerprints before a short command exits.
 func pruneAgentEnvironments(project string) {
+	unlock, err := lockEnvironment(filepath.Join(project, ".harnest", "environment.lock"))
+	if err != nil {
+		return
+	}
+	defer unlock()
+	pruneAgentEnvironmentsLocked(project)
+}
+
+// pruneAgentEnvironmentsLocked prevents cleanup racing with a new publication.
+func pruneAgentEnvironmentsLocked(project string) {
 	stale := staleAgentEnvironments(project)
 	for _, path := range stale {
 		_ = os.RemoveAll(path)
@@ -96,8 +119,8 @@ func staleAgentEnvironments(project string) []string {
 		return nil
 	}
 	if name := linkedIDEEnvironment(root); name != "" {
-		// Automatic sync does not retarget the editor link. Keep its runtime
-		// until an explicit env sync publishes a new link.
+		// Keep the editor-selected slot even if an interrupted sync invalidated
+		// its publication. Migration retargets legacy links before cleanup.
 		current[name] = struct{}{}
 	}
 	environments := filepath.Join(root, "environments")
@@ -108,7 +131,7 @@ func staleAgentEnvironments(project string) []string {
 	stale := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if _, published := current[name]; published || !environmentFingerprintPattern.MatchString(name) {
+		if _, published := current[name]; published || !managedEnvironmentName(name) {
 			continue
 		}
 		if !unleasedEnvironment(root, entry) {
@@ -130,7 +153,7 @@ func linkedIDEEnvironment(root string) string {
 		target = filepath.Join(project, target)
 	}
 	name, err := filepath.Rel(filepath.Join(root, "environments"), filepath.Clean(target))
-	if err != nil || filepath.Dir(name) != "." || !environmentFingerprintPattern.MatchString(name) {
+	if err != nil || filepath.Dir(name) != "." || !managedEnvironmentName(name) {
 		return ""
 	}
 	return name
@@ -139,8 +162,8 @@ func linkedIDEEnvironment(root string) string {
 // currentAgentEnvironments reads every valid profile pointer before authorizing deletion.
 func currentAgentEnvironments(root string) (map[string]struct{}, bool) {
 	current := make(map[string]struct{})
-	for _, profile := range environmentProfiles {
-		path := filepath.Join(root, profile.stateFile())
+	for _, name := range []string{environmentStateFile, "environment-compile.json", "environment-development.json", "environment-eval.json"} {
+		path := filepath.Join(root, name)
 		contents, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
 			continue
@@ -157,7 +180,7 @@ func currentAgentEnvironments(root string) (map[string]struct{}, bool) {
 	return current, len(current) > 0
 }
 
-// environmentStateDirectory validates one published relative fingerprint pointer.
+// environmentStateDirectory validates a relative pointer to an owned environment.
 func environmentStateDirectory(contents []byte) string {
 	var state environmentState
 	if json.Unmarshal(contents, &state) != nil {
@@ -168,7 +191,7 @@ func environmentStateDirectory(contents []byte) string {
 		return ""
 	}
 	name := filepath.Base(directory)
-	if !environmentFingerprintPattern.MatchString(name) {
+	if !managedEnvironmentName(name) {
 		return ""
 	}
 	return name
