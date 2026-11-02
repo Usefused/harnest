@@ -59,6 +59,9 @@ _FACTORY_PHASES = frozenset(
         "skill_source",
     }
 )
+# Improvement hooks take one argument and are bound to one reserved lifecycle
+# file each, so deleting that file is guaranteed to switch the feature off.
+_IMPROVEMENT_PHASES = frozenset({"eval_capture", "eval_redact"})
 _FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
@@ -90,6 +93,8 @@ _DECORATOR_PATHS = {
     "before_mcp": "mcp.before",
     "after_mcp": "mcp.after",
     "on_mcp_error": "mcp.on_error",
+    "eval_capture": "evals.capture",
+    "eval_redact": "evals.redact",
 }
 
 
@@ -297,6 +302,68 @@ class _SkillDecorators:
         return _registration_decorator("skill_source", order=order, name=name)
 
 
+_EVAL_CAPTURE_OPTIONS_ATTRIBUTE = "__harnest_eval_capture_options__"
+
+
+@dataclass(frozen=True, slots=True)
+class EvalCaptureOptions:
+    """Authored capture settings; ``None`` defers to the environment, then defaults."""
+
+    store: str
+    sample_rate: float | None = None
+
+
+class _EvalDecorators:
+    """Production eval improvement hooks, valid only in ``lifecycle/evals_improvement.py``."""
+
+    def capture(
+        self, *, store: str, sample_rate: float | None = None
+    ) -> Callable[[_Hook], _Hook]:
+        """Select finished invocations for structure-only or team-redacted capture.
+
+        ``store`` names a ``@lifecycle.storage.custom`` provider implementing
+        ``harnest.eval_capture.CaptureStore``. ``sample_rate`` additionally
+        captures that fraction of invocations the rule rejects.
+        Content is omitted unless ``@lifecycle.evals.redact`` is registered.
+        That hook takes and returns one ``CaptureRecord``; any other return
+        value drops the capture. Harnest does not detect personal data.
+        """
+
+        _validate_storage_name(store, kind="eval capture store")
+        options = EvalCaptureOptions(store, _validated_sample_rate(sample_rate))
+        decorator = _registration_decorator("eval_capture", order=0, name=store)
+
+        def decorate(function: _Hook) -> _Hook:
+            """Attach options separately so registrations keep their public shape."""
+
+            registered = decorator(function)
+            setattr(registered, _EVAL_CAPTURE_OPTIONS_ATTRIBUTE, options)
+            return registered
+
+        return decorate
+
+    redact = _PhaseDecorator("eval_redact")
+
+
+def eval_capture_options(function: Any) -> EvalCaptureOptions | None:
+    """Return capture options attached by ``@lifecycle.evals.capture``."""
+
+    value = getattr(function, _EVAL_CAPTURE_OPTIONS_ATTRIBUTE, None)
+    return value if isinstance(value, EvalCaptureOptions) else None
+
+
+def _validated_sample_rate(value: float | None) -> float | None:
+    """Accept an omitted rate or a probability in the closed unit interval."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("eval capture sample_rate must be a number")
+    if not 0 <= value <= 1:
+        raise ValueError("eval capture sample_rate must be between 0 and 1")
+    return float(value)
+
+
 # Public lifecycle authoring is the module namespace itself. Keeping the
 # decorator families here prevents ``harnest.lifecycle.lifecycle`` from becoming
 # a second, import-style-dependent public surface.
@@ -309,6 +376,7 @@ http = _HTTPDecorators()
 session = _SessionDecorators()
 mcp = _MCPDecorators()
 skills = _SkillDecorators()
+evals = _EvalDecorators()
 
 credential_provider = _PhaseDecorator("credential_provider")
 http_routes = _PhaseDecorator("http_routes")
@@ -364,7 +432,7 @@ def _registration_decorator(
     name: str | None = None,
 ) -> Callable[[_Hook], _Hook]:
     """Attach validated discovery metadata and preserve the original callable."""
-    if phase not in _PHASES | _FACTORY_PHASES:
+    if phase not in _PHASES | _FACTORY_PHASES | _IMPROVEMENT_PHASES:
         raise ValueError(f"unsupported lifecycle phase {phase!r}")
     if not isinstance(order, int) or isinstance(order, bool):
         raise TypeError("lifecycle order must be an integer")
@@ -439,6 +507,7 @@ def _decorator_path_for_phase(phase: str) -> str:
 __all__ = [
     "CoverageLevel", "LifecycleCoverage", "lifecycle_coverage", "TransitionContext",
     "DROP_EVENT",
+    "EvalCaptureOptions",
     "Finish",
     "LifecycleContext",
     "LifecycleListener",
@@ -453,6 +522,8 @@ __all__ = [
     "authenticate",
     "coverage",
     "credential_provider",
+    "eval_capture_options",
+    "evals",
     "http",
     "session",
     "http_routes",

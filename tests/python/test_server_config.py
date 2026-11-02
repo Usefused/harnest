@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from harnest.runtime import main as runtime_main
+from harnest.server_concurrency import ConcurrencyLimitMiddleware, playground_page_request
 from harnest.server_limits import RequestSizeLimitMiddleware
 from harnest.server_config import (
     DEFAULT_SERVER_YAML,
@@ -265,10 +266,14 @@ class ServerConfigTests(unittest.TestCase):
             )
             captured = {}
 
+            class App:
+                def add_middleware(self, middleware, **options):
+                    captured["middleware"] = (middleware, options)
+
             def create_app(path, **options):
                 captured["artifact"] = path
                 captured["options"] = options
-                return object()
+                return App()
 
             def run(app, **options):
                 captured["app"] = app
@@ -291,6 +296,15 @@ class ServerConfigTests(unittest.TestCase):
             self.assertEqual(captured["options"]["max_request_bytes"], 2 * 1024 * 1024)
             self.assertFalse(captured["options"]["playground_enabled"])
             self.assertTrue(captured["options"]["agent_principal_required"])
+            # The request cap is enforced in-app, not by uvicorn's connection
+            # count, and nothing is exempt when the Playground is disabled.
+            self.assertNotIn("limit_concurrency", captured["uvicorn"])
+            middleware, middleware_options = captured["middleware"]
+            self.assertIs(middleware, ConcurrencyLimitMiddleware)
+            self.assertEqual(middleware_options["max_concurrent_requests"], 8)
+            self.assertFalse(middleware_options["exempt"](
+                {"type": "http", "method": "GET", "path": "/_harnest/playground.js"}
+            ))
 
     def test_compiled_launcher_does_not_print_invalid_environment_value(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -387,6 +401,106 @@ class ServerLimitMiddlewareTests(unittest.TestCase):
         asyncio.run(middleware(scope, receive, send))
 
         self.assertEqual(sent, [])
+
+
+class ConcurrencyLimitMiddlewareTests(unittest.TestCase):
+    """The request cap counts in-flight work, not Playground page loads."""
+
+    def test_rejects_requests_beyond_cap_and_frees_slot_after_completion(self):
+        sent = []
+        release = asyncio.Event()
+
+        async def held(scope, receive, send):
+            await release.wait()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+
+        async def send(message):
+            sent.append(message)
+
+        middleware = ConcurrencyLimitMiddleware(held, max_concurrent_requests=1)
+        agent = {"type": "http", "method": "POST", "path": "/responses"}
+
+        async def scenario():
+            first = asyncio.create_task(middleware(agent, None, send))
+            await asyncio.sleep(0)
+            await middleware(agent, None, send)
+            release.set()
+            await first
+            await middleware(agent, None, send)
+
+        asyncio.run(scenario())
+
+        self.assertEqual([m.get("status") for m in sent if "status" in m], [503, 200, 200])
+        self.assertEqual(sent[1], {"type": "http.response.body", "body": b"Service Unavailable"})
+
+    def test_playground_reads_bypass_cap_while_writes_still_count(self):
+        sent = []
+        release = asyncio.Event()
+
+        async def held(scope, receive, send):
+            if scope["path"] == "/responses":
+                await release.wait()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+
+        async def send(message):
+            sent.append(message)
+
+        middleware = ConcurrencyLimitMiddleware(
+            held, max_concurrent_requests=1, exempt=playground_page_request
+        )
+
+        async def scenario():
+            busy = asyncio.create_task(
+                middleware({"type": "http", "method": "POST", "path": "/responses"}, None, send)
+            )
+            await asyncio.sleep(0)
+            for path in ("/", "/_harnest/playground.js", "/_harnest/evals"):
+                await middleware({"type": "http", "method": "GET", "path": path}, None, send)
+            await middleware(
+                {"type": "http", "method": "POST", "path": "/_harnest/evals/run"}, None, send
+            )
+            release.set()
+            await busy
+
+        asyncio.run(scenario())
+
+        statuses = [m["status"] for m in sent if m["type"] == "http.response.start"]
+        self.assertEqual(statuses, [200, 200, 200, 503, 200])
+
+    def test_websocket_beyond_cap_is_refused(self):
+        release = asyncio.Event()
+        sent = []
+
+        async def held(scope, receive, send):
+            await release.wait()
+
+        async def send(message):
+            sent.append(message)
+
+        middleware = ConcurrencyLimitMiddleware(held, max_concurrent_requests=1)
+
+        async def scenario():
+            first = asyncio.create_task(middleware({"type": "websocket", "path": "/live"}, None, send))
+            await asyncio.sleep(0)
+            await middleware({"type": "websocket", "path": "/live"}, None, send)
+            await middleware(
+                {"type": "websocket", "path": "/live", "extensions": {"websocket.http.response": {}}},
+                None,
+                send,
+            )
+            release.set()
+            await first
+
+        asyncio.run(scenario())
+
+        self.assertEqual(sent[0], {"type": "websocket.close", "code": 1013})
+        self.assertEqual(sent[1]["type"], "websocket.http.response.start")
+        self.assertEqual(sent[1]["status"], 503)
+
+    def test_rejects_invalid_cap(self):
+        for value in (0, -1, True, "8"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ConcurrencyLimitMiddleware(object(), max_concurrent_requests=value)
 
 
 if __name__ == "__main__":

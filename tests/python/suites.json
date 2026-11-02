@@ -29,6 +29,7 @@
       "test_eval_judge_output",
       "test_exception_notes",
       "test_extension_contract",
+      "test_eval_capture",
       "test_extensions",
       "test_external_continuation",
       "test_harnest_extensions",
@@ -199,6 +200,10 @@
     ]
   },
   "overrides": {
+    "integration": [
+      "test_eval_capture.DiscoveryTests",
+      "test_eval_capture.LocalCaptureStoreTests"
+    ],
     "live": [
       "test_hatchet_extension_consumer.HatchetConsumerDockerLiveTests",
       "test_hatchet_extension_consumer.HatchetConsumerRealModelPostgresLiveTests",

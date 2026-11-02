@@ -326,6 +326,7 @@
   "harnest.lifecycle": [
     "CoverageLevel",
     "DROP_EVENT",
+    "EvalCaptureOptions",
     "Finish",
     "LifecycleContext",
     "LifecycleCoverage",
@@ -342,6 +343,8 @@
     "authenticate",
     "coverage",
     "credential_provider",
+    "eval_capture_options",
+    "evals",
     "http",
     "http_routes",
     "langgraph_middleware",
@@ -603,5 +606,15 @@
   ],
   "harnest.ui": [
     "emit"
+  ],
+  "harnest.eval_capture": [
+    "CAPTURE_SCHEMA_VERSION",
+    "CaptureEvent",
+    "CaptureRecord",
+    "CaptureStore",
+    "LocalCaptureStore",
+    "ToolActivity",
+    "default_redactor",
+    "redact_text"
   ]
 }

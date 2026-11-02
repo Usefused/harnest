@@ -233,7 +233,7 @@ func (a *application) newServeCommand() *cobra.Command {
 	command.Flags().StringVar(&host, "host", "127.0.0.1", "HTTP bind host")
 	command.Flags().IntVar(&port, "port", 1907, "HTTP bind port")
 	command.Flags().Float64Var(&requestTimeout, "request-timeout", 0, "non-streaming request deadline in seconds")
-	command.Flags().IntVar(&maxConcurrency, "max-concurrency", 0, "maximum concurrent server connections")
+	command.Flags().IntVar(&maxConcurrency, "max-concurrency", 0, "maximum concurrent in-flight requests")
 	command.Flags().BoolVar(
 		&allowRemote,
 		"allow-remote",

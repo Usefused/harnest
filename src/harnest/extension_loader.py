@@ -46,6 +46,8 @@ _IGNORED_NAMES = frozenset({"__init__.py", ".DS_Store", "__pycache__"})
 _STORAGE_PHASES = frozenset(
     {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store", "memory_store"}
 )
+_EVAL_IMPROVEMENT_PHASES = frozenset({"eval_capture", "eval_redact"})
+_EVAL_IMPROVEMENT_FILE = re.compile(r"^root/[^/]+/evals_improvement\.py$")
 _ROOT_EXTENSION_ORIGIN = "root/extensions"
 _PLUGIN_EXTENSION_ORIGIN = re.compile(
     r"^plugins/[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/extensions$"
@@ -128,6 +130,7 @@ def discover_extension_sources(
     storage, storage_listeners, remaining = _create_storage_registry(
         ordered, framework
     )
+    _validate_eval_improvement(remaining, storage)
     credential_provider, remaining = _create_credential_provider(remaining)
     skill_sources, remaining = _create_skill_sources(remaining)
     http_routes, remaining = _create_http_routes(remaining)
@@ -742,6 +745,9 @@ def _validate_listener_signature(
     if phase == "http_routes":
         _validate_http_route_factory_signature(relative, name, function)
         return
+    if phase in _EVAL_IMPROVEMENT_PHASES:
+        _validate_single_argument(relative, name, function)
+        return
     if phase in factory_phases:
         _validate_factory_signature(relative, name, function, phase)
         return
@@ -753,6 +759,85 @@ def _validate_listener_signature(
     if len(parameters) != 2 or any(item.kind not in positional for item in parameters):
         raise ExtensionDiscoveryError(
             f"lifecycle listener {relative}:{name} must accept exactly two arguments"
+        )
+
+
+def _validate_single_argument(relative: str, name: str, function: Any) -> None:
+    """Capture rules and redactors receive exactly one value to judge or rewrite."""
+
+    parameters = tuple(inspect.signature(function).parameters.values())
+    positional = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    if len(parameters) != 1 or parameters[0].kind not in positional:
+        raise ExtensionDiscoveryError(
+            f"eval improvement hook {relative}:{name} must accept exactly one argument"
+        )
+
+
+def _validate_eval_improvement(
+    listeners: tuple[LifecycleListener, ...], storage: StorageRegistry
+) -> None:
+    """Bind eval hooks to their reserved file and check the named capture store."""
+
+    selected = tuple(item for item in listeners if item.phase in _EVAL_IMPROVEMENT_PHASES)
+    for listener in selected:
+        _require_eval_improvement_file(listener)
+    for phase in sorted(_EVAL_IMPROVEMENT_PHASES):
+        _require_single_hook(phase, selected)
+    for listener in selected:
+        if listener.phase == "eval_capture":
+            _require_capture_store(listener, storage)
+
+
+def _require_single_hook(
+    phase: str, listeners: tuple[LifecycleListener, ...]
+) -> None:
+    """One capture rule and one redactor keep the effective policy unambiguous."""
+
+    matches = tuple(item for item in listeners if item.phase == phase)
+    if len(matches) > 1:
+        raise ExtensionDiscoveryError(
+            f"@lifecycle.{_decorator_path_for_phase(phase)} may be declared once; "
+            f"found {', '.join(item.identity for item in matches)}"
+        )
+
+
+def _require_eval_improvement_file(listener: LifecycleListener) -> None:
+    """Keep deletion of lifecycle/evals_improvement.py a guaranteed off switch."""
+
+    # Only the application's own lifecycle root may own production capture;
+    # extension packages are refused earlier as an unsupported phase.
+    if _EVAL_IMPROVEMENT_FILE.fullmatch(listener.relative_path):
+        return
+    raise ExtensionDiscoveryError(
+        authoring_guidance(
+            f"@lifecycle.{_decorator_path_for_phase(listener.phase)} in "
+            f"{listener.identity} must live in lifecycle/evals_improvement.py",
+            expected="eval improvement hooks only in lifecycle/evals_improvement.py",
+            fix="Move the function into lifecycle/evals_improvement.py; deleting "
+            "that file then switches eval improvement off.",
+        )
+    )
+
+
+def _require_capture_store(listener: LifecycleListener, storage: StorageRegistry) -> None:
+    """Fail at compile time when the rule names a missing or unsuitable store."""
+
+    from .eval_capture import CaptureStore
+
+    name = listener.registration_name or ""
+    value = storage.custom.get(name)
+    if value is None:
+        raise ExtensionDiscoveryError(
+            f"@lifecycle.evals.capture in {listener.identity} names store {name!r}, "
+            f"but no @lifecycle.storage.custom({name!r}) provider is registered"
+        )
+    if not isinstance(value, CaptureStore):
+        raise ExtensionDiscoveryError(
+            f"custom storage {name!r} used by {listener.identity} must implement "
+            "harnest.eval_capture.CaptureStore (append and list)"
         )
 
 

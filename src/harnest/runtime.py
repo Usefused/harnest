@@ -891,8 +891,12 @@ def _build_fastapi_app(
                 application,
                 driver,
             )
+        from ._eval_capture_runtime import with_eval_capture
+
+        # The eval service above keeps the raw driver so eval runs are never
+        # captured as production traffic.
         app = create_neutral_app(
-            driver,
+            with_eval_capture(driver, application),
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
@@ -1005,6 +1009,11 @@ def _build_native_adk_app(
         adk_session_service=adk_session_service,
     )
     pipeline_driver = driver
+    from ._eval_capture_runtime import with_eval_capture
+
+    # Capture wraps the request path only; evals and startup keep the raw
+    # driver so eval runs are never captured as production traffic.
+    driver = with_eval_capture(driver, application)
     trace_store = None
     if playground_enabled:
         from .playground_trace import (
@@ -1229,19 +1238,31 @@ def _create_server_app(args: Any, server: Any) -> Any:
 def _create_configured_app(artifact: Path, server: Any, development: bool) -> Any:
     """Apply the compiled HTTP policy without making UI a production dependency."""
 
+    from .playground import playground_available
+    from .server_concurrency import install_concurrency_limit
+
     http = server.http
-    return create_fastapi_app(
+    playground_enabled = development and server.playground.enabled
+    app = create_fastapi_app(
         artifact,
         bind_host=http.host,
         request_timeout=http.request_timeout_seconds,
         max_concurrency=http.max_concurrent_requests,
         max_request_bytes=server.limits.max_request_bytes,
-        playground_enabled=development and server.playground.enabled,
+        playground_enabled=playground_enabled,
         openapi_enabled=server.openapi,
         live_enabled=server.live,
         agui_enabled=server.agui,
         agent_principal_required=server.agent_principal == "required",
     )
+    # The cap lives in the app rather than uvicorn so it counts in-flight
+    # requests on both neutral and native ADK routes, not idle connections.
+    install_concurrency_limit(
+        app,
+        http.max_concurrent_requests,
+        playground_enabled=playground_enabled and playground_available(),
+    )
+    return app
 
 
 def _serve_command(args: Any) -> int:
@@ -1268,7 +1289,9 @@ def _serve_command(args: Any) -> int:
         host=http.host,
         port=http.port,
         log_level="info",
-        limit_concurrency=http.max_concurrent_requests,
+        # http.maxConcurrentRequests is enforced in-app by
+        # ConcurrencyLimitMiddleware; uvicorn's limit_concurrency counted idle
+        # keep-alive connections and rejected parallel Playground asset loads.
         timeout_keep_alive=10,
         # Dynamic session and asset paths contain opaque private identifiers;
         # Harnest's structured telemetry remains the privacy-safe request signal.
