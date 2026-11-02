@@ -6,6 +6,13 @@
 
 - Fix `http.maxConcurrentRequests` returning HTTP 503 for Playground scripts and stylesheets, which left the Playground and Evals views unresponsive. The cap is now enforced in-app on in-flight requests across neutral and native ADK routes instead of by uvicorn's open-connection count, so idle keep-alive connections no longer consume slots. Playground page and asset reads are exempt; agent requests and Playground writes such as eval runs still count. `--max-concurrency` help now describes in-flight requests.
 
+## [1.8.0](https://github.com/Usefused/harnest/compare/v1.7.1...v1.8.0) (2026-11-02)
+
+
+### Features
+
+* **runtime:** add production eval capture and fix request concurrency ([f2b1006](https://github.com/Usefused/harnest/commit/f2b1006650241b3cc50b4a4708c963552a32d4ee))
+
 ## [1.7.1](https://github.com/Usefused/harnest/compare/v1.7.0...v1.7.1) (2026-10-07)
 
 - Reuse at most two agent environments: one for runtime/compile and one for tests/evaluations. Retire old fingerprinted caches during synchronization, keep the IDE path stable, and prevent dependency changes from replacing an interpreter in use. Run and serve now use the runtime profile without test dependencies. Explicit `env sync` refreshes VS Code's `python.defaultInterpreterPath` to the selected environment, including when a user-owned `.venv` prevents creating the convenience link.
