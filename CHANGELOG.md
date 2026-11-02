@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## [1.8.0](https://github.com/Usefused/harnest/compare/v1.7.1...v1.8.0) (2026-11-02)
 
 - Add production eval capture through `@lifecycle.evals.capture` in `lifecycle/evals_improvement.py`, with sampling, an environment off switch, and custom stores including day-retained `LocalCaptureStore`. Captures omit input, output, tool arguments, and tool results by default (`content="omitted"`). Only an authored `@lifecycle.evals.redact` policy enables content retention (`content="redacted"`); invalid returns drop the capture. Harnest performs no personal-data detection. The existing `default_redactor` and `redact_text` helpers now omit content, and schema version 1 uses `content` instead of the experimental `redacted` boolean. Capture runs in the background on Harnest routes, excludes user/session identifiers and metadata, and never changes the response.
 
 - Fix `http.maxConcurrentRequests` returning HTTP 503 for Playground scripts and stylesheets, which left the Playground and Evals views unresponsive. The cap is now enforced in-app on in-flight requests across neutral and native ADK routes instead of by uvicorn's open-connection count, so idle keep-alive connections no longer consume slots. Playground page and asset reads are exempt; agent requests and Playground writes such as eval runs still count. `--max-concurrency` help now describes in-flight requests.
+
+### Features
+
+* **runtime:** add production eval capture and fix request concurrency ([f2b1006](https://github.com/Usefused/harnest/commit/f2b1006650241b3cc50b4a4708c963552a32d4ee))
 
 ## [1.7.1](https://github.com/Usefused/harnest/compare/v1.7.0...v1.7.1) (2026-10-07)
 
