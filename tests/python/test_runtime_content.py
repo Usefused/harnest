@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Annotated, Any
 import unittest
+from types import SimpleNamespace
 
 from pydantic import BaseModel
 
@@ -18,6 +19,7 @@ from harnest.neutral_runtime import (
     SessionRecord,
 )
 from harnest.runtime_content import ContentRuntimeDriver
+from harnest.runtime_langgraph import _graph_output, _tool_events
 
 
 class _Output(BaseModel):
@@ -157,6 +159,121 @@ class ContentRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.result["image"]["store"], "media")
         self.assertEqual(result.result["image"]["width"], 3)
+
+
+class LangGraphOutputTests(unittest.TestCase):
+    """Pure output projection belongs with runtime content unit contracts."""
+
+    def test_langgraph_output_extracts_structured_cloud_model_text(self):
+        """Project visible cloud-model text and tool events without native bookkeeping."""
+
+        message = SimpleNamespace(
+            content=[
+                {"type": "thinking", "thinking": "internal"},
+                {"type": "text", "text": "visible answer"},
+            ]
+        )
+        application = SimpleNamespace(bridge=None, output_schema=None)
+
+        text_value, structured = _graph_output(
+            application,
+            {
+                "messages": [message],
+                "value": "stale input",
+                "_harnest_turn_start": 0,
+            },
+        )
+
+        self.assertEqual(text_value, "visible answer")
+        self.assertEqual(structured["value"], "stale input")
+        self.assertNotIn("_harnest_turn_start", structured)
+
+        thought_only = SimpleNamespace(
+            content=[{"type": "thinking", "thinking": "private reasoning"}]
+        )
+        self.assertEqual(
+            _graph_output(application, {"messages": [thought_only]}),
+            ("", None),
+        )
+
+        call = SimpleNamespace(
+            type="ai",
+            tool_calls=[{"id": "call-1", "name": "echo", "args": {"text": "ok"}}],
+        )
+        tool_result = SimpleNamespace(
+            type="tool",
+            tool_call_id="call-1",
+            name="echo",
+            content="ok",
+        )
+        self.assertEqual(
+            _tool_events({"messages": [call, tool_result]}),
+            [
+                {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "echo",
+                    "arguments": {"text": "ok"},
+                },
+                {
+                    "type": "tool_result",
+                    "id": "call-1",
+                    "name": "echo",
+                    "result": "ok",
+                },
+            ],
+        )
+
+    def test_langgraph_output_returns_configured_pydantic_result(self):
+        """Normalize a configured Pydantic result without compiling an agent."""
+
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            value: str
+
+        application = SimpleNamespace(bridge=None, output_schema=Answer)
+
+        text_value, result = _graph_output(
+            application,
+            {"structured_response": Answer(value="structured")},
+        )
+
+        self.assertEqual(text_value, '{"value": "structured"}')
+        self.assertEqual(result, {"value": "structured"})
+
+    def test_langgraph_output_injects_declared_current_turn_metadata(self):
+        """Keep declared framework metadata scoped to the current turn."""
+
+        from pydantic import BaseModel
+
+        from harnest.structured import FrameworkMetadata
+
+        class Details(BaseModel):
+            langgraph: dict[str, Any]
+
+        class Answer(BaseModel):
+            value: str
+            metadata: FrameworkMetadata[Details]
+
+        application = SimpleNamespace(
+            bridge=None, output_schema=Answer, kind="agent"
+        )
+        _, result = _graph_output(
+            application,
+            {
+                "structured_response": {"value": "structured"},
+                "messages": [{"content": "old"}, {"content": "current"}],
+            },
+            turn_start=1,
+        )
+
+        self.assertEqual(result["value"], "structured")
+        self.assertEqual(
+            result["metadata"]["langgraph"]["messages"],
+            [{"content": "current"}],
+        )
+
 
 
 if __name__ == "__main__":

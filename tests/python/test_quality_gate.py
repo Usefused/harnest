@@ -161,10 +161,13 @@ class SkillQualityGateTests(unittest.TestCase):
 
 class TestSuiteManifestTests(unittest.TestCase):
     def test_repository_manifest_classifies_every_python_test_module(self):
+        """Keep transport contracts below the compiled end-to-end serving journey."""
+
         assignments = validate_manifest(load_manifest())
 
         self.assertIn("test_quality_gate", assignments)
-        self.assertEqual(assignments["test_neutral_runtime"], "e2e")
+        self.assertEqual(assignments["test_neutral_runtime"], "integration")
+        self.assertEqual(assignments["test_frameworks"], "e2e")
 
     def test_manifest_rejects_duplicate_modules(self):
         directory = tempfile.TemporaryDirectory()

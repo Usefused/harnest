@@ -147,7 +147,7 @@ def _common_response(value: dict) -> dict:
 
 
 def _exercise_http_contract(client: TestClient, framework: str) -> dict:
-    """Exercise the same non-streaming contract against one compiled backend."""
+    """Exercise public routes, discovery and ownership against one compiled backend."""
 
     alice = {"x-user": "alice"}
     bob = {"x-user": "bob"}
@@ -185,6 +185,7 @@ def _exercise_http_contract(client: TestClient, framework: str) -> dict:
         headers=alice,
         json={"input": "custom", "sessionId": session_id},
     )
+    documented_routes = client.get("/openapi.json", headers=alice).json()["paths"]
     failed = client.post(
         "/responses",
         headers=alice,
@@ -232,6 +233,7 @@ def _exercise_http_contract(client: TestClient, framework: str) -> dict:
         ),
         "standard": _common_response(standard.json()),
         "custom": _common_response(custom.json()),
+        "customRoute": (custom.status_code, "/business/invoke" in documented_routes),
         "failure": (
             failed.status_code,
             "private backend detail" in failed.text,
@@ -250,7 +252,7 @@ def _exercise_http_contract(client: TestClient, framework: str) -> dict:
 
 class ManagedRuntimeContractTests(unittest.TestCase):
     def test_adk_and_langgraph_share_the_non_streaming_http_contract(self):
-        """Keep public runtime behavior identical across managed backends."""
+        """Assert each backend's contract, then compare when both are installed."""
 
         available = [
             framework
@@ -260,8 +262,9 @@ class ManagedRuntimeContractTests(unittest.TestCase):
             )
             if installed
         ]
-        if len(available) < 2:
-            self.skipTest("ADK and LangGraph are required for the parity matrix")
+        # Consolidated route coverage must still run with only one optional backend.
+        if not available:
+            self.skipTest("ADK or LangGraph is required for the runtime matrix")
 
         outcomes = {}
         for framework in available:
@@ -278,16 +281,29 @@ class ManagedRuntimeContractTests(unittest.TestCase):
                     create_fastapi_app(artifact), raise_server_exceptions=False
                 ) as client:
                     outcomes[framework] = _exercise_http_contract(client, framework)
+                self._assert_http_contract(outcomes[framework])
 
-        self.assertEqual(outcomes["adk"], outcomes["langgraph"])
-        self.assertEqual(outcomes["adk"]["unauthorized"], (401, 401))
-        self.assertEqual(outcomes["adk"]["session"]["hidden"], (404, 404, 404))
-        self.assertEqual(outcomes["adk"]["failure"], (500, False, 500, False))
-        self.assertEqual(outcomes["adk"]["approval"]["status"], "requires_action")
+        # Per-backend assertions remain useful when parity cannot be evaluated.
+        if len(outcomes) == 2:
+            self.assertEqual(outcomes["adk"], outcomes["langgraph"])
+
+    def _assert_http_contract(self, outcome: dict) -> None:
+        """Keep concrete route guarantees so identical regressions cannot pass parity."""
+
+        self.assertEqual(outcome["unauthorized"], (401, 401))
+        self.assertEqual(outcome["session"]["hidden"], (404, 404, 404))
+        self.assertEqual(outcome["failure"], (500, False, 500, False))
+        self.assertEqual(outcome["approval"]["status"], "requires_action")
         self.assertEqual(
-            outcomes["adk"]["approval"]["result"]["outputText"],
+            outcome["approval"]["result"]["outputText"],
             "approved:record",
         )
+        # These replace the separate compiled custom-route test in test_frameworks.
+        self.assertEqual(outcome["customRoute"], (200, True))
+        self.assertEqual(outcome["custom"], {
+            "status": "completed", "outputText": "custom", "hasOutput": True,
+            "metadata": {"source": "custom"},
+        })
 
 
 class RecordingStore(InMemorySessionStore):

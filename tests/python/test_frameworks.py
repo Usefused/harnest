@@ -5,7 +5,6 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 from harnest.bundle import compile_artifact
 from harnest.compatibility import current_harnest_version
@@ -14,7 +13,6 @@ from harnest.runtime import (
     load_compiled_application,
     run_agent_message,
 )
-from harnest.runtime_langgraph import _graph_output, _tool_events
 from _session_store_fixture import write_session_store
 
 
@@ -23,6 +21,86 @@ LANGGRAPH_AVAILABLE = importlib.util.find_spec("langgraph") is not None
 
 
 class FrameworkArtifactTests(unittest.TestCase):
+    def test_managed_artifact_executes_and_serves_across_frameworks(self):
+        """Compile each backend once for direct, JSON, SSE, and live serving journeys."""
+
+        frameworks = [
+            (framework, distribution)
+            for framework, distribution, available in (
+                ("adk", "google-adk", ADK_AVAILABLE),
+                ("langgraph", "langgraph", LANGGRAPH_AVAILABLE),
+            )
+            if available
+        ]
+        # Optional backends must be visible as a skip, not an empty passing matrix.
+        if not frameworks:
+            self.skipTest("ADK or LangGraph is required for compiled serving")
+        for framework, distribution in frameworks:
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as tmp:
+                root, output = Path(tmp) / "source", Path(tmp) / "artifact"
+                self._managed_source(root)
+                manifest = compile_artifact(root, output, framework=framework)
+                direct = asyncio.run(run_agent_message(output, "hello"))
+
+                self.assertEqual(manifest["harnestVersion"], current_harnest_version())
+                self.assertEqual(manifest["framework"]["name"], framework)
+                self.assertEqual(manifest["framework"]["mode"], "managed")
+                self.assertEqual(manifest["framework"]["distribution"], distribution)
+                self.assertEqual(
+                    manifest["framework"]["version"], metadata.version(distribution)
+                )
+                self.assertEqual(load_compiled_application(output).kind, "graph")
+                self.assertEqual(direct["text"], "compiled-graph")
+                # LangGraph retains native state around the portable scalar result.
+                result = (
+                    direct["result"] if framework == "adk"
+                    else direct["result"]["value"]
+                )
+                self.assertEqual(result, "compiled-graph")
+                self._assert_managed_http_transports(output)
+
+    def _assert_managed_http_transports(self, artifact: Path) -> None:
+        """Preserve the compiled JSON/SSE/live assertions for both managed backends."""
+
+        from fastapi.testclient import TestClient
+
+        with TestClient(create_fastapi_app(artifact)) as client:
+            session = client.post("/sessions", json={})
+            self.assertEqual(session.status_code, 201)
+            session_id = session.json()["id"]
+            response = client.post(
+                "/responses", json={"input": "hello", "sessionId": session_id}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["outputText"], "compiled-graph")
+            stream = client.post(
+                "/responses",
+                json={"input": "hello", "sessionId": session_id, "stream": True},
+            )
+            self.assertEqual(stream.status_code, 200)
+            for event in (
+                "response.agent_activity", "response.text.delta", "response.completed"
+            ):
+                self.assertIn(f"event: {event}", stream.text)
+            with client.websocket_connect("/live") as websocket:
+                websocket.send_json({"type": "connect", "sessionId": session_id})
+                self.assertEqual(websocket.receive_json()["type"], "session.connected")
+                websocket.send_json(
+                    {"type": "response.create", "requestId": "one", "input": "hello"}
+                )
+                self.assertEqual(websocket.receive_json()["type"], "response.created")
+                frames = []
+                while not frames or frames[-1]["type"] != "response.completed":
+                    frames.append(websocket.receive_json())
+                delta = next(
+                    frame for frame in frames if frame["type"] == "response.text.delta"
+                )
+                self.assertTrue(
+                    any(frame["type"] == "response.agent_activity" for frame in frames)
+                )
+                self.assertEqual(delta["delta"], "compiled-graph")
+                self.assertEqual(frames[-1]["status"], "completed")
+
     def _write(self, path: Path, value: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(value).lstrip(), encoding="utf-8")
@@ -93,33 +171,6 @@ class FrameworkArtifactTests(unittest.TestCase):
             """,
         )
         self._card(root)
-
-    def _http_route_source(self, root: Path) -> None:
-        """Add a portable business endpoint backed by the compiled root agent."""
-
-        self._write(
-            root / "lifecycle" / "http.py",
-            """
-            from fastapi import APIRouter, Request
-            from harnest import lifecycle
-
-
-            @lifecycle.http_routes
-            def http_routes(agent):
-                router = APIRouter(prefix="/custom")
-
-                @router.post("/invoke")
-                async def invoke(request: Request):
-                    response = await agent.invoke(
-                        connection=request,
-                        input="hello",
-                        metadata={"source": "custom"},
-                    )
-                    return response.as_dict()
-
-                return router
-            """,
-        )
 
     def _approval_source(self, root: Path) -> None:
         self._write(
@@ -274,134 +325,6 @@ class FrameworkArtifactTests(unittest.TestCase):
         )
         self._card(root)
 
-    def test_langgraph_output_extracts_structured_cloud_model_text(self):
-        message = SimpleNamespace(
-            content=[
-                {"type": "thinking", "thinking": "internal"},
-                {"type": "text", "text": "visible answer"},
-            ]
-        )
-        application = SimpleNamespace(bridge=None, output_schema=None)
-
-        text_value, structured = _graph_output(
-            application,
-            {
-                "messages": [message],
-                "value": "stale input",
-                "_harnest_turn_start": 0,
-            },
-        )
-
-        self.assertEqual(text_value, "visible answer")
-        self.assertEqual(structured["value"], "stale input")
-        self.assertNotIn("_harnest_turn_start", structured)
-
-        thought_only = SimpleNamespace(
-            content=[{"type": "thinking", "thinking": "private reasoning"}]
-        )
-        self.assertEqual(
-            _graph_output(application, {"messages": [thought_only]}),
-            ("", None),
-        )
-
-        call = SimpleNamespace(
-            type="ai",
-            tool_calls=[{"id": "call-1", "name": "echo", "args": {"text": "ok"}}],
-        )
-        tool_result = SimpleNamespace(
-            type="tool",
-            tool_call_id="call-1",
-            name="echo",
-            content="ok",
-        )
-        self.assertEqual(
-            _tool_events({"messages": [call, tool_result]}),
-            [
-                {
-                    "type": "tool_call",
-                    "id": "call-1",
-                    "name": "echo",
-                    "arguments": {"text": "ok"},
-                },
-                {
-                    "type": "tool_result",
-                    "id": "call-1",
-                    "name": "echo",
-                    "result": "ok",
-                },
-            ],
-        )
-
-    def test_langgraph_output_returns_configured_pydantic_result(self):
-        from pydantic import BaseModel
-
-        class Answer(BaseModel):
-            value: str
-
-        application = SimpleNamespace(bridge=None, output_schema=Answer)
-
-        text_value, result = _graph_output(
-            application,
-            {"structured_response": Answer(value="structured")},
-        )
-
-        self.assertEqual(text_value, '{"value": "structured"}')
-        self.assertEqual(result, {"value": "structured"})
-
-    def test_langgraph_output_injects_declared_current_turn_metadata(self):
-        from typing import Any
-
-        from pydantic import BaseModel
-
-        from harnest.structured import FrameworkMetadata
-
-        class Details(BaseModel):
-            langgraph: dict[str, Any]
-
-        class Answer(BaseModel):
-            value: str
-            metadata: FrameworkMetadata[Details]
-
-        application = SimpleNamespace(
-            bridge=None, output_schema=Answer, kind="agent"
-        )
-        _, result = _graph_output(
-            application,
-            {
-                "structured_response": {"value": "structured"},
-                "messages": [{"content": "old"}, {"content": "current"}],
-            },
-            turn_start=1,
-        )
-
-        self.assertEqual(result["value"], "structured")
-        self.assertEqual(
-            result["metadata"]["langgraph"]["messages"],
-            [{"content": "current"}],
-        )
-
-    @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
-    def test_managed_adk_artifact_executes_without_provisioner(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "source"
-            output = Path(directory) / "artifact"
-            root.mkdir()
-            self._managed_source(root)
-
-            manifest = compile_artifact(root, output, framework="adk")
-            result = asyncio.run(run_agent_message(output, "hello"))
-
-            self.assertEqual(manifest["harnestVersion"], current_harnest_version())
-            self.assertEqual(manifest["framework"]["name"], "adk")
-            self.assertEqual(manifest["framework"]["mode"], "managed")
-            self.assertEqual(manifest["framework"]["distribution"], "google-adk")
-            self.assertEqual(
-                manifest["framework"]["version"], metadata.version("google-adk")
-            )
-            self.assertEqual(result["text"], "compiled-graph")
-            self.assertEqual(result["result"], "compiled-graph")
-            self.assertEqual(load_compiled_application(output).kind, "graph")
-
     def test_compiled_frameworks_preserve_structured_result_models(self):
         frameworks = (
             ("adk", ADK_AVAILABLE),
@@ -428,35 +351,6 @@ class FrameworkArtifactTests(unittest.TestCase):
                     structured,
                     {"hits": [{"document_id": "guide", "score": 0.95}]},
                 )
-
-    def test_compiled_frameworks_mount_custom_routes_that_invoke_root(self):
-        from fastapi.testclient import TestClient
-
-        frameworks = (
-            ("adk", ADK_AVAILABLE),
-            ("langgraph", LANGGRAPH_AVAILABLE),
-        )
-        for framework, available in frameworks:
-            if not available:
-                continue
-            with self.subTest(
-                framework=framework
-            ), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory) / "source"
-                output = Path(directory) / "artifact"
-                root.mkdir()
-                self._managed_source(root)
-                self._http_route_source(root)
-
-                compile_artifact(root, output, framework=framework)
-                with TestClient(create_fastapi_app(output)) as client:
-                    response = client.post("/custom/invoke")
-                    paths = client.get("/openapi.json").json()["paths"]
-
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()["status"], "completed")
-                self.assertEqual(response.json()["outputText"], "compiled-graph")
-                self.assertIn("/custom/invoke", paths)
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_managed_adk_http_pauses_and_resumes_protected_tool(self):
@@ -601,69 +495,6 @@ class FrameworkArtifactTests(unittest.TestCase):
                 self.assertEqual(journal.read_text(encoding="utf-8"), "started")
 
             self.assertEqual(journal.read_text(encoding="utf-8"), "stopped")
-
-    @unittest.skipUnless(LANGGRAPH_AVAILABLE, "langgraph is not installed")
-    def test_managed_langgraph_http_json_sse_and_live(self):
-        from fastapi.testclient import TestClient
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "source"
-            output = Path(directory) / "artifact"
-            root.mkdir()
-            self._managed_source(root)
-
-            manifest = compile_artifact(root, output, framework="langgraph")
-            direct = asyncio.run(run_agent_message(output, "hello"))
-            app = create_fastapi_app(output)
-            with TestClient(app) as client:
-                session = client.post("/sessions", json={})
-                self.assertEqual(session.status_code, 201)
-                session_id = session.json()["id"]
-                response = client.post(
-                    "/responses",
-                    json={"input": "hello", "sessionId": session_id},
-                )
-                stream = client.post(
-                    "/responses",
-                    json={"input": "hello", "sessionId": session_id, "stream": True},
-                )
-                with client.websocket_connect("/live") as websocket:
-                    websocket.send_json({"type": "connect", "sessionId": session_id})
-                    connected = websocket.receive_json()
-                    websocket.send_json(
-                        {"type": "response.create", "requestId": "one", "input": "hello"}
-                    )
-                    created = websocket.receive_json()
-                    frames = []
-                    while not frames or frames[-1]["type"] != "response.completed":
-                        frames.append(websocket.receive_json())
-                    delta = next(
-                        frame
-                        for frame in frames
-                        if frame["type"] == "response.text.delta"
-                    )
-                    completed = frames[-1]
-
-            self.assertEqual(manifest["harnestVersion"], current_harnest_version())
-            self.assertEqual(manifest["framework"]["name"], "langgraph")
-            self.assertEqual(manifest["framework"]["mode"], "managed")
-            self.assertEqual(manifest["framework"]["distribution"], "langgraph")
-            self.assertEqual(
-                manifest["framework"]["version"], metadata.version("langgraph")
-            )
-            self.assertEqual(direct["text"], "compiled-graph")
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["outputText"], "compiled-graph")
-            self.assertIn("event: response.agent_activity", stream.text)
-            self.assertIn("event: response.text.delta", stream.text)
-            self.assertIn("event: response.completed", stream.text)
-            self.assertEqual(connected["type"], "session.connected")
-            self.assertEqual(created["type"], "response.created")
-            self.assertTrue(
-                any(frame["type"] == "response.agent_activity" for frame in frames)
-            )
-            self.assertEqual(delta["delta"], "compiled-graph")
-            self.assertEqual(completed["status"], "completed")
 
     @unittest.skipUnless(ADK_AVAILABLE, "google-adk is not installed")
     def test_advanced_adk_mode_accepts_a_workflow(self):
