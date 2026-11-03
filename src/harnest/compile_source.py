@@ -71,7 +71,7 @@ def _evaluation_file(path: Path, scopes: frozenset[Path]) -> bool:
     """Keep conventional evaluation declarations available to compiled-agent tooling."""
     return (
         path.parent.name == "evals" and path.parent.parent in scopes
-        and (path.name == "test_config.json" or path.name.endswith(".evalset.json"))
+        and (path.name == "test_config.json" or path.name.endswith((".evalset.json", ".test_config.json")))
     )
 
 

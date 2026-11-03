@@ -88,17 +88,35 @@ func TestEnvironmentSlotsProtectRunningCommands(t *testing.T) {
 	if _, _, err := executeForTest(t, sys, "env", "sync", agent, "--profile", "eval"); err != nil {
 		t.Fatal(err)
 	}
-	mustChangeEnvironmentDependencyInput(t, agent)
+	project := filepath.Join(agent, "pyproject.toml")
+	before := string(mustReadTestFile(t, project))
+	after := strings.Replace(before, "dependencies = []", `dependencies = ["mcp"]`, 1)
+	if before == after {
+		t.Fatal("expected empty scaffold dependencies")
+	}
+	mustWriteEnvironmentFixture(t, project, after)
 	bundle, err = loadAgentBundle(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Source builds must not bypass the lease through their system-Python fallback.
+	// Keep the serving interpreter intact while the next command installs the new dependency.
+	marker := filepath.Join(filepath.Dir(python.Executable), "active-marker")
+	mustWriteEnvironmentFixture(t, marker, "original")
+	next, err := app.agentPython(command, bundle, runtimeEnvironmentProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.releaseLease()
+	if next.Executable == python.Executable || string(mustReadTestFile(t, marker)) != "original" {
+		t.Fatal("dependency edit mutated the leased interpreter")
+	}
+	mustChangeEnvironmentDependencyInput(t, agent)
 	if _, err := app.agentPython(command, bundle, runtimeEnvironmentProfile); err == nil || !strings.Contains(err.Error(), "is in use") {
-		t.Fatalf("expected live environment rejection: %v", err)
+		t.Fatalf("two active generations must be protected: %v", err)
 	}
 	python.releaseLease()
 	mustSyncAgentEnvironment(t, sys, agent)
+	next.releaseLease()
 	assertEnvironmentSlots(t, agent, "agent", "eval")
 }
 

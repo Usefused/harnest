@@ -66,7 +66,7 @@ class JevExampleTests(unittest.TestCase):
             return await complete(**kwargs, mock_response=reply)
 
         environment = {"JEV_TRIAGE_OFFLINE": "false", "JEV_LLM_MODEL": "openai/test",
-                       "JEV_LLM_API_BASE": "https://models.example.invalid/v1", "JEV_LLM_API_KEY": "test-only"}
+                       "JEV_LLM_API_BASE": "https://mock-jev.example.invalid/v1", "JEV_LLM_API_KEY": "test-only"}
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, environment):
             source = self._source(directory, framework)
             # Keep the actual live reply node; only the Jev resource is replaced.

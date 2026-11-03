@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"harnest.dev/harnest/engine"
 	"harnest.dev/harnest/internal/runtimewheel"
@@ -16,7 +17,25 @@ func (e *environmentBusyError) Error() string { return e.message }
 
 // managedEnvironmentName recognizes reusable slots and legacy fingerprint directories.
 func managedEnvironmentName(name string) bool {
-	return name == "agent" || name == "eval" || environmentFingerprintPattern.MatchString(name)
+	return slotMatches("agent", name) || slotMatches("eval", name) || environmentFingerprintPattern.MatchString(name)
+}
+
+// slotMatches recognizes both managed generations of one dependency profile.
+func slotMatches(slot, name string) bool {
+	return name == slot || name == slot+"-next"
+}
+
+// replacementSlot uses one bounded alternate when a running command owns the primary.
+// The caller holds the project lock; the final lease check precedes any mutation.
+func replacementSlot(root, slot string) (string, error) {
+	leases, err := os.ReadDir(filepath.Join(root, environmentLeaseDirectory, slot))
+	if os.IsNotExist(err) || (err == nil && len(leases) == 0) {
+		return slot, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return slot + "-next", nil
 }
 
 // prepareEnvironmentReplacement refuses to mutate dependencies used by another command.
@@ -26,13 +45,18 @@ func prepareEnvironmentReplacement(paths environmentPaths, staged stagedAgentEnv
 		return err
 	}
 	for _, entry := range entries {
-		// All legacy environments must be idle before migration can enforce the two-slot limit.
+		// Older CLIs lease fingerprint directories that migration also needs to retire.
 		if entry.Name() != filepath.Base(staged.directory) && !environmentFingerprintPattern.MatchString(entry.Name()) {
 			continue
 		}
 		if !unleasedEnvironment(paths.root, entry) {
 			return &environmentBusyError{message: fmt.Sprintf("agent environment %s is in use; stop running Harnest commands (including serve --reload) before changing dependencies, then retry", entry.Name())}
 		}
+	}
+	// A failed install into another directory must preserve the serving publication.
+	data, err := readRegularDependencyFile(paths.state)
+	if err == nil && environmentStateDirectory(data) != filepath.Base(staged.directory) {
+		return nil
 	}
 	if err := os.Remove(paths.state); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("invalidate agent environment: %w", err)
@@ -44,10 +68,8 @@ func prepareEnvironmentReplacement(paths environmentPaths, staged stagedAgentEnv
 // The caller holds environment.lock; user-owned directories and links are never removed.
 func migrateAgentEnvironments(project string, selection pythonSelection) error {
 	root := filepath.Join(project, ".harnest")
-	if environmentFingerprintPattern.MatchString(linkedIDEEnvironment(root)) {
-		if _, err := syncIDEEnvironmentLink(project, selection.Executable); err != nil {
-			return err
-		}
+	if err := followSelectedSlot(project, root, selection); err != nil {
+		return err
 	}
 	if err := removeLegacyEnvironmentStates(root); err != nil {
 		return err
@@ -70,6 +92,19 @@ func migrateAgentEnvironments(project string, selection pythonSelection) error {
 	return nil
 }
 
+// followSelectedSlot keeps an existing IDE link with its chosen dependency profile.
+func followSelectedSlot(project, root string, selection pythonSelection) error {
+	linked := linkedIDEEnvironment(root)
+	selected := filepath.Base(filepath.Dir(filepath.Dir(selection.Executable)))
+	// Follow a replacement only for the profile the editor already selected.
+	if environmentFingerprintPattern.MatchString(linked) || (linked != selected && slotMatches(strings.TrimSuffix(selected, "-next"), linked)) {
+		if _, err := syncIDEEnvironmentLink(project, selection.Executable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // removeLegacyEnvironmentStates keeps only publications for the two reusable slots.
 func removeLegacyEnvironmentStates(root string) error {
 	for _, name := range []string{environmentStateFile, "environment-compile.json", "environment-development.json", "environment-eval.json"} {
@@ -82,7 +117,7 @@ func removeLegacyEnvironmentStates(root string) error {
 			return err
 		}
 		directory := environmentStateDirectory(contents)
-		if (name == environmentStateFile && directory == "agent") || (name == "environment-eval.json" && directory == "eval") {
+		if (name == environmentStateFile && slotMatches("agent", directory)) || (name == "environment-eval.json" && slotMatches("eval", directory)) {
 			continue
 		}
 		if err := os.Remove(path); err != nil {

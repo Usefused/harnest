@@ -95,7 +95,7 @@ class PlaygroundEvalTests(unittest.TestCase):
                 ),
             )
             self._write(
-                root / "evals" / "test_config.json",
+                root / "evals" / "portable.test_config.json",
                 json.dumps(
                     {
                         "criteria": {"custom_quality": 1.0},
@@ -109,6 +109,7 @@ class PlaygroundEvalTests(unittest.TestCase):
                     }
                 ),
             )
+            self._write(root / "evals" / "test_config.json", json.dumps({"criteria": {"response_match_score": 1.0}}))
             compile_artifact(root, artifact, framework="langgraph")
             app = create_fastapi_app(artifact, bind_host="testserver")
 

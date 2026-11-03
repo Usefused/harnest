@@ -11,6 +11,8 @@ import (
 
 func TestRunCompilesAndInvokesGeneratedLauncherLocally(t *testing.T) {
 	target, record, python := runRecordingFixture(t)
+	t.Setenv("OPENAI_MODEL", "fixture")
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:12345/v1")
 	stdout, stderr, err := executeRunForTest(
 		t,
 		strings.NewReader(""),
@@ -35,7 +37,7 @@ func TestRunCompilesAndInvokesGeneratedLauncherLocally(t *testing.T) {
 	if lines[2] != "INPUT\tprivate prompt" {
 		t.Fatalf("launcher stdin = %q", lines[2])
 	}
-	if lines[3] != "ENV\tyour-model\thttps://models.example.invalid/v1" {
+	if lines[3] != "ENV\tfixture\thttp://127.0.0.1:12345/v1" {
 		t.Fatalf("launcher environment = %q", lines[3])
 	}
 	assertEphemeralArtifactRemoved(t, launcher)

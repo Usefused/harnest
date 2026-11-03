@@ -1426,6 +1426,13 @@ async def _run_local_application(application: Any, args: Any, message: str) -> N
         telemetry.force_flush()
 
 
+def _connection_hint(error: Exception) -> str:
+    """Suggest endpoint checks for connection failures without printing provider payloads."""
+    if type(error).__name__ == "APIConnectionError":
+        return ". Check that the configured model server is running and reachable at OPENAI_BASE_URL."
+    return ""
+
+
 def _run_command(args: Any) -> int:
     """Invoke one message, retaining safe task diagnostics and shell cancellation."""
 
@@ -1456,7 +1463,7 @@ def _run_command(args: Any) -> int:
         # Provider exceptions can contain request content. The structured runtime
         # log retains the exception type while terminal output stays payload-free.
         print(
-            f"harnest-agent: local invocation failed with {type(exc).__name__}",
+            f"harnest-agent: local invocation failed with {type(exc).__name__}{_connection_hint(exc)}",
             file=sys.stderr,
         )
         return 1

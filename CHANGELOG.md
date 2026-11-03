@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Score a single eval set with `evals/<set>.test_config.json`. CLI and Playground use its criteria in place of the shared config for that set.
+- Allow dependency edits during local serving by preparing a replacement environment while the running interpreter is leased.
+- Local commands now use exported model settings when a scaffold still has its example URL or model ID. Calling the example endpoint reports how to configure a provider.
+
 - Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.
