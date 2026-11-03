@@ -973,6 +973,33 @@ class AuthoringTests(unittest.TestCase):
                     self.assertEqual(client.get("/agent").json()["resources"], [])
                     self.assertEqual(client.post("/responses", json={"input": "hello"}).status_code, 200)
 
+    def test_required_grants_apply_to_harnest_routes_on_native_adk_server(self):
+        """The same server requires a Harnest grant and accepts a native ADK run."""
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            output = Path(directory) / "compiled"
+            self._write(root / "agent.py", _deterministic_adk_source(advanced=True))
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(root / "agent-card.yaml", json.dumps({"name": "Root", "description": "Test agent"}))
+            compile_artifact(root, output, mode="advanced")
+            app = create_fastapi_app(output, bind_host="testserver", agent_principal_required=True)
+            with TestClient(app) as client:
+                self.assertEqual(client.post("/responses", json={"input": "hi"}).status_code, 403)
+                session = client.post(
+                    "/apps/root/users/test-user/sessions", json={"sessionId": "native"}
+                )
+                self.assertEqual(session.status_code, 200, session.text)
+                response = client.post("/run", json={
+                    "appName": "root", "userId": "test-user", "sessionId": "native",
+                    "newMessage": {"role": "user", "parts": [{"text": "hello"}]},
+                })
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIn("official response", response.text)
+                self.assertIn("/run_sse", client.get("/openapi.json").json()["paths"])
+                self.assertIn("/run_live", {route.path for route in client.app.routes})
+
     def test_advanced_adk_fastapi_reuses_official_route_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

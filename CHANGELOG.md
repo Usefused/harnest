@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Security:** `server.agentPrincipal: required` now refuses new invocations through `/responses`, live, AG-UI, and A2A unless `@lifecycle.http.agent_principal` grants permissions. Add the hook before upgrading deployments that require grants and use these routes. Advanced ADK’s native invocation endpoints stay available outside this grant policy.
+
 - Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.

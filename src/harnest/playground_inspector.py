@@ -47,6 +47,7 @@ _LIFECYCLE_ROLES = frozenset(
         "authenticate",
         "credential_provider",
         "http.after",
+        "http.agent_principal",
         "http.before",
         "http.on_error",
         "http_routes",

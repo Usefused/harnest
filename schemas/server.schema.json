@@ -160,7 +160,7 @@
     "agentPrincipal": {
       "enum": ["optional", "required"],
       "default": "optional",
-      "description": "Require every custom AgentInvoker route to bind an Agent Runtime Principal."
+      "description": "Require a principal for HTTP agent invocations. Custom AgentInvoker routes pass one explicitly; /responses, live, AG-UI and A2A use @lifecycle.http.agent_principal. Advanced ADK native routes remain available outside this grant policy."
     }
   },
   "additionalProperties": false,
