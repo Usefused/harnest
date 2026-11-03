@@ -612,7 +612,8 @@ func TestTestCommandSelectsDevelopmentAndEvalProfiles(t *testing.T) {
 	})
 }
 
-func TestServeSelectsRuntimeProfile(t *testing.T) {
+// TestServeSelectsProfileForActiveSuites covers restarting after a chat capture.
+func TestServeSelectsProfileForActiveSuites(t *testing.T) {
 	root := t.TempDir()
 	agent := filepath.Join(root, "serve-profile-agent")
 	if err := createScaffold(agent, "serve-profile-agent"); err != nil {
@@ -622,6 +623,7 @@ func TestServeSelectsRuntimeProfile(t *testing.T) {
 	app := &application{system: environmentTestSystem(t, root), version: "test-version"}
 	command := &cobra.Command{}
 	command.SetContext(context.Background())
+	mustWriteEnvironmentFixture(t, filepath.Join(agent, "evals", "_example.evalset.json"), "{}")
 	bundle, python, err := app.reloadBundleAndPython(command, agent)
 	if err != nil {
 		t.Fatal(err)
@@ -637,6 +639,16 @@ func TestServeSelectsRuntimeProfile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(agent, developmentEnvironmentProfile.requirementsLockFile())); !os.IsNotExist(err) {
 		t.Fatalf("serve unexpectedly selected the test profile: %v", err)
 	}
+	mustWriteEnvironmentFixture(t, filepath.Join(agent, "evals", "chat.evalset.json"), "{}")
+	_, python, err = app.reloadBundleAndPython(command, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer python.releaseLease()
+	if python.Executable != runtimePythonPath(testAgentEnvironment(bundle.Directory, "eval")) {
+		t.Fatalf("serve did not select the eval interpreter for the saved suite: %s", python.Executable)
+	}
+	assertFilesExist(t, agent, []string{evalEnvironmentProfile.requirementsLockFile()})
 }
 
 // TestEnvironmentSyncRejectsUnknownProfile lists every supported isolated environment.

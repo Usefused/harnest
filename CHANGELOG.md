@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Restart to run the updated suite, or use `--reload` for automatic updates.
+- Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.
 - Fix model calls with ordinary function tools after the last MCP connection is removed. Harnest now keeps framework-owned tools out of LiteLLM’s remote MCP gateway.
