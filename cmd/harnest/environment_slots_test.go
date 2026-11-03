@@ -88,13 +88,7 @@ func TestEnvironmentSlotsProtectRunningCommands(t *testing.T) {
 	if _, _, err := executeForTest(t, sys, "env", "sync", agent, "--profile", "eval"); err != nil {
 		t.Fatal(err)
 	}
-	project := filepath.Join(agent, "pyproject.toml")
-	before := string(mustReadTestFile(t, project))
-	after := strings.Replace(before, "dependencies = []", `dependencies = ["mcp"]`, 1)
-	if before == after {
-		t.Fatal("expected empty scaffold dependencies")
-	}
-	mustWriteEnvironmentFixture(t, project, after)
+	mustAddEnvironmentDependency(t, agent)
 	bundle, err = loadAgentBundle(agent)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +112,18 @@ func TestEnvironmentSlotsProtectRunningCommands(t *testing.T) {
 	mustSyncAgentEnvironment(t, sys, agent)
 	next.releaseLease()
 	assertEnvironmentSlots(t, agent, "agent", "eval")
+}
+
+// mustAddEnvironmentDependency reproduces the manifest change from uv add --no-sync mcp.
+func mustAddEnvironmentDependency(t *testing.T, agent string) {
+	t.Helper()
+	project := filepath.Join(agent, "pyproject.toml")
+	before := string(mustReadTestFile(t, project))
+	after := strings.Replace(before, "dependencies = []", `dependencies = ["mcp"]`, 1)
+	if before == after {
+		t.Fatal("expected empty scaffold dependencies")
+	}
+	mustWriteEnvironmentFixture(t, project, after)
 }
 
 // mustChangeEnvironmentDependencyInput invalidates the lock fingerprint without introducing network dependencies.
