@@ -188,6 +188,18 @@ class EvalSuite:
 
     eval_sets: tuple[Path, ...]
     config: Path | None = None
+    set_configs: tuple[Path, ...] = ()
+
+    def for_set(self, path: Path) -> EvalSuite:
+        """Resolve the validated sidecar or shared fallback for one set."""
+        config = path.with_name(path.name.removesuffix(".evalset.json") + ".test_config.json")
+        return EvalSuite((path,), config if config in self.set_configs else self.config)
+
+    def scoring_groups(self) -> tuple[EvalSuite, ...]:
+        """Keep the shared-config batch intact unless individual sets override it."""
+        if not self.set_configs:
+            return (self,)
+        return tuple(self.for_set(path) for path in self.eval_sets)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2598,16 +2610,9 @@ def _discover_evals(directory: Path) -> EvalSuite:
     if not directory.is_dir():
         raise BundleConventionError(f"evals path must be a directory: {directory}")
 
-    eval_paths = []
-    config_path = None
-    for path in sorted(directory.iterdir(), key=lambda item: item.name):
-        kind = _eval_file_kind(path)
-        if kind == "ignored":
-            continue
-        if kind == "config":
-            config_path = path
-        else:
-            eval_paths.append(path)
+    eval_paths, configs = _eval_inputs(directory)
+    config_path = configs.get("test_config.json")
+    scoped = tuple(path for path in configs.values() if path != config_path)
     if not eval_paths:
         if config_path is not None:
             raise BundleConventionError(
@@ -2619,8 +2624,19 @@ def _discover_evals(directory: Path) -> EvalSuite:
                 )
             )
         return EvalSuite(())
-    _validate_eval_files(eval_paths, config_path)
-    return EvalSuite(tuple(eval_paths), config_path)
+    _validate_eval_files(eval_paths, tuple(configs.values()))
+    return EvalSuite(tuple(eval_paths), config_path, scoped)
+
+
+def _eval_inputs(directory: Path) -> tuple[list[Path], dict[str, Path]]:
+    """Pair each sidecar with an active eval set so a typo cannot change scoring silently."""
+    files = [(path, _eval_file_kind(path)) for path in sorted(directory.iterdir())]
+    sets = [path for path, kind in files if kind == "eval"]
+    configs = {path.name: path for path, kind in files if kind == "config"}
+    allowed = {"test_config.json", *(path.name.removesuffix(".evalset.json") + ".test_config.json" for path in sets)}
+    for orphan in configs.keys() - allowed:
+        raise BundleConventionError(f"eval config {orphan} needs a matching *.evalset.json")
+    return sets, configs
 
 
 def _eval_file_kind(path: Path) -> str:
@@ -2636,18 +2652,19 @@ def _eval_file_kind(path: Path) -> str:
                 path, kind="evals",
             )
         )
-    if path.name == "test_config.json":
+    if path.name == "test_config.json" or path.name.endswith(".test_config.json"):
         return "config"
     if path.name.endswith(".evalset.json"):
         return "eval"
     raise BundleConventionError(
         folder_entry_error(
-            f"unexpected eval file {path}; expected *.evalset.json or test_config.json", path, kind="evals"
+            f"unexpected eval file {path}; expected *.evalset.json or test_config.json (shared or <set>.test_config.json)", path, kind="evals"
         )
     )
 
 
-def _validate_eval_files(eval_paths: Sequence[Path], config_path: Path | None) -> None:
+def _validate_eval_files(eval_paths: Sequence[Path], configs: Sequence[Path]) -> None:
+    """Validate all shared and set-specific configurations during discovery."""
     try:
         from google.adk.evaluation.eval_config import EvalConfig
         from google.adk.evaluation.eval_set import EvalSet
@@ -2658,8 +2675,8 @@ def _validate_eval_files(eval_paths: Sequence[Path], config_path: Path | None) -
 
     for path in eval_paths:
         _validate_eval_set(path, EvalSet)
-    if config_path is not None:
-        _validate_eval_config(config_path, EvalConfig)
+    for path in configs:
+        _validate_eval_config(path, EvalConfig)
 
 
 def _validate_eval_set(path: Path, eval_set_class: type[Any]) -> None:

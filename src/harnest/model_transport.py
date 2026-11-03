@@ -34,13 +34,24 @@ class FrameworkToolClient:
 
     async def acompletion(self, *args: Any, **kwargs: Any) -> Any:
         """Route the final async request after framework tools and hooks are applied."""
+        _check_model_endpoint(kwargs)
         _route_function_tools(args, kwargs)
         return await self._delegate.acompletion(*args, **kwargs)
 
     def completion(self, *args: Any, **kwargs: Any) -> Any:
         """Apply the same tool ownership rule to synchronous and streaming calls."""
+        _check_model_endpoint(kwargs)
         _route_function_tools(args, kwargs)
         return self._delegate.completion(*args, **kwargs)
+
+
+def _check_model_endpoint(arguments: Mapping[str, Any]) -> None:
+    """Catch the scaffold endpoint at invocation so offline compilation still works."""
+    if arguments.get("api_base") == "https://models.example.invalid/v1":
+        raise ValueError(
+            "The example model endpoint cannot serve requests. Set OPENAI_BASE_URL "
+            "to your OpenAI-compatible API and OPENAI_MODEL to a model it serves."
+        )
 
 
 def _route_function_tools(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:

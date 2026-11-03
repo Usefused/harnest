@@ -61,7 +61,7 @@ func (a *application) newAddEvalCommand() *cobra.Command {
 				fmt.Fprintln(command.OutOrStdout(), "Next: implement the scorer, then register its harnest.lib import in evals/test_config.json customMetrics and criteria.")
 				return nil
 			}
-			fmt.Fprintf(command.OutOrStdout(), "Scoring: %s (%s). Criteria in evals/test_config.json apply to all eval sets; existing settings are preserved.\n", choice.ID, choice.Backend)
+			fmt.Fprintf(command.OutOrStdout(), "Scoring: %s (%s). Shared criteria in evals/test_config.json apply unless a set has its own <set>.test_config.json.\n", choice.ID, choice.Backend)
 			fmt.Fprintln(command.OutOrStdout(), "Next: edit the sample cases and criteria, configure the scoring backend, then run `harnest test . --evals` from the agent folder.")
 			return nil
 		},

@@ -5,6 +5,9 @@
 - Add a checksum-verified PowerShell installer for Windows x64 and ARM64. Find the managed Python under `Scripts`, prefer `python.exe` on PATH, read project files as UTF-8, and use portable paths for upgrade moves.
 - Keep capture projection failures off the response path, preserve LangGraph tool errors, and keep unmatched tool results separate from pending calls. Playground errors now appear above the Evals and Work views.
 - **Security:** `server.agentPrincipal: required` now refuses new invocations through `/responses`, live, AG-UI, and A2A unless `@lifecycle.http.agent_principal` grants permissions. Add the hook before upgrading deployments that require grants and use these routes. Advanced ADK’s native invocation endpoints stay available outside this grant policy.
+- Score a single eval set with `evals/<set>.test_config.json`. CLI and Playground use its criteria in place of the shared config for that set.
+- Allow dependency edits during local serving by preparing a replacement environment while the running interpreter is leased.
+- Local commands now use exported model settings when a scaffold still has its example URL or model ID. Calling the example endpoint reports how to configure a provider.
 
 - Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
