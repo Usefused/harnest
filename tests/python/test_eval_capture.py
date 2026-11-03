@@ -261,6 +261,34 @@ class RuntimeCaptureTests(unittest.TestCase):
             agent="refunds", reason="rule",
         )
 
+    def test_unprojectable_input_cannot_break_a_successful_response(self):
+        """An input that cannot be JSON encoded drops only the capture."""
+        cyclic = {}
+        cyclic["self"] = cyclic
+        store = MemoryStore()
+        driver = EvalCaptureRuntimeDriver(FakeDriver(text="ok"), policy_for(lambda _: True, store))
+
+        async def scenario():
+            result = await driver.invoke(request(cyclic))
+            await driver.close()
+            return result.text
+
+        self.assertEqual(asyncio.run(scenario()), "ok")
+        self.assertEqual(store.records, [])
+
+    def test_langgraph_orphan_tool_error_keeps_its_own_identity(self):
+        """A native text error with a different ID must not mark a pending call failed."""
+        from langchain_core.messages import ToolMessage
+        from harnest.runtime_langgraph import _message_tool_events
+
+        events = (TOOL_ERROR_EVENTS[0], *_message_tool_events(ToolMessage(
+            content="declined", name="lookup", tool_call_id="other", status="error",
+        )))
+        store = MemoryStore()
+        driver = EvalCaptureRuntimeDriver(FakeDriver(events), policy_for(lambda event: event.tool_error, store))
+        asyncio.run(run_invoke(driver))
+        self.assertEqual(store.records[0].tool_calls, (ToolActivity("refund"), ToolActivity("lookup", error=True)))
+
     def test_response_is_unchanged_when_rule_or_store_fails(self):
         def broken(event):
             raise RuntimeError("bug in rule")

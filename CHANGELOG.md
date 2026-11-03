@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a checksum-verified PowerShell installer for Windows x64 and ARM64. Find the managed Python under `Scripts`, prefer `python.exe` on PATH, read project files as UTF-8, and use portable paths for upgrade moves.
+- Keep capture projection failures off the response path, preserve LangGraph tool errors, and keep unmatched tool results separate from pending calls. Playground errors now appear above the Evals and Work views.
+
 - Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.

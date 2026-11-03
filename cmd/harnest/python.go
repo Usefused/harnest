@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -35,17 +36,31 @@ func (a *application) resolvePython() (pythonSelection, error) {
 
 	runtimeDirectory, _ := a.runtimeDirectory("")
 	if runtimeDirectory != "" {
-		managed := filepath.Join(runtimeDirectory, "bin", "python")
+		// The managed runtime is a uv environment, so its interpreter lives
+		// under Scripts\python.exe on Windows rather than bin/python.
+		managed := runtimePythonPath(runtimeDirectory)
 		if executable, err := a.system.lookPath(managed); err == nil {
 			return pythonSelection{Executable: executable, Source: "managed runtime"}, nil
 		}
 	}
-	if executable, err := a.system.lookPath("python3"); err == nil {
-		return pythonSelection{Executable: executable, Source: "PATH"}, nil
+	for _, name := range pathPythonCandidates(runtime.GOOS) {
+		if executable, err := a.system.lookPath(name); err == nil {
+			return pythonSelection{Executable: executable, Source: "PATH"}, nil
+		}
 	}
 	return pythonSelection{}, fmt.Errorf(
 		"Python runtime not found; install Harnest, set HARNEST_PYTHON, or pass --python",
 	)
+}
+
+// pathPythonCandidates lists PATH names in preference order for one host OS.
+func pathPythonCandidates(goos string) []string {
+	if goos == "windows" {
+		// Windows installers register python.exe; python3.exe is usually absent
+		// or the Microsoft Store placeholder, so it is only a last resort.
+		return []string{"python", "python3"}
+	}
+	return []string{"python3"}
 }
 
 func (a *application) runtimeDirectory(requested string) (string, error) {

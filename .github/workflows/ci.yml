@@ -135,6 +135,15 @@ jobs:
           python scripts/prepare_uv_assets.py --target "$(go env GOOS)-$(go env GOARCH)"
           python scripts/build_runtime_wheel.py --version "$version" --outdir internal/runtimewheel/assets --no-isolation
           go build -tags harnest_release -ldflags "-X main.version=$version" -o .cache/studio-release/harnest.exe ./cmd/harnest
+      - name: Test Windows installer, Python discovery, and upgrade moves
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          go test ./cmd/harnest -run 'TestPython(ResolutionPrecedence|LocationsFollowHostLayout)$'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/python -p test_harnest_extensions.py -k upgrade_moves_lifecycle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\test_windows_installer.ps1 -Cli .cache/studio-release/harnest.exe
       - name: Launch bundled Studio outside the checkout
         run: python scripts/smoke_studio_release.py --cli .cache/studio-release/harnest.exe
       - name: Build and run attached and embedded agents outside the checkout

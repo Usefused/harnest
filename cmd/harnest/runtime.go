@@ -313,8 +313,14 @@ func managedPythonDirectory(runtimeDirectory string) string {
 	return filepath.Join(filepath.Dir(runtimeDirectory), "python")
 }
 
+// runtimePythonPath returns the interpreter inside a uv-created environment on this host.
 func runtimePythonPath(directory string) string {
-	if runtime.GOOS == "windows" {
+	return environmentPython(runtime.GOOS, directory)
+}
+
+// environmentPython follows uv's environment layout, which differs on Windows.
+func environmentPython(goos, directory string) string {
+	if goos == "windows" {
 		return filepath.Join(directory, "Scripts", "python.exe")
 	}
 	return filepath.Join(directory, "bin", "python")

@@ -83,7 +83,7 @@ class RevisionStore:
         if not path.exists():
             return
         try:
-            state = json.loads(path.read_text())
+            state = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(state, dict):
                 raise ValueError("state must be an object")
         except (OSError, ValueError):
