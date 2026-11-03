@@ -35,6 +35,7 @@ _PHASES = frozenset(
         "before_http",
         "after_http",
         "on_http_error",
+        "http_agent_principal",
         "before_mcp",
         "after_mcp",
         "on_mcp_error",
@@ -90,6 +91,7 @@ _DECORATOR_PATHS = {
     "before_http": "http.before",
     "after_http": "http.after",
     "on_http_error": "http.on_error",
+    "http_agent_principal": "http.agent_principal",
     "before_mcp": "mcp.before",
     "after_mcp": "mcp.after",
     "on_mcp_error": "mcp.on_error",
@@ -282,6 +284,9 @@ class _HTTPDecorators:
     before = _PhaseDecorator("before_http")
     after = _PhaseDecorator("after_http")
     on_error = _PhaseDecorator("on_http_error")
+    # Grants permissions to built-in invocation routes (/responses, live,
+    # AG-UI, A2A), which cannot pass an Agent Runtime Principal themselves.
+    agent_principal = _PhaseDecorator("http_agent_principal")
 
 
 class _MCPDecorators:

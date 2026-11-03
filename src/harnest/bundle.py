@@ -131,6 +131,7 @@ _EXTENSION_PHASE_CAPABILITIES = {
     "before_http": "lifecycle.http",
     "after_http": "lifecycle.http",
     "on_http_error": "lifecycle.http",
+    "http_agent_principal": "lifecycle.http",
     "before_mcp": "lifecycle.mcp",
     "after_mcp": "lifecycle.mcp",
     "on_mcp_error": "lifecycle.mcp",

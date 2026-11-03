@@ -681,7 +681,10 @@ credentials, limits, and telemetry as `/responses`. Compilation rejects
 duplicate and Harnest-owned paths. Subagents cannot own routes. Set
 `server.agentPrincipal: required` when every custom invocation must pass an
 application-authorized `agent_principal=`; an omission then fails before
-session creation. See
+session creation. Built-in routes (`/responses`, live, AG-UI, A2A) cannot pass
+one, so they use one `@lifecycle.http.agent_principal` hook,
+`def grant(connection, principal) -> AgentRuntimePrincipal`. With `required`
+and no hook they refuse with 403; with neither, they run unrestricted. See
 `https://usefused.com/docs/harnest/runtime/custom-http-endpoints` for the public
 contract and example. Keep domain-specific session queries, such as filtering
 by a site's origin, in an authenticated custom route backed by an

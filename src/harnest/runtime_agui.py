@@ -24,6 +24,7 @@ from dataclasses import replace
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from .agent_principal import AgentRuntimePrincipal
 from .runtime_auth import principal_for
 from .runtime_invocation import InvocationCoordinator
 from .runtime_agui_input import AGUIInput, resolve_agui_session
@@ -58,7 +59,11 @@ def mount_agui_routes(router: Any, *, coordinator: InvocationCoordinator) -> Non
             # Reading the session here would wait on the lease held by that same
             # suspended invocation, deadlocking before its result is delivered.
         else:
-            run_request, initializing = await _new_request(coordinator, envelope, user_id)
+            # Resumes keep the suspended run's principal; only new turns need one.
+            agent_principal = await coordinator.builtin_agent_principal(request)
+            run_request, initializing = await _new_request(
+                coordinator, envelope, user_id, agent_principal
+            )
             resume = None
         encoder = _AGUIEncoder(
             run_id=envelope.run_id, messages=envelope.messages, state=envelope.state,
@@ -81,7 +86,10 @@ def mount_agui_routes(router: Any, *, coordinator: InvocationCoordinator) -> Non
 
 
 async def _new_request(
-    coordinator: InvocationCoordinator, envelope: AGUIInput, user_id: str
+    coordinator: InvocationCoordinator,
+    envelope: AGUIInput,
+    user_id: str,
+    agent_principal: AgentRuntimePrincipal | None = None,
 ) -> tuple[InvocationRequest, bool]:
     """Validate a new turn before creating its client-selected session."""
 
@@ -96,11 +104,13 @@ async def _new_request(
         request = coordinator.create_request(
             "", user_id=user_id, session_id=session.id,
             metadata=envelope.metadata, transport="agui",
+            agent_principal=agent_principal,
         )
         return request, True
     request = await coordinator.prepare_request(
         text, user_id=user_id, session_id=session.id,
         metadata=envelope.metadata, transport="agui",
+        agent_principal=agent_principal,
     )
     return replace(request, state_delta=envelope.state), False
 

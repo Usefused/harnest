@@ -1054,6 +1054,7 @@ def _build_native_adk_app(
         asset_stores=application.asset_stores,
         a2a_task_store=_a2a_task_store(application),
         http_routes=application.http_routes,
+        lifecycle_extensions=application.lifecycle_extensions,
     )
     # ADK owns a flat public route table, so preserve it when adding neutral APIs.
     app.router.routes.extend(neutral.routes)

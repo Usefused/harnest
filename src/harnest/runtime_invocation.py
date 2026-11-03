@@ -46,6 +46,7 @@ from .response_status import (
     ResponseStatusCapacityError,
 )
 from .server_config import format_byte_size
+from .http_agent_principal import AgentPrincipalDenied, BuiltinPrincipalPolicy
 
 
 async def resolved_transport_input(
@@ -89,6 +90,21 @@ class InvocationCoordinator:
         default_factory=InMemoryResponseStatusStore
     )
     external_continuations: Any | None = None
+    principal_policy: BuiltinPrincipalPolicy = field(
+        default_factory=BuiltinPrincipalPolicy
+    )
+
+    async def builtin_agent_principal(
+        self, connection: Any
+    ) -> AgentRuntimePrincipal | None:
+        """Resolve a built-in route's principal before any session is touched."""
+
+        try:
+            principal = await self.principal_policy.resolve(connection)
+        except AgentPrincipalDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        validate_agent_principal_runtime(principal, self.driver.info)
+        return principal
 
     async def resolve_session(self, *, user_id: str, session_id: str | None) -> Any:
         """Create an implicit session or authorize one explicit session."""
