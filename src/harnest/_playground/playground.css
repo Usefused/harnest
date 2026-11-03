@@ -393,6 +393,10 @@ body.eval-mode .topbar { grid-template-columns: minmax(180px, 1fr) auto; }
 .inspector-toggle:hover, .inspector-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--line-strong); }
 
 .error-banner { position: absolute; z-index: 3; top: 12px; right: 30px; left: 30px; padding: 11px 14px; color: var(--danger-text); background: var(--danger-bg); border: 1px solid rgba(255, 107, 107, 0.25); border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25); font-size: 12px; }
+/* In Evals and Work, reserve a row for errors above the scrollable content. */
+body.eval-mode .workspace { grid-template-rows: auto minmax(0, 1fr); }
+body.eval-mode .error-banner { position: static; grid-row: 1; margin: 12px 24px 0; }
+body.eval-mode .workspace > :is(.eval-workspace, .work-workspace) { grid-row: 2; }
 .conversation { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 28px max(30px, calc((100% - 760px) / 2)) 20px; background: radial-gradient(circle at 50% 0, rgba(184, 243, 74, 0.025), transparent 26rem); scrollbar-gutter: stable; }
 .empty-state { display: grid; justify-items: center; max-width: 430px; margin: 12vh auto 0; color: var(--muted); text-align: center; }
 .empty-state h3 { margin: 16px 0 7px; color: var(--text); font-size: 21px; }

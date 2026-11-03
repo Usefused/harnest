@@ -26,7 +26,7 @@ def read_project_lock(root: Path) -> dict[str, Any]:
         raise FrameworkCompatibilityError("harnest.lock must be a regular file of at most 64KiB")
     # Reuse duplicate-key rejection so pins cannot mean different things to Go and Python.
     from .server_config import _UniqueKeyLoader
-    value = yaml.load(path.read_text(), Loader=_UniqueKeyLoader)
+    value = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     if not isinstance(value, dict) or value.get("apiVersion") != "harnest.dev/v1alpha1" or value.get("kind") != "ProjectLock":
         raise FrameworkCompatibilityError("invalid Harnest project lock")
     schema = value.get("projectSchema")
@@ -88,7 +88,7 @@ def resolve_project_lock(root: Path, framework: str, *, frozen: bool = False) ->
     path = root / "harnest.lock"
     fd, temporary = tempfile.mkstemp(prefix=".harnest-lock-", dir=root)
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             yaml.safe_dump(value, stream, sort_keys=False)
         os.replace(temporary, path)
     finally:

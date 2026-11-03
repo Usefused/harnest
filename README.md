@@ -23,6 +23,14 @@ curl -fsSL \
 harnest doctor
 ```
 
+On Windows, run the installer in PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP 'install-harnest.ps1'
+Invoke-WebRequest https://raw.githubusercontent.com/Usefused/harnest/main/install.ps1 -UseBasicParsing -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
 See [installation options](https://usefused.com/docs/harnest/reference/installation-and-releases) for version pinning and CI.
 
 ## Build your first agent

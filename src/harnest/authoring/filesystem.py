@@ -88,7 +88,7 @@ def _backup(plan: ProjectPlan) -> Path:
             raise ProjectError("backup directory must be a real directory")
     backup = directory / uuid.uuid4().hex
     backup.mkdir(parents=True, mode=0o700)
-    (backup / "plan.json").write_text(json.dumps(plan.public(), indent=2) + "\n")
+    (backup / "plan.json").write_text(json.dumps(plan.public(), indent=2) + "\n", encoding="utf-8")
     for change in plan.changes:
         if change.path in plan._before:
             atomic_write(backup / "source" / change.path, plan._before[change.path])

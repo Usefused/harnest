@@ -477,11 +477,11 @@ func isRequiredStoreResource(directory, name string) bool {
 
 func TestPythonResolutionPrecedence(t *testing.T) {
 	available := map[string]string{
-		"flag-python":                            "/resolved/flag-python",
-		"env-python":                             "/resolved/env-python",
-		"/runtime/bin/python":                    "/resolved/managed-python",
-		"/home/test/.harnest/runtime/bin/python": "/resolved/default-managed-python",
-		"python3":                                "/resolved/python3",
+		"flag-python":                 "/resolved/flag-python",
+		"env-python":                  "/resolved/env-python",
+		runtimePythonPath("/runtime"): "/resolved/managed-python",
+		runtimePythonPath(filepath.Join("/home/test", ".harnest", "runtime")): "/resolved/default-managed-python",
+		"python3": "/resolved/python3",
 	}
 	environment := map[string]string{
 		"HARNEST_PYTHON":      "env-python",
@@ -513,10 +513,28 @@ func TestPythonResolutionPrecedence(t *testing.T) {
 	if err != nil || selection.Executable != "/resolved/managed-python" {
 		t.Fatalf("managed resolution = %#v, %v", selection, err)
 	}
-	delete(available, "/runtime/bin/python")
+	delete(available, runtimePythonPath("/runtime"))
 	selection, err = app.resolvePython()
 	if err != nil || selection.Executable != "/resolved/python3" {
 		t.Fatalf("PATH resolution = %#v, %v", selection, err)
+	}
+}
+
+func TestPythonLocationsFollowHostLayout(t *testing.T) {
+	directory := filepath.Join("home", ".harnest", "runtime")
+	if got, want := environmentPython("windows", directory), filepath.Join(directory, "Scripts", "python.exe"); got != want {
+		t.Fatalf("windows environment python = %q, want %q", got, want)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got, want := environmentPython(goos, directory), filepath.Join(directory, "bin", "python"); got != want {
+			t.Fatalf("%s environment python = %q, want %q", goos, got, want)
+		}
+	}
+	if got := pathPythonCandidates("windows"); strings.Join(got, ",") != "python,python3" {
+		t.Fatalf("windows PATH candidates = %v", got)
+	}
+	if got := pathPythonCandidates("linux"); strings.Join(got, ",") != "python3" {
+		t.Fatalf("linux PATH candidates = %v", got)
 	}
 }
 
