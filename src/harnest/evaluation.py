@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from functools import lru_cache
+from importlib.metadata import version
 import json
 import sys
 from types import ModuleType
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 import uuid
+
+from packaging.version import Version
 
 from .eval_metrics import MetricContext, MetricScore, metric
 from .bundle import EvalSuite
@@ -131,6 +134,15 @@ def _uses_judge_model(name: str, criterion: Any) -> bool:
     )
 
 
+def _check_vertex_metrics(criteria: Mapping[str, Any]) -> None:
+    """Reject the legacy ADK dataset adapter only for hosted Vertex scoring."""
+    hosted = {"response_evaluation_score", "safety_v1", "multi_turn_task_success_v1",
+              "multi_turn_trajectory_quality_v1", "multi_turn_tool_use_quality_v1"}
+    if hosted.intersection(criteria) and Version(version("google-adk")) < Version("2.13"):
+        raise EvaluationError("Hosted Vertex metrics require google-adk>=2.13 with Vertex SDK 2.7. "
+                              "Update the project's ADK framework lock before running this evaluation.")
+
+
 def eval_config(suite: EvalSuite, trajectory: str) -> Any:
     """Load criteria with shared model defaults and the selected trajectory."""
 
@@ -146,6 +158,7 @@ def eval_config(suite: EvalSuite, trajectory: str) -> Any:
             by_alias=True, exclude_none=True
         )
     config = _configured_eval_models(payload, suite, EvalConfig)
+    _check_vertex_metrics(config.criteria)
     criterion = config.criteria.get("tool_trajectory_avg_score")
     if criterion is None:
         return config

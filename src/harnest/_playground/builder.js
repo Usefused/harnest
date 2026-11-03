@@ -78,6 +78,7 @@ const harnestBuilder = (() => {
     catch (_) { authoring = {available: false, scopes: [], suites: [], files: []}; }
     return authoring;
   }
+  const canCapture = () => authoring.available || authoring.captureAvailable;
   /** Report persistence separately from build activation, which belongs to the supervisor. */
   async function saved() {
     const message = "Saved to workspace. Waiting for the validated build to reload…";
@@ -123,7 +124,7 @@ const harnestBuilder = (() => {
       evalBound = true;
     }
     byId("new-eval-suite").disabled = !authoring.available;
-    byId("eval-authoring-status").textContent = authoring.available ? "Create and edit cases here, or save a Playground conversation as an eval." : "Run existing suites here. Start with harnest serve --reload to create and edit evals.";
+    byId("eval-authoring-status").textContent = authoring.available ? "Create and edit cases here, or save a Playground conversation as an eval." : canCapture() ? "Save a chat as an eval directly to your workspace. Restart the server to run newly saved cases." : "Run existing suites here. Start with harnest serve --reload to create and edit evals.";
     renderSuites();
   }
   /** Share one suite selection between the editor and the existing runtime runner. */
@@ -205,6 +206,20 @@ const harnestBuilder = (() => {
     }
     menu.append(summary, list); return menu;
   }
+  /** Save a reviewed suite through the browser when the server has no writable workspace. */
+  function downloadSuite(filename, text) {
+    const link = el("a");
+    const url = URL.createObjectURL(new Blob([text], {type: "application/json"}));
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    try { link.click(); }
+    finally {
+      link.remove();
+      // Let the browser claim the download before releasing the backing data.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  }
   /** Preserve all existing case fields and multimodal content unless explicitly edited. */
   async function editCase(document, index = null, duplicate = false, captured = null) {
     if (document) document = {...document, ...await json(`/_harnest/authoring/document?path=${encodeURIComponent(document.path)}`)};
@@ -214,7 +229,9 @@ const harnestBuilder = (() => {
     if (duplicate) { delete item.eval_id; item.evalId = caseId(); }
     let suiteID, suiteName, id, title;
     const turns = [];
-    const form = modal(document ? (existing && !duplicate ? "Edit eval case" : "Add eval case") : "Create eval suite", "Save eval", async () => {
+    const download = captured !== null && !canCapture();
+    const heading = document ? (existing && !duplicate ? "Edit eval case" : "Add eval case") : "Create eval suite";
+    const form = modal(download ? "Download conversation as eval" : heading, download ? "Download eval" : "Save eval", async () => {
       const caseKey = "eval_id" in item ? "eval_id" : "evalId";
       item[caseKey] = id.value.trim(); item.name = title.value.trim();
       for (const turn of turns) turn.apply();
@@ -224,10 +241,20 @@ const harnestBuilder = (() => {
       if (index !== null && !duplicate) cases[index] = item; else cases.push(item);
       output[key] = cases;
       if (!document) { output.eval_set_id = suiteID.value.trim(); output.name = suiteName.value.trim() || output.eval_set_id; }
-      const path = document?.path || `evals/${output.eval_set_id}.evalset.json`;
-      await json("/_harnest/authoring/document", "PUT", {path, revision: document?.revision || "", text: pretty(output) + "\n"});
-      selectedSuite = path; await saved();
+      const filename = `${output.eval_set_id}.evalset.json`;
+      const text = pretty(output) + "\n";
+      if (download) {
+        downloadSuite(filename, text);
+        byId("eval-authoring-status").textContent = `Download requested. Place ${filename} in your agent’s evals/ folder, then restart the server to run it.`;
+        return;
+      }
+      const path = document?.path || `evals/${filename}`;
+      await json("/_harnest/authoring/document", "PUT", {path, revision: document?.revision || "", text});
+      selectedSuite = path;
+      if (authoring.available) await saved();
+      else byId("eval-authoring-status").textContent = `Saved to ${path}. Restart harnest serve to run the updated suite.`;
     });
+    if (download) form.append(el("p", "Review your conversation and download the suite for your agent’s evals/ folder. To save directly to the workspace, run harnest serve locally from the agent folder.", "builder-note"));
     if (!document) {
       const suiteDetails = section(form, "Suite details", "Group related checks into a reusable suite.");
       suiteID = field(suiteDetails, "Suite ID", "quality"); suiteID.required = true; suiteID.pattern = "[A-Za-z][A-Za-z0-9_]*";
@@ -292,6 +319,7 @@ const harnestBuilder = (() => {
       else if (conversation.length && bubble.markdownSource) conversation[conversation.length - 1].finalResponse.parts[0].text += bubble.markdownSource;
     }
     if (!conversation.length) throw new Error("Send a message in Playground before saving an eval");
+    if (!canCapture()) return editCase(null, null, false, conversation);
     let suite;
     const form = modal("Save conversation as eval", "Review case", async () => {
       const target = authoring.suites.find(item => item.path === suite.value);

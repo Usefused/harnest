@@ -71,6 +71,29 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	mustRetargetIDEEnvironment(t, sys, agent, idePath, firstTarget)
 }
 
+// TestEnvironmentSyncRepairsMissingCLI exercises a cache hit after an external sync removed Harnest.
+func TestEnvironmentSyncRepairsMissingCLI(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+	sys := environmentTestSystem(t, root)
+	mustSyncAgentEnvironment(t, sys, agent)
+	before := string(mustReadTestFile(t, calls))
+
+	// Keep the environment state and interpreter path intact, but replace the
+	// installed packages with an empty venv, as a project-only sync can do.
+	slot := testAgentEnvironment(agent, "agent")
+	create := exec.Command("python3", "-m", "venv", "--clear", "--without-pip", slot)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create empty venv: %v: %s", err, out)
+	}
+	mustSyncAgentEnvironment(t, sys, agent)
+	repair := string(mustReadTestFile(t, calls))[len(before):]
+	if !strings.Contains(repair, "pip sync --python") || strings.Contains(repair, "pip compile") {
+		t.Fatalf("expected repair from the existing lock: %s", repair)
+	}
+}
+
 func TestEnvironmentPruningPreservesCurrentAndLeasedRuntimes(t *testing.T) {
 	project := t.TempDir()
 	current := "1111111111111111"
@@ -221,7 +244,7 @@ func mustRecreateCachedIDEEnvironment(
 		t.Fatal(err)
 	}
 	mustSyncAgentEnvironment(t, sys, agent)
-	if secondCalls := string(mustReadTestFile(t, calls)); secondCalls != firstCalls {
+	if secondCalls := string(mustReadTestFile(t, calls)); strings.Contains(secondCalls[len(firstCalls):], "UV ") {
 		t.Fatalf("cached sync invoked uv again:\n%s", secondCalls)
 	}
 	if cachedTarget := mustReadIDEEnvironmentLink(t, idePath); cachedTarget != firstTarget {
@@ -683,6 +706,7 @@ printf 'UV %s\n' "$*" >> "$HARNEST_ENV_TEST_CALLS"
 if [ "$1" = "venv" ]; then
 	for directory in "$@"; do :; done
 	mkdir -p "$directory/bin"
+	rm -f "$directory/bin/python"
 	printf '#!/bin/sh\nprintf '\''PYTHON %%s\\n'\'' "$*" >> "$HARNEST_ENV_TEST_CALLS"\n' > "$directory/bin/python"
 	chmod +x "$directory/bin/python"
 fi

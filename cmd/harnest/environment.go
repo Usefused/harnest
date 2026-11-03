@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -165,12 +166,9 @@ func (a *application) selectAgentEnvironment(
 		return pythonSelection{}, err
 	}
 	defer unlock()
-	selection, found := cachedAgentPython(paths, fingerprint)
-	if !found || filepath.Base(filepath.Dir(filepath.Dir(selection.Executable))) != profile.directoryName() {
-		selection, err = a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
-		if err != nil {
-			return pythonSelection{}, err
-		}
+	selection, err := a.reuseOrRepairAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen, fingerprint)
+	if err != nil {
+		return pythonSelection{}, err
 	}
 	if err := migrateAgentEnvironments(bundle.Directory, selection); err != nil {
 		return pythonSelection{}, err
@@ -179,6 +177,45 @@ func (a *application) selectAgentEnvironment(
 		return leaseAgentPythonLocked(bundle.Directory, selection)
 	}
 	return selection, nil
+}
+
+// reuseOrRepairAgentEnvironment checks that external package tools have not removed the CLI.
+func (a *application) reuseOrRepairAgentEnvironment(
+	command *cobra.Command, bundle engine.Bundle, wheel runtimewheel.Artifact, uv uvbootstrap.Artifact,
+	paths environmentPaths, plan runtimeDependencyPlan, profile environmentProfile, frozen bool, fingerprint string,
+) (pythonSelection, error) {
+	selection, found := cachedAgentPython(paths, fingerprint)
+	if found && filepath.Base(filepath.Dir(filepath.Dir(selection.Executable))) == profile.directoryName() {
+		available, err := a.agentCLIAvailable(command, selection.Executable)
+		if err != nil {
+			return pythonSelection{}, err
+		}
+		if available {
+			return selection, nil
+		}
+		// The inputs still match; restore the published versions without resolving new ones.
+		frozen = true
+	}
+	return a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
+}
+
+// agentCLIAvailable distinguishes a missing module from a failure to execute the probe.
+func (a *application) agentCLIAvailable(command *cobra.Command, python string) (bool, error) {
+	// -I excludes the current checkout, PYTHONPATH and user-installed packages.
+	const probe = `from importlib.util import find_spec
+import sys
+if find_spec("harnest") is None or find_spec("harnest.cli") is None:
+    sys.exit(42)
+`
+	err := a.system.commandContext(command.Context(), python, "-I", "-c", probe).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 42 {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect Harnest CLI in %s: %w", python, err)
 }
 
 type environmentPaths struct {

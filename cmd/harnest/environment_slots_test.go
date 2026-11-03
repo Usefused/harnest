@@ -28,7 +28,7 @@ func TestEnvironmentSlotsRemainBounded(t *testing.T) {
 		if _, _, err := executeForTest(t, sys, "env", "sync", agent, "--profile", profile); err != nil {
 			t.Fatal(err)
 		}
-		if after := string(mustReadTestFile(t, calls)); after != before {
+		if after := string(mustReadTestFile(t, calls)); strings.Contains(after[len(before):], "UV ") {
 			t.Fatal("unchanged profile was not cached")
 		}
 	}

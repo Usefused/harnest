@@ -175,7 +175,7 @@ function builderPage() {
   // Expose editor entrypoints in the VM; generation reload is covered by runtime integration.
   const source = fs.readFileSync(path.join(assets, "builder.js"), "utf8").replace(
     "return {openEvals, captureConversation, syncEvalSelection}",
-    "return {editCase, showError, setup(request) { api = request; saved = async () => {}; }}"
+    "return {editCase, captureConversation, showError, setup(request, capabilities = authoring) { api = request; authoring = capabilities; saved = async () => {}; }}"
   );
   vm.runInContext(source, page.context);
   return page;
@@ -214,6 +214,72 @@ test("case form separates sections and preserves native fields across failed-sav
     assert.deepEqual(copy.conversation[0].userContent.parts[1], original.eval_cases[0].conversation[0].userContent.parts[1]);
     assert.deepEqual(copy.conversation[0].intermediateData, original.eval_cases[0].conversation[0].intermediateData);
   }
+});
+
+test("plain serve offers a workspace save and reports when the suite can run", async () => {
+  const page = builderPage(), writes = [];
+  page.context.document.querySelectorAll = () => [{
+    classList: {contains: role => role === "user"}, querySelector: () => ({textContent: "Hello"}),
+  }];
+  page.context.request = async (url, options) => {
+    writes.push([url, JSON.parse(options.body)]);
+    return {json: async () => ({})};
+  };
+  let review;
+  page.context.setTimeout = callback => { review = callback; };
+  await page.run("harnestBuilder.setup(request, {available:false, captureAvailable:true, suites:[]}); harnestBuilder.captureConversation()");
+  const submit = () => descendants(page.get("builder-dialog")).find(node => node.tag === "form").listeners.submit({preventDefault() {}});
+  await submit();
+  await review();
+  inputByLabel(page, "Suite ID").value = "plain";
+  await submit();
+  const [[url, body]] = writes;
+  assert.equal(url, "/_harnest/authoring/document");
+  assert.equal(body.path, "evals/plain.evalset.json");
+  assert.equal(JSON.parse(body.text).eval_cases[0].conversation[0].userContent.parts[0].text, "Hello");
+  assert.match(page.get("eval-authoring-status").textContent, /Saved to evals\/plain\.evalset\.json.*Restart/);
+});
+
+test("read-only chat capture downloads a reviewed eval suite without a workspace write", async () => {
+  const page = builderPage();
+  const message = (user, text) => ({
+    classList: {contains: role => user && role === "user"},
+    querySelector: () => ({textContent: text, markdownSource: user ? undefined : text}),
+  });
+  page.context.document.querySelectorAll = () => [
+    message(true, "First question"), message(false, "First answer"),
+    message(true, "Follow-up"), message(false, "Second answer"),
+  ];
+  let blob, filename, revoked;
+  page.context.Blob = Blob;
+  page.context.URL = {
+    createObjectURL: value => { blob = value; return "blob:eval"; },
+    revokeObjectURL: url => { revoked = url; },
+  };
+  page.context.setTimeout = fn => fn();
+  page.context.document.createElement = tag => {
+    const node = new Element(tag);
+    if (tag === "a") {
+      node.click = () => { filename = node.download; assert.equal(node.href, "blob:eval"); };
+      node.remove = () => {};
+    }
+    return node;
+  };
+  await page.run("harnestBuilder.captureConversation()");
+  const dialog = page.get("builder-dialog");
+  assert.ok(descendants(dialog).some(node => node.textContent === "Download eval"));
+  inputByLabel(page, "Suite ID").value = "chat_review";
+  inputByLabel(page, "Expected response").value = "Reviewed answer";
+  await descendants(dialog).find(node => node.tag === "form").listeners.submit({preventDefault() {}});
+  assert.equal(dialog.open, false);
+  assert.equal(filename, "chat_review.evalset.json");
+  assert.equal(revoked, "blob:eval");
+  const suite = JSON.parse(await blob.text());
+  assert.equal(suite.eval_set_id, "chat_review");
+  assert.deepEqual(suite.eval_cases[0].conversation.map(turn => [
+    turn.userContent.parts[0].text, turn.finalResponse.parts[0].text,
+  ]), [["First question", "Reviewed answer"], ["Follow-up", "Second answer"]]);
+  assert.match(page.get("eval-authoring-status").textContent, /chat_review\.evalset\.json/);
 });
 
 test("evaluation errors render without the removed Studio status element", () => {

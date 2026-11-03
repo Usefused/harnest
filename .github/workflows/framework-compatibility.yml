@@ -60,6 +60,8 @@ jobs:
           tests/python/test_eval_adk_context.py
           tests/python/test_eval_adk_context_edges.py
           tests/python/test_eval_transport_entrypoints.py
+          tests/python/test_eval_transport_http.py
+          tests/python/test_model_transport.py
       - name: Prepare real Docker isolation checks
         run: docker pull python:3.12-slim
       - name: Verify actual container limits and cleanup

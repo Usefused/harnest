@@ -44,6 +44,7 @@ from .runtime_contract import (
 from .session import ADKSessionStorage, SessionStore
 from .server_config import (
     DEFAULT_SERVER_CONFIG,
+    HTTPServerConfig,
     SERVER_CONFIG_FILENAME,
     ServerConfigError,
     load_server_config,
@@ -1223,7 +1224,7 @@ def _load_server(args: Any) -> tuple[Any, Any]:
 
 
 def _create_server_app(args: Any, server: Any) -> Any:
-    """Only the local CLI lends assets; a deployed launcher never enables UI by default."""
+    """Capture CLI workspace capabilities only for the local Playground."""
 
     from .playground import playground_assets
 
@@ -1231,8 +1232,18 @@ def _create_server_app(args: Any, server: Any) -> Any:
     from .playground_authoring import authoring_workspace
 
     root = getattr(args, "authoring_root", None) if directory is not None else None
-    with playground_assets(directory), authoring_workspace(root):
+    eval_root = _local_eval_root(directory, server.http)
+    with playground_assets(directory), authoring_workspace(root, eval_root=eval_root):
         return _create_configured_app(args.artifact, server, directory is not None)
+
+
+def _local_eval_root(directory: Path | None, http: HTTPServerConfig) -> Path | None:
+    """Keep deployed launchers and remote-enabled servers outside workspace capture."""
+
+    if directory is None or http.allow_remote or http.host not in {"localhost", "127.0.0.1", "::1"}:
+        return None
+    value = os.environ.get("HARNEST_PLAYGROUND_EVAL_ROOT")
+    return Path(value) if value else None
 
 
 def _create_configured_app(artifact: Path, server: Any, development: bool) -> Any:

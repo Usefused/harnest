@@ -1,10 +1,13 @@
 """Transport-binding metadata and borrowed lifecycle ownership regressions."""
 
 import copy
+import json
 import os
 import types
 import unittest
 from unittest.mock import patch
+
+import httpx
 
 from harnest.model import LiteLLMModel
 from harnest.model_lifecycle import (
@@ -58,6 +61,41 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         )
         environment.start()
         self.addCleanup(environment.stop)
+
+    async def test_ordinary_tool_reaches_openai_without_an_mcp_connection(self):
+        """Exercise LiteLLM's tool dispatch before the first provider HTTP request."""
+
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key="offline-test", base_url="https://gateway.invalid/v1",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(self._reply_to_lookup)),
+        )
+        schema = {"type": "function", "function": {
+            "name": "lookup", "parameters": {"type": "object", "properties": {}},
+        }}
+        async with client:
+            connector = LiteLLMModel("openai/gpt-4o-mini", client=client, api_key="offline-test")
+            model = connector.build()
+            response = await model.llm_client.acompletion(
+                model=model.model, messages=[{"role": "user", "content": "Hello"}],
+                tools=[schema], **model._additional_args,
+            )
+            self.assertEqual(response.choices[0].message.content, "received lookup")
+            graph_response = await connector.build_langgraph().bind_tools([schema]).ainvoke("Hello")
+            self.assertEqual(graph_response.content, "received lookup")
+
+    def _reply_to_lookup(self, request):
+        """Accept only an ordinary tool that reached the OpenAI-compatible endpoint."""
+
+        self.assertEqual(request.url.path, "/v1/chat/completions")
+        tool, = json.loads(request.content)["tools"]
+        self.assertEqual((tool["type"], tool["function"]["name"]), ("function", "lookup"))
+        return httpx.Response(200, json={
+            "id": "test", "object": "chat.completion", "created": 1, "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "received lookup"}}],
+        })
 
     def test_explicit_transport_arguments_are_private_and_borrowed_unchanged(self):
         """Native clients and private options survive reconstruction by identity."""

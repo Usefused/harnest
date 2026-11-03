@@ -85,6 +85,18 @@ class ServerConfigTests(unittest.TestCase):
                     _create_server_app(args, ServerConfig(playground=PlaygroundConfig(enabled=enabled)))
                 self.assertEqual(create_app.call_args.kwargs["playground_enabled"], expected)
 
+    def test_eval_capture_root_is_limited_to_local_cli_serve(self):
+        """A workspace hint alone must not enable writes in deployed or remote launchers."""
+        from harnest.runtime import _local_eval_root
+        from harnest.server_config import HTTPServerConfig
+
+        root, assets = Path("/tmp/workspace"), Path("/tmp/ui")
+        with patch.dict(os.environ, {"HARNEST_PLAYGROUND_EVAL_ROOT": str(root)}):
+            self.assertEqual(_local_eval_root(assets, HTTPServerConfig()), root)
+            self.assertIsNone(_local_eval_root(None, HTTPServerConfig()))
+            self.assertIsNone(_local_eval_root(assets, HTTPServerConfig(allow_remote=True)))
+            self.assertIsNone(_local_eval_root(assets, HTTPServerConfig(host="0.0.0.0")))
+
     def test_loads_strict_versioned_configuration_and_binary_size(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.yaml"

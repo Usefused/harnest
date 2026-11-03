@@ -32,11 +32,11 @@ class PlaygroundBuilderTests(unittest.TestCase):
         self.studio = PlaygroundStudioService(self.compiled, mode="managed")
         self.client = self.make_client()
 
-    def make_client(self, writable=True, host="127.0.0.1"):
+    def make_client(self, writable=True, host="127.0.0.1", *, capture=False):
         """Install the production routes with explicit development ownership."""
 
         app = FastAPI()
-        with authoring_workspace(self.root if writable else None):
+        with authoring_workspace(self.root if writable else None, eval_root=self.root if capture else None):
             install_builder_routes(app.router, self.studio)
         client = TestClient(app, base_url="http://127.0.0.1", client=(host, 1234))
         self.addCleanup(client.close)
@@ -75,6 +75,28 @@ class PlaygroundBuilderTests(unittest.TestCase):
         payload["eval_cases"].append(payload["eval_cases"][0])
         self.assertEqual(self.write(stale, json.dumps(payload)).status_code, 422)
         self.assertEqual(self.write(document, "{}").status_code, 422)
+
+    def test_plain_serve_can_save_only_eval_suites(self):
+        """Chat captures use native validation and conflict checks without granting other edits."""
+
+        client = self.make_client(False, capture=True)
+        url = "/_harnest/authoring/document"
+        body = {"path": "evals/chat.evalset.json", "revision": "", "text": '{"eval_set_id":"chat","eval_cases":[]}'}
+        self.assertEqual(client.put(url, json=body, headers={"Origin": "https://elsewhere.test"}).status_code, 403)
+        self.assertEqual(client.put(url, json={**body, "text": "{}"}).status_code, 422)
+        self.assertEqual(client.put(url, json=body).status_code, 200)
+        self.assertEqual((self.root / body["path"]).read_text(), body["text"])
+        self.assertFalse((self.compiled / body["path"]).exists())
+        catalog = client.get("/_harnest/authoring").json()
+        self.assertTrue(catalog["captureAvailable"])
+        self.assertFalse(catalog["available"])
+        self.assertEqual(catalog["suites"][0]["path"], body["path"])
+        self.assertEqual(client.put(url, json=body).status_code, 409)
+        for path in ("agent.py", "mcp/tool.py", "evals/test_config.json", "evals/../x.evalset.json", "child/evals/x.evalset.json"):
+            self.assertEqual(client.put(url, json={**body, "path": path}).status_code, 404, path)
+        (self.root / "evals" / "link.evalset.json").symlink_to(self.compiled / "agent.py")
+        self.assertEqual(client.get(url, params={"path": "evals/link.evalset.json"}).status_code, 404)
+        self.assertEqual(client.post("/_harnest/authoring/mcp", json={"name": "x", "endpoint": "http://localhost"}).status_code, 403)
 
     def test_invalid_source_never_replaces_previous_file(self):
         """Syntax validation happens before an atomic write becomes visible to the watcher."""

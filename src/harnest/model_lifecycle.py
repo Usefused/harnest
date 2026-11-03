@@ -564,7 +564,9 @@ def create_adk_lifecycle_client(
 ) -> Any:
     """Create the concrete client type required by ADK's validated adapter."""
 
-    delegate = client_type()
+    from .model_transport import framework_adk_client
+
+    delegate = framework_adk_client(client_type)
     controller = _LifecycleLiteLLMClient(
         delegate,
         lifecycle,

@@ -304,8 +304,7 @@ func (o serveOptions) validateReload() error {
 	return nil
 }
 
-// serveBundle selects one-shot execution unless development reload is explicit.
-// serveBundle lends CLI assets only for the lifetime of the local server or reload supervisor.
+// serveBundle lends the workspace for eval capture; only reload enables general editing.
 func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, options serveOptions) error {
 	assets, releaseAssets, err := stagePlayground()
 	if err != nil {
@@ -350,7 +349,8 @@ func (a *application) serveBundle(command *cobra.Command, bundle engine.Bundle, 
 		bundle.Config.Metadata.Name, python.Executable,
 	)
 	server := a.system.commandContext(command.Context(), python.Executable, args...)
-	server.Env = configuredEnvironment(bundle)
+	// An environment handoff keeps older locked launchers compatible with this CLI.
+	server.Env = append(configuredEnvironment(bundle), "HARNEST_PLAYGROUND_EVAL_ROOT="+bundle.Directory)
 	if err := runCommand(server, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr()); err != nil {
 		return fmt.Errorf("run generated harnest-agent: %w", err)
 	}

@@ -145,7 +145,10 @@ class PlaygroundEvalTests(unittest.TestCase):
         result = run.json()
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["summary"]["passedCases"], 1)
-        self.assertEqual(result["metrics"][0]["name"], "custom_quality")
+        metrics = {metric["name"]: metric for metric in result["metrics"]}
+        self.assertEqual(metrics["custom_quality"]["status"], "passed")
+        if "tool_call_count_v1" in metrics:
+            self.assertEqual(metrics["tool_call_count_v1"]["status"], "informational")
         self.assertEqual(result["cases"][0]["results"][0]["score"], 1.0)
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(invalid.status_code, 400)

@@ -1,2 +1,2 @@
 # Must match framework.version in harnest.lock.
-google-adk==2.8.0
+google-adk==2.13.0
