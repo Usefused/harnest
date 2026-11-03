@@ -15,6 +15,17 @@
 - Fix model calls with ordinary function tools after the last MCP connection is removed. Harnest now keeps framework-owned tools out of LiteLLM’s remote MCP gateway.
 - Pin LiteLLM 1.106.6 across serving, compilation, and evaluations for upstream security fixes. Use the Vertex 2.7 SDK for hosted scoring without installing Google’s optional LiteLLM adapter. Hosted Vertex metrics require Google ADK 2.13 or newer. Its informational metrics appear in evaluation results without failing Playground runs.
 
+## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
+
+
+### Fixes
+
+* complete Windows installation and protect eval capture ([c6cef0c](https://github.com/Usefused/harnest/commit/c6cef0cbf84e76c884d6369ea93defa7a3f9e3f9))
+* enforce runtime grants on built-in Harnest routes ([cdfc232](https://github.com/Usefused/harnest/commit/cdfc2324bdc107587e4ae4654237173b825ad602))
+* isolate eval criteria and handle live dependency and model setup changes ([8ef5375](https://github.com/Usefused/harnest/commit/8ef5375e418162fadf4aa89857cbab92a4b4a2f3))
+* load evaluation dependencies for served suites ([3345808](https://github.com/Usefused/harnest/commit/33458087ac377b3f6ee51e8e044f2b409fe08d98))
+* repair managed environments, tool calls, and Playground eval saves ([53f5c78](https://github.com/Usefused/harnest/commit/53f5c781dd9e8b9a0cef1a07fcf1fa295d7c9119))
+
 ## [1.8.0](https://github.com/Usefused/harnest/compare/v1.7.1...v1.8.0) (2026-11-02)
 
 - Add production eval capture through `@lifecycle.evals.capture` in `lifecycle/evals_improvement.py`, with sampling, an environment off switch, and custom stores including day-retained `LocalCaptureStore`. Captures omit input, output, tool arguments, and tool results by default (`content="omitted"`). Only an authored `@lifecycle.evals.redact` policy enables content retention (`content="redacted"`); invalid returns drop the capture. Harnest performs no personal-data detection. The existing `default_redactor` and `redact_text` helpers now omit content, and schema version 1 uses `content` instead of the experimental `redacted` boolean. Capture runs in the background on Harnest routes, excludes user/session identifiers and metadata, and never changes the response.
