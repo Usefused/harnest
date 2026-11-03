@@ -141,7 +141,7 @@ jobs:
         run: |
           go test ./cmd/harnest -run 'TestPython(ResolutionPrecedence|LocationsFollowHostLayout)$'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q tests/python/test_harnest_extensions.py -k upgrade_moves_lifecycle
+          python -m unittest discover -s tests/python -p test_harnest_extensions.py -k upgrade_moves_lifecycle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\scripts\test_windows_installer.ps1 -Cli .cache/studio-release/harnest.exe
       - name: Launch bundled Studio outside the checkout
