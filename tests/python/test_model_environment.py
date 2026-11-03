@@ -87,7 +87,7 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
             os.environ, environment, clear=True
         ), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
-        ), patch("litellm.telemetry", False):
+        ):
             owner = LiteLLMModel.from_openai_environment().build_for(framework)
             config = _authored_eval_config(Path(directory) / "test_config.json")
             # Runtime transport must retain the captured authority, not read
@@ -123,7 +123,7 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         }, clear=True), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
-        ), patch("litellm.telemetry", False):
+        ):
             config = _authored_eval_config(Path(directory) / "test_config.json")
             with eval_model_transports(SimpleNamespace(), config) as prepared:
                 adapter = LLMRegistry.new_llm(prepared.user_simulator_config.model)

@@ -191,7 +191,7 @@ class EvalTransportHTTPTests(unittest.IsolatedAsyncioTestCase):
             side_effect=AssertionError("unconfigured HTTP transport is forbidden"),
         ), patch(
             "httpx.Client.send", side_effect=AssertionError("sync HTTP is forbidden")
-        ), patch("litellm.telemetry", False):
+        ):
             owner = LiteLLMModel(
                 "openai/gpt-4.1", lifecycle=lifecycle, temperature=0.1
             ).build_for(framework)
@@ -233,3 +233,41 @@ class EvalTransportHTTPTests(unittest.IsolatedAsyncioTestCase):
         for framework in ("adk", "langgraph"):
             with self.subTest(framework=framework):
                 await self._assert_shared_gateway(framework)
+
+class HostedVertexTests(unittest.TestCase):
+    """Verify the hosted scoring SDK without credentials or a live Google service."""
+
+    def test_safety_metric_returns_hosted_score(self):
+        """Exercise dataset conversion and the actual Vertex request/response boundary."""
+        from importlib.metadata import version
+
+        from google.adk.evaluation.eval_case import Invocation
+        from google.adk.evaluation.eval_metrics import EvalMetric
+        from google.adk.evaluation.safety_evaluator import SafetyEvaluatorV1
+        from google.genai.types import Content, Part
+        from google.oauth2.credentials import Credentials
+        from packaging.version import Version
+        from harnest.evaluation import _check_vertex_metrics, EvaluationError
+
+        if Version(version("google-adk")) < Version("2.13"):
+            with self.assertRaisesRegex(EvaluationError, "google-adk>=2.13"):
+                _check_vertex_metrics({"safety_v1": 0.9})
+            return
+        turn = Invocation(
+            user_content=Content(role="user", parts=[Part(text="Hello")]),
+            final_response=Content(role="model", parts=[Part(text="Hi")]),
+        )
+        environment = {"GOOGLE_CLOUD_PROJECT": "offline-test", "GOOGLE_CLOUD_LOCATION": "us-central1",
+                       "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
+
+        def reply(client, request, **kwargs):
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(request.url.host, "us-central1-aiplatform.googleapis.com")
+            self.assertTrue(request.url.path.endswith(":evaluateInstances"))
+            return httpx.Response(200, request=request, json={"metricResults": [{"score": 1.0}]})
+
+        with patch.dict(os.environ, environment, clear=True), patch(
+            "google.auth.default", return_value=(Credentials(token="offline"), "offline-test")
+        ), patch("httpx.Client.send", reply):
+            result = SafetyEvaluatorV1(EvalMetric(metric_name="safety_v1", threshold=0.9)).evaluate_invocations([turn])
+        self.assertEqual(result.overall_score, 1.0)

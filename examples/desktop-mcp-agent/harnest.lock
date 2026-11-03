@@ -4,4 +4,4 @@ projectSchema: 6
 framework:
   name: adk
   distribution: google-adk
-  version: 2.8.0
+  version: 2.13.0

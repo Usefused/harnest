@@ -14,7 +14,8 @@ dependencies = [
   "anyio>=4.5,<5",
   "croniter>=6,<7",
   "a2a-sdk[http-server]>=1.1.2,<2",
-  "litellm>=1.84,<2",
+  # Reviewed security-patched release. Change deliberately when updating the lock.
+  "litellm==1.106.6",
   "packaging>=24,<27",
   "fastapi>=0.115",
   "httpx[socks]>=0.28,<1",
@@ -47,7 +48,7 @@ adk = [
   "asyncpg>=0.30,<1",
   "redis>=6,<8",
 ]
-adk-mcp = ["google-adk[mcp]>=2.8,<3"]
+adk-mcp = ["google-adk[mcp]>=2.8,<3", "mcp>=1.26,<2"]
 langgraph = [
   "langgraph>=1.2,<2",
   "langchain>=1.3,<2",
@@ -55,13 +56,28 @@ langgraph = [
   "asyncpg>=0.30,<1",
   "redis>=6,<8",
 ]
-langgraph-mcp = ["langchain-mcp-adapters>=0.3,<1"]
+langgraph-mcp = ["langchain-mcp-adapters>=0.3,<1", "mcp>=1.26,<2"]
 openapi = ["fastmcp>=2.14.5,<3"]
 test = ["pytest>=8,<9"]
-eval = ["google-adk[eval]>=2.8,<3", "pytest>=8,<9"]
+# ADK's eval extra pulls in Vertex's optional local model adapters, which cap
+# LiteLLM below the security fix. Harnest uses the hosted Vertex scoring client.
+eval = [
+  "google-adk>=2.8,<3",
+  "google-cloud-aiplatform>=2.7,<3",
+  "google-cloud-texttospeech>=2.37",
+  "gepa>=0.1",
+  "jinja2>=3.1.4,<4",
+  "nltk!=3.10.1",
+  "openpyxl>=3.1.5,<4",
+  "pandas>=2.2.3",
+  "rouge-score>=0.1.2",
+  "tabulate>=0.9",
+  "xlrd>=2,<3",
+  "pytest>=8,<9",
+]
 all = [
   "fastmcp>=2.14.5,<3",
-  "google-adk[eval,mcp]>=2.8,<3",
+  "harnest[eval,adk-mcp]",
   "langgraph>=1.2,<2",
   "langchain>=1.3,<2",
   "langchain-litellm>=0.7,<1",

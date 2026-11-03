@@ -727,6 +727,14 @@ func TestServeUsesCompiledServerDefaultsWithoutOverrides(t *testing.T) {
 	if len(lines) != 2 || withoutPlaygroundArgument(t, lines[1]) != want {
 		t.Fatalf("serve overrode compiled server.yaml defaults: %q", lines)
 	}
+	// Capture must receive the source agent root, even when output is elsewhere.
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(mustReadTestFile(t, record+".eval-root")); got != resolved {
+		t.Fatalf("eval captures target %q, want %q", got, resolved)
+	}
 }
 
 func serveRecordingFixture(t *testing.T) (string, string, string) {
@@ -741,6 +749,9 @@ func serveRecordingFixture(t *testing.T) (string, string, string) {
 printf 'CALL' >> "$HARNEST_TEST_RECORD"
 for value in "$@"; do printf '\t%s' "$value" >> "$HARNEST_TEST_RECORD"; done
 printf '\n' >> "$HARNEST_TEST_RECORD"
+if [ "$2" = "serve" ]; then
+  printf '%s' "$HARNEST_PLAYGROUND_EVAL_ROOT" > "$HARNEST_TEST_RECORD.eval-root"
+fi
 if [ "$1" = "-m" ]; then
   output=""
   while [ "$#" -gt 0 ]; do

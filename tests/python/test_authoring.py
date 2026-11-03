@@ -101,6 +101,7 @@ def _fake_adk_modules(*, public_mcp_exports=True):
     models.BaseLlm = _recording_class("BaseLlm")
     lite_llm = types.ModuleType("google.adk.models.lite_llm")
     lite_llm.LiteLlm = _recording_class("LiteLlm")
+    lite_llm.LiteLLMClient = _recording_class("LiteLLMClient")
     tools_package = types.ModuleType("google.adk.tools")
     tools_package.__path__ = []
     mcp_tool = types.ModuleType("google.adk.tools.mcp_tool")
@@ -458,6 +459,7 @@ class AuthoringTests(unittest.TestCase):
             )
 
         chat_adapter = _recording_class("ChatLiteLLM")
+        chat_adapter.client = object()
         chat_adapter.model_fields = {
             "model": object(),
             "api_base": object(),
@@ -2268,7 +2270,7 @@ raise SystemExit(main(sys.argv[1:]))
             },
         )
         case = result["evalSetResults"][0]["evalCaseResults"][0]
-        self.assertTrue(case["sessionId"].startswith("___eval___session___"))
+        self.assertTrue(case["sessionId"].startswith(("___eval___session___", "adk-eval-session-")))
         self.assertEqual(case["userId"], "eval-user")
         self.assertIn("sessionDetails", case)
         invocation = case["evalMetricResultPerInvocation"][0]

@@ -767,6 +767,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn(f"{package}/py.typed", archived_paths)
         requirements = distribution_requirements(metadata_text)
         self.assertEqual(requirements["anyio"], "<5,>=4.5")
+        self.assertEqual(requirements["litellm"], "==1.106.6")
         self.assertNotIn("harnest-postgres", requirements)
         self.assertNotIn("harnest-redis", requirements)
         self.assertIn("harnest/extensions/docker.pyi", archived_paths)
@@ -909,7 +910,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )["project"]["optional-dependencies"]
 
         self.assertEqual(extras["test"], ["pytest>=8,<9"])
-        self.assertIn("google-adk[eval]>=2.8,<3", extras["eval"])
+        self.assertIn("google-cloud-aiplatform>=2.7,<3", extras["eval"])
+        self.assertIn("harnest[eval,adk-mcp]", extras["all"])
         self.assertNotIn("pytest>=8,<9", extras["adk"])
         self.assertFalse(
             any("eval" in value or "extensions" in value for value in extras["adk"])

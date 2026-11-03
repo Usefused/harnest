@@ -16,7 +16,7 @@ from .model_lifecycle import (
     _prompt_cache_transformers,
     create_adk_lifecycle_client,
 )
-from .model_transport import attach_model_transport_binding
+from .model_transport import FrameworkToolClient, attach_model_transport_binding, framework_adk_client
 from .model_hooks import ModelLifecycleError
 from .lifecycle import ModelCallRequest, ModelCallResponse, ModelLifecycleContext, ModelMessage
 
@@ -260,7 +260,7 @@ class LiteLLMModel(ModelConnector):
         """Build ADK's ``LiteLlm`` without contacting the provider."""
 
         try:
-            from google.adk.models.lite_llm import LiteLlm
+            from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
         except ImportError as exc:  # pragma: no cover - optional runtime import
             raise RuntimeError(
                 "LiteLLMModel requires Google ADK's LiteLLM support; install "
@@ -272,14 +272,14 @@ class LiteLLMModel(ModelConnector):
         )
         if self.lifecycle is None and not auto_wrap:
             adapter = LiteLlm(model=self.model, **dict(self.completion_args))
+            if "llm_client" not in self.completion_args:
+                adapter.llm_client = framework_adk_client(LiteLLMClient)
             return attach_model_transport_binding(
                 adapter,
                 model=self.model,
                 completion_args=self.completion_args,
                 borrowed_client=self.completion_args.get("llm_client"),
             )
-        from google.adk.models.lite_llm import LiteLLMClient
-
         client = create_adk_lifecycle_client(
             LiteLLMClient,
             self.lifecycle or LiteLLMLifecycle(),
@@ -310,6 +310,7 @@ class LiteLLMModel(ModelConnector):
             ) from exc
         kwargs = _langgraph_completion_args(ChatLiteLLM, self.completion_args)
         adapter = ChatLiteLLM(model=self.model, **kwargs)
+        adapter.client = FrameworkToolClient(adapter.client)
         binding_args = _langgraph_binding_args(kwargs)
         transformers = _prompt_cache_transformers(self.model, self.prompt_cache)
         auto_wrap = bool(transformers) and _manages_litellm_transport(

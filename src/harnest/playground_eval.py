@@ -229,7 +229,8 @@ def _optional_float(value: str | None) -> float | None:
 
 
 def _has_failed_rows(rows: tuple[_EvalRow, ...]) -> bool:
-    return any(row.status != "passed" for row in rows)
+    """ADK efficiency observations do not decide whether a scored criterion passed."""
+    return any(row.status not in {"passed", "informational"} for row in rows)
 
 
 def _run_result(
@@ -282,9 +283,12 @@ def _metric_result(name: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
 
     selected = [row for row in rows if row.metric == name]
     scores = [row.score for row in selected if row.score is not None]
+    status = "failed" if _has_failed_rows(tuple(selected)) else "passed"
+    if {row.status for row in selected} == {"informational"}:
+        status = "informational"
     return {
         "name": name,
-        "status": "passed" if not _has_failed_rows(tuple(selected)) else "failed",
+        "status": status,
         "score": sum(scores) / len(scores) if scores else None,
         "threshold": selected[0].threshold if selected else None,
         "resultCount": len(selected),

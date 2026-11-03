@@ -424,8 +424,12 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         self.assertEqual([event[0] for event in lifecycle.events][-1], "close")
 
     def test_transport_and_cleanup_are_isolated_per_built_adk_model(self):
+        called_transports = []
+
         class FakeADKClient(_Delegate):
-            pass
+            async def acompletion(self, **kwargs):
+                called_transports.append(kwargs["client"])
+                return await super().acompletion(**kwargs)
 
         class FakeLiteLlm:
             def __init__(self, **kwargs):
@@ -456,14 +460,7 @@ class LiteLLMLifecycleTests(unittest.TestCase):
             await close_litellm_lifecycles(first)
 
         asyncio.run(exercise())
-        self.assertIs(
-            first.llm_client.__harnest_controller__._delegate.calls[0]["client"],
-            first_lifecycle.transport,
-        )
-        self.assertIs(
-            second.llm_client.__harnest_controller__._delegate.calls[0]["client"],
-            second_lifecycle.transport,
-        )
+        self.assertEqual(called_transports, [first_lifecycle.transport, second_lifecycle.transport])
         self.assertEqual([event[0] for event in first_lifecycle.events][-1], "close")
         self.assertNotIn("close", [event[0] for event in second_lifecycle.events])
 

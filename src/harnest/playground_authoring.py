@@ -25,18 +25,22 @@ from .logging import get_logger
 from .playground_studio import _SOURCE_LIMIT, _SOURCE_SUFFIXES
 
 _authoring_root: ContextVar[Path | None] = ContextVar("playground_authoring_root", default=None)
+_eval_root: ContextVar[Path | None] = ContextVar("playground_eval_root", default=None)
 _AUDIT = get_logger("playground.authoring.audit")
+_ROOT_EVAL = re.compile(r"evals/[^./_\\:][^/\\:]*\.evalset\.json\Z")
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
 
 
 @contextmanager
-def authoring_workspace(root: Path | None) -> Iterator[None]:
-    """Lend a source directory only while the development app is constructed."""
+def authoring_workspace(root: Path | None, *, eval_root: Path | None = None) -> Iterator[None]:
+    """Lend general authoring and eval-only roots while the local app is constructed."""
 
     token = _authoring_root.set(root.resolve() if root else None)
+    eval_token = _eval_root.set(eval_root.resolve() if eval_root else None)
     try:
         yield
     finally:
+        _eval_root.reset(eval_token)
         _authoring_root.reset(token)
 
 
@@ -44,6 +48,12 @@ def configured_workspace() -> Path | None:
     """Capture the supervisor-owned workspace without trusting browser paths."""
 
     return _authoring_root.get()
+
+
+def configured_eval_workspace() -> Path | None:
+    """Return the CLI-owned workspace for capturing conversations without reload."""
+
+    return _eval_root.get()
 
 
 @contextmanager
@@ -70,15 +80,18 @@ def require_name(value: str) -> str:
 class AuthoringStore:
     """Own bounded source writes and reject stale revisions before atomic replacement."""
 
-    def __init__(self, root: Path, studio: Any) -> None:
+    def __init__(self, root: Path, studio: Any, *, eval_only: bool = False) -> None:
         """Bind edits to a known source root and the served projection's ownership scopes."""
 
         self.root = root.resolve()
+        self.eval_only = eval_only
         self.studio = studio
         self._lock = RLock()
-        self.connection_scopes = sorted({str(PurePosixPath(item["path"]).parent) for item in studio.projection["blocks"] if item["kind"] == "agent" and PurePosixPath(item["path"]).name == "agent.py"})
-        self.paths = {item["path"] for item in studio.projection["files"]}
-        self.scopes = sorted({str(PurePosixPath(item["path"]).parent) for item in studio.projection["blocks"] if item["kind"] in {"agent", "graph"}})
+        # Capture is limited by filename and needs no inspection of authored code at startup.
+        projection = {"blocks": [], "files": []} if eval_only else studio.projection
+        self.connection_scopes = sorted({str(PurePosixPath(item["path"]).parent) for item in projection["blocks"] if item["kind"] == "agent" and PurePosixPath(item["path"]).name == "agent.py"})
+        self.paths = {item["path"] for item in projection["files"]}
+        self.scopes = sorted({str(PurePosixPath(item["path"]).parent) for item in projection["blocks"] if item["kind"] in {"agent", "graph"}})
 
     def path(self, relative: str) -> Path:
         """Reject hidden files, traversal, and linked parents for both reads and creates."""
@@ -89,9 +102,16 @@ class AuthoringStore:
         candidate = self.root / relative
         if candidate.suffix not in _SOURCE_SUFFIXES or not self._contained_path(candidate):
             raise HTTPException(404, "Source file not available")
-        if relative not in self.paths and not self._generated_path(parts):
+        if not self._permitted_document(relative, parts):
             raise HTTPException(404, "Source file not available")
         return candidate
+
+    def _permitted_document(self, relative: str, parts: PurePosixPath) -> bool:
+        """Plain serve owns only root eval suites, even if the projection lists other files."""
+
+        if self.eval_only:
+            return _ROOT_EVAL.fullmatch(relative) is not None
+        return relative in self.paths or self._generated_path(parts)
 
     def _contained_path(self, path: Path) -> bool:
         """Validate parents without requiring a new source file to exist yet."""
@@ -170,17 +190,27 @@ class AuthoringStore:
             self._check_revision(relative, revision)
             path.unlink()
 
-    def catalog(self) -> dict[str, Any]:
-        """Describe editable suites and agent ownership without disclosing source roots."""
+    def _suite_documents(self, scope: str) -> Iterator[dict[str, str]]:
+        """Read only regular suite files visible to this workspace capability."""
 
-        suites = []
-        for scope in self.scopes:
-            folder = self.root / scope / "evals"
-            if folder.is_dir() and not folder.is_symlink():
-                for path in sorted(folder.glob("*.evalset.json")):
-                    relative = path.relative_to(self.root).as_posix()
-                    document = self.read(relative)
-                    suites.append({**document, "scope": scope})
+        folder = self.root / scope / "evals"
+        if folder.is_symlink() or not folder.is_dir():
+            return
+        for path in sorted(folder.glob("*.evalset.json")):
+            relative = path.relative_to(self.root).as_posix()
+            if path.is_symlink() or not path.is_file():
+                continue
+            if self.eval_only and not _ROOT_EVAL.fullmatch(relative):
+                continue
+            yield {**self.read(relative), "scope": scope}
+
+    def catalog(self) -> dict[str, Any]:
+        """List root suites for chat capture; expose other editor resources only under reload."""
+
+        scopes = ["."] if self.eval_only else self.scopes
+        suites = [document for scope in scopes for document in self._suite_documents(scope)]
+        if self.eval_only:
+            return {"available": False, "captureAvailable": True, "scopes": [], "suites": suites, "files": [], "reload": False}
         return {"available": True, "scopes": self.scopes, "connectionScopes": self.connection_scopes, "suites": suites, "files": sorted(self.paths), "reload": True}
 
 
