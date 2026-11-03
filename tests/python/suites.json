@@ -10,6 +10,7 @@
       "test_assets",
       "test_authored_library",
       "test_authoring_errors",
+      "test_builtin_agent_principal",
       "test_channel_cli",
       "test_channel_store_memory",
       "test_channels",

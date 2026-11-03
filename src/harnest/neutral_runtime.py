@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from functools import partial
 import json
 from typing import Any, AsyncIterator, Mapping, Sequence
 import uuid
@@ -213,6 +214,7 @@ def create_neutral_router(
     asset_stores: Mapping[str, AssetStore] | None = None,
     a2a_task_store: Any | None = None,
     http_routes: Sequence[HTTPRouteExtension] = (),
+    lifecycle_extensions: Sequence[Any] = (),
 ) -> Any:
     """Create shared routes, mounting live and AG-UI transports only when enabled."""
 
@@ -220,6 +222,11 @@ def create_neutral_router(
     if not isinstance(live_enabled, bool):
         raise TypeError("live_enabled must be boolean")
     _validate_agent_principal_required(agent_principal_required)
+    from .http_agent_principal import builtin_principal_policy
+
+    principal_policy = builtin_principal_policy(
+        lifecycle_extensions, required=agent_principal_required
+    )
     if request_timeout <= 0:
         raise ValueError("request timeout must be greater than zero")
     if max_concurrency < 1:
@@ -255,6 +262,7 @@ def create_neutral_router(
         request_timeout=request_timeout,
         max_request_bytes=max_request_bytes,
         external_continuations=external_continuations,
+        principal_policy=principal_policy,
     )
 
     async def read_json(request: Request) -> dict[str, Any]:
@@ -301,6 +309,8 @@ def create_neutral_router(
         metadata: Mapping[str, Any],
         user_id: str,
         transport: str | None = None,
+        *,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> InvocationRequest:
         """Adapt legacy streaming call sites to the shared request factory."""
 
@@ -311,6 +321,7 @@ def create_neutral_router(
             invocation_id=response_id,
             metadata=metadata,
             transport=transport or "response",
+            agent_principal=agent_principal,
         )
 
     async def invoke_from_http_route(
@@ -664,12 +675,14 @@ def create_neutral_router(
         parsed = parse_response(payload)
         stream, metadata = parsed.stream, parsed.metadata
         user_id = principal_for(request).user_id
+        agent_principal = await coordinator.builtin_agent_principal(request)
         run = await coordinator.prepare_request(
             parsed.input,
             user_id=user_id,
             session_id=parsed.session_id,
             metadata=metadata,
             transport="stream" if stream else "response",
+            agent_principal=agent_principal,
         )
         if not stream:
             return await coordinator.invoke_json(run)
@@ -834,6 +847,13 @@ def create_neutral_router(
     async def live(websocket: WebSocket) -> None:
         """Serve live frames through the coordinator's shared request contract."""
 
+        try:
+            agent_principal = await coordinator.builtin_agent_principal(websocket)
+        except HTTPException:
+            # Closing before accept rejects the handshake with HTTP 403, so a
+            # refused client never holds an open socket or creates a session.
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         try:
             user_id = principal_for(websocket).user_id
@@ -882,7 +902,9 @@ def create_neutral_router(
                     websocket,
                     validated_frame,
                     session,
-                    invocation=streaming_invocation,
+                    invocation=partial(
+                        streaming_invocation, agent_principal=agent_principal
+                    ),
                     semaphore=semaphore,
                     driver=driver,
                     approval_store=approvals,
@@ -1022,6 +1044,7 @@ def create_neutral_app(
             asset_store=asset_store,
             a2a_task_store=a2a_task_store,
             http_routes=http_routes,
+            lifecycle_extensions=lifecycle_extensions,
         )
     )
     # Authentication is added last and therefore runs outside this middleware,
