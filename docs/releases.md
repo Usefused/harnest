@@ -220,9 +220,16 @@ when the project should receive the release's updated authoring guidance.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs the quality matrix for pull requests and branch
-pushes but never changes versions or tags commits. After a successful `main`
-run, `.github/workflows/release-please.yml` opens or updates the release PR. Set
+`.github/workflows/ci.yml` is the single validation pipeline for pull requests
+and pushes to `main`; other branch pushes do not duplicate PR checks. A newer
+run on the same source branch cancels the previous run and its child jobs.
+The pipeline retains the quality and native-platform matrices and calls the
+reusable framework-compatibility and extension checks. Compatibility checks
+also retain their independent daily schedule and manual trigger.
+
+After successful core checks on `main`, a final job calls
+`.github/workflows/release-please.yml` to open or update the release PR within
+the same pipeline. Manual release preparation remains available. Set
 the `RELEASE_PLEASE_TOKEN` repository secret to a fine-grained token with
 contents, issues, and pull-request write access so GitHub runs normal CI on that
 generated PR. The token is required because GitHub suppresses workflows caused
@@ -247,7 +254,11 @@ Tag Docker as `harnest-extension-docker-v<version>` and Hatchet as
 `harnest-extension-hatchet-v<version>`. A manual dispatch from `main` requires
 selecting exactly one extension. Before building, the workflow rejects a
 mismatch between that extension's tag, `pyproject.toml`, and `extension.yaml`.
-Branch and pull-request runs build, install-check, test, and complexity-check
-both official extensions without publishing them. Extension-only changes
-do not start the main or framework-compatibility CI workflows; branch protection
-should require the corresponding isolated extension build check.
+The CI coordinator uses `scripts/ci_changes.py` to select checks from the push
+or PR diff. Extension changes build, install-check, test, and complexity-check
+the official extensions through `validate-extensions.yml`, without publishing.
+Extension-only changes skip the core and compatibility matrices; mixed changes
+run both sets of checks in one pipeline. Manual CI runs validate both. Branch
+protection should require the corresponding extension build checks. Extension
+publishing starts only on matching tags or a manual dispatch; immutable tag
+publication is not cancelled by newer branch commits.

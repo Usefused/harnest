@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -97,11 +98,114 @@ def write_installer_fakes(directory: Path, version: str):
     )
 
 
+class CISelectionTests(unittest.TestCase):
+    """Exercise job selection against real Git history and GitHub event files."""
+
+    def setUp(self):
+        """Create an isolated repository with core and extension source files."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.git("init", "-b", "main")
+        self.git("config", "user.name", "CI Test")
+        self.git("config", "user.email", "ci-test@example.invalid")
+        (self.root / "core.py").write_text("original\n")
+        extension = self.root / "official-extensions/docker/lib.py"
+        extension.parent.mkdir(parents=True)
+        extension.write_text("original\n")
+        self.base = self.commit()
+
+    def git(self, *args):
+        """Run Git only within the disposable history used by this test."""
+        return subprocess.run(
+            ["git", *args], cwd=self.root, check=True,
+            text=True, capture_output=True,
+        ).stdout.strip()
+
+    def commit(self):
+        """Snapshot fixture changes and return the exact event revision."""
+        self.git("add", ".")
+        self.git("commit", "-m", "test: update CI fixture")
+        return self.git("rev-parse", "HEAD")
+
+    def select(self, event_name, event):
+        """Invoke the same CLI as Actions and collect its actual job outputs."""
+        event_path = self.root / "event.json"
+        output_path = self.root / "outputs.txt"
+        event_path.write_text(json.dumps(event))
+        output_path.write_text("")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/ci_changes.py")],
+            cwd=self.root, capture_output=True, text=True,
+            env={**os.environ, "GITHUB_EVENT_NAME": event_name,
+                 "GITHUB_EVENT_PATH": str(event_path),
+                 "GITHUB_OUTPUT": str(output_path)},
+        )
+        return result, output_path.read_text()
+
+    def test_pr_excludes_base_changes_but_push_includes_them(self):
+        """A core change on main must not turn an extension-only PR into core CI."""
+        self.git("checkout", "-b", "extension-change")
+        (self.root / "official-extensions/docker/lib.py").write_text("updated\n")
+        head = self.commit()
+        self.git("checkout", "main")
+        (self.root / "core.py").write_text("updated base\n")
+        base = self.commit()
+        event = {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+        result, output = self.select("pull_request", event)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "core=false\nextensions=true\n")
+        result, output = self.select("push", {"before": base, "after": head})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "core=true\nextensions=true\n")
+
+    def test_move_into_extension_keeps_core_deletion_checks(self):
+        """Renames across ownership boundaries must validate both sides."""
+        self.git("mv", "core.py", "official-extensions/docker/moved.py")
+        head = self.commit()
+        result, output = self.select("push", {"before": self.base, "after": head})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "core=true\nextensions=true\n")
+
+    def test_core_only_and_workflow_changes_select_expected_checks(self):
+        """Ordinary core changes avoid extension builds; coordinator edits validate both."""
+        (self.root / "core.py").write_text("updated\n")
+        head = self.commit()
+        result, output = self.select("push", {"before": self.base, "after": head})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "core=true\nextensions=false\n")
+        coordinator = self.root / ".github/workflows/ci.yml"
+        coordinator.parent.mkdir(parents=True)
+        coordinator.write_text("updated\n")
+        next_head = self.commit()
+        result, output = self.select("push", {"before": head, "after": next_head})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "core=true\nextensions=true\n")
+
+    def test_full_checks_and_invalid_baselines_fail_closed(self):
+        """Manual/initial runs validate everything; bad history must fail selection."""
+        for event_name, event in (
+            ("workflow_dispatch", {}),
+            ("push", {"before": "0" * 40, "after": self.base}),
+        ):
+            with self.subTest(event=event_name):
+                result, output = self.select(event_name, event)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output, "core=true\nextensions=true\n")
+        for baseline in ("HEAD", "f" * 40):
+            with self.subTest(baseline=baseline):
+                result, output = self.select("push", {"before": baseline, "after": self.base})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+
+
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_official_extensions_publish_with_trusted_publishing(self):
+        """Share read-only validation while keeping publishing permissions isolated."""
         workflow = load_yaml(".github/workflows/publish-extensions.yml")
         events = workflow_events(workflow)
-        build_job = workflow["jobs"]["build"]
+        validator = load_yaml(".github/workflows/validate-extensions.yml")
+        build_job = validator["jobs"]["build"]
         scripts = "\n".join(step.get("run", "") for step in build_job["steps"])
 
         self.assertEqual(workflow["name"], "Publish Official Extensions")
@@ -113,14 +217,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "harnest-extension-rag-v*",
             ],
         )
+        self.assertEqual(set(events), {"push", "workflow_dispatch"})
+        self.assertEqual(set(events["push"]), {"tags"})
+        self.assertEqual(set(workflow_events(validator)), {"workflow_call"})
+        self.assertEqual(validator["permissions"], {"contents": "read"})
         self.assertEqual(
-            events["push"]["paths"],
-            [
-                "official-extensions/docker/**",
-                "official-extensions/hatchet/**",
-                "official-extensions/rag/**",
-                ".github/workflows/publish-extensions.yml",
-            ],
+            workflow["jobs"]["build"]["uses"],
+            "./.github/workflows/validate-extensions.yml",
         )
         self.assertEqual(
             events["workflow_dispatch"]["inputs"]["extension"]["options"],
@@ -141,8 +244,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
             ),
         }
-        for job in workflow["jobs"].values():
-            for step in job["steps"]:
+        for job in [build_job, *workflow["jobs"].values()]:
+            for step in job.get("steps", []):
                 action = step.get("uses")
                 if action is None:
                     continue
@@ -349,7 +452,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn(documentation, readme)
                 self.assertIn("https://github.com/Usefused/harnest", readme)
 
-    def test_ci_only_validates_source_changes(self):
+    def test_ci_coordinates_one_cancellable_branch_pipeline(self):
+        """Avoid push/PR duplication without dropping any validation matrices."""
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]
         quality_step = next(
@@ -357,14 +461,45 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
 
         events = workflow_events(workflow)
-        self.assertEqual(events["push"]["branches"], ["**"])
-        for event in ("pull_request", "push"):
-            self.assertEqual(
-                events[event]["paths-ignore"], ["official-extensions/**"]
-            )
+        self.assertEqual(set(events), {"pull_request", "push", "workflow_dispatch"})
+        self.assertEqual(events["push"], {"branches": ["main"]})
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        self.assertIn("github.head_ref || github.ref_name", workflow["concurrency"]["group"])
+        self.assertIn("head.repo.full_name", workflow["concurrency"]["group"])
+        for name, output in (
+            ("quality", "core"), ("studio-release", "core"),
+            ("framework-compatibility", "core"), ("extensions", "extensions"),
+        ):
+            job = workflow["jobs"][name]
+            self.assertEqual(job["needs"], "changes")
+            self.assertEqual(job["if"], f"needs.changes.outputs.{output} == 'true'")
+        self.assertEqual(
+            workflow["jobs"]["extensions"]["uses"],
+            "./.github/workflows/validate-extensions.yml",
+        )
+        self.assertEqual(
+            quality_job["strategy"]["matrix"]["python-version"], ["3.11", "3.12"]
+        )
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
         self.assertNotIn("release-tag", workflow["jobs"])
         self.assertEqual(workflow["permissions"]["contents"], "read")
+
+    def test_compatibility_is_reused_without_duplicate_branch_triggers(self):
+        """Preserve scheduled dependency coverage and both resolution matrices."""
+        workflow = load_yaml(".github/workflows/framework-compatibility.yml")
+        self.assertEqual(
+            set(workflow_events(workflow)), {"workflow_call", "workflow_dispatch", "schedule"}
+        )
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        caller = load_yaml(".github/workflows/ci.yml")
+        self.assertNotEqual(workflow["concurrency"]["group"], caller["concurrency"]["group"])
+        self.assertEqual(
+            caller["jobs"]["framework-compatibility"]["uses"],
+            "./.github/workflows/framework-compatibility.yml",
+        )
+        self.assertEqual(workflow["jobs"]["contracts"]["strategy"]["matrix"], {
+            "python": ["3.11", "3.12"], "resolution": ["locked", "minimum", "latest"],
+        })
 
     def test_ci_example_test_withholds_external_credentials(self):
         """Keep the default example lane offline even on credentialed runners."""
@@ -407,9 +542,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(workflow["name"], "Prepare Release")
-        self.assertEqual(events["workflow_run"]["workflows"], ["CI"])
-        self.assertIn("workflow_run.conclusion == 'success'", release_job["if"])
-        self.assertIn("workflow_run.head_branch == 'main'", release_job["if"])
+        self.assertEqual(set(events), {"workflow_call", "workflow_dispatch"})
+        self.assertIn("github.ref == 'refs/heads/main'", release_job["if"])
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
         self.assertIn("RELEASE_PLEASE_TOKEN", token_step["run"])
         self.assertEqual(
             release_step["uses"],
@@ -441,6 +576,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/finalize_release_changelog.py", finalize_step["run"])
         self.assertIn('git push origin "HEAD:${RELEASE_BRANCH}"', finalize_step["run"])
         self.assertEqual(tuple(workflow["jobs"]), ("release-please",))
+
+    def test_release_preparation_requires_successful_main_validation(self):
+        """Never prepare releases from failed, cancelled, or skipped core checks."""
+        caller = load_yaml(".github/workflows/ci.yml")["jobs"]["prepare-release"]
+        self.assertEqual(caller["uses"], "./.github/workflows/release-please.yml")
+        self.assertEqual(set(caller["needs"]), {
+            "quality", "studio-release", "framework-compatibility", "extensions",
+        })
+        self.assertIn("!cancelled()", caller["if"])
+        self.assertIn("github.event_name == 'push'", caller["if"])
+        self.assertIn("github.ref == 'refs/heads/main'", caller["if"])
+        for name in ("quality", "studio-release", "framework-compatibility"):
+            self.assertIn(f"needs.{name}.result == 'success'", caller["if"])
+        self.assertIn("needs.extensions.result == 'success'", caller["if"])
+        self.assertIn("needs.extensions.result == 'skipped'", caller["if"])
 
     def test_release_please_updates_both_source_versions(self):
         config = json.loads((ROOT / "release-please-config.json").read_text())

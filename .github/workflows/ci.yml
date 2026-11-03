@@ -2,19 +2,37 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - "official-extensions/**"
   push:
-    branches:
-      - "**"
-    paths-ignore:
-      - "official-extensions/**"
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# PR updates own branch validation; a second push run would repeat every matrix.
+# Include the source repository so identically named fork branches stay isolated.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: Select validation checks
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.changes.outputs.core }}
+      extensions: ${{ steps.changes.outputs.extensions }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Select checks from changed files
+        id: changes
+        run: python3 scripts/ci_changes.py
+
   quality:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -79,6 +97,8 @@ jobs:
         run: sh -n install.sh
 
   studio-release:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     name: Native release smoke tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -119,3 +139,30 @@ jobs:
         run: python scripts/smoke_studio_release.py --cli .cache/studio-release/harnest.exe
       - name: Build and run attached and embedded agents outside the checkout
         run: python scripts/smoke_agent_executable.py --cli .cache/studio-release/harnest.exe
+
+  framework-compatibility:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    uses: ./.github/workflows/framework-compatibility.yml
+
+  extensions:
+    needs: changes
+    if: needs.changes.outputs.extensions == 'true'
+    uses: ./.github/workflows/validate-extensions.yml
+
+  prepare-release:
+    # Skipped extension checks are normal for core-only changes. Explicit success
+    # requirements prevent failed, skipped, or superseded core checks releasing.
+    needs: [quality, studio-release, framework-compatibility, extensions]
+    if: >-
+      !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.quality.result == 'success' && needs.studio-release.result == 'success' &&
+      needs.framework-compatibility.result == 'success' &&
+      (needs.extensions.result == 'success' || needs.extensions.result == 'skipped')
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/release-please.yml
+    secrets:
+      RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}

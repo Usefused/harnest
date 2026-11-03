@@ -202,7 +202,8 @@
   "overrides": {
     "integration": [
       "test_eval_capture.DiscoveryTests",
-      "test_eval_capture.LocalCaptureStoreTests"
+      "test_eval_capture.LocalCaptureStoreTests",
+      "test_release_workflows.CISelectionTests"
     ],
     "live": [
       "test_hatchet_extension_consumer.HatchetConsumerDockerLiveTests",

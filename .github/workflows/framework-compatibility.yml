@@ -1,19 +1,18 @@
 name: Framework compatibility
 
 on:
-  pull_request:
-    paths-ignore:
-      - "official-extensions/**"
-  push:
-    branches: [main]
-    paths-ignore:
-      - "official-extensions/**"
+  workflow_call:
   schedule:
     - cron: '23 6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A distinct group avoids a reusable workflow cancelling its own CI caller.
+concurrency:
+  group: framework-compatibility-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   contracts:

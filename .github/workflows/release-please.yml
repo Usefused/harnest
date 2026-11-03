@@ -1,11 +1,10 @@
 name: Prepare Release
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
+  workflow_call:
+    secrets:
+      RELEASE_PLEASE_TOKEN:
+        required: true
   workflow_dispatch:
 
 permissions:
@@ -14,16 +13,14 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: release-please-main
-  cancel-in-progress: false
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   release-please:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main')
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - name: Require release automation token
