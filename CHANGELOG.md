@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
 
 - Add a checksum-verified PowerShell installer for Windows x64 and ARM64. Find the managed Python under `Scripts`, prefer `python.exe` on PATH, read project files as UTF-8, and use portable paths for upgrade moves.
 - Keep capture projection failures off the response path, preserve LangGraph tool errors, and keep unmatched tool results separate from pending calls. Playground errors now appear above the Evals and Work views.
@@ -14,9 +14,6 @@
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.
 - Fix model calls with ordinary function tools after the last MCP connection is removed. Harnest now keeps framework-owned tools out of LiteLLM’s remote MCP gateway.
 - Pin LiteLLM 1.106.6 across serving, compilation, and evaluations for upstream security fixes. Use the Vertex 2.7 SDK for hosted scoring without installing Google’s optional LiteLLM adapter. Hosted Vertex metrics require Google ADK 2.13 or newer. Its informational metrics appear in evaluation results without failing Playground runs.
-
-## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
-
 
 ### Fixes
 
