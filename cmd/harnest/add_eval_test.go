@@ -66,7 +66,7 @@ func TestAddEvalCreatesPresets(t *testing.T) {
 // assertBuiltinEvalScaffold checks the file contract without requiring a model or dependency setup.
 func assertBuiltinEvalScaffold(t *testing.T, root, output string, choice evalScaffold) {
 	t.Helper()
-	assertContainsAll(t, "eval output", output, []string{choice.ID, choice.Backend, "all eval sets"})
+	assertContainsAll(t, "eval output", output, []string{choice.ID, choice.Backend, "<set>.test_config.json"})
 	path := filepath.Join(root, "evals", "my_eval.evalset.json")
 	var set map[string]any
 	if err := json.Unmarshal(mustReadTestFile(t, path), &set); err != nil {
