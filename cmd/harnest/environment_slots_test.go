@@ -114,12 +114,12 @@ func TestEnvironmentSlotsProtectRunningCommands(t *testing.T) {
 	assertEnvironmentSlots(t, agent, "agent", "eval")
 }
 
-// mustAddEnvironmentDependency reproduces the manifest change from uv add --no-sync mcp.
+// mustAddEnvironmentDependency reproduces the manifest change from adding the supported MCP dependency with uv --no-sync.
 func mustAddEnvironmentDependency(t *testing.T, agent string) {
 	t.Helper()
 	project := filepath.Join(agent, "pyproject.toml")
 	before := string(mustReadTestFile(t, project))
-	after := strings.Replace(before, "dependencies = []", `dependencies = ["mcp"]`, 1)
+	after := strings.Replace(before, "dependencies = []", `dependencies = ["mcp>=1.26,<2"]`, 1)
 	if before == after {
 		t.Fatal("expected empty scaffold dependencies")
 	}

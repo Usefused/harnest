@@ -54,7 +54,7 @@ examples rather than Python placeholders. Select
 framework APIs.
 
 `env sync` uses the embedded `uv` and Harnest wheel to manage two profiles of environments: `.harnest/environments/agent` for runtime and compile profiles,
-and `.harnest/environments/eval` for development tests and evaluations. During dependency changes each can use a second directory while running commands hold the first. Use `uv add --no-sync mcp` to edit dependencies without syncing a running IDE-linked environment. The default production
+and `.harnest/environments/eval` for development tests and evaluations. During dependency changes each can use a second directory while running commands hold the first. Use `uv add --no-sync 'mcp>=1.26,<2'` to edit dependencies without syncing a running IDE-linked environment. The default production
 profile writes `harnest-runtime.lock`; `--profile development` and `--profile eval`
 write separate development and evaluation locks. Commit every profile used by CI. MCP and eval
 packages join only the profiles that need them. Do
