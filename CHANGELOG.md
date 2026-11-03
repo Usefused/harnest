@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Package existing Harnest agents as Hostlier container workloads with the optional `hostlier-harnest` executable and its settings under `packages.harnest` in `.hostlier`. Use `harnest_redis.cache.RedisCache` for user-scoped cache entries with TTL and Redis ACL prefix support.
+
 - Add a checksum-verified PowerShell installer for Windows x64 and ARM64. Find the managed Python under `Scripts`, prefer `python.exe` on PATH, read project files as UTF-8, and use portable paths for upgrade moves.
 - Keep capture projection failures off the response path, preserve LangGraph tool errors, and keep unmatched tool results separate from pending calls. Playground errors now appear above the Evals and Work views.
 - **Security:** `server.agentPrincipal: required` now refuses new invocations through `/responses`, live, AG-UI, and A2A unless `@lifecycle.http.agent_principal` grants permissions. Add the hook before upgrading deployments that require grants and use these routes. Advanced ADK’s native invocation endpoints stay available outside this grant policy.

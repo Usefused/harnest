@@ -158,6 +158,7 @@
       "test_project_pack_studio",
       "test_provisioner_lifecycle",
       "test_provisioner_revisions",
+      "test_redis_cache",
       "test_runtime_adk_driver",
       "test_runtime_cli",
       "test_runtime_contract_matrix",
