@@ -88,9 +88,13 @@ func proposeInit(req initRequest) (initResponse, error) {
 	if err != nil {
 		return response, err
 	}
-	arch := cmp.Or(req.Architecture, "amd64")
-	if arch != "amd64" && arch != "arm64" {
-		return response, errors.New("unsupported Hostlier architecture")
+	container := map[string]any{"context": "."}
+	// Without an explicit target the same authored file can run on either Linux architecture.
+	if req.Architecture != "" {
+		if req.Architecture != "amd64" && req.Architecture != "arm64" {
+			return response, errors.New("unsupported Hostlier architecture")
+		}
+		container["architecture"] = req.Architecture
 	}
 	port := cmp.Or(req.Port, 1907)
 	if port < 1 || port > 65535 {
@@ -98,7 +102,7 @@ func proposeInit(req initRequest) (initResponse, error) {
 	}
 	response.Project = map[string]any{
 		"version": 2, "name": name,
-		"source":   map[string]any{"container": map[string]any{"context": ".", "architecture": arch}},
+		"source":   map[string]any{"container": container},
 		"endpoint": map[string]any{"exposure": "public", "port": port, "route": req.Route},
 		"health":   map[string]any{"path": "/healthz"},
 	}
