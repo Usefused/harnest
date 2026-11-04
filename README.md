@@ -23,15 +23,7 @@ curl -fsSL \
 harnest doctor
 ```
 
-On Windows, run the installer in PowerShell when your device policy permits downloaded scripts:
-
-```powershell
-$installer = Join-Path $env:TEMP 'install-harnest.ps1'
-Invoke-WebRequest https://raw.githubusercontent.com/Usefused/harnest/main/install.ps1 -UseBasicParsing -OutFile $installer
-powershell -NoProfile -File $installer
-```
-
-If your policy blocks the script, use the [Windows ZIP installation](https://usefused.com/docs/harnest/reference/installation-and-releases#windows-zip-installation).
+On Windows, download the MSI for your system type from [Harnest releases](https://github.com/Usefused/harnest/releases/latest) and double-click it. Choose the `windows_amd64.msi` file for x64 or `windows_arm64.msi` for ARM64. The installer sets up the CLI and runtime and adds Harnest to your user PATH. Open a new terminal and run `harnest doctor`.
 
 See [installation options](https://usefused.com/docs/harnest/reference/installation-and-releases) for version pinning and CI.
 

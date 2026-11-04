@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add native Windows MSI installers for x64 and ARM64, with per-user PATH registration, runtime bootstrap, repair, upgrade, and uninstall. The optional PowerShell bootstrap now verifies and launches the MSI.
+
 - Respect the device execution policy in documented Windows installer commands. Document checksum-verified ZIP installation for devices that block PowerShell scripts.
 
 - Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
