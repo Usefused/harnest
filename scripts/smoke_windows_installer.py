@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -60,6 +61,8 @@ def exercise(package: Path, cli: Path, output: Path, arch: str) -> None:
     try:
         directory = installed_path()
         verify_cli(directory)
+        run_msi(failure, "/i", output / "failed-upgrade.log", success=False)
+        verify_cli(directory)
         run_msi(package, "/fa", output / "repair.log")
         verify_cli(directory)
         upgrade = build(cli, "254.0.1", arch, output / "upgrade")
@@ -84,6 +87,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path(".cache/windows-installer-smoke"))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    # Hosted runners may pass a process override to children; test the actual restricted policy.
+    os.environ.pop("PSExecutionPolicyPreference", None)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, POLICY_KEY) as key:
         try:
             previous = winreg.QueryValueEx(key, "ExecutionPolicy")
@@ -91,6 +96,10 @@ def main() -> None:
             previous = None
         winreg.SetValueEx(key, "ExecutionPolicy", 0, winreg.REG_SZ, "Restricted")
         try:
+            policy = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command",
+                                              "Get-ExecutionPolicy"], text=True).strip()
+            if policy != "Restricted":
+                raise AssertionError(f"Expected effective Restricted policy, found {policy}")
             exercise(args.package, args.cli, args.output, args.arch)
             if winreg.QueryValueEx(key, "ExecutionPolicy")[0] != "Restricted":
                 raise AssertionError("MSI changed PowerShell execution policy")

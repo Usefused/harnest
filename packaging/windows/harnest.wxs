@@ -1,7 +1,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Harnest" Manufacturer="Fused" Version="$(var.Version)"
            UpgradeCode="86085EE6-F11F-4AE7-9316-322D92699EB0" Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Harnest is already installed." />
+    <!-- Keep removal of the previous version inside the rollback transaction. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer version of Harnest is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
