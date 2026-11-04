@@ -43,7 +43,7 @@ def verify_cli(directory: str) -> None:
         raise AssertionError("Installer did not add the CLI directory to user PATH")
 
 
-def exercise(package: Path, cli: Path, output: Path) -> None:
+def exercise(package: Path, cli: Path, output: Path, arch: str) -> None:
     """Check native bootstrap failure before exercising install and upgrade with release bytes."""
     original_path = user_path()
     with tempfile.TemporaryDirectory(prefix="harnest-msi-failure-") as temporary:
@@ -52,7 +52,7 @@ def exercise(package: Path, cli: Path, output: Path) -> None:
         (fixture / "main.go").write_text('package main\nimport "os"\nfunc main() { os.Exit(42) }\n')
         bad_cli = fixture / "harnest.exe"
         subprocess.run(["go", "build", "-o", str(bad_cli), str(fixture / "main.go")], check=True)
-        failure = build(bad_cli, "254.0.0", "amd64", output / "failure")
+        failure = build(bad_cli, "254.0.0", arch, output / "failure")
         run_msi(failure, "/i", output / "failure.log", success=False)
         if user_path() != original_path:
             raise AssertionError("Failed installation changed PATH")
@@ -62,7 +62,7 @@ def exercise(package: Path, cli: Path, output: Path) -> None:
         verify_cli(directory)
         run_msi(package, "/fa", output / "repair.log")
         verify_cli(directory)
-        upgrade = build(cli, "254.0.1", "amd64", output / "upgrade")
+        upgrade = build(cli, "254.0.1", arch, output / "upgrade")
         run_msi(upgrade, "/i", output / "upgrade.log")
         package = upgrade
         verify_cli(directory)
@@ -80,6 +80,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--cli", type=Path, required=True)
+    parser.add_argument("--arch", choices=("amd64", "arm64"), required=True)
     parser.add_argument("--output", type=Path, default=Path(".cache/windows-installer-smoke"))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -90,7 +91,7 @@ def main() -> None:
             previous = None
         winreg.SetValueEx(key, "ExecutionPolicy", 0, winreg.REG_SZ, "Restricted")
         try:
-            exercise(args.package, args.cli, args.output)
+            exercise(args.package, args.cli, args.output, args.arch)
             if winreg.QueryValueEx(key, "ExecutionPolicy")[0] != "Restricted":
                 raise AssertionError("MSI changed PowerShell execution policy")
         finally:
