@@ -14,10 +14,11 @@ import (
 
 // projectSettings contains only Harnest packaging inputs. Hostlier owns placement, bindings and secrets.
 type projectSettings struct {
-	Name      string `yaml:"name,omitempty"`
-	Version   int    `yaml:"version"`
-	BaseImage string `yaml:"baseImage"`
-	Artifact  string `yaml:"artifact,omitempty"`
+	Name       string            `yaml:"name,omitempty"`
+	Version    int               `yaml:"version"`
+	BaseImage  string            `yaml:"baseImage"`
+	BaseImages map[string]string `yaml:"baseImages"`
+	Artifact   string            `yaml:"artifact,omitempty"`
 	// Bindings are explicitly consumed by authored lifecycle or sandbox factories.
 	RequiredBindings []string `yaml:"requiredBindings,omitempty"`
 }
@@ -28,16 +29,19 @@ var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // settingsSchema describes the same inline settings accepted by decodeSettings.
 // Initialization may precede selection of the required packaging base image.
 func settingsSchema() map[string]any {
+	pin := map[string]any{"type": "string", "pattern": pinnedImage.String()}
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
 			"name":             map[string]any{"type": "string", "pattern": agentName.String(), "description": "Agent name for initialization. Omit to use --name or the project directory name."},
-			"baseImage":        map[string]any{"type": "string", "pattern": pinnedImage.String(), "description": "Required to package the agent. Use a Linux base image pinned by SHA-256."},
+			"baseImage":        map[string]any{"type": "string", "pattern": pinnedImage.String(), "description": "A digest-pinned Linux image or multi-platform index. Set either baseImage or baseImages."},
+			"baseImages":       map[string]any{"type": "object", "description": "Per-target image pins keyed by linux/amd64 or linux/arm64. Plan requires an entry for the selected target.", "minProperties": 1, "additionalProperties": false, "properties": map[string]any{"linux/amd64": pin, "linux/arm64": pin}},
 			"artifact":         map[string]any{"type": "string", "minLength": 1, "description": "Project-relative compiled agent executable. Omit to compile the source during packaging."},
 			"requiredBindings": map[string]any{"type": "array", "items": map[string]any{"type": "string", "pattern": environmentName.String()}, "description": "Environment names the agent needs from the deployment or another package."},
 			"version":          map[string]any{"type": "integer", "const": 1, "description": "Settings format version. Omit to use version 1."},
 		},
-		"if": map[string]any{"anyOf": []map[string]any{{"required": []string{"artifact"}}, {"required": []string{"version"}}, {"required": []string{"requiredBindings"}}}}, "then": map[string]any{"required": []string{"baseImage"}},
+		"not": map[string]any{"required": []string{"baseImage", "baseImages"}},
+		"if":  map[string]any{"anyOf": []map[string]any{{"required": []string{"artifact"}}, {"required": []string{"version"}}, {"required": []string{"requiredBindings"}}}}, "then": map[string]any{"anyOf": []map[string]any{{"required": []string{"baseImage"}}, {"required": []string{"baseImages"}}}},
 	}
 }
 
@@ -70,12 +74,37 @@ func (s projectSettings) validate() error {
 	if s.Name != "" && !agentName.MatchString(s.Name) {
 		return errors.New("invalid packages.harnest.name")
 	}
-	if s.Version != 1 || !pinnedImage.MatchString(s.BaseImage) {
-		return errors.New("set packages.harnest.baseImage to a digest-pinned Linux image and use settings version 1")
+	if s.Version != 1 {
+		return errors.New("use Harnest settings version 1")
+	}
+	if err := s.validateBaseImages(); err != nil {
+		return err
 	}
 	for _, name := range s.RequiredBindings {
 		if !environmentName.MatchString(name) {
 			return errors.New("invalid required environment binding name")
+		}
+	}
+	return nil
+}
+
+// validateBaseImages keeps a single pin and a per-target map mutually exclusive.
+func (s projectSettings) validateBaseImages() error {
+	if s.BaseImages == nil {
+		if !pinnedImage.MatchString(s.BaseImage) {
+			return errors.New("set packages.harnest.baseImage or baseImages to digest-pinned Linux images")
+		}
+		return nil
+	}
+	if s.BaseImage != "" || len(s.BaseImages) == 0 {
+		return errors.New("set either packages.harnest.baseImage or a nonempty baseImages map")
+	}
+	for platform, pin := range s.BaseImages {
+		if platform != "linux/amd64" && platform != "linux/arm64" {
+			return errors.New("baseImages keys must be linux/amd64 or linux/arm64")
+		}
+		if !pinnedImage.MatchString(pin) {
+			return fmt.Errorf("packages.harnest.baseImages[%s] must be a digest-pinned image", platform)
 		}
 	}
 	return nil

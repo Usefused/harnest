@@ -88,12 +88,9 @@ func projectHook(ctx context.Context, action string, req hookRequest) (hookRespo
 	if err != nil {
 		return out, err
 	}
-	decl := review{SourceDigest: bundle.Digest, BaseImage: settings.BaseImage, Required: settings.RequiredBindings}
-	if settings.Artifact != "" {
-		decl.ArtifactDigest, err = reviewArtifact(req, settings.Artifact, &bundle.Config)
-		if err != nil {
-			return out, err
-		}
+	decl, err := reviewInputs(ctx, req, bundle, settings)
+	if err != nil {
+		return out, err
 	}
 	if action == "project-plan" {
 		return hookResponse{Project: project, Declarations: &decl}, nil
@@ -102,6 +99,19 @@ func projectHook(ctx context.Context, action string, req hookRequest) (hookRespo
 		return out, errors.New("deployment inputs changed; run Hostlier plan again")
 	}
 	return buildReviewed(ctx, req, settings, decl, port)
+}
+
+// reviewInputs records the exact base manifest and optional prebuilt agent reviewed for this target.
+func reviewInputs(ctx context.Context, req hookRequest, bundle engine.Bundle, settings projectSettings) (review, error) {
+	base, err := settings.resolveBaseImage(ctx, req.Architecture)
+	if err != nil {
+		return review{}, err
+	}
+	decl := review{SourceDigest: bundle.Digest, BaseImage: base, Required: settings.RequiredBindings}
+	if settings.Artifact != "" {
+		decl.ArtifactDigest, err = reviewArtifact(req, settings.Artifact, &bundle.Config)
+	}
+	return decl, err
 }
 
 // reviewArtifact checks containment before inspecting prebuilt code and rejects foreign targets during preview.
@@ -133,7 +143,7 @@ func buildReviewed(ctx context.Context, req hookRequest, settings projectSetting
 	if !filepath.IsAbs(req.OutputDir) {
 		return out, errors.New("expected an absolute Hostlier output directory")
 	}
-	build := buildSettings{project: req.ProjectDir, architecture: req.Architecture, base: settings.BaseImage, port: port, output: filepath.Join(req.OutputDir, "context")}
+	build := buildSettings{project: req.ProjectDir, architecture: req.Architecture, base: decl.BaseImage, port: port, output: filepath.Join(req.OutputDir, "context")}
 	if settings.Artifact != "" {
 		build.artifact = filepath.Join(req.ProjectDir, settings.Artifact)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +51,8 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 		}
 	}
 	set(".hostlier", topology)
-	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImage": "debian@sha256:" + strings.Repeat("a", 64), "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
+	index, pins := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"}, v1.Platform{OS: "linux", Architecture: "arm64"})
+	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImages": map[string]string{"linux/amd64": index}, "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
 
 	plan := invokeHook(t, request, "project-plan")
 	if plan.Project["packages"] != nil {
@@ -66,6 +68,7 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 	if got := invokeHook(t, request, "project-package"); got.Artifact["kind"] != "container-context" {
 		t.Fatal(got)
 	}
+	verifyPlannedBase(t, plan, request.OutputDir, pins["linux/amd64"])
 	set("agent.py", "raise Exception('plan must never execute this source')\n")
 	if got := invokeHook(t, request, "project-package"); !strings.Contains(got.Error, "changed") {
 		t.Fatalf("accepted stale plan: %+v", got)
@@ -128,5 +131,14 @@ func TestHookSettingsUsesSnapshot(t *testing.T) {
 	settings, err := inlineSettings(map[string]any{"baseImage": base, "requiredBindings": []string{"CACHE_URL"}})
 	if err != nil || settings.BaseImage != base || len(settings.RequiredBindings) != 1 {
 		t.Fatal(settings, err)
+	}
+}
+
+// verifyPlannedBase asserts that review and Docker build share the same immutable child manifest.
+func verifyPlannedBase(t *testing.T, plan hookResponse, output, pin string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(output, "context", "Dockerfile"))
+	if err != nil || plan.Declarations.BaseImage != pin || !strings.HasPrefix(string(raw), "FROM "+pin+"\n") {
+		t.Fatal(string(raw), plan.Declarations, err)
 	}
 }

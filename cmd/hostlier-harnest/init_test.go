@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,8 @@ import (
 func TestInitProposal(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
-	req := initRequest{Version: 1, DefaultName: "unused", Port: 9042, Route: "starter.example.com", Architecture: "amd64", Config: map[string]any{"name": "starter-agent", "baseImage": "debian@sha256:" + strings.Repeat("a", 64), "requiredBindings": []string{"CACHE_URL"}}}
+	index, _ := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"})
+	req := initRequest{Version: 1, DefaultName: "unused", Port: 9042, Route: "starter.example.com", Architecture: "amd64", Config: map[string]any{"name": "starter-agent", "baseImage": index, "requiredBindings": []string{"CACHE_URL"}}}
 	raw, err := json.Marshal(req)
 	if err != nil {
 		t.Fatal(err)
