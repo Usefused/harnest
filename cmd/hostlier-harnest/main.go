@@ -17,9 +17,11 @@ func run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 	switch args[0] {
 	case "describe":
 		return json.NewEncoder(output).Encode(map[string]any{
-			"version": 1, "name": "harnest", "hooks": []string{"project-plan", "project-package"},
-			"configSchema": map[string]any{}, "outputSchema": map[string]any{}, "outputs": []string{},
+			"version": 1, "name": "harnest", "hooks": []string{"init", "project-plan", "project-package"},
+			"configSchema": settingsSchema(), "outputSchema": map[string]any{}, "outputs": []string{},
 		})
+	case "init":
+		return dispatchInit(input, output)
 	case "project-plan", "project-package":
 		return dispatchHook(ctx, args[0], input, output)
 	default:

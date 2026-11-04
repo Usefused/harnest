@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
+
 ## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
 
 - Package existing Harnest agents as Hostlier container workloads with the optional `hostlier-harnest` executable and its settings under `packages.harnest` in `.hostlier`. Use `harnest_redis.cache.RedisCache` for user-scoped cache entries with TTL and Redis ACL prefix support.

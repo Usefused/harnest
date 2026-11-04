@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +51,8 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 		}
 	}
 	set(".hostlier", topology)
-	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64"}
+	index, pins := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"}, v1.Platform{OS: "linux", Architecture: "arm64"})
+	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImage": index, "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
 
 	plan := invokeHook(t, request, "project-plan")
 	if plan.Project["packages"] != nil {
@@ -66,6 +68,7 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 	if got := invokeHook(t, request, "project-package"); got.Artifact["kind"] != "container-context" {
 		t.Fatal(got)
 	}
+	verifyPlannedBase(t, plan, request.OutputDir, pins["linux/amd64"])
 	set("agent.py", "raise Exception('plan must never execute this source')\n")
 	if got := invokeHook(t, request, "project-package"); !strings.Contains(got.Error, "changed") {
 		t.Fatalf("accepted stale plan: %+v", got)
@@ -108,20 +111,34 @@ func invokeHook(t *testing.T, request hookRequest, action string) hookResponse {
 	return result
 }
 
-// TestLegacySettings preserves existing deployments and rejects misspelled inline settings without falling back.
-func TestLegacySettings(t *testing.T) {
+// TestPackageRequiresInlineConfig ensures a stray legacy file cannot authorize preparation.
+func TestPackageRequiresInlineConfig(t *testing.T) {
 	root := t.TempDir()
+	copyAgentFixture(t, root)
 	base := "debian@sha256:" + strings.Repeat("b", 64)
-	err := os.WriteFile(filepath.Join(root, "harnest-hostlier.yaml"), []byte("version: 1\nbaseImage: "+base+"\n"), 0600)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(root, "harnest-hostlier.yaml"), []byte("version: 1\nbaseImage: "+base+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := readSettings(root, map[string]any{"packages": map[string]any{"harnest": map[string]any{}}})
-	if err != nil || settings.BaseImage != base {
+	result := invokeHook(t, hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64"}, "project-plan")
+	if !strings.Contains(result.Error, "packages.harnest.baseImage") || result.Project != nil {
+		t.Fatal(result)
+	}
+}
+
+// TestHookSettingsUsesSnapshot checks that both lifecycle hooks use the typed request configuration.
+func TestHookSettingsUsesSnapshot(t *testing.T) {
+	base := "debian@sha256:" + strings.Repeat("c", 64)
+	settings, err := inlineSettings(map[string]any{"baseImage": base, "requiredBindings": []string{"CACHE_URL"}})
+	if err != nil || settings.BaseImage != base || len(settings.RequiredBindings) != 1 {
 		t.Fatal(settings, err)
 	}
-	project := map[string]any{"packages": map[string]any{"harnest": map[string]any{"baseImage": base, "typo": true}}}
-	if _, err = readSettings(root, project); err == nil {
-		t.Fatal("invalid inline settings fell back to the legacy file")
+}
+
+// verifyPlannedBase asserts that review and Docker build share the same immutable child manifest.
+func verifyPlannedBase(t *testing.T, plan hookResponse, output, pin string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(output, "context", "Dockerfile"))
+	if err != nil || plan.Declarations.BaseImage != pin || !strings.HasPrefix(string(raw), "FROM "+pin+"\n") {
+		t.Fatal(string(raw), plan.Declarations, err)
 	}
 }

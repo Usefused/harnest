@@ -21,6 +21,7 @@ import (
 )
 
 type hookRequest struct {
+	Config           map[string]any `json:"config,omitempty"`
 	ProvidedBindings []string       `json:"providedBindings,omitempty"`
 	Version          int            `json:"version"`
 	ProjectDir       string         `json:"projectDir"`
@@ -79,20 +80,17 @@ func projectHook(ctx context.Context, action string, req hookRequest) (hookRespo
 	if err != nil {
 		return out, err
 	}
-	settings, err := readSettings(req.ProjectDir, project)
+	settings, err := inlineSettings(req.Config)
 	if err != nil {
 		return out, err
 	}
-	port, err := deploymentProject(req, project, bundle, settings.RequiredBindings)
+	port, err := deploymentProject(req, project, bundle, settings)
 	if err != nil {
 		return out, err
 	}
-	decl := review{SourceDigest: bundle.Digest, BaseImage: settings.BaseImage, Required: settings.RequiredBindings}
-	if settings.Artifact != "" {
-		decl.ArtifactDigest, err = reviewArtifact(req, settings.Artifact, &bundle.Config)
-		if err != nil {
-			return out, err
-		}
+	decl, err := reviewInputs(ctx, req, bundle, settings)
+	if err != nil {
+		return out, err
 	}
 	if action == "project-plan" {
 		return hookResponse{Project: project, Declarations: &decl}, nil
@@ -101,6 +99,19 @@ func projectHook(ctx context.Context, action string, req hookRequest) (hookRespo
 		return out, errors.New("deployment inputs changed; run Hostlier plan again")
 	}
 	return buildReviewed(ctx, req, settings, decl, port)
+}
+
+// reviewInputs records the exact base manifest and optional prebuilt agent reviewed for this target.
+func reviewInputs(ctx context.Context, req hookRequest, bundle engine.Bundle, settings projectSettings) (review, error) {
+	base, err := settings.resolveBaseImage(ctx, req.Architecture)
+	if err != nil {
+		return review{}, err
+	}
+	decl := review{SourceDigest: bundle.Digest, BaseImage: base, Required: settings.RequiredBindings}
+	if settings.Artifact != "" {
+		decl.ArtifactDigest, err = reviewArtifact(req, settings.Artifact, &bundle.Config)
+	}
+	return decl, err
 }
 
 // reviewArtifact checks containment before inspecting prebuilt code and rejects foreign targets during preview.
@@ -132,7 +143,7 @@ func buildReviewed(ctx context.Context, req hookRequest, settings projectSetting
 	if !filepath.IsAbs(req.OutputDir) {
 		return out, errors.New("expected an absolute Hostlier output directory")
 	}
-	build := buildSettings{project: req.ProjectDir, architecture: req.Architecture, base: settings.BaseImage, port: port, output: filepath.Join(req.OutputDir, "context")}
+	build := buildSettings{project: req.ProjectDir, architecture: req.Architecture, base: decl.BaseImage, port: port, output: filepath.Join(req.OutputDir, "context")}
 	if settings.Artifact != "" {
 		build.artifact = filepath.Join(req.ProjectDir, settings.Artifact)
 	}
@@ -153,7 +164,11 @@ func buildReviewed(ctx context.Context, req hookRequest, settings projectSetting
 }
 
 // deploymentProject reads deployment topology as data and keeps the Harnest build confined to the primary workload.
-func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, required []string) (int, error) {
+func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, settings projectSettings) (int, error) {
+	// Keep an explicitly configured starter identity bound to the same agent at packaging time.
+	if settings.Name != "" && settings.Name != b.Config.Metadata.Name {
+		return 0, errors.New("packages.harnest.name must match the agent in config.yaml")
+	}
 	if req.Architecture != "amd64" && req.Architecture != "arm64" {
 		return 0, errors.New("unsupported Hostlier architecture")
 	}
@@ -167,7 +182,7 @@ func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, requi
 	if err != nil {
 		return 0, err
 	}
-	return port, validateBindings(p, b.Config.Spec.Secrets, required, req.ProvidedBindings)
+	return port, validateBindings(p, b.Config.Spec.Secrets, settings.RequiredBindings, req.ProvidedBindings)
 }
 
 // validateBindings makes missing lifecycle and runner inputs actionable before packaging.
@@ -282,11 +297,25 @@ func validateSource(p map[string]any, arch string) error {
 	if p["image"] != nil || p["profile"] != nil {
 		return errors.New("the Harnest package owns the primary container source and entrypoint")
 	}
-	if source := p["source"]; source != nil && !reflect.DeepEqual(source, desired) && !reflect.DeepEqual(source, map[string]any{"container": map[string]any{"context": "."}}) {
+	if source := p["source"]; source != nil && !validAuthoredSource(source) {
 		return errors.New("use source.container.context '.' for the Harnest package")
 	}
 	p["source"] = desired
 	return nil
+}
+
+// validAuthoredSource permits Hostlier to override a saved platform with the selected target.
+func validAuthoredSource(source any) bool {
+	for _, arch := range []string{"", "amd64", "arm64"} {
+		container := map[string]any{"context": "."}
+		if arch != "" {
+			container["architecture"] = arch
+		}
+		if reflect.DeepEqual(source, map[string]any{"container": container}) {
+			return true
+		}
+	}
+	return false
 }
 
 // primaryEndpoint follows Hostlier v2's explicit, conventional, then lexical primary listener selection.
