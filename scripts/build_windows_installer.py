@@ -33,7 +33,7 @@ def build(cli: Path, version: str, arch: str, output: Path) -> Path:
         "wix", "build", str(ROOT / "packaging/windows/harnest.wxs"),
         "-arch", "x64" if arch == "amd64" else "arm64",
         "-ext", "WixToolset.UI.wixext", "-d", f"Version={version}",
-        "-d", f"ComponentGuid={component_guid}", "-d", f"Cli={cli.resolve(strict=True)}", "-d", f"LicenseRtf={license_rtf.resolve()}",
+        "-d", f"SourceRoot={ROOT}", "-d", f"ComponentGuid={component_guid}", "-d", f"Cli={cli.resolve(strict=True)}", "-d", f"LicenseRtf={license_rtf.resolve()}",
         "-out", str(artifact.resolve()),
     ], check=True)
     return artifact
