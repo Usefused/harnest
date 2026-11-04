@@ -33,7 +33,7 @@ permissions:
 # Only one publisher can update a release checksum manifest at a time.
 concurrency:
   group: windows-installer-${{ inputs.tag_name || github.head_ref || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:

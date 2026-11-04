@@ -2,11 +2,16 @@
   <Package Name="Harnest" Manufacturer="Fused" Version="$(var.Version)"
            UpgradeCode="86085EE6-F11F-4AE7-9316-322D92699EB0" Scope="perUser">
     <!-- Keep removal of the previous version inside the rollback transaction. -->
-    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer version of Harnest is already installed." />
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Harnest is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <ui:WixUI Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <Property Id="ARPURLINFOABOUT" Value="https://usefused.com/docs/harnest" />
+    <!-- Preserve a destination selected by the compatibility script across upgrades. -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="ExistingInstallDir" Root="HKCU" Key="Software\Fused\Harnest"
+                      Name="InstallDir" Type="raw" />
+    </Property>
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="Harnest">

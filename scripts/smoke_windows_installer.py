@@ -63,6 +63,11 @@ def exercise(package: Path, cli: Path, output: Path, arch: str) -> None:
         verify_cli(directory)
         run_msi(failure, "/i", output / "failed-upgrade.log", success=False)
         verify_cli(directory)
+        # Repackaging a release must replace its registration instead of duplicating it.
+        rebuilt = build(cli, package.name.split("_")[1], arch, output / "rebuilt")
+        run_msi(rebuilt, "/i", output / "reinstall.log")
+        package = rebuilt
+        verify_cli(directory)
         run_msi(package, "/fa", output / "repair.log")
         verify_cli(directory)
         upgrade = build(cli, "254.0.1", arch, output / "upgrade")
