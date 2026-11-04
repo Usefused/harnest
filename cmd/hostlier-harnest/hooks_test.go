@@ -50,7 +50,7 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 		}
 	}
 	set(".hostlier", topology)
-	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64"}
+	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImage": "debian@sha256:" + strings.Repeat("a", 64), "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
 
 	plan := invokeHook(t, request, "project-plan")
 	if plan.Project["packages"] != nil {
@@ -108,20 +108,25 @@ func invokeHook(t *testing.T, request hookRequest, action string) hookResponse {
 	return result
 }
 
-// TestLegacySettings preserves existing deployments and rejects misspelled inline settings without falling back.
-func TestLegacySettings(t *testing.T) {
+// TestPackageRequiresInlineConfig ensures a stray legacy file cannot authorize preparation.
+func TestPackageRequiresInlineConfig(t *testing.T) {
 	root := t.TempDir()
+	copyAgentFixture(t, root)
 	base := "debian@sha256:" + strings.Repeat("b", 64)
-	err := os.WriteFile(filepath.Join(root, "harnest-hostlier.yaml"), []byte("version: 1\nbaseImage: "+base+"\n"), 0600)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(root, "harnest-hostlier.yaml"), []byte("version: 1\nbaseImage: "+base+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := readSettings(root, map[string]any{"packages": map[string]any{"harnest": map[string]any{}}})
-	if err != nil || settings.BaseImage != base {
-		t.Fatal(settings, err)
+	result := invokeHook(t, hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64"}, "project-plan")
+	if !strings.Contains(result.Error, "packages.harnest.baseImage") || result.Project != nil {
+		t.Fatal(result)
 	}
-	project := map[string]any{"packages": map[string]any{"harnest": map[string]any{"baseImage": base, "typo": true}}}
-	if _, err = readSettings(root, project); err == nil {
-		t.Fatal("invalid inline settings fell back to the legacy file")
+}
+
+// TestHookSettingsUsesSnapshot checks that both lifecycle hooks use the typed request configuration.
+func TestHookSettingsUsesSnapshot(t *testing.T) {
+	base := "debian@sha256:" + strings.Repeat("c", 64)
+	settings, err := inlineSettings(map[string]any{"baseImage": base, "requiredBindings": []string{"CACHE_URL"}})
+	if err != nil || settings.BaseImage != base || len(settings.RequiredBindings) != 1 {
+		t.Fatal(settings, err)
 	}
 }

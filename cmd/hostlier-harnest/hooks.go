@@ -21,6 +21,7 @@ import (
 )
 
 type hookRequest struct {
+	Config           map[string]any `json:"config,omitempty"`
 	ProvidedBindings []string       `json:"providedBindings,omitempty"`
 	Version          int            `json:"version"`
 	ProjectDir       string         `json:"projectDir"`
@@ -79,11 +80,11 @@ func projectHook(ctx context.Context, action string, req hookRequest) (hookRespo
 	if err != nil {
 		return out, err
 	}
-	settings, err := readSettings(req.ProjectDir, project)
+	settings, err := inlineSettings(req.Config)
 	if err != nil {
 		return out, err
 	}
-	port, err := deploymentProject(req, project, bundle, settings.RequiredBindings)
+	port, err := deploymentProject(req, project, bundle, settings)
 	if err != nil {
 		return out, err
 	}
@@ -153,7 +154,11 @@ func buildReviewed(ctx context.Context, req hookRequest, settings projectSetting
 }
 
 // deploymentProject reads deployment topology as data and keeps the Harnest build confined to the primary workload.
-func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, required []string) (int, error) {
+func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, settings projectSettings) (int, error) {
+	// Keep an explicitly configured starter identity bound to the same agent at packaging time.
+	if settings.Name != "" && settings.Name != b.Config.Metadata.Name {
+		return 0, errors.New("packages.harnest.name must match the agent in config.yaml")
+	}
 	if req.Architecture != "amd64" && req.Architecture != "arm64" {
 		return 0, errors.New("unsupported Hostlier architecture")
 	}
@@ -167,7 +172,7 @@ func deploymentProject(req hookRequest, p map[string]any, b engine.Bundle, requi
 	if err != nil {
 		return 0, err
 	}
-	return port, validateBindings(p, b.Config.Spec.Secrets, required, req.ProvidedBindings)
+	return port, validateBindings(p, b.Config.Spec.Secrets, settings.RequiredBindings, req.ProvidedBindings)
 }
 
 // validateBindings makes missing lifecycle and runner inputs actionable before packaging.
