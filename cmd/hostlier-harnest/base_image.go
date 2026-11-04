@@ -16,12 +16,6 @@ import (
 func (s projectSettings) resolveBaseImage(ctx context.Context, arch string) (string, error) {
 	target := v1.Platform{OS: "linux", Architecture: arch}
 	pin := s.BaseImage
-	if s.BaseImages != nil {
-		pin = s.BaseImages[target.String()]
-		if pin == "" {
-			return "", fmt.Errorf("packages.harnest.baseImages has no entry for %s", target)
-		}
-	}
 	ref, err := name.NewDigest(pin)
 	if err != nil {
 		return "", fmt.Errorf("invalid Harnest base image reference %q", pin)

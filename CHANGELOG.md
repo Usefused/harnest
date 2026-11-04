@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Hostlier planning now verifies the Harnest base image against the target Linux architecture. Pin a multi-platform index in `baseImage` or supply per-target pins under `baseImages`. Packaging uses the exact manifest selected by the plan.
+- Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
 
 ## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
 

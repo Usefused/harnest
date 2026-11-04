@@ -55,7 +55,8 @@ func TestBaseImagePlatforms(t *testing.T) {
 	platforms := []v1.Platform{{OS: "linux", Architecture: "amd64"}, {OS: "linux", Architecture: "arm64"}, {OS: "windows", Architecture: "arm64"}}
 	index, pins := imagePins(t, platforms...)
 	for _, p := range platforms[:2] {
-		for _, settings := range []projectSettings{{BaseImage: index}, {BaseImages: map[string]string{"linux/amd64": pins["linux/amd64"], "linux/arm64": pins["linux/arm64"]}}} {
+		for _, pin := range []string{index, pins[p.String()]} {
+			settings := projectSettings{BaseImage: pin}
 			got, err := settings.resolveBaseImage(context.Background(), p.Architecture)
 			if err != nil || got != pins[p.String()] {
 				t.Fatalf("%s: got %q, %v", p, got, err)
@@ -71,22 +72,12 @@ func TestBaseImagePlatforms(t *testing.T) {
 	}
 }
 
-// TestNoMatchingBase prevents either selection form substituting another architecture.
+// TestNoMatchingBase rejects an index that has no manifest for the target.
 func TestNoMatchingBase(t *testing.T) {
-	index, pins := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"})
-	for _, settings := range []projectSettings{{BaseImage: index}, {BaseImages: pins}} {
-		_, err := settings.resolveBaseImage(context.Background(), "arm64")
-		if err == nil || !strings.Contains(err.Error(), "linux/arm64") {
-			t.Fatal(err)
-		}
-	}
-}
-
-func TestInvalidBaseImageSettings(t *testing.T) {
-	pin := "debian@sha256:" + strings.Repeat("a", 64)
-	for _, s := range []projectSettings{{BaseImage: pin, BaseImages: map[string]string{"linux/arm64": pin}}, {BaseImages: map[string]string{}}, {BaseImages: map[string]string{"linux/386": pin}}, {BaseImages: map[string]string{"linux/arm64": "debian:latest"}}} {
-		if err := s.validateBaseImages(); err == nil {
-			t.Fatal("accepted", s)
-		}
+	index, _ := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"})
+	settings := projectSettings{BaseImage: index}
+	_, err := settings.resolveBaseImage(context.Background(), "arm64")
+	if err == nil || !strings.Contains(err.Error(), "linux/arm64") {
+		t.Fatal(err)
 	}
 }

@@ -52,7 +52,7 @@ secrets: {SANDBOX_TOKEN: "secret://runner-token", KNOWLEDGE_MCP_TOKEN: "secret:/
 	}
 	set(".hostlier", topology)
 	index, pins := imagePins(t, v1.Platform{OS: "linux", Architecture: "amd64"}, v1.Platform{OS: "linux", Architecture: "arm64"})
-	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImages": map[string]string{"linux/amd64": index}, "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
+	request := hookRequest{Version: 1, ProjectDir: root, Architecture: "amd64", Config: map[string]any{"baseImage": index, "artifact": "compiled", "requiredBindings": []string{"CACHE_URL", "SANDBOX_URL", "SANDBOX_TOKEN"}}}
 
 	plan := invokeHook(t, request, "project-plan")
 	if plan.Project["packages"] != nil {
