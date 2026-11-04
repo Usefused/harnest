@@ -297,11 +297,25 @@ func validateSource(p map[string]any, arch string) error {
 	if p["image"] != nil || p["profile"] != nil {
 		return errors.New("the Harnest package owns the primary container source and entrypoint")
 	}
-	if source := p["source"]; source != nil && !reflect.DeepEqual(source, desired) && !reflect.DeepEqual(source, map[string]any{"container": map[string]any{"context": "."}}) {
+	if source := p["source"]; source != nil && !validAuthoredSource(source) {
 		return errors.New("use source.container.context '.' for the Harnest package")
 	}
 	p["source"] = desired
 	return nil
+}
+
+// validAuthoredSource permits Hostlier to override a saved platform with the selected target.
+func validAuthoredSource(source any) bool {
+	for _, arch := range []string{"", "amd64", "arm64"} {
+		container := map[string]any{"context": "."}
+		if arch != "" {
+			container["architecture"] = arch
+		}
+		if reflect.DeepEqual(source, map[string]any{"container": container}) {
+			return true
+		}
+	}
+	return false
 }
 
 // primaryEndpoint follows Hostlier v2's explicit, conventional, then lexical primary listener selection.
