@@ -94,6 +94,8 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     # Hosted runners may pass a process override to children; test the actual restricted policy.
     os.environ.pop("PSExecutionPolicyPreference", None)
+    # Windows PowerShell must load its own security module, not the runner's PowerShell 7 modules.
+    os.environ.pop("PSModulePath", None)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, POLICY_KEY) as key:
         try:
             previous = winreg.QueryValueEx(key, "ExecutionPolicy")
