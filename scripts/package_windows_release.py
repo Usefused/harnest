@@ -47,7 +47,7 @@ def package_release(repo: str, tag: str, output: Path) -> list[Path]:
         cli = extract_cli(archive, checksums, output / arch)
         artifacts.append(build(cli, version, arch, output))
     names = {artifact.name for artifact in artifacts}
-    lines = [line for line in checksums.splitlines() if line.split()[-1].lstrip("*") not in names]
+    lines = [line for line in checksums.splitlines() if line.strip() and line.split()[-1].lstrip("*") not in names]
     for artifact in artifacts:
         lines.append(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}")
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -55,7 +55,7 @@ def package_release(repo: str, tag: str, output: Path) -> list[Path]:
 
 
 def main() -> None:
-    """Publish only when the workflow explicitly requests release attachment."""
+    """Prepare packages for the workflow to test before release attachment."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--tag", required=True)

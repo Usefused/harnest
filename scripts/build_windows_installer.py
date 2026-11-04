@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,11 +27,13 @@ def build(cli: Path, version: str, arch: str, output: Path) -> Path:
     license_rtf = output / "license.rtf"
     license_rtf.write_text("{\\rtf1\\ansi\n" + escaped.replace("\n", "\\par\n") + "}", encoding="utf-8")
     artifact = output / f"harnest_{version}_windows_{arch}.msi"
+    # Component identity is stable across upgrades and distinct for each executable architecture.
+    component_guid = uuid.uuid5(uuid.NAMESPACE_URL, "https://usefused.com/harnest/windows/cli/" + arch)
     subprocess.run([
         "wix", "build", str(ROOT / "packaging/windows/harnest.wxs"),
         "-arch", "x64" if arch == "amd64" else "arm64",
         "-ext", "WixToolset.UI.wixext", "-d", f"Version={version}",
-        "-d", f"Cli={cli.resolve(strict=True)}", "-d", f"LicenseRtf={license_rtf.resolve()}",
+        "-d", f"ComponentGuid={component_guid}", "-d", f"Cli={cli.resolve(strict=True)}", "-d", f"LicenseRtf={license_rtf.resolve()}",
         "-out", str(artifact.resolve()),
     ], check=True)
     return artifact
