@@ -670,7 +670,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         """Keep native execution coverage alongside cross-compilation of release assets."""
         job = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
         self.assertEqual(set(job["strategy"]["matrix"]["os"]),
-                         {"ubuntu-latest", "macos-latest", "windows-latest"})
+                         {"ubuntu-latest", "macos-14", "windows-latest"})
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("scripts/prepare_agent_launchers.py", scripts)
         self.assertIn("go test ./internal/agentpack ./cmd/harnest-agent", scripts)
