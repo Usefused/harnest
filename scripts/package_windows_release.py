@@ -41,11 +41,10 @@ def package_release(repo: str, tag: str, output: Path) -> list[Path]:
                     f"harnest_{version}_windows_*.zip", "--dir", str(output), "--clobber", repo=repo)
     manifest = output / "checksums.txt"
     checksums = manifest.read_text(encoding="utf-8")
-    artifacts = []
-    for arch in ("amd64", "arm64"):
-        archive = output / f"harnest_{version}_windows_{arch}.zip"
-        cli = extract_cli(archive, checksums, output / arch)
-        artifacts.append(build(cli, version, arch, output))
+    # Publish the architecture whose complete installation has passed native validation.
+    archive = output / f"harnest_{version}_windows_amd64.zip"
+    cli = extract_cli(archive, checksums, output / "amd64")
+    artifacts = [build(cli, version, "amd64", output)]
     names = {artifact.name for artifact in artifacts}
     lines = [line for line in checksums.splitlines() if line.strip() and line.split()[-1].lstrip("*") not in names]
     for artifact in artifacts:

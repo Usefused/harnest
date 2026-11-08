@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add native Windows MSI installers for x64 and ARM64, with per-user PATH registration, runtime bootstrap, repair, upgrade, and uninstall. The optional PowerShell bootstrap now verifies and launches the MSI.
+- Add native Windows MSI installation for x64, with per-user PATH registration, runtime bootstrap, repair, upgrade, and uninstall. The optional PowerShell bootstrap verifies and launches the MSI when available, with ZIP support for ARM64 and older releases.
 
 - Respect the device execution policy in documented Windows installer commands. Document checksum-verified ZIP installation for devices that block PowerShell scripts.
 

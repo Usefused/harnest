@@ -71,7 +71,7 @@ jobs:
           git merge-base --is-ancestor $env:RELEASE_TAG origin/main
           if ($LASTEXITCODE -ne 0) { throw 'Release must belong to main' }
           "RELEASE_TAG=$env:RELEASE_TAG" >> $env:GITHUB_ENV
-      - name: Build both native MSI architectures from verified release archives
+      - name: Build the x64 MSI from verified release archives
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -83,7 +83,6 @@ jobs:
             dist/windows-installer/*.msi
             dist/windows-installer/checksums.txt
             dist/windows-installer/amd64/harnest.exe
-            dist/windows-installer/arm64/harnest.exe
 
   test:
     needs: package
@@ -93,8 +92,6 @@ jobs:
         include:
           - os: windows-latest
             arch: amd64
-          - os: windows-11-arm
-            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
