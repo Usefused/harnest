@@ -297,7 +297,7 @@ The compiler imports providers without connecting to external services.
 
 Harnest binds the context around `/responses`, `/live`, direct
 `run_agent_message` calls, and their managed nodes, tools, lifecycle listeners,
-and subagents. A framework-native endpoint or native ADK/LangGraph target called
+and subagents. A framework-specific endpoint or native ADK/LangGraph target called
 outside that boundary has no Harnest context. Advanced code that needs context
 must therefore run through the compiled Harnest application.
 
@@ -319,6 +319,24 @@ queued-work behavior, and complete examples.
   `None`, fails closed if no listener resolves a principal, and never permits an
   established `user_id` to change. With no auth listeners, local anonymous mode
   remains enabled.
+- `http.agent_principal(connection, principal)` grants permissions to the
+  built-in invocation routes: `/responses`, live, AG-UI and A2A. It receives the
+  same read-only `ConnectionContext` and the authenticated `AuthPrincipal`, and
+  returns an `AgentRuntimePrincipal` (sync or async). Returning `None` denies
+  the invocation (A2A reports hook denial as a protocol error). At most one hook is
+  allowed. Without it, built-in routes run in compatibility mode with every tool
+  visible, unless `server.agentPrincipal: required` is set, in which case they
+  refuse with 403. Custom `AgentInvoker` routes keep passing `agent_principal=`
+  themselves. Resumed approvals and client tools keep the principal of the run
+  they resume. Advanced ADK also serves its native routes in required mode. They bypass this hook.
+
+  ```python
+  @lifecycle.http.agent_principal
+  def grant(connection, principal):
+      return AgentRuntimePrincipal.create(
+          permissions=principal.claims.get("permissions", ())
+      )
+  ```
 - `before_invoke(context, request)` pipelines `InvocationRequest` values.
 - `on_event(context, event)` pipelines runtime events; return `DROP_EVENT` to
   suppress one.
@@ -340,19 +358,19 @@ Use a native decorator for structural control. Arbitrary advanced native model
 calls do not receive portable hooks automatically; configure Harnest's LiteLLM
 lifecycle or a native plugin/middleware explicitly.
 
-## Native integrations
+## Framework extensions
 
 Use an explicit synchronous zero-argument factory when portable hooks cannot
 express a framework feature:
 
 ```python
-@lifecycle.adk_plugin(order=30)
+@lifecycle.framework_extension(order=30)
 def audit_plugin():
     from google.adk.plugins.base_plugin import BasePlugin
     return BasePlugin(name="audit")
 
 
-@lifecycle.langgraph_middleware(order=30)
+@lifecycle.framework_extension(order=30)
 def guardrail_middleware():
     from langchain.agents.middleware import AgentMiddleware
     return AgentMiddleware()

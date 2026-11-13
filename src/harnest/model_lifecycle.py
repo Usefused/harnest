@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeAlias
 
+from .frameworks.base import FrameworkName
+
 LifecycleValue: TypeAlias = Any | Awaitable[Any]
 
 
@@ -17,7 +19,7 @@ class LiteLLMContext:
     """Stable call context provided to every LiteLLM lifecycle hook."""
 
     model: str
-    framework: Literal["adk", "langgraph"]
+    framework: FrameworkName
     transport: Any | None = None
 
 
@@ -165,7 +167,7 @@ class _LifecycleLiteLLMClient:
         lifecycle: LiteLLMLifecycle,
         *,
         model: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
         request_transformers: Sequence[Callable[[dict[str, Any]], Any]] = (),
     ) -> None:
         self._delegate = delegate
@@ -564,7 +566,9 @@ def create_adk_lifecycle_client(
 ) -> Any:
     """Create the concrete client type required by ADK's validated adapter."""
 
-    delegate = client_type()
+    from .model_transport import framework_adk_client
+
+    delegate = framework_adk_client(client_type)
     controller = _LifecycleLiteLLMClient(
         delegate,
         lifecycle,

@@ -62,7 +62,7 @@ class CredentialRequest:
 class Credential:
     """Opaque material Harnest passes transiently and never serializes.
 
-    Material may be a token or a framework-native credential value. Harnest
+    Material may be a token or a framework-specific credential value. Harnest
     keeps either form redacted and requires transport adapters to reveal it at
     the final outbound security boundary.
     """

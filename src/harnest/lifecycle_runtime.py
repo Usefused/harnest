@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .frameworks.registry import require_framework
 from ._exception_notes import capture_cleanup_failure as _cleanup_failure
 
 from ._exception_notes import merge_cleanup_failure as _merge_cleanup_failure
@@ -137,12 +138,10 @@ async def _resolve(value: Any) -> Any:
 
 
 def _context(driver: RuntimeDriver, request: InvocationRequest) -> LifecycleContext:
-    framework = driver.info.framework
-    if framework not in {"adk", "langgraph"}:
-        raise ValueError(
-            "runtime extensions require driver.info.framework to be 'adk' or "
-            "'langgraph'"
-        )
+    """Build invocation context using the driver's registered framework identity."""
+    framework = require_framework(
+        driver.info.framework, "runtime extension driver.info.framework"
+    )
     return LifecycleContext(
         framework=framework,
         # Public cards may supply a human-facing display name. Lifecycle
@@ -747,7 +746,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         return replace(active, _decision_output=DecisionOutput(enabled=self._output_policy.decision_results))
 
     @asynccontextmanager
-    async def native_invocation_context(
+    async def framework_invocation_context(
         self, request: InvocationRequest, *, session_store: SessionStore | None = None
     ) -> AsyncIterator[None]:
         """Bind owned capabilities while a native evaluator owns runner and events."""

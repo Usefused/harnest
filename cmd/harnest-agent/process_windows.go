@@ -1,5 +1,7 @@
 //go:build windows
 
+// Runs the agent inside a Windows job object so it stops when the launcher stops.
+
 package main
 
 import (

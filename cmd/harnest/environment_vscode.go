@@ -1,3 +1,5 @@
+// Points VS Code's Python interpreter setting at the agent's managed environment.
+
 package main
 
 import (

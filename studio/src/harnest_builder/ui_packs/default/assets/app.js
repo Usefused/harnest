@@ -956,8 +956,8 @@ function reviewPack(proposal) {
     catch(problem){status(`Pack changes were saved, but the view could not refresh: ${problem.message}`);}
   },true);
   $("dialog").classList.add("pack-review-dialog");
-  const sourceFiles=proposal.files.filter(file=>file.path!=="studio-packs.lock");
-  const receipt=proposal.files.find(file=>file.path==="studio-packs.lock");
+  const sourceFiles=proposal.files.filter(file=>file.path!=="harnest-packs.lock");
+  const receipt=proposal.files.find(file=>file.path==="harnest-packs.lock");
   if(sourceFiles.length) {
     const tabs=el("div","","review-tabs"),preview=el("div","","review-diff");form.append(tabs,preview);
     const choose=file=>{renderDiff(preview,file);for(const tab of tabs.children)tab.classList.toggle("active",tab.textContent===file.path);};
@@ -966,7 +966,7 @@ function reviewPack(proposal) {
   } else form.append(el("p","Your agent files are unchanged. Only the installed pack record will be updated.","pack-review-note"));
   if(receipt) {
     const details=el("details","","pack-receipt"),preview=el("div","","review-diff");
-    details.append(el("summary","Installation record · studio-packs.lock"),preview);
+    details.append(el("summary","Installation record · harnest-packs.lock"),preview);
     details.addEventListener("toggle",()=>{if(details.open&&!preview.children.length)renderDiff(preview,receipt);});
     form.append(details);
   }

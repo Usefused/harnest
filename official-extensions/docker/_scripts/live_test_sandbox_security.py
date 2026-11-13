@@ -22,6 +22,7 @@ from unittest.mock import patch
 import docker
 from docker.models.containers import ContainerCollection
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
 from harnest.context import activate_context, create_agent_context, revoke_context
 from harnest.sandbox import Sandbox, SandboxNetworkPolicy, SandboxRequest
 from harnest_extension_docker.extension import docker_sandbox
@@ -144,7 +145,7 @@ async def _cancel(task: asyncio.Task[Any]) -> None:
 
 async def _queued_probe(backend: Any) -> dict[str, Any]:
     """Cancel a call waiting behind native execution and verify it never writes."""
-    tool = Sandbox.provider(lambda: backend, timeout_seconds=4).to_langchain_tool()
+    tool = sandbox_tool(Sandbox.provider(lambda: backend, timeout_seconds=4))
     container_id = _warm(backend)
     container = backend._executor._container
     first = asyncio.create_task(tool.ainvoke({"code":
@@ -166,7 +167,7 @@ async def _queued_probe(backend: Any) -> dict[str, Any]:
 
 async def _active_probe(backend: Any, client: Any) -> dict[str, Any]:
     """Cancel admitted native work and require its entire container to disappear."""
-    tool = Sandbox.provider(lambda: backend, timeout_seconds=4).to_langchain_tool()
+    tool = sandbox_tool(Sandbox.provider(lambda: backend, timeout_seconds=4))
     original = _warm(backend)
     container = backend._executor._container
     running = asyncio.create_task(tool.ainvoke({"code":
@@ -187,7 +188,7 @@ async def _active_probe(backend: Any, client: Any) -> dict[str, Any]:
 def _revoked_probe(args: argparse.Namespace) -> dict[str, Any]:
     """Ensure a revoked managed identity cannot become an anonymous provider call."""
     backend = _backend(args)
-    tool = Sandbox.provider(lambda: backend).to_langchain_tool()
+    tool = sandbox_tool(Sandbox.provider(lambda: backend))
     active = create_agent_context(
         framework="langgraph", agent_name="security-test", invocation_id="test-call",
         user_id="test-user", session_id="test-session", metadata={}, resources={},

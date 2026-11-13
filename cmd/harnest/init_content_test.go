@@ -127,11 +127,11 @@ func assertGeneratedTreeExcludesRetiredProvider(t *testing.T, root string) {
 	}
 }
 
-// TestRepositorySamplesExcludeRetiredProvider checks every versioned sample,
-// excluding only untracked environments and build artifacts through Git's index.
+// TestRepositorySamplesExcludeRetiredProvider checks present samples, including
+// newly authored files, while Git's ignore rules exclude environments and build output.
 func TestRepositorySamplesExcludeRetiredProvider(t *testing.T) {
 	root := filepath.Join("..", "..")
-	command := exec.Command("git", "ls-files", "-z", "--", "examples")
+	command := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "examples")
 	command.Dir = root
 	output, err := command.Output()
 	if err != nil {
@@ -139,10 +139,17 @@ func TestRepositorySamplesExcludeRetiredProvider(t *testing.T) {
 	}
 	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
 	if len(paths) == 0 || paths[0] == "" {
-		t.Fatal("no versioned samples found")
+		t.Fatal("no samples found")
 	}
 	for _, path := range paths {
-		contents := mustReadTestFile(t, filepath.Join(root, path))
+		contents, err := os.ReadFile(filepath.Join(root, path))
+		// Unstaged deletions remain in the index but are no longer authored samples.
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 		assertNoOllamaReference(t, path, string(contents))
 	}
 }

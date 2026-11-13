@@ -89,7 +89,10 @@ class ProviderRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return value
 
         authored, application = application_for(deliver, OwnedStore())
-        with patch("harnest.runtime._langgraph_runtime_driver", return_value=_CronCallingDriver(authored)):
+        with patch(
+            "harnest.frameworks.langgraph.adapter.LangGraphFramework.create_runtime_driver",
+            return_value=_CronCallingDriver(authored),
+        ):
             driver = _runtime_driver(application)
         try:
             await driver.start()

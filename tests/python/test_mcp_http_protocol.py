@@ -11,6 +11,8 @@ from unittest.mock import patch
 import httpx
 import anyio
 
+from harnest.frameworks.adk.mcp_tools import build_toolset
+from harnest.frameworks.context import framework_scope
 from harnest.mcp import MCPClient, MCPClientLifecycle, MCPResourceError
 from harnest.mcp_http_session import modern_session
 from harnest.mcp_http_tools import modern_tools
@@ -84,6 +86,9 @@ class Gateway(MCPClientLifecycle):
 
 class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        """Use the same compiler-selected framework as the retained test lifecycle."""
+
+        self.enterContext(framework_scope("langgraph"))
         self.gateway = Gateway()
         self.configured = MCPClient.streamable_http("https://modern.invalid/mcp", lifecycle=self.gateway, prefix="modern")
 
@@ -147,7 +152,7 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.configured._lifecycle_binding("langgraph").close(reset=True)
         binding = self.configured._lifecycle_binding("adk")
         await binding.start()
-        toolset = self.configured.to_adk_toolset()
+        toolset = build_toolset(self.configured)
         try:
             tools = await toolset.get_tools()
             result = await tools[0].run_async(args={"text": "ADK"}, tool_context=None)
@@ -248,7 +253,7 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
         configured = replace(self.configured, approval=ApprovalPolicy("Approve echo"))
         binding = configured._lifecycle_binding("adk")
         await binding.start()
-        toolset = configured.to_adk_toolset()
+        toolset = build_toolset(configured)
         try:
             tools = await toolset.get_tools()
             with patch("harnest.mcp.authorize_mcp", side_effect=PermissionError("denied")):
@@ -311,9 +316,9 @@ async def _managed_agent(configured):
     from langgraph.checkpoint.memory import MemorySaver
     from harnest.agent import AgentDefinition
     from harnest.application import CompiledApplication
-    from harnest.backends.langgraph import ManagedAgentPlan
+    from harnest.frameworks.langgraph.lowering import ManagedAgentPlan
     from harnest.runtime_contract import InvocationRequest
-    from harnest.runtime_langgraph import LangGraphRuntimeDriver
+    from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
     from test_mcp_agent import _DiscoveryModel
 
     configured = replace(configured, identity="knowledge", capability_id="knowledge")

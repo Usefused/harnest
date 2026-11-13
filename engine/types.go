@@ -65,6 +65,7 @@ type AgentMetadata struct {
 }
 
 type AgentConfigSpec struct {
+	Evaluation  *AgentEvaluation  `yaml:"evaluation,omitempty" json:"evaluation,omitempty"`
 	Enabled     *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Entrypoint  string            `yaml:"entrypoint" json:"entrypoint"`
 	Framework   AgentFramework    `yaml:"framework" json:"framework"`

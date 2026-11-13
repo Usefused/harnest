@@ -1,3 +1,5 @@
+// Content-addressed object store for runtime and agent files.
+
 package agentpack
 
 import (

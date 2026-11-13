@@ -76,6 +76,10 @@ const themeNames = { dark: "Dark", light: "Light", system: "System" };
 
 const runtime = {
   sessionId: "",
+  generation: "",
+  reloadCheck: null,
+  replacement: null,
+  preparingSend: false,
   transport: "stream",
   socket: null,
   liveSessionId: "",
@@ -800,10 +804,25 @@ function appendEvalEvidence(parent, label, value) {
   parent.append(section);
 }
 
+/** Refresh only the selection and credentials that initiated this request. */
 async function loadSessions(preferredId = runtime.sessionId, restoreTranscript = true) {
+  const id = runtime.sessionId, token = ui.token.value;
   const response = await api(endpoints.sessions, { method: "GET" });
   const body = await response.json();
-  const sessions = await includePreferredSession(body.sessions || [], preferredId);
+  // Idle recovery must yield to a user action before issuing any follow-up lookup.
+  if (!selectionMatches(id, token)) return;
+  let sessions;
+  try {
+    sessions = await includePreferredSession(body.sessions || [], preferredId);
+  } catch (error) {
+    // A late lookup failure belongs to the abandoned selection, not the current UI.
+    if (!selectionMatches(id, token)) return;
+    // A missing bookmark can be replaced; a mistyped ID in the picker should still report an error.
+    if (!preferredId || preferredId !== runtime.sessionId || !missingSession(error)) throw error;
+    return replaceMissingSession(preferredId, token);
+  }
+  // The exact-session lookup is another network boundary where ownership may change.
+  if (!selectionMatches(id, token)) return;
   replaceSessionOptions(sessions, preferredId);
   syncSessionUrl(runtime.sessionId);
   const selected = sessions.find((session) => session.id === runtime.sessionId);
@@ -940,17 +959,93 @@ function closeSessionMenu() {
   ui.sessionTrigger.focus();
 }
 
+/** Only the session endpoint's own 404 confirms that a replacement is appropriate. */
+function missingSession(error) {
+  return error.status === 404 && error.message === "Session not found";
+}
+
+/** Bind asynchronous view updates to the session and credentials that requested them. */
+function selectionMatches(id, token) {
+  return runtime.sessionId === id && ui.token.value === token;
+}
+
+/** Recovery also yields while an invocation owns the current conversation. */
+function stillSelected(id, token) {
+  return selectionMatches(id, token) && !runtime.busy;
+}
+
+/** Replace a confirmed missing session without touching the composer draft. */
+function replaceMissingSession(id, token) {
+  if (!stillSelected(id, token)) return;
+  const current = runtime.replacement;
+  if (current?.id === id && current.token === token) return current.promise;
+  const replacement = {id, token};
+  runtime.replacement = replacement;
+  replacement.promise = createSession(true, replacement).finally(() => {
+    if (runtime.replacement === replacement) runtime.replacement = null;
+  });
+  return replacement.promise;
+}
+
+/** Read the selected session only after the reload supervisor has replaced the process. */
+async function reconcileReload() {
+  const id = runtime.sessionId, token = ui.token.value;
+  const response = await api("/_harnest/generation", {cache: "no-store"});
+  const generation = await response.text();
+  if (generation === runtime.generation || !stillSelected(id, token)) return;
+  try {
+    await api(`${endpoints.sessions}/${encodeURIComponent(id)}`, {cache: "no-store"});
+    if (!stillSelected(id, token)) return;
+  } catch (error) {
+    if (!missingSession(error)) throw error;
+    if (!stillSelected(id, token)) return;
+    if (!await replaceMissingSession(id, token)) return;
+  }
+  if (ui.token.value !== token) return;
+  runtime.generation = generation;
+}
+
+/** Share foreground and background checks so a restart creates at most one replacement. */
+function checkReload() {
+  if (runtime.replacement) return runtime.replacement.promise;
+  if (!runtime.generation || !runtime.sessionId || runtime.busy) return;
+  if (!runtime.reloadCheck) {
+    runtime.reloadCheck = reconcileReload().finally(() => { runtime.reloadCheck = null; });
+  }
+  return runtime.reloadCheck;
+}
+
+/** Retry silently while the server is starting; keep the current session on transient failures. */
+function monitorReload() {
+  if (!runtime.generation) return;
+  const probe = () => {
+    if (!document.hidden) checkReload()?.catch(() => {});
+  };
+  window.setInterval(probe, 3000);
+  document.addEventListener("visibilitychange", probe);
+  window.addEventListener("focus", probe);
+}
+
 /** Create a session, preserving a just-submitted turn for implicit creation. */
-async function createSession(clearConversation = true) {
+async function createSession(clearConversation = true, missing = null) {
   setStatus("Creating session…");
   const response = await api(endpoints.sessions, { method: "POST", body: "{}" });
   const session = await response.json();
+  if (missing) {
+    if (!stillSelected(missing.id, missing.token)) return;
+    if (typeof harnestAgui !== "undefined") harnestAgui.forget(missing.id);
+  }
   setActiveSession(session.id, clearConversation);
   syncSessionUrl(session.id);
   closeLiveSocket();
   await loadSessions(session.id, clearConversation);
-  await loadTraces();
-  setStatus("Session ready", "ok");
+  // A user action during the refresh cancels the remainder of background recovery.
+  if (missing && !stillSelected(session.id, missing.token)) return;
+  await loadTraces(Boolean(missing));
+  // Trace loading must not publish recovery status over a newer session or credential choice.
+  if (missing && !stillSelected(session.id, missing.token)) return;
+  clearError();
+  setStatus(missing ? "Previous session expired. New session ready." : "Session ready", "ok");
   return session.id;
 }
 
@@ -959,27 +1054,37 @@ async function ensureSession() {
   return runtime.sessionId || createSession(false);
 }
 
+/** Render state only while its original session and credential context still owns the view. */
 async function loadSessionState(selected = null) {
+  const id = runtime.sessionId, token = ui.token.value;
+  // An empty selection clears state without making an unscoped request.
   if (!runtime.sessionId) {
     renderSessionState({});
     ui.sessionId.textContent = "Not created";
     return;
   }
   let session = selected;
+  // List responses may already include the selected state, avoiding a second request.
   if (!session) {
-    const response = await api(`${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}`, { method: "GET" });
+    const response = await api(`${endpoints.sessions}/${encodeURIComponent(id)}`, { method: "GET" });
     session = await response.json();
   }
+  // The picker or credentials may have changed while the session was being read.
+  if (!selectionMatches(id, token)) return;
   renderSessionState(session.state || {});
   ui.sessionId.textContent = session.id;
 }
 
-/** Restore the portable transcript owned by the selected session. */
+/** Restore the portable transcript only while its requesting selection still owns the view. */
 async function loadSessionMessages() {
+  const id = runtime.sessionId, token = ui.token.value;
+  // No selected session owns a transcript to fetch.
   if (!runtime.sessionId) return resetConversation();
-  const path = `${endpoints.sessions}/${encodeURIComponent(runtime.sessionId)}/messages`;
+  const path = `${endpoints.sessions}/${encodeURIComponent(id)}/messages`;
   const response = await api(path, { method: "GET" });
   const body = await response.json();
+  // A late response must never erase a newer conversation.
+  if (!selectionMatches(id, token)) return;
   renderSessionMessages(body.messages || []);
 }
 
@@ -1038,18 +1143,24 @@ function renderSessionState(state) {
   ui.sessionState.textContent = pretty(state || {});
 }
 
+/** Keep trace responses and errors scoped to the session and credentials that requested them. */
 async function loadTraces(silent = false) {
+  const id = runtime.sessionId, token = ui.token.value;
+  // An empty selection has no trace history to query.
   if (!runtime.sessionId) {
     renderTraces([]);
     return;
   }
   try {
-    const query = new URLSearchParams({ sessionId: runtime.sessionId });
+    const query = new URLSearchParams({ sessionId: id });
     const response = await api(`${endpoints.traces}?${query}`, { method: "GET" });
     const body = await response.json();
+    // Background recovery cannot replace traces after the user changes ownership.
+    if (!selectionMatches(id, token)) return;
     renderTraces(body.traces || []);
   } catch (error) {
-    if (!silent) throw error;
+    // Errors from an abandoned selection must not interrupt the current conversation.
+    if (!silent && selectionMatches(id, token)) throw error;
   }
 }
 
@@ -1703,6 +1814,17 @@ function closeLiveSocket() {
 
 async function submitMessage(event) {
   event.preventDefault();
+  if (!ui.input.value.trim() || runtime.busy || runtime.preparingSend) return;
+  runtime.preparingSend = true;
+  try {
+    // Validate before consuming the draft, including sends between two idle checks.
+    await checkReload();
+  } catch (error) {
+    showError(error);
+    return;
+  } finally {
+    runtime.preparingSend = false;
+  }
   const input = ui.input.value.trim();
   if (!input || runtime.busy) return;
   if (typeof harnestAgui !== "undefined" && harnestAgui.pending(runtime.sessionId)) { showError(new Error("Complete the pending AG-UI actions before sending another message.")); return; }
@@ -1934,6 +2056,7 @@ function setActiveSession(sessionId, clearConversation = true) {
 
 /** Restore session and normalize retired workspace links even when chat loading fails. */
 async function initialize() {
+  runtime.generation = document.body.dataset.reloadGeneration;
   selectTheme(storedTheme(), false);
   bindEvents();
   resizeComposer();
@@ -1944,8 +2067,10 @@ async function initialize() {
     await loadTraces(true);
     setStatus(runtime.sessionId ? "Ready" : "No session", "ok");
   } catch (error) {
+    if (runtime.generation) runtime.generation = "unverified";
     showError(error);
   }
+  monitorReload();
   // A failed chat-only load must not strand a deep link on the wrong workspace.
   try {
     await selectWorkspace(workspaceFromLocation());

@@ -1,5 +1,7 @@
 //go:build darwin && amd64 && harnest_release
 
+// Embeds the uv binary for release builds on macOS amd64.
+
 package uvbootstrap
 
 import _ "embed"

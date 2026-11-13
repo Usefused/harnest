@@ -1,3 +1,5 @@
+// Installs and reuses Studio's own Python environment, kept separate from every agent's.
+
 package main
 
 import (

@@ -1,4 +1,8 @@
+
+from _framework_testing import build_for_framework, bundle_for_framework
 import asyncio
+from harnest.frameworks.adk.mcp_tools import build_toolset
+from harnest.frameworks.adk.lowering import build_agent
 import importlib.util
 import inspect
 import json
@@ -17,22 +21,22 @@ from unittest.mock import patch
 from harnest.agent import tool
 from harnest.agent import Agent
 from harnest.orchestrator import AgentSource, Orchestrator
-from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEvalError, BundleExportError, BundleImportError, BundleSkillError, EvalSuite, bundle_agent, compile_agent, compile_artifact, discover_evals
+from harnest.bundle import BundleConventionError, BundleDuplicateError, BundleEvalError, BundleExportError, BundleImportError, BundleSkillError, EvalSuite, compile_agent, compile_artifact, discover_evals
 from harnest.model import LiteLLMModel
 from harnest.mcp import MCPClient
 from harnest.cli import load_orchestrator, main as cli_main
 from harnest.runtime import create_fastapi_app
 from harnest.server_config import DEFAULT_SERVER_YAML
+from harnest.frameworks.adk.evaluation import run_builtin_evals as _run_adk_evals
+from harnest.frameworks.langgraph.evaluation import run_builtin_evals as _run_langgraph_evals
+from harnest.frameworks.adk.evaluation import _adk_eval_output_filter
 from harnest.testing import (
     AgentTestError,
     _EvalResultCollector,
-    _adk_eval_output_filter,
     _eval_case_result_payload,
     _eval_config,
     _evaluate_eval_sets,
     _isolated_eval_logging,
-    _run_adk_evals,
-    _run_langgraph_evals,
     run_agent_tests,
 )
 from _session_store_fixture import write_session_store
@@ -101,6 +105,7 @@ def _fake_adk_modules(*, public_mcp_exports=True):
     models.BaseLlm = _recording_class("BaseLlm")
     lite_llm = types.ModuleType("google.adk.models.lite_llm")
     lite_llm.LiteLlm = _recording_class("LiteLlm")
+    lite_llm.LiteLLMClient = _recording_class("LiteLLMClient")
     tools_package = types.ModuleType("google.adk.tools")
     tools_package.__path__ = []
     mcp_tool = types.ModuleType("google.adk.tools.mcp_tool")
@@ -278,7 +283,7 @@ class AuthoringTests(unittest.TestCase):
             generate_content_config={"temperature": 0.2},
         )
         with patch.dict(sys.modules, modules):
-            built = parent.build()
+            built = build_agent(parent)
 
         self.assertEqual(built.kwargs["name"], "parent")
         self.assertEqual(built.kwargs["sub_agents"][0].kwargs["name"], "child")
@@ -290,7 +295,7 @@ class AuthoringTests(unittest.TestCase):
         definition = Agent(name="helper", model="gemini-test", instruction="Help.")
         with patch.dict(sys.modules, {"google.adk.agents": None}):
             with self.assertRaisesRegex(RuntimeError, "google-adk is required"):
-                definition.build()
+                build_agent(definition)
 
     def test_agent_preserves_string_and_custom_adk_models(self):
         class CustomModel:
@@ -300,16 +305,16 @@ class AuthoringTests(unittest.TestCase):
         modules = _fake_adk_modules()
         custom_model = CustomModel()
         with patch.dict(sys.modules, modules):
-            string_agent = Agent(
+            string_agent = build_agent(Agent(
                 name="string_model",
                 model="gemini-test",
                 instruction="Help.",
-            ).build()
-            custom_agent = Agent(
+            ))
+            custom_agent = build_agent(Agent(
                 name="custom_model",
                 model=custom_model,
                 instruction="Help.",
-            ).build()
+            ))
 
         self.assertEqual(string_agent.kwargs["model"], "gemini-test")
         self.assertIs(custom_agent.kwargs["model"], custom_model)
@@ -325,13 +330,13 @@ class AuthoringTests(unittest.TestCase):
 
         modules = _fake_adk_modules()
         with patch.dict(sys.modules, modules):
-            built = Agent(
+            built = build_agent(Agent(
                 name="structured",
                 model="gemini-test",
                 instruction="Answer structurally.",
                 input_schema=Question,
                 output_schema=Answer,
-            ).build()
+            ))
 
         # Harnest owns request validation because ADK flattens multipart input
         # before applying its node schema, which would reject portable media.
@@ -358,12 +363,12 @@ class AuthoringTests(unittest.TestCase):
             return Count(value=3)
 
         with patch.dict(sys.modules, _fake_adk_modules()):
-            built = Agent(
+            built = build_agent(Agent(
                 name="structured_tool",
                 model="gemini-test",
                 instruction="Count.",
                 tools=[count],
-            ).build()
+            ))
 
         runtime_tool = built.kwargs["tools"][0]
         self.assertEqual(runtime_tool(), {"value": 3})
@@ -384,12 +389,12 @@ class AuthoringTests(unittest.TestCase):
 
         modules = _fake_adk_modules()
         with patch.dict(sys.modules, modules):
-            built = Agent(
+            built = build_agent(Agent(
                 name="structured_metadata",
                 model="gemini-test",
                 instruction="Answer structurally.",
                 output_schema=Answer,
-            ).build()
+            ))
 
         self.assertNotIn("metadata", built.kwargs["output_schema"].model_fields)
         self.assertIn("metadata", Answer.model_fields)
@@ -407,12 +412,12 @@ class AuthoringTests(unittest.TestCase):
 
         modules = _fake_adk_modules()
         with patch.dict(sys.modules, modules):
-            built_model = connector.build()
-            built_agent = Agent(
+            built_model = build_for_framework(connector, "adk")
+            built_agent = build_agent(Agent(
                 name="neutral_agent",
                 model=connector,
                 instruction="Help.",
-            ).build()
+            ))
 
         expected = {
             "model": "openai/gpt-4.1-mini",
@@ -454,10 +459,11 @@ class AuthoringTests(unittest.TestCase):
         modules = _fake_adk_modules()
         with patch.dict(sys.modules, modules):
             self.assertEqual(
-                non_thinking.build().kwargs["reasoning_effort"], "none"
+                build_for_framework(non_thinking, "adk").kwargs["reasoning_effort"], "none"
             )
 
         chat_adapter = _recording_class("ChatLiteLLM")
+        chat_adapter.client = object()
         chat_adapter.model_fields = {
             "model": object(),
             "api_base": object(),
@@ -466,7 +472,7 @@ class AuthoringTests(unittest.TestCase):
         langgraph_module = types.ModuleType("langchain_litellm")
         langgraph_module.ChatLiteLLM = chat_adapter
         with patch.dict(sys.modules, {"langchain_litellm": langgraph_module}):
-            built = non_thinking.build_langgraph()
+            built = build_for_framework(non_thinking, "langgraph")
 
         self.assertEqual(
             built.kwargs,
@@ -496,7 +502,7 @@ class AuthoringTests(unittest.TestCase):
         connector = LiteLLMModel("anthropic/claude-sonnet-4")
         with patch.dict(sys.modules, {"google.adk.models.lite_llm": None}):
             with self.assertRaisesRegex(RuntimeError, "LiteLLM support"):
-                connector.build()
+                build_for_framework(connector, "adk")
 
     def test_mcp_environment_expansion_is_deferred(self):
         client = MCPClient.streamable_http("${TEST_MCP_URL}")
@@ -515,17 +521,17 @@ class AuthoringTests(unittest.TestCase):
                     timeout_seconds=12,
                 )
                 with patch.dict(os.environ, {"TEST_TOKEN": "secret"}):
-                    remote_toolset = remote.to_adk_toolset()
-                    sse_toolset = MCPClient.sse(
+                    remote_toolset = build_toolset(remote)
+                    sse_toolset = build_toolset(MCPClient.sse(
                         "${TEST_MCP_URL}/sse",
                         headers={"Authorization": "Bearer ${TEST_TOKEN}"},
                         timeout_seconds=7,
                         sse_read_timeout_seconds=420,
-                    ).to_adk_toolset()
+                    ))
                 with patch.dict(os.environ, {"TEST_TOKEN": "secret"}):
-                    stdio_toolset = MCPClient.stdio(
+                    stdio_toolset = build_toolset(MCPClient.stdio(
                         "uvx", "server", env={"API_TOKEN": "${TEST_TOKEN}"}
-                    ).to_adk_toolset()
+                    ))
 
         remote_connection = remote_toolset.kwargs["connection_params"]
         self.assertEqual(remote_connection.kwargs["url"], "https://mcp.example/mcp")
@@ -548,7 +554,7 @@ class AuthoringTests(unittest.TestCase):
     def test_mcp_supports_legacy_adk_connection_exports(self):
         modules = _fake_adk_modules(public_mcp_exports=False)
         with patch.dict(sys.modules, modules):
-            toolset = MCPClient.sse("https://mcp.example/sse").to_adk_toolset()
+            toolset = build_toolset(MCPClient.sse("https://mcp.example/sse"))
         self.assertEqual(
             toolset.kwargs["connection_params"].kwargs["url"],
             "https://mcp.example/sse",
@@ -557,16 +563,16 @@ class AuthoringTests(unittest.TestCase):
     def test_mcp_builds_langgraph_adapter_connections(self):
         remote = MCPClient.streamable_http(
             "https://mcp.example/mcp", timeout_seconds=12
-        ).to_langgraph_connection()
+        ).connection_options()
         sse = MCPClient.sse(
             "https://mcp.example/sse",
             headers={"Authorization": "Bearer test"},
             timeout_seconds=6,
             sse_read_timeout_seconds=480,
-        ).to_langgraph_connection()
+        ).connection_options()
         stdio = MCPClient.stdio(
             "uvx", "server", timeout_seconds=9
-        ).to_langgraph_connection()
+        ).connection_options()
 
         self.assertEqual(remote["transport"], "streamable_http")
         self.assertEqual(remote["timeout"], 12)
@@ -620,25 +626,25 @@ class AuthoringTests(unittest.TestCase):
             definition = Agent(name="root", model="gemini-test")
 
             with self.assertRaisesRegex(BundleConventionError, "instructions.*missing"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
             self._write(root / "instructions.md", "  Loaded from disk.\n")
             with patch.dict(sys.modules, _fake_adk_modules()):
-                built = bundle_agent(anchor, definition)
-                overridden = bundle_agent(
+                built = bundle_for_framework(anchor, definition, framework="adk")
+                overridden = bundle_for_framework(
                     anchor,
                     Agent(
                         name="root",
                         model="gemini-test",
                         instruction="Explicit override.",
-                    ),
+                    ), framework="adk",
                 )
 
         self.assertEqual(built.kwargs["instruction"], "Loaded from disk.")
         self.assertEqual(overridden.kwargs["instruction"], "Explicit override.")
 
         with self.assertRaisesRegex(ValueError, "instruction is unresolved"):
-            definition.build()
+            build_agent(definition)
 
     def test_compile_agent_uses_explicit_compiler_namespace_imports(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -970,6 +976,33 @@ class AuthoringTests(unittest.TestCase):
                         self.assertEqual(client.get(path).status_code, 404)
                     self.assertEqual(client.get("/agent").json()["resources"], [])
                     self.assertEqual(client.post("/responses", json={"input": "hello"}).status_code, 200)
+
+    def test_required_grants_apply_to_harnest_routes_on_native_adk_server(self):
+        """The same server requires a Harnest grant and accepts a native ADK run."""
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "authored"
+            output = Path(directory) / "compiled"
+            self._write(root / "agent.py", _deterministic_adk_source(advanced=True))
+            self._write(root / "instructions.md", "Answer clearly.\n")
+            self._write(root / "agent-card.yaml", json.dumps({"name": "Root", "description": "Test agent"}))
+            compile_artifact(root, output, mode="advanced")
+            app = create_fastapi_app(output, bind_host="testserver", agent_principal_required=True)
+            with TestClient(app) as client:
+                self.assertEqual(client.post("/responses", json={"input": "hi"}).status_code, 403)
+                session = client.post(
+                    "/apps/root/users/test-user/sessions", json={"sessionId": "native"}
+                )
+                self.assertEqual(session.status_code, 200, session.text)
+                response = client.post("/run", json={
+                    "appName": "root", "userId": "test-user", "sessionId": "native",
+                    "newMessage": {"role": "user", "parts": [{"text": "hello"}]},
+                })
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIn("official response", response.text)
+                self.assertIn("/run_sse", client.get("/openapi.json").json()["paths"])
+                self.assertIn("/run_live", {route.path for route in client.app.routes})
 
     def test_advanced_adk_fastapi_reuses_official_route_surface(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1484,7 +1517,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
 
             with patch(
-                "harnest.testing._run_adk_evals", return_value=0
+                "harnest.frameworks.adk.evaluation.run_builtin_evals", return_value=0
             ) as eval_runner:
                 exit_code = run_agent_tests(root, include_evals=True)
 
@@ -1526,7 +1559,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
 
             with patch(
-                "harnest.testing._run_langgraph_evals", return_value=0
+                "harnest.frameworks.langgraph.evaluation.run_builtin_evals", return_value=0
             ) as eval_runner:
                 exit_code = run_agent_tests(
                     root, include_evals=True, framework="langgraph"
@@ -1569,7 +1602,7 @@ raise SystemExit(main(sys.argv[1:]))
             )
 
             with patch(
-                "harnest.testing._run_adk_evals", return_value=0
+                "harnest.frameworks.adk.evaluation.run_builtin_evals", return_value=0
             ) as eval_runner:
                 output = StringIO()
                 errors = StringIO()
@@ -1966,7 +1999,7 @@ raise SystemExit(main(sys.argv[1:]))
             ), patch(
                 "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
-                "harnest.testing._adk_eval_output_filter"
+                "harnest.frameworks.adk.evaluation._adk_eval_output_filter"
             ), patch(
                 "harnest.testing._evaluate_eval_sets",
                 side_effect=RuntimeError(
@@ -2043,7 +2076,7 @@ raise SystemExit(main(sys.argv[1:]))
             ), patch(
                 "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
-                "harnest.testing._adk_eval_output_filter"
+                "harnest.frameworks.adk.evaluation._adk_eval_output_filter"
             ), patch(
                 "harnest.testing._eval_case_result_payload",
                 return_value=case_payload,
@@ -2096,7 +2129,7 @@ raise SystemExit(main(sys.argv[1:]))
             ), patch(
                 "harnest.testing._eval_config", return_value=config
             ), patch(
-                "harnest.eval_langgraph.langgraph_eval_agent_module", eval_module
+                "harnest.frameworks.langgraph.evaluation.langgraph_eval_agent_module", eval_module
             ), patch("harnest.testing._evaluate_eval_sets"):
                 stdout = StringIO()
                 with redirect_stdout(stdout):
@@ -2268,7 +2301,7 @@ raise SystemExit(main(sys.argv[1:]))
             },
         )
         case = result["evalSetResults"][0]["evalCaseResults"][0]
-        self.assertTrue(case["sessionId"].startswith("___eval___session___"))
+        self.assertTrue(case["sessionId"].startswith(("___eval___session___", "adk-eval-session-")))
         self.assertEqual(case["userId"], "eval-user")
         self.assertIn("sessionDetails", case)
         invocation = case["evalMetricResultPerInvocation"][0]
@@ -2620,13 +2653,13 @@ raise SystemExit(main(sys.argv[1:]))
 
             modules = _fake_adk_modules()
             with patch.dict(sys.modules, modules):
-                built = bundle_agent(
+                built = bundle_for_framework(
                     anchor,
                     Agent(
                         name="root",
                         model="gemini-test",
                         instruction="Delegate.",
-                    ),
+                    ), framework="adk",
                 )
 
         self.assertEqual(
@@ -2671,9 +2704,9 @@ raise SystemExit(main(sys.argv[1:]))
             )
 
             with patch.dict(sys.modules, _fake_adk_modules()):
-                built = bundle_agent(
+                built = bundle_for_framework(
                     anchor,
-                    Agent(name="root", model="gemini-test", instruction="Delegate."),
+                    Agent(name="root", model="gemini-test", instruction="Delegate."), framework="adk",
                 )
 
         researcher = built.kwargs["sub_agents"][0]
@@ -2699,9 +2732,9 @@ raise SystemExit(main(sys.argv[1:]))
                 )
 
             with patch.dict(sys.modules, _fake_adk_modules()):
-                built = bundle_agent(
+                built = bundle_for_framework(
                     anchor,
-                    Agent(name="root", model="gemini-test"),
+                    Agent(name="root", model="gemini-test"), framework="adk",
                 )
 
         self.assertEqual(built.kwargs["instruction"], "Use relevant skills.")
@@ -2726,7 +2759,7 @@ raise SystemExit(main(sys.argv[1:]))
             skill.mkdir(parents=True)
 
             with self.assertRaisesRegex(BundleSkillError, "uppercase SKILL.md"):
-                bundle_agent(anchor, Agent(name="root", model="gemini-test"))
+                bundle_for_framework(anchor, Agent(name="root", model="gemini-test"), framework="adk")
 
             self._write(
                 skill / "SKILL.md",
@@ -2734,13 +2767,13 @@ raise SystemExit(main(sys.argv[1:]))
             )
             with patch.dict(sys.modules, _fake_adk_modules()):
                 with self.assertRaisesRegex(BundleDuplicateError, "skill tools"):
-                    bundle_agent(
+                    bundle_for_framework(
                         anchor,
                         Agent(
                             name="root",
                             model="gemini-test",
                             tools=[load_skill],
-                        ),
+                        ), framework="adk",
                     )
 
     def test_bundle_agent_rejects_symlinks_inside_skills(self):
@@ -2761,7 +2794,7 @@ raise SystemExit(main(sys.argv[1:]))
             (references / "outside.md").symlink_to(outside)
 
             with self.assertRaisesRegex(BundleSkillError, "cannot be a symlink"):
-                bundle_agent(anchor, Agent(name="root", model="gemini-test"))
+                bundle_for_framework(anchor, Agent(name="root", model="gemini-test"), framework="adk")
 
     def test_discover_evals_validates_sorted_test_only_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2786,9 +2819,9 @@ raise SystemExit(main(sys.argv[1:]))
 
             with patch.dict(sys.modules, _fake_adk_modules()):
                 suite = discover_evals(anchor)
-                built = bundle_agent(
+                built = bundle_for_framework(
                     anchor,
-                    Agent(name="root", model="gemini-test"),
+                    Agent(name="root", model="gemini-test"), framework="adk",
                 )
 
         self.assertEqual(
@@ -2850,7 +2883,7 @@ raise SystemExit(main(sys.argv[1:]))
             definition = Agent(name="root", model="gemini-test", instruction="Help.")
 
             with self.assertRaisesRegex(BundleExportError, "must export 'search'"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
             self._write(
                 resource,
@@ -2865,14 +2898,14 @@ raise SystemExit(main(sys.argv[1:]))
                 "    return 'extra'\n",
             )
             with self.assertRaisesRegex(BundleExportError, "additional tool"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
             self._write(resource, "raise RuntimeError('broken resource')\n")
             with self.assertRaisesRegex(
                 BundleImportError,
                 "RuntimeError: broken resource",
             ):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
     def test_bundle_agent_reports_duplicate_resources(self):
         @tool
@@ -2901,7 +2934,7 @@ raise SystemExit(main(sys.argv[1:]))
                 tools=[search],
             )
             with self.assertRaisesRegex(BundleDuplicateError, "duplicate tool 'search'"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
     def test_bundle_agent_enforces_anchor_and_nested_conventions(self):
         definition = Agent(name="root", model="gemini-test", instruction="Help.")
@@ -2910,14 +2943,14 @@ raise SystemExit(main(sys.argv[1:]))
             wrong_anchor = root / "main.py"
             self._write(wrong_anchor, "# wrong anchor\n")
             with self.assertRaisesRegex(BundleConventionError, "named agent.py"):
-                bundle_agent(wrong_anchor, definition)
+                bundle_for_framework(wrong_anchor, definition, framework="adk")
 
             anchor = root / "agent.py"
             self._write(anchor, "# bundle anchor\n")
             self._write(root / "instructions.md", "Bundled instructions.\n")
             (root / "subagents" / "researcher").mkdir(parents=True)
             with self.assertRaisesRegex(BundleConventionError, "must contain agent.py"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
     def test_bundle_agent_rejects_symlinked_resources_and_nested_anchors(self):
         definition = Agent(name="root", model="gemini-test", instruction="Help.")
@@ -2940,7 +2973,7 @@ raise SystemExit(main(sys.argv[1:]))
             (tools / "escaped.py").symlink_to(outside_tool)
 
             with self.assertRaisesRegex(BundleConventionError, "cannot be a symlink"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2959,7 +2992,7 @@ raise SystemExit(main(sys.argv[1:]))
             (nested / "agent.py").symlink_to(outside_agent)
 
             with self.assertRaisesRegex(BundleConventionError, "cannot be a symlink"):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
     def test_bundle_agent_requires_filesystem_and_agent_names_to_match(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2979,7 +3012,7 @@ raise SystemExit(main(sys.argv[1:]))
                 BundleExportError,
                 "must have name 'researcher'",
             ):
-                bundle_agent(anchor, definition)
+                bundle_for_framework(anchor, definition, framework="adk")
 
 
 if __name__ == "__main__":

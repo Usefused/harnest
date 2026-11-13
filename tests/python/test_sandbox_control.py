@@ -11,13 +11,15 @@ from unittest.mock import Mock
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.models import LlmResponse
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
+from harnest.frameworks.adk.sandbox import code_executor
 from harnest.context import (
     ContextUnavailableError, activate_context, create_agent_context,
     optional_active_context, revoke_context,
 )
 from harnest.sandbox import Sandbox
 from harnest.sandbox_adapters import execution_context
-from harnest.sandbox_adk import _CodeContinuationProcessor
+from harnest.frameworks.adk.sandbox import _CodeContinuationProcessor
 from harnest.sandbox_control import (
     SandboxCancelledError, SandboxControl, current_control, execution_control,
 )
@@ -74,8 +76,8 @@ class SandboxControlTests(unittest.TestCase):
         """Do not build a provider after managed authority has been revoked."""
         factory = Mock()
         definition = Sandbox.provider(factory)
-        tool = definition.to_langchain_tool()
-        executor = definition.to_adk_executor()
+        tool = sandbox_tool(definition)
+        executor = code_executor(definition)
         active = _managed()
         with activate_context(active):
             revoke_context(active)
@@ -143,7 +145,7 @@ class SandboxAsyncControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_langgraph_call_never_executes_after_unlock(self):
         """Native async cancellation revokes the worker waiting for admission."""
         backend = QueuedBackend()
-        tool = Sandbox.provider(lambda: backend).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(lambda: backend))
         task = asyncio.create_task(tool.ainvoke({"code": "write_later()"}))
         try:
             await self._entered(backend)
@@ -157,7 +159,7 @@ class SandboxAsyncControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_revoked_queued_call_never_executes_after_unlock(self):
         """Revalidate shared lifetime after the queue releases its lock."""
         backend = QueuedBackend()
-        tool = Sandbox.provider(lambda: backend).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(lambda: backend))
         active = _managed()
         with activate_context(active):
             task = asyncio.create_task(tool.ainvoke({"code": "write_later()"}))
@@ -173,7 +175,7 @@ class SandboxAsyncControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_adk_processor_cancellation_revokes_worker(self):
         """Propagate native ADK generator cancellation into its to_thread worker."""
         backend = QueuedBackend()
-        executor = Sandbox.provider(lambda: backend).to_adk_executor()
+        executor = code_executor(Sandbox.provider(lambda: backend))
         invocation = SimpleNamespace(agent=SimpleNamespace(code_executor=executor))
 
         class NativeProcessor:
@@ -215,7 +217,7 @@ class SandboxAsyncControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_adk_generator_close_revokes_inherited_worker_token(self):
         """An early event-stream close revokes workers even without task cancellation."""
         backend = QueuedBackend()
-        executor = Sandbox.provider(lambda: backend).to_adk_executor()
+        executor = code_executor(Sandbox.provider(lambda: backend))
         invocation = SimpleNamespace(agent=SimpleNamespace(code_executor=executor))
         captured = []
 

@@ -43,27 +43,15 @@ class SandboxRegistry:
     @classmethod
     def from_definition(cls, root: Any, framework: str) -> "SandboxRegistry":
         """Collect resolved grants across graphs and children, rejecting ambiguity."""
-        from .agent import AgentDefinition, _AdvancedAgentDefinition
-        from .graph import Graph
+        from .agent import AgentDefinition
+        from .agent_tree import walk_agent_tree
 
         grants = {}
-        seen = set()
-        pending = [root]
-        while pending:
-            value = pending.pop()
-            if id(value) in seen:
-                continue
-            seen.add(id(value))
-            if isinstance(value, _AdvancedAgentDefinition):
-                value = value.target
+        for value in walk_agent_tree(root):
             if isinstance(value, AgentDefinition):
                 _record_grants(grants, value.name, dict(assigned_sandboxes(value)))
-                pending.extend(value.subagents)
-            elif isinstance(value, Graph):
-                pending.extend(value.nodes.values())
             elif callable(getattr(value, "run_async", None)):
                 _record_grants(grants, value.name, {})
-                pending.extend(getattr(value, "sub_agents", ()))
         return cls(grants, framework=framework)
 
     async def aclose(self) -> None:

@@ -31,15 +31,12 @@ async def modern_tools(configured: Any, framework: str, *, server_name: str | No
 def _framework_tools(configured: Any, framework: str, schemas: list[Any], server_name: str | None, interceptors: Any) -> list[Any]:
     """Keep framework projection separate from protocol and catalogue selection."""
 
-    calls = ToolCalls(configured, framework, schemas)
-    if framework == "adk":
-        return [_adk_tool(schema, calls) for schema in schemas]
-    from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+    from .frameworks.registry import get_framework
 
-    return [convert_mcp_tool_to_langchain_tool(
-        calls, schema, server_name=server_name, tool_name_prefix=True,
-        tool_interceptors=interceptors,
-    ) for schema in schemas]
+    calls = ToolCalls(configured, framework, schemas)
+    return get_framework(framework).mcp_tools(
+        calls, schemas, server_name=server_name, interceptors=interceptors
+    )
 
 
 async def _tool_pages(session: Any, limit: int) -> list[Any]:
@@ -90,20 +87,3 @@ class ToolCalls:
         except Exception as error:
             failure = _resource_failure(error, "tools/call")
         raise failure from None
-
-
-def _adk_tool(schema: Any, calls: ToolCalls) -> Any:
-    """Reuse ADK schema conversion while replacing only its initialized transport."""
-
-    from google.adk.tools.mcp_tool.mcp_tool import McpTool
-
-    class HTTPTool(McpTool):
-        """Governance remains in the enclosing toolset and invocation facade."""
-
-        async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> Any:
-            """Return MCP content without opening a 2025 session."""
-
-            result = await calls.call_tool(schema.name, args)
-            return result.model_dump(mode="json", by_alias=True, exclude_none=True)
-
-    return HTTPTool(mcp_tool=schema, mcp_session_manager=None)

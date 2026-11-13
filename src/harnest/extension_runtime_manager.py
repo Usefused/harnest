@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .frameworks.registry import require_framework
 from ._exception_notes import merge_cleanup_failure as _merge_failure
 
 import asyncio
@@ -43,8 +44,7 @@ class ExtensionRuntimeManager:
     ) -> None:
         """Validate dependencies without initializing extension-owned resources."""
 
-        if framework not in {"adk", "langgraph"}:
-            raise ValueError("extension runtime framework must be adk or langgraph")
+        require_framework(framework, "extension runtime framework")
         _require_text(root_agent_name, "root agent name")
         stores = {} if custom_stores is None else custom_stores
         if not isinstance(stores, Mapping):

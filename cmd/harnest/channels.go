@@ -1,3 +1,5 @@
+// `harnest add channel` and `harnest channels`: connect messaging platforms through a channel extension.
+
 package main
 
 import (

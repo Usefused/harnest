@@ -1,3 +1,5 @@
+// `harnest add`: the parent command, `add mcp`, and the shared scaffolds behind each `harnest add <kind> NAME`.
+
 package main
 
 import (
@@ -12,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 var agentResourceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -33,9 +36,10 @@ type agentResourceScaffold struct {
 	Directory   string
 	Description string
 	ManagedOnly bool
-	ADKOnly     bool
-	Source      func(string) string
-	Next        func(string) string
+	// RequiresCapability names a framework capability the scaffold needs.
+	RequiresCapability frameworks.Capability
+	Source             func(string) string
+	Next               func(string) string
 }
 
 type addMCPOptions struct {
@@ -265,7 +269,7 @@ func validateAgentResourceCompatibility(
 			scaffold.Kind,
 		)
 	}
-	if scaffold.ADKOnly && framework != "adk" {
+	if !scaffoldSupportedBy(scaffold, framework) {
 		return fmt.Errorf(
 			"harnest add %s currently requires the adk framework; LangGraph subagents must be explicit Graph nodes in agent.py",
 			scaffold.Kind,
@@ -330,7 +334,7 @@ func agentResourceScaffolds() []agentResourceScaffold {
 			},
 		},
 		{
-			Kind: "subagent", Directory: "subagents", ManagedOnly: true, ADKOnly: true,
+			Kind: "subagent", Directory: "subagents", ManagedOnly: true, RequiresCapability: frameworks.RootAgentSubagents,
 			Description: "Add a managed ADK subagent",
 			Source:      subagentResourceSource,
 			Next: func(string) string {
@@ -454,4 +458,14 @@ def client() -> MCPClient:
         prefix=%s,
     )
 `, strings.ReplaceAll(name, "_", " "), constructor, strconv.Quote(options.URL), headers, strconv.Quote(name))
+}
+
+// scaffoldSupportedBy reports whether the selected framework declares the
+// capability a scaffold needs; scaffolds without a requirement fit every framework.
+func scaffoldSupportedBy(scaffold agentResourceScaffold, framework string) bool {
+	if scaffold.RequiresCapability == "" {
+		return true
+	}
+	selected, ok := frameworks.Lookup(framework)
+	return ok && selected.Supports(scaffold.RequiresCapability)
 }

@@ -1,3 +1,5 @@
+// Writes an agent executable: the native launcher with the runtime and agent appended as a zip payload.
+
 package agentpack
 
 import (

@@ -45,8 +45,7 @@ EXTENSION_CAPABILITIES = frozenset(
         "lifecycle.model",
         "lifecycle.skills",
         "lifecycle.tool",
-        "native.adk",
-        "native.langgraph",
+        "framework.extension",
         "policy.output",
         "sandbox.provider",
         "storage.assets",
@@ -169,14 +168,23 @@ def discover_extensions(
 ) -> tuple[ExtensionDescriptor, ...]:
     """Discover extensions in dependency order with lexical tie-breaking."""
 
-    root = Path(directory)
-    _require_optional_directory(root, label="extensions")
+    return _discover_descriptors(Path(directory))
+
+
+def _discover_descriptors(
+    root: Path, *, legacy: bool = False, upgrade: bool = False
+) -> tuple[ExtensionDescriptor, ...]:
+    """Share descriptor validation while allowing only upgrade readers to map old names."""
+
+    _require_optional_directory(root, label="plugins" if legacy else "extensions")
     if not root.exists():
         return ()
     descriptors = tuple(
         descriptor
         for extension_directory in _extension_directories(root)
-        if (descriptor := _load_optional_descriptor(extension_directory)) is not None
+        if (descriptor := _load_optional_descriptor(
+            extension_directory, legacy=legacy, upgrade=upgrade
+        )) is not None
     )
     _validate_casefold_names(descriptors)
     _validate_dependency_projects(descriptors)
@@ -199,18 +207,18 @@ def discover_application_extensions(root: str | Path) -> tuple[ExtensionDescript
 def discover_legacy_extensions(directory: str | Path) -> tuple[ExtensionDescriptor, ...]:
     """Read removed extension packages solely for ``harnest upgrade``."""
 
-    root = Path(directory)
-    _require_optional_directory(root, label="plugins")
-    if not root.exists():
+    return _discover_descriptors(Path(directory), legacy=True, upgrade=True)
+
+
+def discover_upgrade_application_extensions(root: Path) -> tuple[ExtensionDescriptor, ...]:
+    """Inspect old capability declarations without relaxing compiler validation."""
+
+    from .application_layout import lifecycle_directory
+
+    directory = root / "extensions"
+    if lifecycle_directory(root) == directory:
         return ()
-    descriptors = tuple(
-        descriptor
-        for child in _extension_directories(root)
-        if (descriptor := _load_optional_descriptor(child, legacy=True)) is not None
-    )
-    _validate_casefold_names(descriptors)
-    _validate_dependency_projects(descriptors)
-    return _dependency_order(descriptors)
+    return _discover_descriptors(directory, upgrade=True)
 
 
 def validate_extension_dependencies(
@@ -296,7 +304,7 @@ def _extension_directories(root: Path) -> tuple[Path, ...]:
 
 
 def _load_optional_descriptor(
-    directory: Path, *, legacy: bool = False
+    directory: Path, *, legacy: bool = False, upgrade: bool = False
 ) -> ExtensionDescriptor | None:
     """Load one canonical manifest or a legacy manifest for upgrade inspection."""
 
@@ -322,7 +330,20 @@ def _load_optional_descriptor(
             f"Harnest Extension manifest must be a regular file: {path}"
         )
     document = _load_manifest(path)
+    if upgrade:
+        document = _upgrade_capability_names(document)
     return _descriptor_from_document(directory, document, legacy=legacy)
+
+
+def _upgrade_capability_names(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Normalize retired declarations for read-only upgrade validation, not execution."""
+
+    from .upgrade_framework_names import CAPABILITY_RENAMES
+
+    names = _require_string_list(document.get("capabilities", []), label="capabilities")
+    _reject_duplicates(names, label="Harnest Extension capabilities")
+    capabilities = list(dict.fromkeys(CAPABILITY_RENAMES.get(name, name) for name in names))
+    return {**document, "capabilities": capabilities}
 
 
 def _load_manifest(path: Path) -> Mapping[str, Any]:

@@ -13,14 +13,11 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import importlib.util
-import inspect
 from io import StringIO
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
-import tempfile
 from typing import Any, Mapping
 import uuid
 
@@ -35,15 +32,22 @@ from .agent_principal import (
     resolve_nested_agent_principal,
     validate_agent_principal_runtime,
 )
-from .runtime_auth import Authenticator, install_authentication
+from .runtime_auth import Authenticator
 from .runtime_contract import (
     AgentInfo, InvocationRequest, InvocationResult, NoCustomerFacingOutputError,
     ResponseRequest, RuntimeDriver, RuntimeEvent, SessionConflictError,
     SessionMessage, SessionRecord,
 )
-from .session import ADKSessionStorage, SessionStore
+from .frameworks.base import (
+    FrameworkConventionError,
+    RuntimeSessions,
+    UnknownFrameworkError,
+)
+from .frameworks.registry import get_framework
+from .session import SessionStore
 from .server_config import (
     DEFAULT_SERVER_CONFIG,
+    HTTPServerConfig,
     SERVER_CONFIG_FILENAME,
     ServerConfigError,
     load_server_config,
@@ -64,11 +68,10 @@ class AgentExecutionTimeout(RuntimeError):
 
 
 def _apply_observability_defaults(framework: str) -> None:
-    if framework == "adk":
-        os.environ.setdefault(
-            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "NO_CONTENT"
-        )
-        os.environ.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    """Apply the privacy-safe telemetry defaults the selected framework declares."""
+
+    for name, value in get_framework(framework).observability_defaults().items():
+        os.environ.setdefault(name, value)
 
 
 def load_compiled_application(artifact: str | Path) -> Any:
@@ -121,16 +124,16 @@ def _import_compiled_application(entrypoint: Path) -> Any:
     return application
 
 
-def load_compiled_app(artifact: str | Path) -> Any:
-    """Load the native ADK App from an ADK compiled artifact."""
+def load_framework_app(artifact: str | Path) -> Any:
+    """Load the framework-specific application object from a compiled artifact."""
 
     application = load_compiled_application(artifact)
     _apply_observability_defaults(application.framework)
-    if application.framework != "adk" or application.native_app is None:
+    if application.framework_app is None:
         _release_application_extensions(application)
         release_authored_library(Path(artifact).resolve() / "source")
-        raise AgentRuntimeError("compiled application does not contain an ADK App")
-    return application.native_app
+        raise AgentRuntimeError("compiled application does not expose a framework-specific application")
+    return application.framework_app
 
 
 def load_compiled_agent(artifact: str | Path) -> Any:
@@ -174,8 +177,7 @@ def _runtime_driver(
     *,
     card: Mapping[str, Any] | None = None,
     extra_endpoints: Mapping[str, str] | None = None,
-    adk_session_service: Any | None = None,
-    langgraph_session_store: SessionStore | None = None,
+    sessions: RuntimeSessions | None = None,
     manage_credential_provider: bool = True,
     enable_cron: bool = True,
 ) -> Any:
@@ -185,22 +187,17 @@ def _runtime_driver(
     extension_manager = _extension_runtime_manager(
         application, continuation_runtime=continuations
     )
-    if application.framework == "adk":
-        driver = _adk_runtime_driver(
-            application,
-            card=card,
-            extra_endpoints=extra_endpoints,
-            session_service=adk_session_service,
-            extension_manager=extension_manager,
-        )
-    elif application.framework == "langgraph":
-        driver = _langgraph_runtime_driver(
-            application,
-            card=card,
-            session_store=langgraph_session_store,
-        )
-    else:
-        raise AgentRuntimeError(f"unsupported framework: {application.framework}")
+    try:
+        adapter = get_framework(application.framework)
+    except UnknownFrameworkError as exc:
+        raise AgentRuntimeError(f"unsupported framework: {application.framework}") from exc
+    driver = adapter.create_runtime_driver(
+        application,
+        card=card,
+        extra_endpoints=extra_endpoints,
+        sessions=sessions if sessions is not None else RuntimeSessions(),
+        extension_manager=extension_manager,
+    )
     if application.mode == "managed" and application.kind == "agent":
         from .dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 
@@ -306,65 +303,6 @@ def _a2a_task_store(application: Any) -> Any | None:
     return HarnestA2ATaskStore(
         persistence,
         application_id=application.name,
-    )
-
-
-def _adk_runtime_driver(
-    application: Any,
-    *,
-    card: Mapping[str, Any] | None,
-    extra_endpoints: Mapping[str, str] | None,
-    session_service: Any | None,
-    extension_manager: Any | None = None,
-) -> Any:
-    """Give one ADK service sole ownership of native session persistence."""
-
-    from .checkpoint import ADKStore
-    from .runtime_adk import ADKRuntimeDriver
-
-    capabilities = application.runtime_capabilities
-    provider = capabilities.checkpointer
-    if isinstance(provider, ADKStore):
-        if session_service is not None:
-            raise AgentRuntimeError(
-                "ADKStore cannot be combined with an injected ADK session service"
-            )
-        session_service = provider.session_service
-    if capabilities.session_store is not None and session_service is None:
-        from .session_adk import create_adk_session_service
-
-        session_service = create_adk_session_service(capabilities.session_store)
-    return ADKRuntimeDriver(
-        application,
-        card=card,
-        extra_endpoints=extra_endpoints,
-        session_service=session_service,
-        extension_manager=extension_manager,
-    )
-
-
-def _langgraph_runtime_driver(
-    application: Any,
-    *,
-    card: Mapping[str, Any] | None,
-    session_store: SessionStore | None,
-) -> Any:
-    """Resolve compiled versus host-injected LangGraph session ownership."""
-
-    from .runtime_langgraph import LangGraphRuntimeDriver
-
-    lifecycle_store = application.runtime_capabilities.session_store
-    if lifecycle_store is not None and session_store is not None:
-        raise AgentRuntimeError(
-            "@lifecycle.storage.sessions cannot be combined with an injected "
-            "LangGraph session store"
-        )
-    return LangGraphRuntimeDriver(
-        application,
-        card=card,
-        session_store=(
-            lifecycle_store if lifecycle_store is not None else session_store
-        ),
     )
 
 
@@ -527,210 +465,6 @@ async def _run_agent_message(
             telemetry.force_flush()
 
 
-def _create_adk_fastapi_app(
-    artifact: str | Path,
-    *,
-    application: Any,
-    bind_host: str,
-    session_service: Any,
-    manage_credential_provider: bool = True,
-) -> Any:
-    """Create ADK's official app without inspecting private route closures."""
-
-    try:
-        from google.adk.cli.fast_api import get_fast_api_app
-        from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
-    except ImportError as exc:
-        raise AgentRuntimeError(
-            "Google ADK's FastAPI server dependencies are required"
-        ) from exc
-
-    compiled_app = application.native_app
-    if compiled_app is None:
-        raise AgentRuntimeError("compiled ADK application does not contain an App")
-    card = load_agent_card(artifact)
-    app_name = compiled_app.root_agent.name
-
-    class CompiledAgentLoader(BaseAgentLoader):
-        def load_agent(self, agent_name: str) -> Any:
-            if agent_name != app_name:
-                raise ValueError(f"unknown compiled agent: {agent_name}")
-            return compiled_app
-
-        def list_agents(self) -> list[str]:
-            return [app_name]
-
-        def list_agents_detailed(self) -> list[dict[str, Any]]:
-            return [
-                {
-                    "name": app_name,
-                    "display_name": card.get("name"),
-                    "description": getattr(compiled_app.root_agent, "description", ""),
-                    "type": type(compiled_app.root_agent).__name__,
-                }
-            ]
-
-    runtime_root = Path(tempfile.mkdtemp(prefix="harnest-adk-state-"))
-    agents_dir = runtime_root / "adk_agents"
-    (agents_dir / app_name).mkdir(parents=True)
-
-    @asynccontextmanager
-    async def lifespan(_app: Any) -> AsyncIterator[None]:
-        """Keep ADK host state inside the final runtime pipeline lifetime."""
-
-        from .lifecycle_runtime import (
-            _close_credential_provider,
-            _start_credential_provider,
-        )
-
-        provider = application.credential_provider
-        provider_started = False
-        try:
-            # Direct construction has no outer Harnest pipeline. Production
-            # serving disables this owner so the composed pipeline starts the
-            # same provider between plugins and extension resources.
-            if manage_credential_provider and provider is not None:
-                await _start_credential_provider(provider)
-                provider_started = True
-            yield
-        finally:
-            try:
-                if provider_started:
-                    await _close_credential_provider(provider)
-            finally:
-                shutil.rmtree(runtime_root, ignore_errors=True)
-
-    kwargs: dict[str, Any] = {
-        "agents_dir": str(agents_dir),
-        "agent_loader": CompiledAgentLoader(),
-        "artifact_service_uri": "memory://",
-        "memory_service_uri": "memory://",
-        "use_local_storage": False,
-        "web": False,
-        "a2a": False,
-        "host": bind_host,
-        "lifespan": lifespan,
-        "reload_agents": False,
-        "auto_create_session": False,
-    }
-    if "bind_host" in inspect.signature(get_fast_api_app).parameters:
-        kwargs["bind_host"] = bind_host
-    credential_service = None
-    if application.credential_provider is not None:
-        from .credentials_adk import adk_credential_service
-
-        credential_service = adk_credential_service(application.credential_provider)
-    try:
-        # Without a provider, retain ADK's in-memory warning because that
-        # credential durability choice remains user-actionable.
-        if session_service is None:
-            return _build_adk_fastapi_app(
-                get_fast_api_app,
-                session_service_uri="memory://",
-                credential_service=credential_service,
-                kwargs=kwargs,
-            )
-        from .session_adk import register_adk_session_service
-
-        with register_adk_session_service(session_service) as service_uri:
-            return _build_adk_fastapi_app(
-                get_fast_api_app,
-                session_service_uri=service_uri,
-                credential_service=credential_service,
-                kwargs=kwargs,
-            )
-    except Exception:
-        shutil.rmtree(runtime_root, ignore_errors=True)
-        raise
-
-
-def _build_adk_fastapi_app(
-    factory: Any,
-    *,
-    session_service_uri: str,
-    credential_service: Any,
-    kwargs: Mapping[str, Any],
-) -> Any:
-    """Use ADK's supported credential seam or its public server constructor."""
-
-    if credential_service is None:
-        return factory(session_service_uri=session_service_uri, **kwargs)
-    if "credential_service" in inspect.signature(factory).parameters:
-        return factory(
-            session_service_uri=session_service_uri,
-            credential_service=credential_service,
-            **kwargs,
-        )
-    # ADK 2.8's convenience factory hardcodes in-memory credentials. ApiServer
-    # exposes the service explicitly, so compose the equivalent production-safe
-    # surface until the convenience factory gains that parameter.
-    return _build_adk_api_server(
-        session_service_uri=session_service_uri,
-        credential_service=credential_service,
-        kwargs=kwargs,
-    )
-
-
-def _build_adk_api_server(
-    *,
-    session_service_uri: str,
-    credential_service: Any,
-    kwargs: Mapping[str, Any],
-) -> Any:
-    """Construct ADK's public ApiServer with non-persisting credentials."""
-
-    from google.adk.cli import fast_api as adk_fast_api
-
-    agents_dir = str(kwargs["agents_dir"])
-    loader = kwargs["agent_loader"]
-    loader._allow_special_agents = False
-    adk_fast_api.load_services_module(agents_dir)
-    memory_service = adk_fast_api.create_memory_service_from_options(
-        base_dir=agents_dir,
-        memory_service_uri=str(kwargs["memory_service_uri"]),
-    )
-    session_service = adk_fast_api.create_session_service_from_options(
-        base_dir=agents_dir,
-        session_service_uri=session_service_uri,
-        session_db_kwargs=None,
-        use_local_storage=False,
-    )
-    artifact_service = adk_fast_api.create_artifact_service_from_options(
-        base_dir=agents_dir,
-        artifact_service_uri=str(kwargs["artifact_service_uri"]),
-        strict_uri=True,
-        use_local_storage=False,
-    )
-    server = adk_fast_api.ApiServer(
-        agent_loader=loader,
-        session_service=session_service,
-        memory_service=memory_service,
-        artifact_service=artifact_service,
-        credential_service=credential_service,
-        eval_sets_manager=adk_fast_api.LocalEvalSetsManager(agents_dir=agents_dir),
-        eval_set_results_manager=adk_fast_api.LocalEvalSetResultsManager(
-            agents_dir=agents_dir
-        ),
-        agents_dir=agents_dir,
-        auto_create_session=False,
-    )
-    server.default_app_name = loader.list_agents()[0]
-    app = server.get_fast_api_app(
-        lifespan=kwargs["lifespan"],
-        bind_host=kwargs.get("bind_host"),
-    )
-    adk_fast_api.maybe_install_request_metrics_middleware(
-        app, otel_to_cloud=False
-    )
-    return app
-
-
-def _exposes_native_adk_api(application: Any) -> bool:
-    """Keep framework-owned HTTP contracts behind the advanced-mode boundary."""
-
-    return application.framework == "adk" and application.mode == "advanced"
-
-
 def _application_with_asset_store(application: Any) -> Any:
     """Install the fixed-ceiling development store when none was authored."""
 
@@ -756,8 +490,8 @@ def create_fastapi_app(
     live_enabled: bool = True,
     agui_enabled: bool = True,
     agent_principal_required: bool = False,
-    adk_session_storage: ADKSessionStorage | None = None,
-    langgraph_session_store: SessionStore | None = None,
+    session_store: SessionStore | None = None,
+    framework_session_storage: Any | None = None,
     authenticator: Authenticator | None = None,
 ) -> Any:
     """Build a server with explicit policy and no UI when production assets are absent."""
@@ -794,8 +528,8 @@ def create_fastapi_app(
             live_enabled=live_enabled,
             agui_enabled=agui_enabled,
             agent_principal_required=agent_principal_required,
-            adk_session_storage=adk_session_storage,
-            langgraph_session_store=langgraph_session_store,
+            session_store=session_store,
+            framework_session_storage=framework_session_storage,
             authenticator=authenticator,
         )
     except Exception:
@@ -817,14 +551,14 @@ def _build_fastapi_app(
     live_enabled: bool,
     agui_enabled: bool,
     agent_principal_required: bool,
-    adk_session_storage: ADKSessionStorage | None,
-    langgraph_session_store: SessionStore | None,
+    session_store: SessionStore | None,
+    framework_session_storage: Any | None,
     authenticator: Authenticator | None,
 ) -> Any:
     """Apply the same live transport choice to neutral and native server backends."""
 
     _validate_session_storage_choice(
-        application, adk_session_storage, langgraph_session_store
+        application, framework_session_storage, session_store
     )
     card = load_agent_card(artifact)
     _apply_observability_defaults(application.framework)
@@ -839,20 +573,17 @@ def _build_fastapi_app(
         instrument_fastapi,
     )
 
-    adk_session_service = _runtime_adk_session_service(
-        artifact,
-        application,
-        adk_session_storage,
-        langgraph_session_store,
+    adapter = get_framework(application.framework)
+    sessions = _host_sessions(
+        adapter, artifact, application, framework_session_storage, session_store
     )
-    native_adk = _exposes_native_adk_api(application)
-    if native_adk:
-        app, telemetry = _build_native_adk_app(
+    if adapter.exposes_framework_server(application):
+        app, telemetry = adapter.build_framework_server(
             artifact,
             application=application,
             bind_host=bind_host,
             card=card,
-            adk_session_service=adk_session_service,
+            sessions=sessions,
             request_timeout=request_timeout,
             max_concurrency=max_concurrency,
             max_request_bytes=max_request_bytes,
@@ -870,12 +601,7 @@ def _build_fastapi_app(
             framework=application.framework,
             exporter_factories=application.telemetry_exporters,
         )
-        driver = _runtime_driver(
-            application,
-            card=card,
-            adk_session_service=adk_session_service,
-            langgraph_session_store=langgraph_session_store,
-        )
+        driver = _runtime_driver(application, card=card, sessions=sessions)
         eval_service = None
         mcp_service = None
         connectors_service = None
@@ -920,155 +646,36 @@ def _build_fastapi_app(
     return app
 
 
+def _host_sessions(
+    adapter: Any,
+    artifact: str | Path,
+    application: Any,
+    framework_storage: Any | None,
+    store: SessionStore | None,
+) -> RuntimeSessions:
+    """Let the framework choose one session authority before its server is built."""
+
+    try:
+        return adapter.host_sessions(
+            artifact, application, framework_storage=framework_storage, store=store
+        )
+    except FrameworkConventionError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+
 def _validate_session_storage_choice(
     application: Any,
-    adk_storage: ADKSessionStorage | None,
-    langgraph_store: SessionStore | None,
+    framework_storage: Any | None,
+    store: SessionStore | None,
 ) -> None:
     """Reject host storage injection when the compiled agent owns that boundary."""
 
     if application.session_store is not None and (
-        adk_storage is not None or langgraph_store is not None
+        framework_storage is not None or store is not None
     ):
         raise AgentRuntimeError(
             "@lifecycle.storage.sessions cannot be combined with injected session storage"
         )
-
-
-def _runtime_adk_session_service(
-    artifact: str | Path,
-    application: Any,
-    adk_storage: ADKSessionStorage | None,
-    langgraph_store: SessionStore | None,
-) -> Any | None:
-    """Select one ADK session authority before the native application is built."""
-
-    from .checkpoint import ADKStore
-
-    if isinstance(application.checkpointer, ADKStore):
-        if adk_storage is not None:
-            raise AgentRuntimeError(
-                "ADKStore cannot be combined with deployment ADK session storage"
-            )
-        return application.checkpointer.session_service
-    service = _resolve_adk_session_service(
-        artifact, application, adk_storage, langgraph_store
-    )
-    if (
-        application.framework != "adk"
-        or service is not None
-        or application.session_store is None
-    ):
-        return service
-    from .session_adk import create_adk_session_service
-
-    return create_adk_session_service(application.session_store)
-
-
-def _build_native_adk_app(
-    artifact: str | Path,
-    *,
-    application: Any,
-    bind_host: str,
-    card: Mapping[str, Any],
-    adk_session_service: Any,
-    request_timeout: float,
-    max_concurrency: int,
-    max_request_bytes: int,
-    playground_enabled: bool,
-    openapi_enabled: bool,
-    live_enabled: bool,
-    agui_enabled: bool,
-    agent_principal_required: bool,
-    authenticator: Authenticator | None,
-    telemetry_exporter_factories: Any,
-) -> tuple[Any, Any]:
-    """Apply neutral transport and API-documentation policy to native ADK routes."""
-
-    from .neutral_runtime import create_neutral_router
-    from .runtime_openapi import configure_openapi
-    from .http_lifecycle import install_http_lifecycle
-    from .playground import create_playground_router
-    from .playground_studio import PlaygroundStudioService
-    from .server_limits import install_request_size_limit
-    from .server_transports import install_live_policy
-    from .telemetry import configure_observability
-
-    os.environ.setdefault("OTEL_SERVICE_NAME", application.name)
-    app = _create_adk_fastapi_app(
-        artifact,
-        application=application,
-        bind_host=bind_host,
-        session_service=adk_session_service,
-        manage_credential_provider=False,
-    )
-    driver = _runtime_driver(
-        application,
-        card=card,
-        extra_endpoints={"adkRun": "/run", "adkRunSse": "/run_sse"},
-        adk_session_service=adk_session_service,
-    )
-    pipeline_driver = driver
-    from ._eval_capture_runtime import with_eval_capture
-
-    # Capture wraps the request path only; evals and startup keep the raw
-    # driver so eval runs are never captured as production traffic.
-    driver = with_eval_capture(driver, application)
-    trace_store = None
-    if playground_enabled:
-        from .playground_trace import (
-            PlaygroundTraceRuntimeDriver,
-            PlaygroundTraceStore,
-        )
-
-        trace_store = PlaygroundTraceStore()
-        driver = PlaygroundTraceRuntimeDriver(driver, trace_store)
-        from .playground_connectors import PlaygroundConnectorsService
-        from .playground_eval import PlaygroundEvalService
-        from .playground_mcp import PlaygroundMCPService
-
-        eval_service = PlaygroundEvalService(
-            artifact,
-            application,
-            pipeline_driver,
-        )
-        app.router.routes.extend(
-            create_playground_router(
-                trace_store, eval_service, openapi_enabled=openapi_enabled,
-                mcp_service=PlaygroundMCPService(Path(artifact) / "source", application.framework),
-                studio_service=PlaygroundStudioService(Path(artifact) / "source", mode=application.mode, framework=application.framework),
-                connectors_service=PlaygroundConnectorsService(),
-                work_driver=pipeline_driver,
-            ).routes
-        )
-    neutral = create_neutral_router(
-        driver,
-        request_timeout=request_timeout,
-        max_concurrency=max_concurrency,
-        max_request_bytes=max_request_bytes,
-        live_enabled=live_enabled,
-        agui_enabled=agui_enabled,
-        agent_principal_required=agent_principal_required,
-        asset_store=application.asset_store,
-        asset_stores=application.asset_stores,
-        a2a_task_store=_a2a_task_store(application),
-        http_routes=application.http_routes,
-    )
-    # ADK owns a flat public route table, so preserve it when adding neutral APIs.
-    app.router.routes.extend(neutral.routes)
-    _attach_driver_lifecycle(app, driver, startup_driver=pipeline_driver)
-    install_http_lifecycle(app, application.lifecycle_extensions)
-    install_authentication(app, authenticator)
-    install_request_size_limit(app, max_request_bytes)
-    install_live_policy(app, live_enabled)
-    configure_openapi(app, enabled=openapi_enabled)
-    telemetry = configure_observability(
-        application.name,
-        framework=application.framework,
-        use_global_providers=_adk_owns_otel(),
-        exporter_factories=telemetry_exporter_factories,
-    )
-    return app, telemetry
 
 
 def _attach_driver_lifecycle(
@@ -1103,16 +710,6 @@ def _attach_driver_lifecycle(
     app.router.lifespan_context = lifespan
 
 
-def _adk_owns_otel() -> bool:
-    names = (
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-    )
-    return any(os.getenv(name, "").strip() for name in names)
-
-
 def _resolve_lifecycle_authenticator(
     listeners: Any, authenticator: Authenticator | None
 ) -> Authenticator | None:
@@ -1124,27 +721,6 @@ def _resolve_lifecycle_authenticator(
             "auth lifecycle listeners cannot be combined with an injected authenticator"
         )
     return discovered or authenticator
-
-
-def _resolve_adk_session_service(
-    artifact: str | Path,
-    application: Any,
-    storage: ADKSessionStorage | None,
-    langgraph_store: SessionStore | None,
-) -> Any | None:
-    if application.framework == "adk":
-        if langgraph_store is not None:
-            raise AgentRuntimeError(
-                "langgraph_session_store cannot be used with an ADK agent"
-            )
-        if storage is None:
-            return None
-        return storage.create_service(str(Path(artifact).resolve() / "source"))
-    if storage is not None:
-        raise AgentRuntimeError(
-            "adk_session_storage cannot be used with a LangGraph agent"
-        )
-    return None
 
 
 def _attach_library_lifecycle(app: Any, source_root: Path) -> None:
@@ -1223,7 +799,7 @@ def _load_server(args: Any) -> tuple[Any, Any]:
 
 
 def _create_server_app(args: Any, server: Any) -> Any:
-    """Only the local CLI lends assets; a deployed launcher never enables UI by default."""
+    """Capture CLI workspace capabilities only for the local Playground."""
 
     from .playground import playground_assets
 
@@ -1231,8 +807,18 @@ def _create_server_app(args: Any, server: Any) -> Any:
     from .playground_authoring import authoring_workspace
 
     root = getattr(args, "authoring_root", None) if directory is not None else None
-    with playground_assets(directory), authoring_workspace(root):
+    eval_root = _local_eval_root(directory, server.http)
+    with playground_assets(directory), authoring_workspace(root, eval_root=eval_root):
         return _create_configured_app(args.artifact, server, directory is not None)
+
+
+def _local_eval_root(directory: Path | None, http: HTTPServerConfig) -> Path | None:
+    """Keep deployed launchers and remote-enabled servers outside workspace capture."""
+
+    if directory is None or http.allow_remote or http.host not in {"localhost", "127.0.0.1", "::1"}:
+        return None
+    value = os.environ.get("HARNEST_PLAYGROUND_EVAL_ROOT")
+    return Path(value) if value else None
 
 
 def _create_configured_app(artifact: Path, server: Any, development: bool) -> Any:
@@ -1479,7 +1065,7 @@ __all__ = [
     "create_fastapi_app",
     "load_agent_card",
     "load_compiled_agent",
-    "load_compiled_app",
+    "load_framework_app",
     "load_compiled_application",
     "run_agent_message",
 ]

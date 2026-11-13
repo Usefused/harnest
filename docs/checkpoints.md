@@ -95,7 +95,7 @@ LangGraph with Harnest storage must compile with the exact adapter:
 ```python
 from harnest.lib.storage import store
 
-graph = builder.compile(checkpointer=store.as_langgraph_checkpointer())
+graph = builder.compile(checkpointer=store.framework_checkpointer())
 root_agent = Agent.advanced(graph)
 ```
 
@@ -103,7 +103,7 @@ To hand checkpoint ownership to LangGraph, wrap its native saver and use that
 exact wrapper for both native graph compilation and the checkpoint lifecycle:
 
 ```python
-from harnest.checkpoint import LangGraphStore
+from harnest.frameworks.langgraph import LangGraphStore
 
 checkpoints = LangGraphStore(native_saver)
 graph = builder.compile(checkpointer=checkpoints)
@@ -111,7 +111,8 @@ graph = builder.compile(checkpointer=checkpoints)
 
 Return `checkpoints` from `@lifecycle.storage.checkpoints`, and keep a separate
 `SessionStore` factory for committed conversation state. For
-ADK-native ownership, create `ADKStore(session_service)` once in
+ADK-native ownership, create `ADKStore(session_service)` (from
+`harnest.frameworks.adk`) once in
 `lib/storage.py` and return that same object from both storage factories.
 Harnest enables ADK resumability and uses the declared service rather than
 creating a second session authority.
@@ -126,5 +127,5 @@ from the run and tool-call identities.
 Harnest records privacy-safe OTEL mutation events, never checkpoint payloads,
 prompts, arguments, credentials, or results. Current neutral HTTP approvals and
 client-tool waits retain the exact in-process task; their wait metadata can be
-stored, but restart-safe continuation requires a framework-native interrupt
+stored, but restart-safe continuation requires a framework-specific interrupt
 boundary and is not claimed for arbitrary Python call stacks.

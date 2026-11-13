@@ -99,7 +99,7 @@ async def sdk_resource_session(configured: Any, framework: str = "langgraph", *,
     if configured.transport == "stdio":
         transport = stdio_client(StdioServerParameters(**configured._stdio_configuration()))
     else:
-        options = configured.to_langgraph_connection()
+        options = configured.connection_options()
         options.pop("transport")
         options.pop("session_kwargs", None)
         binding = configured._lifecycle_binding(framework)

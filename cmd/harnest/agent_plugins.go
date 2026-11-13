@@ -1,3 +1,5 @@
+// `harnest plugins`: installs standard Agent Plugins into an agent and validates their manifests.
+
 package main
 
 import (

@@ -1,5 +1,6 @@
 """Explicit sandbox capabilities must stay private, scoped, and revocable."""
 
+from harnest.frameworks.adk.lowering import build_agent
 import asyncio
 import threading
 from dataclasses import replace
@@ -9,8 +10,8 @@ from unittest.mock import Mock
 from harnest import context
 from harnest.agent import Agent
 from harnest.sandbox import Sandbox, SandboxFile, SandboxResult
-from harnest.agent_scope_adk import managed_adk_agent_type, scope_native_adk_agent
-from harnest.backends.langgraph import _agent_tools
+from harnest.frameworks.adk.agent_scope import managed_adk_agent_type, scope_native_adk_agent
+from harnest.frameworks.langgraph.lowering import _agent_tools
 from harnest.context import (
     ContextResourceError, ContextUnavailableError, activate_agent_scope,
     activate_context, create_agent_context, revoke_context,
@@ -284,14 +285,14 @@ class SandboxGrantDefinitionTests(unittest.TestCase):
         bindings.clear()
         self.assertEqual(agent.sandboxes, ("research",))
         self.assertEqual(tuple(agent._sandbox_bindings), ("research",))
-        built = agent.build()
+        built = build_agent(agent)
         self.assertEqual(built.tools, [])
         self.assertIsNone(built.code_executor)
         self.assertEqual(_agent_tools(agent, ()), [])
 
     def test_unresolved_mixed_and_invalid_grants_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "unresolved"):
-            definition(sandboxes=["research"]).build()
+            build_agent(definition(sandboxes=["research"]))
         with self.assertRaisesRegex(TypeError, "unexpected keyword argument.*sandbox"):
             definition(sandbox=Sandbox.provider(Mock()), sandboxes=["research"])
         for names in ("research", ["research", "research"], ["../escape"], [42]):

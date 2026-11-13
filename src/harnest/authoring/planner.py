@@ -105,14 +105,14 @@ def _run_core_init(stage: Path, command: Sequence[str], init_arguments: Sequence
     return snapshot(stage)
 
 
-def _run_core_upgrade(stage: Path, before: dict[str, _File]) -> tuple[dict[str, _File], list[str]]:
+def _run_core_upgrade(stage: Path, before: dict[str, _File]) -> tuple[dict[str, _File], list[str], Any]:
     """Run the existing migration engine only on the disposable project snapshot."""
     write_snapshot(stage, before)
     core = plan_upgrade(stage)
     if core.blockers:
-        return dict(before), list(core.blockers)
+        return dict(before), list(core.blockers), core
     apply_upgrade(core)
-    return snapshot(stage), []
+    return snapshot(stage), [], core
 
 
 def _pack_hooks(pack: ProjectPack, lock: dict[str, Any], initializing: bool) -> list[Any]:
@@ -198,6 +198,8 @@ class ProjectPlanner:
     def __init__(self, packs: Sequence[ProjectPack], *, harnest_command: Sequence[str] = ('harnest',)) -> None:
         """Keep pack ordering explicit and never import packages named by project files."""
         self.packs = tuple(packs)
+        if any(not isinstance(pack, ProjectPack) or pack.name is None for pack in self.packs):
+            raise ProjectError("project packs must be loaded from a pack directory (harnest.authoring.load_pack)")
         names = [pack.name for pack in packs]
         if len(names) != len(set(names)):
             raise ProjectError("duplicate project pack names")
@@ -230,18 +232,21 @@ class ProjectPlanner:
         existed = root.exists()
         with tempfile.TemporaryDirectory(prefix='harnest-project-plan-') as temporary:
             stage = Path(temporary) / root.name
+            core = None
             if initializing:
                 after, blockers = _run_core_init(stage, self.harnest_command, init_arguments), []
             else:
-                after, blockers = _run_core_upgrade(stage, before)
-        engine = OperationEngine(after, read_lock(before))
+                after, blockers, core = _run_core_upgrade(stage, before)
+        # Core upgrade migrates the lock itself, so read it from the staged result.
+        engine = OperationEngine(after, read_lock(after))
         core_paths = [change.path for change in _changes(before, after, {})]
         if not initializing:
             blockers.extend(_core_conflicts(engine, core_paths))
         blockers.extend(self._compose(engine, root.name, options, initializing, bool(blockers)))
         blockers.extend(_structural_conflicts(before, engine.files))
         return ProjectPlan(root, _changes(before, engine.files, engine.owners), tuple(blockers),
-                           MappingProxyType(before), MappingProxyType(dict(engine.files)), existed)
+                           MappingProxyType(before), MappingProxyType(dict(engine.files)), existed,
+                           core.notes if core else (), core.warnings if core else ())
 
     def _compose(self, engine: OperationEngine, name: str, options: Mapping[str, Mapping[str, Any]],
                  initializing: bool, blocked: bool) -> list[str]:

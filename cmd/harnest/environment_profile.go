@@ -1,3 +1,5 @@
+// Environment profiles (compile, test, serve, ...): the wheel extras and lock file each one uses.
+
 package main
 
 import (
@@ -64,10 +66,10 @@ func (p environmentProfile) wheelExtras(
 	if plan.HasMCP {
 		extras = append(extras, framework+"-mcp")
 	}
-	if p == developmentEnvironmentProfile {
+	if p == developmentEnvironmentProfile || (p == evalEnvironmentProfile && plan.CustomEvalOnly) {
 		extras = append(extras, "test")
 	}
-	if p == evalEnvironmentProfile {
+	if p == evalEnvironmentProfile && !plan.CustomEvalOnly {
 		extras = append(extras, "eval")
 	}
 	return extras

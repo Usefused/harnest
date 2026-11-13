@@ -1,3 +1,5 @@
+// Writes the files behind `harnest add eval`: eval sets, custom criteria, and test_config.json updates.
+
 package main
 
 import (

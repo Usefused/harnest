@@ -16,15 +16,16 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from .frameworks.registry import framework_metadata, framework_names
 from .server_config import ServerConfigError, project_server_config_yaml
 from .application_layout import ApplicationLayoutError, lifecycle_directory
 from .lifecycle import _decorator_path_for_phase
 
 
-PROJECT_SCHEMA = 6
+PROJECT_SCHEMA = 7
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 6
+projectSchema: 7
 """
 _STORAGE_LIBRARY = """from harnest.store import MemoryStore
 
@@ -95,7 +96,9 @@ _FLAT_ROOT_IMPORT_GROUPS = {
             "discover_evals",
         }
     ),
-    "checkpoint": frozenset({"ADKStore", "HarnestStore", "LangGraphStore"}),
+    "checkpoint": frozenset({"HarnestStore"}),
+    "frameworks.adk": frozenset({"ADKStore"}),
+    "frameworks.langgraph": frozenset({"LangGraphStore"}),
     "context": frozenset(
         {"AgentContext", "SessionContext", "SessionDataError", "StorageContext"}
     ),
@@ -225,14 +228,11 @@ _FLAT_ROOT_IMPORTS = {
     for domain, names in _FLAT_ROOT_IMPORT_GROUPS.items()
     for name in names
 }
+# Framework packages are owned by the compiler and pinned per release in
+# frameworks.json, so upgrades never copy them into project requirements.
 _FRAMEWORK_DEPENDENCIES = {
-    "adk": ("google-adk>=2.8,<3",),
-    "langgraph": (
-        "langgraph>=1.2,<2",
-        "langchain>=1.3,<2",
-        "langchain-litellm>=0.7,<1",
-        "langchain-mcp-adapters>=0.3,<1",
-    ),
+    name: metadata.requirements + metadata.mcp_requirements
+    for name, metadata in framework_metadata().items()
 }
 _COMPILER_OWNED_DISTRIBUTIONS = frozenset({"harnest"}) | frozenset(
     re.sub(r"[-_.]+", "-", re.match(r"[A-Za-z0-9._-]+", value).group(0).lower())
@@ -313,6 +313,8 @@ class UpgradePlan:
     actions: tuple[UpgradeAction, ...]
     blockers: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    source_checks: tuple[tuple[str, str], ...] = ()
 
     def public(self) -> dict[str, Any]:
         """Expose optional migration guidance separately from mutations and blockers."""
@@ -326,6 +328,8 @@ class UpgradePlan:
             "actions": [item.public() for item in self.actions],
             "blockers": list(self.blockers),
             "notes": list(self.notes),
+            "warnings": list(self.warnings),
+            "sourceChecks": dict(self.source_checks),
         }
 
 
@@ -333,11 +337,12 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     """Inspect an existing repository without importing authored Python."""
 
     root = _agent_root(directory)
-    framework = _framework(root / "config.yaml")
+    framework, config_digest = _framework(root / "config.yaml")
     actions: list[UpgradeAction] = []
     blockers: list[str] = []
     _plan_server(root, blockers)
     _plan_project_lock(root, actions, blockers)
+    _plan_pack_lock(root, actions, blockers)
     _plan_dependencies(root, framework, actions, blockers)
     from .upgrade_python import plan_python_minimum
 
@@ -349,6 +354,9 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
 
     plan_application_layout(root, actions, blockers)
     _plan_authoring_namespaces(root, actions, blockers)
+    from .upgrade_frameworks import plan_framework_upgrade
+
+    source_checks = plan_framework_upgrade(root, framework, actions, blockers)
     from .upgrade_cron import cron_migration_notes
 
     return UpgradePlan(
@@ -357,6 +365,8 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
         tuple(sorted(actions, key=_action_order)),
         tuple(sorted(set(blockers))),
         cron_migration_notes(root),
+        pack_merge_warnings(root),
+        (("config.yaml", config_digest), *source_checks),
     )
 
 
@@ -375,6 +385,8 @@ def render_upgrade_plan(plan: UpgradePlan, *, applying: bool = False) -> str:
         f"Target project schema: {PROJECT_SCHEMA}",
         "",
     ]
+    if plan.warnings:
+        lines.extend(("Warnings:", *(f"  ! {warning}" for warning in plan.warnings), ""))
     lines.extend(_render_actions(plan.actions))
     lines.extend(_render_blockers(plan.blockers))
     # Supported authoring forms should surface alternatives without making a
@@ -386,6 +398,99 @@ def render_upgrade_plan(plan: UpgradePlan, *, applying: bool = False) -> str:
     elif not applying and not plan.blockers:
         lines.extend(("", "Run the same command with --apply to perform exactly these classes of changes."))
     return "\n".join(lines) + "\n"
+
+
+PACK_LOCK = "harnest-packs.lock"
+STUDIO_PACK_LOCK = "studio-packs.lock"
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _plan_pack_lock(root: Path, actions: list[UpgradeAction], blockers: list[str]) -> None:
+    """Move Studio receipts into harnest-packs.lock (version 2) and drop studio-packs.lock."""
+
+    lock_path, studio_path = root / PACK_LOCK, root / STUDIO_PACK_LOCK
+    if lock_path.is_symlink() or studio_path.is_symlink():
+        blockers.append("pack lock files cannot be symlinks")
+        return
+    try:
+        lock = _pack_lock_for_upgrade(lock_path)
+        resources = _studio_receipts_for_upgrade(studio_path)
+    except UpgradeError as error:
+        blockers.append(str(error))
+        return
+    if lock.get("version") == 2 and not resources:
+        return
+    current = lock.get("resources", {})
+    overlap = sorted(set(current) & set(resources))
+    if overlap:
+        blockers.append(f"{STUDIO_PACK_LOCK} and {PACK_LOCK} both record: {', '.join(overlap)}")
+        return
+    merged = {"version": 2, "packs": lock.get("packs", {}), "claims": lock.get("claims", []),
+              "resources": {**current, **resources}}
+    content = json.dumps(merged, sort_keys=True, indent=2) + "\n"
+    detail = "record Studio resource receipts in the single pack lock (version 2)"
+    if lock_path.exists():
+        actions.append(_rewrite(root, lock_path, content, detail))
+    else:
+        actions.append(UpgradeAction("create", PACK_LOCK, detail, content=content))
+    if studio_path.exists():
+        actions.append(UpgradeAction("delete", STUDIO_PACK_LOCK, f"receipts now live in {PACK_LOCK}",
+                                     digest=_file_digest(studio_path)))
+
+
+def _pack_lock_for_upgrade(path: Path) -> dict[str, Any]:
+    """Read either supported lock version before planning the receipt merge."""
+    if not path.exists():
+        return {"version": 2, "packs": {}, "claims": [], "resources": {}}
+    lock = _read_json_object(path)
+    if lock is None or set(lock) - {"version", "packs", "claims", "resources"} or lock.get("version") not in (1, 2):
+        raise UpgradeError(f"{PACK_LOCK} is not a valid pack lock")
+    return lock
+
+
+def _studio_receipts_for_upgrade(path: Path) -> dict[str, Any]:
+    """Read legacy Studio receipts without transferring ownership of invalid data."""
+    if not path.exists():
+        return {}
+    studio = _read_json_object(path)
+    if studio is None or studio.get("version") != 1 or not isinstance(studio.get("resources"), dict):
+        raise UpgradeError(f"{STUDIO_PACK_LOCK} is not a valid Studio receipt")
+    return studio["resources"]
+
+
+def pack_merge_warnings(root: Path) -> tuple[str, ...]:
+    """Warn agents built with the removed pack systems; nothing is migrated for them."""
+
+    packs: list[str] = []
+    lock = root / PACK_LOCK
+    if lock.is_file() and not lock.is_symlink():
+        try:
+            value = json.loads(lock.read_text(encoding="utf-8")).get("packs", {})
+            packs = sorted(name for name in value if isinstance(name, str))
+        except (OSError, ValueError, AttributeError):
+            packs = []
+    studio = (root / STUDIO_PACK_LOCK).is_file()
+    if not packs and not studio:
+        return ()
+    used = f" This agent uses: {', '.join(packs)}." if packs else ""
+    return (
+        "Breaking change, no compatibility: project packs, company CLIs and Studio Packs "
+        "are now one Harnest pack (pack.yaml + pack.py, with Studio as its `studio` "
+        "sub-pack). ProjectCLI, StudioLauncher, ProjectPack(name=...), studio-pack.yaml, "
+        "`harnest studio --safe-ui` and `harnest studio pack package` were removed. Studio "
+        "install receipts move from studio-packs.lock into harnest-packs.lock." + used,
+        "Rebuild each company pack with `harnest pack init NAME` (keep the same pack name "
+        "so this agent's recorded versions still match), then run `harnest upgrade "
+        "AGENT_DIR --pack PACK_DIR` or the pack's own `<command> upgrade` to apply its "
+        "migrations. Plain `harnest upgrade` does not run pack migrations.",
+    )
 
 
 def apply_upgrade(plan: UpgradePlan) -> Path | None:
@@ -401,6 +506,7 @@ def apply_upgrade(plan: UpgradePlan) -> Path | None:
     # This keeps a stale plan strictly non-mutating.
     for action in plan.actions:
         _verify_action_source(plan.root, action)
+    _verify_plan_sources(plan)
     backup = plan.root / ".harnest" / "upgrade-backups" / uuid.uuid4().hex
     _verify_contained_target(plan.root, backup)
     backup.mkdir(parents=True, exist_ok=False)
@@ -416,29 +522,55 @@ def apply_upgrade(plan: UpgradePlan) -> Path | None:
     return backup
 
 
+def _verify_plan_sources(plan: UpgradePlan) -> None:
+    """Bind cross-file inference and framework selection to the reviewed inputs."""
+
+    from .upgrade_frameworks import verify_framework_inventory
+
+    if plan.source_checks:
+        verify_framework_inventory(plan.root, plan.actions,
+                                   {path for path, _ in plan.source_checks} - {"config.yaml"})
+    for relative, digest in plan.source_checks:
+        path = plan.root / relative
+        _verify_contained_target(plan.root, path)
+        try:
+            actual = _file_digest(path)
+        except OSError:
+            actual = None
+        if actual != digest:
+            raise UpgradeError(f"upgrade source changed after planning: {relative}")
+
+
 def _agent_root(directory: str | Path) -> Path:
+    """Require project metadata without imposing prompt files on every definition type."""
+
     raw = Path(directory)
     if raw.is_symlink():
         raise UpgradeError(f"agent directory cannot be a symlink: {raw}")
     root = raw.resolve()
     if not root.is_dir():
         raise UpgradeError(f"agent directory is invalid: {root}")
-    for required in ("config.yaml", "agent.py", "instructions.md", "agent-card.yaml"):
+    # Graphs and agents with inline instructions need no instructions.md;
+    # the compiler validates the selected definition's actual prompt contract.
+    for required in ("config.yaml", "agent.py", "agent-card.yaml"):
         path = root / required
         if path.is_symlink() or not path.is_file():
             raise UpgradeError(f"agent repository is missing a regular {required}: {path}")
     return root
 
 
-def _framework(path: Path) -> str:
+def _framework(path: Path) -> tuple[str, str]:
+    """Read framework selection and its digest from the same configuration snapshot."""
+
     try:
-        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        value = yaml.safe_load(raw.decode("utf-8"))
         framework = value["spec"]["framework"]["name"]
     except (OSError, UnicodeError, yaml.YAMLError, KeyError, TypeError) as exc:
         raise UpgradeError(f"cannot read framework from {path}") from exc
-    if framework not in {"adk", "langgraph"}:
+    if framework not in framework_names():
         raise UpgradeError(f"unsupported framework in {path}: {framework!r}")
-    return framework
+    return framework, hashlib.sha256(raw).hexdigest()
 
 
 def _plan_server(root: Path, blockers: list[str]) -> None:
@@ -847,14 +979,14 @@ def _storage_factories(
 ) -> dict[str, list[str]] | None:
     """Inspect lifecycle ownership without executing authored extension code."""
 
-    from .extension_descriptors import discover_application_extensions, ExtensionConventionError
+    from .extension_descriptors import discover_upgrade_application_extensions, ExtensionConventionError
 
     try:
         directories = (
             lifecycle_directory(root),
             *(
                 path
-                for item in discover_application_extensions(root)
+                for item in discover_upgrade_application_extensions(root)
                 for path in item.contribution_paths("lifecycle")
             ),
         )
@@ -976,19 +1108,19 @@ def _plan_extension_file(
             UpgradeAction(
                 "move",
                 _relative(root, path),
-                f"make the inactive {target_framework} native extension private",
+                f"make the inactive {target_framework} framework extension private",
                 destination=_relative(root, destination),
                 digest=_file_digest(path),
             )
         )
         return
     try:
-        replacement = _native_extension_source(path, framework)
+        replacement = _framework_extension_source(path, framework)
     except UpgradeError as exc:
         blockers.append(str(exc))
         return
     if replacement is not None:
-        actions.append(_rewrite(root, path, replacement, f"wrap the legacy {framework} native export in a lifecycle factory"))
+        actions.append(_rewrite(root, path, replacement, f"wrap the legacy {framework} framework export in a lifecycle factory"))
 
 
 def _plan_portable_extension(
@@ -1054,17 +1186,11 @@ def _plan_authoring_namespaces(
 
 
 def _authoring_python_files(root: Path) -> tuple[Path, ...]:
-    """Return authored Python while excluding managed environments and backups."""
+    """Prune generated environments before inspecting authored Python, without following links."""
 
-    excluded = frozenset({".harnest", ".venv", "venv", "__pycache__"})
-    return tuple(
-        path
-        for path in sorted(root.rglob("*.py"))
-        if not any(
-            part in excluded or part.startswith(".")
-            for part in path.relative_to(root).parts
-        )
-    )
+    from .upgrade_frameworks import authored_upgrade_files
+
+    return tuple(path for path in authored_upgrade_files(root) if path.suffix == ".py")
 
 
 def _authoring_namespace_source(path: Path, source: str) -> str | None:
@@ -2228,13 +2354,15 @@ def _extension_import_edits(
     return [_node_edit(source, imports[0], replacement)]
 
 
-def _native_extension_source(path: Path, framework: str) -> str | None:
+def _framework_extension_source(path: Path, framework: str) -> str | None:
+    """Wrap legacy value exports while leaving decorated factories to API migration."""
+
     source, module = _python_source(path)
-    phase = "adk_plugin" if framework == "adk" else "langgraph_middleware"
-    if f"lifecycle.{phase}" in source:
+    phase = "framework_extension"
+    if _has_framework_factory(module):
         return None
     if not any(_assignment_name(item) == "extension" for item in module.body):
-        raise UpgradeError(f"{path}: expected a legacy native export named 'extension'")
+        raise UpgradeError(f"{path}: expected a legacy framework export named 'extension'")
     suffix = (
         "\n\nfrom harnest import lifecycle as _harnest_lifecycle\n\n"
         f"@_harnest_lifecycle.{phase}\n"
@@ -2242,6 +2370,27 @@ def _native_extension_source(path: Path, framework: str) -> str | None:
         "    return extension\n"
     )
     return source.rstrip() + suffix
+
+
+def _has_framework_factory(module: ast.Module) -> bool:
+    """Recognize current and retired lifecycle decorators without importing factories."""
+
+    names = _framework_factory_names(module)
+    functions = (node for node in ast.walk(module) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    return any(_dotted_name(decorator.func if isinstance(decorator, ast.Call) else decorator) in names
+               for node in functions for decorator in node.decorator_list)
+
+
+def _framework_factory_names(module: ast.Module) -> set[str]:
+    """Resolve imported decorator names while retaining authored aliases."""
+
+    phases = {"framework_extension", "native_extension", "adk_plugin", "langgraph_middleware"}
+    prefixes = _namespace_prefixes(module, "lifecycle")
+    names = {f"{prefix}.{phase}" for prefix in prefixes for phase in phases}
+    for node in ast.walk(module):
+        if isinstance(node, ast.ImportFrom) and node.module == "harnest.lifecycle":
+            names.update(alias.asname or alias.name for alias in node.names if alias.name in phases)
+    return names
 
 
 def _python_source(path: Path) -> tuple[str, ast.Module]:

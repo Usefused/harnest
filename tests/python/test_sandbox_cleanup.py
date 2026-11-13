@@ -6,6 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
 from harnest.sandbox import Sandbox, SandboxCancelledError, control
 
 
@@ -13,7 +14,7 @@ class SandboxCleanupTests(unittest.TestCase):
     def test_cancelled_parent_allows_cleanup_but_never_execution(self):
         """The narrow exception must not clear the parent's cancellation token."""
         factory = Mock()
-        tool = Sandbox.provider(factory).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(factory))
         with control.execute(30) as parent:
             parent.cancelled.set()
             with control.cleanup(2) as cleanup:

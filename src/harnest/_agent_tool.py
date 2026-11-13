@@ -48,7 +48,7 @@ def tool(
     Both managed backends wrap callables natively. This decorator preserves the
     function's typed signature, checks that the model receives a description,
     validates an optional Pydantic result, and installs declared execution
-    policy before backend lowering. Durable tools cross a framework-native
+    policy before backend lowering. Durable tools cross a framework-specific
     suspension boundary and therefore must be asynchronous.
     """
 

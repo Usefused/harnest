@@ -11,7 +11,7 @@ def _write_project(
     (root / "lib").mkdir()
     (root / "lifecycle").mkdir()
     checkpoint_source = (
-        "from harnest.checkpoint import LangGraphStore\n"
+        "from harnest.frameworks.langgraph import LangGraphStore\n"
         "from langgraph.checkpoint.memory import InMemorySaver\n"
         "store = LangGraphStore(InMemorySaver())\n"
         if native
@@ -32,10 +32,10 @@ def _write_project(
         encoding="utf-8",
     )
     checkpointer = (
-        "store" if native else "store.as_langgraph_checkpointer()"
+        "store" if native else "store.framework_checkpointer()"
     )
     if mismatch:
-        checkpointer = "MemoryStore().as_langgraph_checkpointer()"
+        checkpointer = "MemoryStore().framework_checkpointer()"
     source = (
         "from harnest.agent import Agent\n"
         "from harnest.store import MemoryStore\n"
@@ -74,7 +74,7 @@ class CheckpointCompilerTests(unittest.TestCase):
             _write_project(root, mismatch=True)
 
             with self.assertRaisesRegex(
-                BundleConventionError, "as_langgraph_checkpointer"
+                BundleConventionError, "store\\.framework_checkpointer\\(\\)"
             ):
                 compile_application(
                     root,

@@ -1,4 +1,12 @@
-"""Filesystem-first agent composition."""
+"""The compiler: turns an agent folder into a framework-native application.
+
+``compile_application`` imports the authored entrypoint, composes the managed
+folders (tools, MCP clients, skills, subagents, extensions) into an
+``AgentDefinition`` or ``Graph``, and asks the selected framework adapter to
+lower it. ``compile_artifact`` writes the result as an artifact folder: the
+copied source, a generated loader (``agent.py``/``__main__.py``) and
+``harnest-manifest.json``. The runtime recompiles from that folder at start.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,7 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import warnings
 import os
 import shutil
 import sys
@@ -22,10 +31,8 @@ from .agent import AgentDefinition, _AdvancedAgentDefinition
 from .authoring_errors import authoring_guidance, folder_entry_error, inactive_entry_hint
 from .application import CompiledApplication
 from .checkpoint import (
-    ADKStore,
     CheckpointAuthority,
     HarnestStore,
-    LangGraphStore,
     checkpoint_metadata,
 )
 from .compatibility import (
@@ -36,12 +43,15 @@ from .cron import CompiledCron, Cron
 from .cron import _registration_for as cron_registration_for
 from .compile_selection import read_compile_selection, write_compile_report
 from .compile_source import compile_source_paths
-from .backends import (
-    AdvancedBackendValidationError,
-    BackendDependencyError,
-    UnknownBackendError,
-    get_backend,
+from .frameworks.base import (
+    AdvancedTargetError,
+    Capability,
+    FrameworkConventionError,
+    FrameworkDependencyError,
+    UnknownFrameworkError,
 )
+from .frameworks.registry import get_framework
+from .frameworks.context import current_framework, framework_scope
 from .graph import Graph
 from .extension_loader import (
     ExtensionDiscoveryError,
@@ -131,6 +141,7 @@ _EXTENSION_PHASE_CAPABILITIES = {
     "before_http": "lifecycle.http",
     "after_http": "lifecycle.http",
     "on_http_error": "lifecycle.http",
+    "http_agent_principal": "lifecycle.http",
     "before_mcp": "lifecycle.mcp",
     "after_mcp": "lifecycle.mcp",
     "on_mcp_error": "lifecycle.mcp",
@@ -148,8 +159,7 @@ _EXTENSION_PHASE_CAPABILITIES = {
     "http_routes": "http.routes",
     "output_policy": "policy.output",
     "telemetry_exporter": "telemetry.exporter",
-    "adk_plugin": "native.adk",
-    "langgraph_middleware": "native.langgraph",
+    "framework_extension": "framework.extension",
 }
 
 
@@ -207,7 +217,7 @@ def compile_agent(
     framework: str = "adk",
     mode: str = "managed",
 ) -> Any:
-    """Compile a filesystem definition into its framework-native target.
+    """Compile a filesystem definition into its framework-specific target.
 
     ``source`` may be the agent directory or its ``agent.py`` file. Authored
     modules import the compiler-provided namespace explicitly, for example
@@ -232,7 +242,7 @@ def compile_app(
     compiled = compile_application(
         source, entrypoint=entrypoint, framework=framework, mode=mode
     )
-    return compiled.native_app if compiled.native_app is not None else compiled.target
+    return compiled.framework_app if compiled.framework_app is not None else compiled.target
 
 
 def compile_application(
@@ -245,8 +255,8 @@ def compile_application(
     """Compile one managed definition or advanced framework application."""
 
     try:
-        backend = get_backend(framework)
-    except UnknownBackendError as exc:
+        backend = _lowering_adapter(framework)
+    except UnknownFrameworkError as exc:
         raise BundleConventionError(str(exc)) from exc
     if mode not in {"managed", "advanced"}:
         raise BundleConventionError("framework mode must be managed or advanced")
@@ -269,7 +279,7 @@ def compile_application(
     export_name = entrypoint.partition(":")[2]
     activated_extensions: tuple[ActivatedExtension, ...] = ()
     try:
-        with _bundle_library(anchor.parent), independent_sandbox_catalog():
+        with framework_scope(framework), _bundle_library(anchor.parent), independent_sandbox_catalog():
             # Extensions share the agent interpreter and may import application
             # helpers, so the authored namespace must exist before extension.py.
             activated_extensions = _activate_bundle_extensions(extension_descriptors)
@@ -369,22 +379,22 @@ def _compile_advanced_application(
         advanced = backend.validate_advanced(
             value, fallback_name=anchor.parent.name
         )
-    except BackendDependencyError as exc:
+    except FrameworkDependencyError as exc:
         raise BundleImportError(str(exc)) from exc
-    except AdvancedBackendValidationError as exc:
+    except AdvancedTargetError as exc:
         raise BundleExportError(str(exc)) from exc
-    credential_extensions = _credential_native_extensions(
+    credential_extensions = _credential_framework_extensions(
         discovered_extensions.credential_provider,
-        discovered_extensions.native,
+        discovered_extensions.framework_extensions,
         framework=framework,
     )
-    advanced = _attach_advanced_native_extensions(
+    advanced = _attach_advanced_framework_extensions(
         advanced,
-        discovered_extensions.native,
+        discovered_extensions.framework_extensions,
         framework=framework,
         prepend_extensions=credential_extensions,
     )
-    advanced = _ensure_adk_resumability(advanced, framework=framework)
+    advanced = _prepare_advanced(advanced, framework=framework)
     _validate_advanced_checkpointer(
         advanced, discovered_extensions.checkpointer, framework=framework
     )
@@ -397,7 +407,7 @@ def _compile_advanced_application(
         framework=framework,
         mode="advanced",
         target=advanced.target,
-        native_app=advanced.native_app,
+        framework_app=advanced.framework_app,
         kind="advanced",
         bridge=value,
         lifecycle_extensions=discovered_extensions.listeners,
@@ -461,26 +471,26 @@ def _compile_managed_application(
     model_extension = portable_model_extension(
         portable_extensions, framework=framework
     )
-    authored_native_extensions = discovered_extensions.native + (
+    authored_framework_extensions = discovered_extensions.framework_extensions + (
         (model_extension,) if model_extension is not None else ()
     )
-    credential_extensions = _credential_native_extensions(
+    credential_extensions = _credential_framework_extensions(
         discovered_extensions.credential_provider,
-        authored_native_extensions,
+        authored_framework_extensions,
         framework=framework,
     )
     # Credentials bind first so every authored native callback observes the
     # same private invocation authority as tools and subagents.
-    native_extensions = credential_extensions + authored_native_extensions
+    framework_extensions = credential_extensions + authored_framework_extensions
     provider = discovered_extensions.checkpointer
     # Managed compilation owns framework adaptation. Native wrappers would
     # create a second authority outside that portable ownership boundary.
     if not isinstance(provider, HarnestStore):
         raise BundleConventionError(
-            "managed agents require a Harnest checkpoint store; native "
-            "LangGraphStore and ADKStore are advanced-mode ownership wrappers"
+            "managed agents require a Harnest checkpoint store; framework-specific "
+            "storage is an advanced-mode ownership wrapper"
         )
-    native_checkpointer = _managed_checkpointer(provider, framework)
+    framework_checkpointer = _managed_checkpointer(provider, framework)
     skill_scopes: dict[str, SkillScope] = {}
     if isinstance(value, AgentDefinition):
         definition = _compose_definition(
@@ -494,8 +504,8 @@ def _compile_managed_application(
         sandbox_definition = definition
         target = backend.lower_managed(
             definition,
-            native_extensions=native_extensions,
-            checkpointer=native_checkpointer,
+            framework_extensions=framework_extensions,
+            checkpointer=framework_checkpointer,
         )
     else:
         graph = _resolve_graph_resources(
@@ -509,19 +519,19 @@ def _compile_managed_application(
         sandbox_definition = graph
         target = backend.lower_managed(
             graph,
-            native_extensions=native_extensions,
-            checkpointer=native_checkpointer,
+            framework_extensions=framework_extensions,
+            checkpointer=framework_checkpointer,
         )
 
     # Extensions wrap the completed target because capability composition must
     # finish first and remain independent of runtime lifecycle behavior.
     try:
-        native_app = backend.wrap_managed(
-            target, native_extensions=native_extensions
+        framework_app = backend.wrap_managed(
+            target, framework_extensions=framework_extensions
         )
-    except BackendDependencyError as exc:
+    except FrameworkDependencyError as exc:
         raise BundleImportError(str(exc)) from exc
-    except AdvancedBackendValidationError as exc:
+    except AdvancedTargetError as exc:
         raise BundleConventionError(str(exc)) from exc
     application_name = getattr(target, "name", value.name)
     tasks, crons = _discover_tasks_and_crons(anchor.parent, application_name)
@@ -534,10 +544,10 @@ def _compile_managed_application(
         framework=framework,
         mode=mode,
         target=target,
-        native_app=native_app,
+        framework_app=framework_app,
         managed_definition=sandbox_definition,
-        native_extensions=native_extensions,
-        native_checkpointer=native_checkpointer,
+        framework_extensions=framework_extensions,
+        framework_checkpointer=framework_checkpointer,
         kind="agent" if isinstance(value, AgentDefinition) else "graph",
         lifecycle_extensions=portable_extensions,
         session_store=discovered_extensions.session_store,
@@ -584,16 +594,57 @@ def _advanced_skill_registry(
         raise BundleSkillError(str(exc)) from exc
 
 
+def _lowering_adapter(framework: str) -> Any:
+    """Select the adapter that lowers this compile's root; tests replace this seam."""
+
+    return get_framework(framework)
+
+
+def _supports(framework: str, capability: Capability) -> bool:
+    """Report one optional capability; unregistered names are rejected elsewhere."""
+
+    try:
+        return get_framework(framework).supports(capability)
+    except UnknownFrameworkError:
+        return False
+
+
+def _warn_unused_generation_config(root: Any | None, framework: str) -> None:
+    """Tell authors when the selected framework ignores generate_content_config."""
+
+    # Advanced roots are native objects; only managed definitions carry the field.
+    if root is None or _supports(framework, Capability.GENERATE_CONTENT_CONFIG):
+        return
+    from .agent_tree import walk_agent_tree
+
+    names = sorted(
+        value.name
+        for value in walk_agent_tree(root)
+        if isinstance(value, AgentDefinition) and value.generate_content_config is not None
+    )
+    if names:
+        display = get_framework(framework).metadata.display_name
+        warnings.warn(
+            f"{display} does not use generate_content_config; ignoring it on "
+            f"{', '.join(repr(name) for name in names)}",
+            UserWarning,
+            stacklevel=2,
+        )
+
+
+def _framework_rule(call: Callable[..., _T], *args: Any) -> _T:
+    """Report a framework ownership rule as a bundle convention error."""
+
+    try:
+        return call(*args)
+    except FrameworkConventionError as exc:
+        raise BundleConventionError(str(exc)) from exc
+
+
 def _managed_checkpointer(provider: HarnestStore, framework: str) -> Any:
     """Adapt Harnest storage only when the framework owns checkpoint calls."""
 
-    # ADK resumability persists through its runtime services, while LangGraph
-    # requires its checkpoint protocol to be installed during graph compilation.
-    if framework == "adk":
-        return None
-    from .checkpoint_langgraph import HarnestCheckpointSaver
-
-    return HarnestCheckpointSaver(provider)
+    return get_framework(framework).managed_checkpointer(provider)
 
 
 def _validate_advanced_checkpointer(
@@ -604,62 +655,45 @@ def _validate_advanced_checkpointer(
 ) -> None:
     """Enforce one visible checkpoint authority for each advanced framework."""
 
-    if framework == "langgraph":
-        _validate_advanced_langgraph_checkpointer(advanced.target, provider)
-        return
-    if not isinstance(provider, (HarnestStore, ADKStore)):
-        raise BundleConventionError(
-            "advanced ADK agents require HarnestStore or ADKStore checkpoint ownership"
-        )
-    if advanced.native_app is None:
-        return
-    config = getattr(advanced.native_app, "resumability_config", None)
-    if not bool(getattr(config, "is_resumable", False)):
-        raise BundleConventionError(
-            "advanced ADK App must enable ResumabilityConfig(is_resumable=True)"
-        )
+    _framework_rule(
+        get_framework(framework).validate_advanced_checkpointer, advanced, provider
+    )
 
 
-def _ensure_adk_resumability(advanced: Any, *, framework: str) -> Any:
-    """Enable the ADK capability required by the checkpoint contract."""
+def _prepare_advanced(advanced: Any, *, framework: str) -> Any:
+    """Enable framework features the checkpoint contract requires."""
 
-    if framework != "adk" or advanced.native_app is None:
-        return advanced
-    config = getattr(advanced.native_app, "resumability_config", None)
-    if bool(getattr(config, "is_resumable", False)):
-        return advanced
-    from google.adk.apps.app import ResumabilityConfig
-    from ._adk_warnings import suppress_adk_warnings
-
-    with suppress_adk_warnings("resumability"):
-        native_app = advanced.native_app.model_copy(
-            update={"resumability_config": ResumabilityConfig(is_resumable=True)}
-        )
-    return replace(advanced, native_app=native_app)
+    return get_framework(framework).prepare_advanced(advanced)
 
 
-def _validate_advanced_langgraph_checkpointer(
-    target: Any, provider: CheckpointAuthority
-) -> None:
-    """Match lifecycle ownership to the checkpointer compiled into the graph."""
+def _attach_advanced_framework_extensions(
+    advanced: Any,
+    framework_extensions: Sequence[Any],
+    *,
+    framework: str,
+    prepend_extensions: Sequence[Any] = (),
+) -> Any:
+    """Attach native extensions only where the framework keeps construction mutable."""
 
-    native = getattr(target, "checkpointer", None)
-    if isinstance(provider, LangGraphStore):
-        if native is not provider:
-            raise BundleConventionError(
-                "advanced LangGraph target must compile with the same LangGraphStore "
-                "returned by @lifecycle.storage.checkpoints"
-            )
-        return
-    if not isinstance(provider, HarnestStore):
-        raise BundleConventionError(
-            "advanced LangGraph agents require HarnestStore or LangGraphStore"
-        )
-    if getattr(native, "store", None) is not provider:
-        raise BundleConventionError(
-            "advanced LangGraph target must compile with "
-            "store.as_langgraph_checkpointer() when Harnest owns checkpointing"
-        )
+    return _framework_rule(
+        get_framework(framework).attach_advanced_extensions,
+        advanced,
+        framework_extensions,
+        prepend_extensions,
+    )
+
+
+def _credential_framework_extensions(
+    provider: Any,
+    framework_extensions: Sequence[Any],
+    *,
+    framework: str,
+) -> tuple[Any, ...]:
+    """Bind private credentials through any framework-specific run surface."""
+
+    return _framework_rule(
+        get_framework(framework).credential_extensions, provider, framework_extensions
+    )
 
 
 def _load_extensions(
@@ -685,65 +719,6 @@ def _load_extensions(
         return discover_extension_sources(sources, framework=framework)
     except ExtensionDiscoveryError as exc:
         raise BundleConventionError(str(exc)) from exc
-
-
-def _attach_advanced_native_extensions(
-    advanced: Any,
-    native_extensions: Sequence[Any],
-    *,
-    framework: str,
-    prepend_extensions: Sequence[Any] = (),
-) -> Any:
-    """Attach ADK plugins only where native construction remains mutable."""
-
-    if not native_extensions and not prepend_extensions:
-        return advanced
-    if framework == "langgraph":
-        raise BundleConventionError(
-            "advanced LangGraph applications cannot attach discovered middleware "
-            "after graph compilation; apply it before Agent.advanced(...)"
-        )
-    app = advanced.native_app
-    if app is None:
-        raise BundleConventionError("advanced ADK lifecycle plugins require an ADK App")
-    # Harnest-owned security binders must run before plugins already attached
-    # to an advanced App; ordinary discovered plugins retain append semantics.
-    plugins = (
-        tuple(prepend_extensions)
-        + tuple(getattr(app, "plugins", ()))
-        + tuple(native_extensions)
-    )
-    names = [getattr(plugin, "name", None) for plugin in plugins]
-    duplicates = sorted({name for name in names if name and names.count(name) > 1})
-    if duplicates:
-        raise BundleConventionError(
-            "duplicate ADK application plugin names: " + ", ".join(duplicates)
-        )
-    native_app = app.model_copy(update={"plugins": list(plugins)})
-    return replace(advanced, native_app=native_app)
-
-
-def _credential_native_extensions(
-    provider: Any,
-    native_extensions: Sequence[Any],
-    *,
-    framework: str,
-) -> tuple[Any, ...]:
-    """Bind private credentials across ADK's neutral and native run surfaces."""
-
-    if provider is None or framework != "adk":
-        return ()
-    from .credentials_adk import adk_credential_plugin
-
-    plugin = adk_credential_plugin(provider)
-    if any(
-        getattr(candidate, "name", None) == plugin.name
-        for candidate in native_extensions
-    ):
-        raise BundleConventionError(
-            f"ADK plugin name {plugin.name!r} is reserved by Harnest credentials"
-        )
-    return (plugin,)
 
 
 def compile_artifact(
@@ -791,6 +766,9 @@ def compile_artifact(
         anchor, entrypoint=entrypoint, framework=framework, mode=mode
     )
     try:
+        # Keep warning-as-error failures inside extension cleanup. The loader
+        # recompiles on startup, so emit this warning only when building artifacts.
+        _warn_unused_generation_config(built.managed_definition, framework)
         output_directory.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(
@@ -980,7 +958,7 @@ def _write_artifact_loader(
         f"        framework={framework!r},\n"
         f"        mode={mode!r},\n"
         "    )\n"
-        "app = application.native_app or application.target\n"
+        "app = application.framework_app or application.target\n"
         "root_agent = application.target\n",
         encoding="utf-8",
     )
@@ -1145,7 +1123,7 @@ def _replace_artifact(staging: Path, output: Path) -> None:
 
 
 def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
-    """Discover sibling resources and build an ADK root agent.
+    """Discover sibling resources and lower with Harnest's selected framework.
 
     Pass ``__file__`` from an agent folder's ``agent.py``. Public Python files
     below ``tools/``, ``subagents/``, and ``mcp/`` are imported in
@@ -1159,7 +1137,9 @@ def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
     validated_anchor = _validate_anchor(anchor)
     with _bundle_library(validated_anchor.parent), independent_sandbox_catalog():
         definition = _compose_definition(validated_anchor, root)
-        return definition.build()
+        return current_framework().lower_agent(
+            definition, framework_extensions=(), checkpointer=None
+        )
 
 
 def discover_evals(anchor: str | Path) -> EvalSuite:
@@ -1421,7 +1401,14 @@ def _validate_graph_resource_consumption(
 
 
 def _root_agent_consumes(kind: str, present: bool, framework: str) -> bool:
-    return present and (kind == "tool" or (kind == "subagent" and framework == "adk"))
+    """Report whether a managed root agent consumes one resource kind directly."""
+
+    if not present:
+        return False
+    return kind == "tool" or (
+        kind == "subagent"
+        and _supports(framework, Capability.ROOT_AGENT_SUBAGENTS)
+    )
 
 
 def _reject_unconsumed_graph_capabilities(
@@ -1721,7 +1708,7 @@ def _extension_skill_directories(
 def _validate_framework_evals(directory: Path, framework: str) -> None:
     """Validate the shared eval-set contract before either backend is lowered."""
 
-    if framework in {"adk", "langgraph"}:
+    if _supports(framework, Capability.EVALS):
         _discover_evals(directory)
 
 
@@ -1732,7 +1719,9 @@ def _agent_subagents_for_framework(
 ) -> tuple[AgentDefinition | _AdvancedAgentDefinition, ...]:
     """Return filesystem subagents consumable by the selected framework shape."""
 
-    if framework != "langgraph":
+    # Frameworks whose root agent consumes subagents directly accept them
+    # anywhere; the rest only accept subagents inside a graph resource context.
+    if _supports(framework, Capability.ROOT_AGENT_SUBAGENTS):
         return discovered
     if discovered and not graph_resource_context:
         rendered = ", ".join(
@@ -2590,8 +2579,18 @@ def _skill_directories(directory: Path) -> tuple[Path, ...]:
 
 def _discover_evals(directory: Path) -> EvalSuite:
     """Load evaluation files with actionable guidance for incomplete suites."""
+    from ._eval_runner_config import read_runners
+
     if directory.is_symlink():
         raise BundleConventionError(f"evals directory cannot be a symlink: {directory}")
+    if any(runner.name == "adk" for runner in read_runners(directory.parent)):
+        return _discover_adk_eval_files(directory)
+    # A custom-only runner owns its dataset format and need not install ADK.
+    return EvalSuite(())
+
+
+def _discover_adk_eval_files(directory: Path) -> EvalSuite:
+    """Validate only the built-in runner’s flat EvalSet and criteria files."""
     if not directory.exists():
         return EvalSuite(())
     if not directory.is_dir():
@@ -2647,9 +2646,10 @@ def _eval_file_kind(path: Path) -> str:
 
 
 def _validate_eval_files(eval_paths: Sequence[Path], config_path: Path | None) -> None:
+    from .evaluation import _eval_file_schemas
+
     try:
-        from google.adk.evaluation.eval_config import EvalConfig
-        from google.adk.evaluation.eval_set import EvalSet
+        EvalSet, EvalConfig = _eval_file_schemas()
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise BundleImportError(
             "discovered evals require Google ADK 2.x evaluation support"

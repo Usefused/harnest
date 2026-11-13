@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .frameworks.base import FrameworkName
+
 if TYPE_CHECKING:
     import httpx
 
@@ -15,7 +17,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
-MCPFramework = Literal["adk", "langgraph"]
+MCPFramework = FrameworkName
 MCPLifecycleValue: TypeAlias = Any | Awaitable[Any]
 
 _RESOURCE_ATTRIBUTE = "__harnest_mcp_lifecycle_resources__"

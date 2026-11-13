@@ -1,3 +1,5 @@
+// Compiles and deploys many bundles concurrently and records each result.
+
 package engine
 
 import (

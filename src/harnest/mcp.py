@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from google.adk.tools.base_toolset import BaseToolset
 
 import os
 import re
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence, cast
 
+from .frameworks.base import FrameworkName
 from .agent.approval import (
     ApprovalPolicy,
     authorize_mcp,
@@ -29,7 +28,6 @@ from .mcp_lifecycle import (
     _MCPClientLifecycleBinding,
     _MCPClientLifecycleController,
     _mcp_lifecycle_controller,
-    attach_mcp_lifecycle,
 )
 from .mcp_context import (
     MCPClientUnavailableError, MCPContext, MCPContextUnavailableError,
@@ -40,9 +38,6 @@ from .mcp_resources import MCPResourceClient, MCPResourceError
 from .mcp_subscriptions import MCPResourceEvent, MCPSubscription, SubscriptionLifecycle
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
-_ADK_PUBLIC_NAME = "__harnest_mcp_public_name__"
-_ADK_CLIENT_NAME = "__harnest_mcp_client_name__"
-_ADK_APPROVAL_WRAPPED = "__harnest_mcp_approval_wrapped__"
 
 __all__ = [
     "MCPClientUnavailableError", "MCPContext", "MCPContextUnavailableError",
@@ -284,12 +279,13 @@ class MCPClient:
                 raise TypeError(f"MCP {name} must be a sequence of non-empty identifiers")
             object.__setattr__(self, name, tuple(value))
 
-    def connect(self, *, framework: Literal["adk", "langgraph"] = "langgraph") -> Any:
-        """Open a developer-owned read client using the configured lifecycle and credentials."""
+    def connect(self) -> AbstractAsyncContextManager[MCPResourceClient]:
+        """Open a read client using Harnest's selected framework and credentials."""
 
+        from .frameworks.context import current_framework
         from .mcp_resources import managed_resource_client
 
-        return managed_resource_client(self, framework=framework)
+        return managed_resource_client(self, framework=current_framework().name)
 
     def _validate_permissions(self) -> None:
         """Freeze client and tool requirements using permissioned-tool identifiers."""
@@ -355,179 +351,10 @@ class MCPClient:
         if self.transport not in {"stdio", "sse", "streamable-http"}:
             raise ValueError(f"unsupported MCP transport: {self.transport}")
 
-    def to_adk_toolset(self) -> Any:
-        """Use native transport while preserving portable expansion and failure rules."""
-
-        classes = _adk_mcp_classes()
-        binding = self._lifecycle_binding("adk")
-        toolset = self._construct_adk_toolset(classes, binding)
-        _attach_adk_mcp_toolset_metadata(
-            toolset,
-            public_name=self.identity or self.tool_name_prefix or self._client_name(),
-            client_name=self._client_name(),
-            approval_wrapped=self.approval is not None,
-        )
-        for runtime_binding in self._runtime_bindings("adk"):
-            attach_mcp_lifecycle(toolset, runtime_binding)
-        return toolset
-
-    def _construct_adk_toolset(self, classes: tuple[type[Any], ...], binding: _MCPClientLifecycleBinding | None) -> BaseToolset:
-        """Keep portable parameter and constructor failures inside their component."""
-        from .agent_plugin_runtime import disabled_adk_toolset, portable_adk_toolset
-        try:
-            connection = self._adk_connection(classes, binding=binding)
-            toolset_type = self._adk_toolset_type(classes[0])
-            if self.portable is not None:
-                toolset_type = portable_adk_toolset(toolset_type, self)
-            return toolset_type(
-                connection_params=connection,
-                tool_filter=list(self.tool_filter) if self.tool_filter is not None else None,
-                tool_name_prefix=self.tool_name_prefix,
-            )
-        except Exception as error:
-            if self.portable is None:
-                raise
-            self.portable.failed(error)
-            return disabled_adk_toolset()
-
-    def _adk_toolset_type(self, base: Any) -> Any:
-        """Project remote tools and local context operations through one client policy."""
-
-        configured = self
-        policy = self.approval
-        required_permission = self.permission
-        tool_permissions = dict(self.tool_permissions)
-        client_name = self._client_name()
-        public_name = self.identity or self.tool_name_prefix or client_name
-
-        class GovernedMcpToolset(base):
-            """Apply approval and principal projection after ADK discovery."""
-
-            # Invocation adapters need the canonical capability key without
-            # retaining the MCPClient, whose fields include raw connection data.
-            __harnest_mcp_public_name__ = public_name
-            __harnest_mcp_client_name__ = client_name
-            __harnest_mcp_approval_wrapped__ = policy is not None
-
-            async def get_tools(self, readonly_context: Any = None) -> list[Any]:
-                """Apply client authorization before discovery, then project each operation."""
-
-                from .agent_principal import (
-                    attach_required_permissions,
-                    capability_is_available,
-                    permissions_are_available,
-                )
-
-                client_requirements = (
-                    () if required_permission is None else (required_permission,)
-                )
-                # Even an otherwise ungoverned client must cross principal
-                # projection so an active principal cannot discover untagged tools.
-                untagged_client = not client_requirements and not tool_permissions
-                if (
-                    untagged_client
-                    and not permissions_are_available(())
-                ) or (
-                    client_requirements
-                    and not permissions_are_available(client_requirements)
-                ):
-                    return []
-                from .mcp_resources import discover_remote_tools
-
-                native = super().get_tools
-                tools = await discover_remote_tools(lambda: native(readonly_context), configured, "adk")
-                names = tuple(
-                    str(getattr(tool, "name", ""))
-                    for tool in tools
-                )
-                _validate_mcp_permission_tools(tool_permissions, names, client_name)
-                if policy is not None:
-                    _validate_approval_tools(policy, names, capability_id=client_name)
-                selected: list[Any] = []
-                for remote_tool in tools:
-                    # BaseToolset applies its presentation prefix only after
-                    # this method returns, so these are canonical remote names.
-                    name = str(getattr(remote_tool, "name", ""))
-                    requirements = tuple(
-                        item
-                        for item in (required_permission, tool_permissions.get(name))
-                        if item is not None
-                    )
-                    attach_required_permissions(remote_tool, requirements)
-                    if policy is not None and policy.applies_to(name):
-                        # ADK creates MCP tools only after discovery. Wrapping its
-                        # public execution method is the only point that can audit
-                        # success after transport I/O without copying MCP internals.
-                        remote_tool.run_async = _guard_adk_mcp_tool(
-                            remote_tool.run_async,
-                            client_name=client_name,
-                            tool_name=name,
-                            policy=policy,
-                        )
-                    if capability_is_available(remote_tool):
-                        selected.append(remote_tool)
-                from .mcp_capability_tools import model_capability_tools
-                from .mcp_resources import tool_capabilities
-
-                local = self.get_context_tools(tools)
-                capabilities = await tool_capabilities(
-                    tools, configured, "adk", session_manager=getattr(self, "_mcp_session_manager", None),
-                )
-                selected.extend(model_capability_tools(local, configured, capabilities))
-                return selected
-
-            def get_context_tools(self, existing: list[Any]) -> list[Any]:
-                """Build developer operations independently of the model's capability projection."""
-
-                from .agent_principal import capability_is_available
-                from .mcp_capability_tools import adk_capability_tools
-
-                # Local helpers already carry canonical aliases. Exclude model
-                # projections before checking collisions with remote names.
-                remote = [tool for tool in existing if not getattr(tool, "__harnest_mcp_capability__", None)]
-                return [tool for tool in adk_capability_tools(configured, remote) if capability_is_available(tool)]
-
-        return GovernedMcpToolset
-
     def _client_name(self) -> str:
         """Return the canonical capability identity used by approval and audit."""
 
         return self.capability_id or self.identity or self.tool_name_prefix or "mcp"
-
-    def _adk_connection(
-        self,
-        classes: tuple[Any, ...],
-        *,
-        binding: _MCPClientLifecycleBinding | None = None,
-    ) -> Any:
-        """Build ADK parameters and install the portable HTTP-client seam."""
-
-        _, sse_params, stdio_params, stream_params, server_parameters = classes
-        if self.transport == "stdio":
-            return self._adk_stdio(stdio_params, server_parameters)
-        params = sse_params if self.transport == "sse" else stream_params
-        kwargs: dict[str, Any] = {
-            "url": self._expand(self.url or ""),
-            "headers": {
-                key: self._expand(value) for key, value in self.headers.items()
-            },
-            "timeout": self.timeout_seconds,
-            "sse_read_timeout": self.sse_read_timeout_seconds,
-        }
-        if binding is not None:
-            # Both framework adapters own and close each returned session client.
-            kwargs["httpx_client_factory"] = binding.client_factory()
-        if self.portable is not None:
-            from .agent_plugin_runtime import portable_http_factory
-            kwargs["httpx_client_factory"] = portable_http_factory(self.url or "")
-        return params(**kwargs)
-
-    def _adk_stdio(self, params: Any, server_parameters: Any) -> Any:
-        """Share stdio configuration without host expansion of portable fields."""
-        configuration = self._stdio_configuration()
-        configuration["env"] = configuration["env"] or None
-        server = server_parameters(**configuration)
-        return params(server_params=server, timeout=self.timeout_seconds)
 
     def _expand(self, value: str) -> str:
         """Keep portable HTTP fields literal and native factory environment support."""
@@ -544,8 +371,8 @@ class MCPClient:
             value["cwd"] = _expand(self.cwd)
         return value
 
-    def to_langgraph_connection(self) -> dict[str, Any]:
-        """Return a LangChain MCP adapter connection without opening it."""
+    def connection_options(self) -> dict[str, Any]:
+        """Return this server's connection options without opening a session."""
 
         if self.transport == "stdio":
             return {
@@ -579,7 +406,7 @@ class MCPClient:
         return connection
 
     def _lifecycle_binding(
-        self, framework: Literal["adk", "langgraph"]
+        self, framework: FrameworkName
     ) -> _MCPClientLifecycleBinding | None:
         """Resolve a privacy-safe framework binding for this connection."""
 
@@ -594,56 +421,6 @@ class MCPClient:
             url=self._expand(self.url or ""),
         )
         return _MCPClientLifecycleBinding(controller, context)
-
-
-def _guard_adk_mcp_tool(
-    operation: Any,
-    *,
-    client_name: str,
-    tool_name: str,
-    policy: ApprovalPolicy,
-) -> Any:
-    async def guarded(*, args: dict[str, Any], tool_context: Any) -> Any:
-        return await _invoke_governed_mcp_call(
-            lambda: operation(args=args, tool_context=tool_context),
-            client_name=client_name,
-            tool_name=tool_name,
-            arguments=args,
-            policy=policy,
-        )
-
-    return guarded
-
-
-def _adk_mcp_toolset_metadata(toolset: Any) -> tuple[str, str, bool]:
-    """Return only the adapter facts needed to bind invocation-scoped tools."""
-
-    public_name = getattr(toolset, _ADK_PUBLIC_NAME, None)
-    client_name = getattr(toolset, _ADK_CLIENT_NAME, None)
-    approval_wrapped = getattr(toolset, _ADK_APPROVAL_WRAPPED, None)
-    if not isinstance(public_name, str) or not public_name:
-        raise TypeError("ADK MCP toolset is missing Harnest public-name metadata")
-    if not isinstance(client_name, str) or not client_name:
-        raise TypeError("ADK MCP toolset is missing Harnest capability metadata")
-    if not isinstance(approval_wrapped, bool):
-        raise TypeError("ADK MCP toolset is missing Harnest governance metadata")
-    return public_name, client_name, approval_wrapped
-
-
-def _attach_adk_mcp_toolset_metadata(
-    toolset: Any,
-    *,
-    public_name: str,
-    client_name: str,
-    approval_wrapped: bool,
-) -> None:
-    """Attach stable adapter facts without retaining the connection declaration."""
-
-    # Some ADK releases use Pydantic models that reject undeclared setattr even
-    # though the runtime object can safely carry private integration metadata.
-    object.__setattr__(toolset, _ADK_PUBLIC_NAME, public_name)
-    object.__setattr__(toolset, _ADK_CLIENT_NAME, client_name)
-    object.__setattr__(toolset, _ADK_APPROVAL_WRAPPED, approval_wrapped)
 
 
 async def _invoke_governed_mcp_call(
@@ -744,49 +521,3 @@ def _validate_mcp_permission_tools(
             f"MCP capability {capability_id!r} permissions reference unavailable "
             f"tools: {', '.join(missing)}"
         )
-
-
-def _adk_mcp_classes() -> tuple[Any, ...]:
-    """Load ADK MCP types without leaking Harnest-owned feature warnings."""
-
-    from ._adk_warnings import suppress_adk_warnings
-
-    try:
-        # Importing ADK MCP support instantiates its experimental auth registry.
-        # Harnest owns that choice, so the upstream warning is not user-actionable.
-        with suppress_adk_warnings("pluggable_auth"):
-            from google.adk.tools.mcp_tool import (
-                McpToolset, SseConnectionParams, StdioConnectionParams,
-                StreamableHTTPConnectionParams,
-            )
-            from mcp import StdioServerParameters
-    except ImportError:  # pragma: no cover - depends on optional runtime
-        return _fallback_adk_mcp_classes()
-    return (McpToolset, SseConnectionParams, StdioConnectionParams,
-            StreamableHTTPConnectionParams, StdioServerParameters)
-
-
-def _fallback_adk_mcp_classes() -> tuple[Any, ...]:
-    """Load ADK MCP types from their defining compatibility modules."""
-
-    from ._adk_warnings import suppress_adk_warnings
-
-    # ADK releases differ in what mcp_tool re-exports, so use the defining
-    # modules as a compatibility seam for the supported 2.x line.
-    try:
-        with suppress_adk_warnings("pluggable_auth"):
-            from google.adk.tools.mcp_tool.mcp_session_manager import (
-                SseConnectionParams, StdioConnectionParams,
-                StreamableHTTPConnectionParams,
-            )
-            from mcp import StdioServerParameters
-            try:
-                from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-            except ImportError:
-                from google.adk.tools.mcp_tool import McpToolset
-    except ImportError as exc:  # pragma: no cover - optional runtime
-        raise RuntimeError(
-            "google-adk with MCP support is required to use MCPClient"
-        ) from exc
-    return (McpToolset, SseConnectionParams, StdioConnectionParams,
-            StreamableHTTPConnectionParams, StdioServerParameters)

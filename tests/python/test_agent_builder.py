@@ -256,7 +256,7 @@ class AgentBuilderTests(_BuilderFixture):
         current = self.document("instructions.md")
         self.assertEqual(self.save([current, current]).status_code, 422)
 
-    def test_components_create_native_files_and_refuse_collisions(self):
+    def test_components_create_framework_extension_files_and_refuse_collisions(self):
         """Non-command resources become source immediately and never replace an existing identity."""
         for kind in ("skill", "plugin", "model", "library", "test", "smoke", "storage", "sandbox", "cron", "client-input", "ui-event", "agui"):
             body = {"project": "sample", "kind": kind, "name": "example_" + kind.replace("-", "_")}

@@ -18,7 +18,7 @@ import yaml
 from .application_layout import ApplicationLayoutError, lifecycle_directory
 from .extension_descriptors import (
     ExtensionConventionError,
-    discover_application_extensions,
+    discover_upgrade_application_extensions,
     discover_legacy_extensions,
 )
 from .upgrade import UpgradeAction, _file_digest, _tree_digest, _rewrite
@@ -29,7 +29,7 @@ def plan_application_layout(root: Path, actions: list, blockers: list[str]) -> N
 
     try:
         directory = lifecycle_directory(root)
-        canonical = discover_application_extensions(root)
+        canonical = discover_upgrade_application_extensions(root)
         legacy = discover_legacy_extensions(root / "plugins")
     except (ApplicationLayoutError, ExtensionConventionError) as error:
         blockers.append(str(error))

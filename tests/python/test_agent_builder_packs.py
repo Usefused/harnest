@@ -25,7 +25,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "studio/src"))
 from harnest_builder.app import create_app
-from harnest_builder.pack_distribution import package_packs
+from harnest.authoring.distribution import build_pack
 from harnest_builder.packs import Packs
 from harnest_builder.prompting import Prompt, propose
 
@@ -39,7 +39,7 @@ class StudioPackTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.pack = self.root / "pack"
-        shutil.copytree(ROOT / "examples/studio-packs/company-support", self.pack)
+        shutil.copytree(ROOT / "examples/packs/company-support", self.pack)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
         self.project = self.workspace / "existing"
@@ -63,10 +63,14 @@ class StudioPackTests(unittest.TestCase):
 
     def change_manifest(self, change):
         """Alter publisher inputs without mutating a previously loaded catalog snapshot."""
-        path = self.pack / "studio-pack.yaml"
-        manifest = yaml.safe_load(path.read_text())
+        path = self.pack / "pack.yaml"
+        document = yaml.safe_load(path.read_text())
+        studio = document.pop("studio", None) or {}
+        # Tests edit one flat view; Studio keys go back under `studio:`.
+        manifest = {**document, **studio}
         change(manifest)
-        path.write_text(yaml.safe_dump(manifest))
+        sections = {key: manifest.pop(key) for key in ("builder", "ui", "resources") if key in manifest}
+        path.write_text(yaml.safe_dump({**manifest, "studio": sections}))
 
     def test_catalog_is_shared_and_discovery_never_executes_pack_code(self):
         """Company resources have one identity in the UI, builder, and packaged snapshot."""
@@ -86,7 +90,8 @@ class StudioPackTests(unittest.TestCase):
         target = self.project / "tools/reference.py"
         self.assertFalse(target.exists())
         self.apply(review)
-        receipt = json.loads((self.project / "studio-packs.lock").read_text())
+        receipt = json.loads((self.project / "harnest-packs.lock").read_text())
+        self.assertEqual(receipt["version"], 2)
         item = receipt["resources"]["company-support/ticket-reference"]
         self.assertEqual(item["version"], "1.0.0")
         self.assertEqual(item["files"]["tools/reference.py"], hashlib.sha256(target.read_bytes()).hexdigest())
@@ -99,12 +104,29 @@ class StudioPackTests(unittest.TestCase):
         # A version-only upgrade needs a receipt diff, but unchanged source still guards the apply.
         self.packs.resources["company-support/ticket-reference"]["version"] = "1.0.1"
         stale = self.preview(["company-support/ticket-reference"], project="existing")
-        self.assertEqual([item["path"] for item in stale["files"]], ["studio-packs.lock"])
+        self.assertEqual([item["path"] for item in stale["files"]], ["harnest-packs.lock"])
         target.write_text("# employee edit\n")
         rejected = self.client.post("/api/packs/apply", json={"review": stale["review"]})
         self.assertEqual(rejected.status_code, 409)
         self.assertEqual(target.read_text(), "# employee edit\n")
         self.assertEqual(self.client.post("/api/packs/preview", json={"project": "existing", "resources": ["company-support/ticket-reference"]}).status_code, 409)
+
+    def test_receipts_share_the_pack_lock_and_legacy_lock_requires_upgrade(self):
+        """Studio adds receipts without disturbing project-pack versions and ownership claims."""
+        lock = self.project / "harnest-packs.lock"
+        lock.write_text(json.dumps({"version": 2, "packs": {"acme": 3}, "claims": [], "resources": {}}))
+        self.apply(self.preview(["company-support/ticket-reference"], project="existing"))
+        merged = json.loads(lock.read_text())
+        self.assertEqual(merged["packs"], {"acme": 3})
+        self.assertIn("company-support/ticket-reference", merged["resources"])
+        (self.project / "studio-packs.lock").write_text('{"version": 1, "resources": {}}')
+        response = self.client.post("/api/packs/preview", json={"resources": ["company-support/ticket-reference"], "project": "existing"})
+        self.assertNotEqual(response.status_code, 200)
+        self.assertIn("harnest upgrade", response.text)
+        (self.project / "studio-packs.lock").unlink()
+        lock.write_text(json.dumps({"version": 1, "packs": {}, "claims": []}))
+        response = self.client.post("/api/packs/preview", json={"resources": ["company-support/ticket-reference"], "project": "existing"})
+        self.assertIn("harnest upgrade", response.text)
 
     def test_template_bundle_composes_profile_and_preserves_other_projects(self):
         """Create a full native agent only after reviewing its composed source and configuration."""
@@ -193,23 +215,27 @@ class StudioPackTests(unittest.TestCase):
         self.assertEqual(repeated["files"], [])
         self.assertNotIn("pack_review", repeated)
 
-    def test_company_wheel_installs_with_embedded_pack_and_exact_dependency(self):
-        """Produce a real pip-installable artifact without copying unreferenced publisher files."""
-        (self.pack / "private.txt").write_text("must not ship")
-        wheel = package_packs([self.pack], self.root / "dist", "acme-studio", "1.0.0")
+    def test_pack_wheel_installs_the_studio_sub_pack_and_branded_command(self):
+        """`harnest pack build` ships the pack folder, never local env files or caches."""
+        (self.pack / ".env").write_text("TOKEN=must-not-ship")
+        (self.pack / "__pycache__").mkdir()
+        (self.pack / "__pycache__/cached.pyc").write_bytes(b"cache")
+        wheel = build_pack(self.pack, self.root / "dist")
         with ZipFile(wheel) as archive:
             names = archive.namelist()
-            self.assertFalse(any("private.txt" in name for name in names))
-            metadata = archive.read("acme_studio-1.0.0.dist-info/METADATA").decode()
-            self.assertIn("Requires-Dist: harnest-agent-builder==0.1.0", metadata)
-            records = list(csv.reader(StringIO(archive.read("acme_studio-1.0.0.dist-info/RECORD").decode())))
+            self.assertFalse(any(".env" in name or "__pycache__" in name for name in names))
+            metadata = archive.read("harnest_pack_company_support-1.0.0.dist-info/METADATA").decode()
+            self.assertIn("Name: harnest-pack-company-support", metadata)
+            self.assertNotIn("Requires-Dist", metadata)
+            records = list(csv.reader(StringIO(archive.read("harnest_pack_company_support-1.0.0.dist-info/RECORD").decode())))
             self.assertEqual({row[0] for row in records}, set(names))
+        self.assertEqual(build_pack(self.pack, self.root / "again").read_bytes(), wheel.read_bytes())
         target = self.root / "installed"
         result = subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", "--target", str(target), str(wheel)], capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
-        embedded = Packs([target / "acme_studio_studio/packs/company-support"])
+        embedded = Packs([target / "harnest_pack_company_support/pack"])
         self.assertEqual(embedded.catalog(), self.packs.catalog())
-        self.assertTrue((target / "bin/acme-studio").exists())
+        self.assertTrue((target / "bin/company-support").exists())
 
 
 class StudioBuilderConfigurationTests(unittest.TestCase):
@@ -236,12 +262,12 @@ class StudioBuilderConfigurationTests(unittest.TestCase):
             "model": "openai/company-model", "api_base": "https://ai.example.test/v1",
             "api_key_env": "COMPANY_TEST_KEY", "ca_bundle": "ca.pem", "timeout": 240, "max_tokens": 8192}))
         with patch.dict(os.environ, {"COMPANY_TEST_KEY": "never-embed-this-secret"}):
-            wheel = package_packs([self.pack], self.root / "dist", "configured-studio", "1.0.0")
+            wheel = build_pack(self.pack, self.root / "dist")
             with ZipFile(wheel) as archive:
                 self.assertFalse(any(b"never-embed-this-secret" in archive.read(name) for name in archive.namelist()))
                 archive.extractall(self.root / "relocated")
             shutil.rmtree(self.pack)
-            packs = Packs([self.root / "relocated/configured_studio_studio/packs/company-support"])
+            packs = Packs([self.root / "relocated/harnest_pack_company_support/pack"])
             config = BuilderConfiguration(packs)
             self.addCleanup(config.close)
             environment = config.environment
@@ -262,8 +288,8 @@ class StudioBuilderConfigurationTests(unittest.TestCase):
             "model": "openai/company", "api_base": "https://company.example/v1", "ca_bundle": "ca.pem"}))
         team = self.root / "team"
         team.mkdir()
-        (team / "studio-pack.yaml").write_text(yaml.safe_dump({"apiVersion": "harnest.dev/studio-pack/v1",
-            "name": "team", "title": "Team", "version": "1.0.0", "builder": {"max_tokens": 2048}}))
+        (team / "pack.yaml").write_text(yaml.safe_dump({"apiVersion": "harnest.dev/pack/v1",
+            "name": "team", "title": "Team", "version": "1.0.0", "studio": {"builder": {"max_tokens": 2048}}}))
         packs = Packs([self.pack, team])
         with patch.dict(os.environ, {"HARNEST_BUILDER_MODEL": "openai/local", "HARNEST_BUILDER_TIMEOUT_SECONDS": "300",
                                     "HARNEST_BUILDER_CA_BUNDLE": str(self.pack / "ca.pem")}):

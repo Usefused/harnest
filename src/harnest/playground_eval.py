@@ -13,8 +13,6 @@ from typing import Any, Mapping
 
 from .bundle import EvalSuite, discover_evals
 from .evaluation import (
-    EvaluationError,
-    adk_eval_agent_module,
     eval_config,
     eval_dependencies,
     require_eval_trajectory,
@@ -82,9 +80,10 @@ class PlaygroundEvalService:
         if path is None:
             raise KeyError(suite_id)
         async with self._run_lock:
-            from .eval_adk import adk_evaluation_runtime
+            from .frameworks.registry import get_framework
 
-            async with adk_evaluation_runtime(self._application, self._driver):
+            adapter = get_framework(self._application.framework)
+            async with adapter.evaluation_runtime(self._application, self._driver):
                 return await self._run_locked(path, trajectory)
 
     async def _run_locked(self, path: Path, trajectory: str) -> dict[str, Any]:
@@ -140,13 +139,10 @@ class PlaygroundEvalService:
     def _agent_module(self) -> Any:
         """Select native ADK fidelity or the active neutral LangGraph driver."""
 
-        if self._application.framework == "adk":
-            return adk_eval_agent_module(self._application)
-        from .eval_langgraph import runtime_eval_agent_module
+        from .frameworks.registry import get_framework
 
-        if self._driver is None:
-            raise EvaluationError("LangGraph playground evals require a runtime driver")
-        return runtime_eval_agent_module(self._driver)
+        adapter = get_framework(self._application.framework)
+        return adapter.playground_eval_agent_module(self._application, self._driver)
 
 
 def _suite_summary(path: Path) -> dict[str, Any]:
@@ -229,7 +225,8 @@ def _optional_float(value: str | None) -> float | None:
 
 
 def _has_failed_rows(rows: tuple[_EvalRow, ...]) -> bool:
-    return any(row.status != "passed" for row in rows)
+    """ADK efficiency observations do not decide whether a scored criterion passed."""
+    return any(row.status not in {"passed", "informational"} for row in rows)
 
 
 def _run_result(
@@ -282,9 +279,12 @@ def _metric_result(name: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
 
     selected = [row for row in rows if row.metric == name]
     scores = [row.score for row in selected if row.score is not None]
+    status = "failed" if _has_failed_rows(tuple(selected)) else "passed"
+    if {row.status for row in selected} == {"informational"}:
+        status = "informational"
     return {
         "name": name,
-        "status": "passed" if not _has_failed_rows(tuple(selected)) else "failed",
+        "status": status,
         "score": sum(scores) / len(scores) if scores else None,
         "threshold": selected[0].threshold if selected else None,
         "resultCount": len(selected),

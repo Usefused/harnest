@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Callable, Mapping, MutableMapping, TypeVar, overload
 
+from .frameworks.registry import framework_names
 from .lifecycle_transition import Finish, Next, TransitionContext
 from .lifecycle_coverage import CoverageLevel, LifecycleCoverage, lifecycle_coverage
 
@@ -35,6 +36,7 @@ _PHASES = frozenset(
         "before_http",
         "after_http",
         "on_http_error",
+        "http_agent_principal",
         "before_mcp",
         "after_mcp",
         "on_mcp_error",
@@ -42,8 +44,7 @@ _PHASES = frozenset(
 )
 _FACTORY_PHASES = frozenset(
     {
-        "adk_plugin",
-        "langgraph_middleware",
+        "framework_extension",
         "session_store",
         "checkpointer",
         "asset_store",
@@ -62,7 +63,6 @@ _FACTORY_PHASES = frozenset(
 # Improvement hooks take one argument and are bound to one reserved lifecycle
 # file each, so deleting that file is guaranteed to switch the feature off.
 _IMPROVEMENT_PHASES = frozenset({"eval_capture", "eval_redact"})
-_FRAMEWORKS = frozenset({"adk", "langgraph"})
 _REGISTRATION_ATTRIBUTE = "__harnest_lifecycle_registration__"
 _STORAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 _STORAGE_PHASES = frozenset(
@@ -90,6 +90,7 @@ _DECORATOR_PATHS = {
     "before_http": "http.before",
     "after_http": "http.after",
     "on_http_error": "http.on_error",
+    "http_agent_principal": "http.agent_principal",
     "before_mcp": "mcp.before",
     "after_mcp": "mcp.after",
     "on_mcp_error": "mcp.on_error",
@@ -151,7 +152,7 @@ class LifecycleContext(TransitionContext):
     attributes: MutableMapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.framework not in _FRAMEWORKS:
+        if self.framework not in framework_names():
             raise ValueError(f"unsupported lifecycle framework {self.framework!r}")
         for name in ("agent_name", "invocation_id", "user_id", "session_id"):
             value = getattr(self, name)
@@ -197,7 +198,7 @@ class ModelLifecycleContext(TransitionContext):
     session_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.framework not in _FRAMEWORKS:
+        if self.framework not in framework_names():
             raise ValueError(f"unsupported model lifecycle framework {self.framework!r}")
 
 
@@ -282,6 +283,9 @@ class _HTTPDecorators:
     before = _PhaseDecorator("before_http")
     after = _PhaseDecorator("after_http")
     on_error = _PhaseDecorator("on_http_error")
+    # Grants permissions to built-in invocation routes (/responses, live,
+    # AG-UI, A2A), which cannot pass an Agent Runtime Principal themselves.
+    agent_principal = _PhaseDecorator("http_agent_principal")
 
 
 class _MCPDecorators:
@@ -387,40 +391,26 @@ authenticate = _PhaseDecorator("authenticate")
 
 
 @overload
-def adk_plugin(function: _Hook, *, order: int = 0) -> _Hook: ...
+def framework_extension(function: _Hook, *, order: int = 0) -> _Hook: ...
 
 
 @overload
-def adk_plugin(function: None = None, *, order: int = 0) -> Callable[[_Hook], _Hook]: ...
+def framework_extension(
+    function: None = None, *, order: int = 0
+) -> Callable[[_Hook], _Hook]: ...
 
 
-def adk_plugin(
+def framework_extension(
     function: _Hook | None = None, *, order: int = 0
 ) -> _Hook | Callable[[_Hook], _Hook]:
-    """Register a native ADK plugin factory at the lifecycle boundary."""
+    """Register a zero-argument factory for one framework-specific extension.
 
-    decorator = _registration_decorator(
-        "adk_plugin", order=order, framework="adk"
-    )
-    return decorator if function is None else decorator(function)
+    The factory returns the selected framework's framework extension type, for
+    example an ADK ``BasePlugin`` or a LangChain ``AgentMiddleware``; the
+    compiler validates it against the project's framework.
+    """
 
-
-@overload
-def langgraph_middleware(function: _Hook, *, order: int = 0) -> _Hook: ...
-
-
-@overload
-def langgraph_middleware(function: None = None, *, order: int = 0) -> Callable[[_Hook], _Hook]: ...
-
-
-def langgraph_middleware(
-    function: _Hook | None = None, *, order: int = 0
-) -> _Hook | Callable[[_Hook], _Hook]:
-    """Register a native LangGraph middleware factory at the lifecycle boundary."""
-
-    decorator = _registration_decorator(
-        "langgraph_middleware", order=order, framework="langgraph"
-    )
+    decorator = _registration_decorator("framework_extension", order=order)
     return decorator if function is None else decorator(function)
 
 
@@ -517,7 +507,6 @@ __all__ = [
     "ModelLifecycleContext",
     "ModelMessage",
     "Next",
-    "adk_plugin",
     "agent",
     "authenticate",
     "coverage",
@@ -527,8 +516,8 @@ __all__ = [
     "http",
     "session",
     "http_routes",
-    "langgraph_middleware",
     "mcp",
+    "framework_extension",
     "model",
     "output_policy",
     "registrations_for",

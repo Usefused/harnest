@@ -26,6 +26,39 @@ _TRANSPORT_ARGUMENTS = frozenset(
 _BINDINGS_ATTRIBUTE = "__harnest_model_transport_bindings__"
 
 
+class FrameworkToolClient:
+    """Keep framework-executed functions out of LiteLLM's optional remote MCP gateway."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    async def acompletion(self, *args: Any, **kwargs: Any) -> Any:
+        """Route the final async request after framework tools and hooks are applied."""
+        _route_function_tools(args, kwargs)
+        return await self._delegate.acompletion(*args, **kwargs)
+
+    def completion(self, *args: Any, **kwargs: Any) -> Any:
+        """Apply the same tool ownership rule to synchronous and streaming calls."""
+        _route_function_tools(args, kwargs)
+        return self._delegate.completion(*args, **kwargs)
+
+
+def _route_function_tools(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """Bypass LiteLLM's MCP import only for a list of ordinary function schemas."""
+    tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+    if isinstance(tools, (list, tuple)) and tools and all(
+        isinstance(tool, Mapping) and tool.get("type") == "function" for tool in tools
+    ):
+        # ADK and LangGraph execute these functions, including Harnest MCP tools.
+        # Let LiteLLM handle mixed or provider-native tool lists as usual.
+        kwargs.setdefault("_skip_mcp_handler", True)
+
+
+def framework_adk_client(client_type: type[Any]) -> Any:
+    """Keep ADK's native client interface while routing framework-owned tool calls."""
+    return _borrow_adk_client(FrameworkToolClient(client_type()), client_type)
+
+
 @dataclass(frozen=True, slots=True, init=False, eq=False)
 class ModelTransportBinding:
     """Private configuration and a borrowed client for one authored model."""
@@ -74,22 +107,15 @@ class ModelTransportBinding:
         }
 
     def build_eval_model(self, model_name: str) -> Any:
-        """Build an ADK adapter sharing transport but never cleanup ownership."""
+        """Build an evaluator judge model sharing transport but never cleanup ownership."""
 
-        from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+        from .eval_model_transport import build_judge_model
 
-        # Agent generation settings must not replace a judge's temperature,
-        # sampling, or output contract; only transport/auth choices are shared.
-        arguments = self._transport_options()
-        if self._borrowed_client is not None:
-            # Hooks and lazy initialization belong to the original controller;
-            # constructing another lifecycle would create a second transport.
-            arguments["llm_client"] = _borrow_adk_client(
-                self._borrowed_client, LiteLLMClient
-            )
-        # Explicit native `client` options remain untouched in the arguments.
-        # In particular, no lifecycle resource is attached to this borrower.
-        return LiteLlm(model=model_name, **arguments)
+        return build_judge_model(
+            model_name,
+            transport_options=self._transport_options(),
+            borrowed_client=self._borrowed_client,
+        )
 
 
 def _same_transport_value(left: Any, right: Any) -> bool:
@@ -128,15 +154,15 @@ def _borrow_adk_client(client: Any, client_type: type[Any]) -> Any:
     class BorrowedADKClient(client_type):
         """Forward completions without exposing lifecycle cleanup ownership."""
 
-        async def acompletion(self, **kwargs: Any) -> Any:
+        async def acompletion(self, *args: Any, **kwargs: Any) -> Any:
             """Reuse the owner's asynchronous hooks and lazy transport."""
 
-            return await client.acompletion(**kwargs)
+            return await client.acompletion(*args, **kwargs)
 
-        def completion(self, **kwargs: Any) -> Any:
+        def completion(self, *args: Any, **kwargs: Any) -> Any:
             """Reuse the owner's synchronous hooks and lazy transport."""
 
-            return client.completion(**kwargs)
+            return client.completion(*args, **kwargs)
 
     return BorrowedADKClient()
 

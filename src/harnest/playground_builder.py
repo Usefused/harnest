@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 
-from .playground_authoring import AuthoringStore, authoring_audit, configured_workspace, mcp_source, require_name
+from .playground_authoring import AuthoringStore, authoring_audit, configured_eval_workspace, configured_workspace, mcp_source, require_name
 from .playground_mcp import _MCPRequest, _require_local, PlaygroundMCPService
 
 
@@ -63,12 +63,16 @@ def install_builder_routes(router: Any, studio: Any) -> None:
     """Capture CLI authoring ownership once; every operation still requires local access."""
 
     root = configured_workspace()
+    eval_root = configured_eval_workspace()
     store = AuthoringStore(root, studio) if root is not None else None
+    captures = AuthoringStore(eval_root, studio, eval_only=True) if eval_root and not store else None
 
-    def writable(request: Request) -> AuthoringStore:
-        """Reject direct/deployed launchers even if a caller can reach their loopback port."""
+    def writable(request: Request, *, eval_suite: bool = False) -> AuthoringStore:
+        """Grant plain local serve access only through the suite-restricted document store."""
 
         _require_local(request)
+        if eval_suite and captures is not None:
+            return captures
         if store is None:
             raise HTTPException(403, "Editing requires harnest serve --reload from the agent workspace")
         return store
@@ -78,20 +82,22 @@ def install_builder_routes(router: Any, studio: Any) -> None:
         """Tell both editors whether source persistence is available for this runtime."""
 
         _require_local(request)
+        if captures:
+            return captures.catalog()
         return store.catalog() if store else {"available": False, "scopes": [], "suites": [], "files": []}
 
     @router.get("/_harnest/authoring/document", include_in_schema=False)
     def document(path: str, request: Request) -> Any:
         """Read current authoring text and its conflict token rather than compiled text."""
 
-        return writable(request).read(path)
+        return writable(request, eval_suite=True).read(path)
 
     @router.put("/_harnest/authoring/document", include_in_schema=False)
     def save(body: DocumentWrite, request: Request) -> Any:
         """Save a validated document; compilation remains owned by the reload supervisor."""
 
         with authoring_audit("save"):
-            return writable(request).save(body.path, body.text, body.revision)
+            return writable(request, eval_suite=True).save(body.path, body.text, body.revision)
 
     @router.get("/_harnest/authoring/form", include_in_schema=False)
     def form(path: str, line: int, request: Request) -> Any:

@@ -1,5 +1,6 @@
 """Exercise the private-input boundary through real framework and HTTP paths."""
 
+from harnest.frameworks.adk.lowering import build_agent
 import asyncio
 import inspect
 import pickle
@@ -21,13 +22,13 @@ from harnest.agent import Agent, AgentRuntimePrincipal, client_input, client_too
 from harnest.agent.approval import ApprovalRun, require_human_approval
 from harnest.agent_principal import activate_agent_principal, create_agent_principal_binding
 from harnest.application import CompiledApplication
-from harnest.backends.langgraph import lower_agent
+from harnest.frameworks.langgraph.lowering import lower_agent
 from harnest.client_tool import ClientToolError, ClientToolExecution, InMemoryClientToolStore, client_tool_execution
-from harnest.durable import ResumeArtifact, native_durable_call
+from harnest.durable import ResumeArtifact, framework_durable_call
 from harnest.neutral_runtime import create_neutral_app
-from harnest.runtime_adk import ADKRuntimeDriver
+from harnest.frameworks.adk.runtime import ADKRuntimeDriver
 from harnest.runtime_contract import InvocationRequest, InvocationResult
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 
 from test_agui import _events
 from test_neutral_runtime import FakeDriver, HeaderAuthenticator
@@ -90,9 +91,9 @@ def native_driver(framework, operation):
     checkpoint = InMemorySaver()
     if framework == "adk":
         model = InputADKModel(model="offline")
-        target = Agent(name="private_reader", model=model, instruction="Connect the service.", tools=[operation]).build()
+        target = build_agent(Agent(name="private_reader", model=model, instruction="Connect the service.", tools=[operation]))
         app = CompiledApplication(name="private_reader", framework="adk", mode="managed",
-                                  target=target, native_app=App(name="private_reader", root_agent=target))
+                                  target=target, framework_app=App(name="private_reader", root_agent=target))
         return ADKRuntimeDriver(app), model, checkpoint
     model = InputGraphModel(responses=[AIMessage(content="", tool_calls=[
         {"name": "connect", "args": {"service": "mail"}, "id": "call"},
@@ -177,7 +178,7 @@ class PrivateInputTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ClientToolError):
             await operation(service="mail")
         artifact = ResumeArtifact("langgraph", "thread", "tool", "connect")
-        with native_durable_call(artifact):
+        with framework_durable_call(artifact):
             with self.assertRaisesRegex(ClientToolError, "durable"):
                 await operation(service="mail")
         await self.check_approval_permissions()

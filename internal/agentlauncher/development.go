@@ -1,5 +1,7 @@
 //go:build !harnest_release
 
+// Builds the launcher from source for contributor (non-release) builds.
+
 package agentlauncher
 
 import (

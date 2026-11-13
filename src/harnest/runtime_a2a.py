@@ -35,6 +35,7 @@ from a2a.types import (
 )
 from a2a.utils.errors import (
     ContentTypeNotSupportedError,
+    InvalidRequestError,
     TaskNotCancelableError,
     TaskNotFoundError,
     UnsupportedOperationError,
@@ -42,6 +43,8 @@ from a2a.utils.errors import (
 from starlette.exceptions import HTTPException
 
 from .agent.approval import ApprovalDenied, ApprovalRun
+from .agent_principal import AgentRuntimePrincipal
+from .http_agent_principal import BuiltinPrincipalPolicy
 from .output import _agent_metadata_from_runtime_event, _aggregate_token_usage
 from .runtime_auth import (
     AuthPrincipal,
@@ -60,6 +63,7 @@ from .runtime_invocation import InvocationCoordinator
 
 _STREAMING_STATE_KEY = "harnest.a2a.streaming"
 _PRINCIPAL_STATE_KEY = "harnest.a2a.principal"
+_CONNECTION_STATE_KEY = "harnest.a2a.connection"
 _TERMINAL_STATES = frozenset(
     {
         TaskState.TASK_STATE_COMPLETED,
@@ -92,13 +96,30 @@ class _HarnestA2AUser(User):
 class _HarnestCallContextBuilder(DefaultServerCallContextBuilder):
     """Bridge verified Harnest identity into the official A2A request context."""
 
+    def __init__(
+        self, principal_policy: BuiltinPrincipalPolicy | None = None
+    ) -> None:
+        """Apply the same grant policy to every configured A2A binding."""
+
+        super().__init__()
+        self._principal_policy = principal_policy or BuiltinPrincipalPolicy()
+
     def build(self, request: Any) -> ServerCallContext:
         """Retain the opaque principal privately while exposing only its ID."""
 
+        if self._principal_policy.refuses_all:
+            # Nothing can grant permissions here, so refuse the whole A2A
+            # surface at the HTTP boundary instead of failing tasks later.
+            raise HTTPException(
+                status_code=403, detail="Agent Runtime Principal is required"
+            )
         context = super().build(request)
         principal = principal_for(request)
         context.user = _HarnestA2AUser(principal)
         context.state[_PRINCIPAL_STATE_KEY] = principal
+        # Only the grant hook needs the original connection at task startup.
+        if self._principal_policy.grant is not None:
+            context.state[_CONNECTION_STATE_KEY] = request
         return context
 
 
@@ -303,7 +324,10 @@ class HarnestA2AExecutor(AgentExecutor):
     ) -> None:
         """Choose direct-message or task execution from the requested semantics."""
 
-        request = await self._invocation_request(context, principal.user_id)
+        agent_principal = await self._agent_principal(context)
+        request = await self._invocation_request(
+            context, principal.user_id, agent_principal
+        )
         tracked = _requires_task(context)
         run = start_approval_run(
             self._coordinator.approvals,
@@ -512,8 +536,22 @@ class HarnestA2AExecutor(AgentExecutor):
         published = published or await _initial_task(context, event_queue)
         await published.updater.failed(helpers.new_text_message(message))
 
+    async def _agent_principal(
+        self, context: RequestContext
+    ) -> AgentRuntimePrincipal | None:
+        """Grant this task's permissions before its session is created."""
+
+        connection = context.call_context.state.get(_CONNECTION_STATE_KEY)
+        try:
+            return await self._coordinator.builtin_agent_principal(connection)
+        except HTTPException as exc:
+            raise InvalidRequestError(message=str(exc.detail)) from exc
+
     async def _invocation_request(
-        self, context: RequestContext, user_id: str
+        self,
+        context: RequestContext,
+        user_id: str,
+        agent_principal: AgentRuntimePrincipal | None = None,
     ) -> InvocationRequest:
         """Authorize the A2A context as a Harnest session and validate its content."""
 
@@ -534,6 +572,7 @@ class HarnestA2AExecutor(AgentExecutor):
             invocation_id=_required_identifier(context.task_id, "task"),
             metadata=context.metadata,
             transport="a2a_stream" if _is_streaming(context) else "a2a",
+            agent_principal=agent_principal,
         )
 
     async def _ensure_session(
@@ -773,7 +812,9 @@ def mount_a2a_routes(
         task_store=store,
         agent_card=card,
     )
-    context_builder: ServerCallContextBuilder = _HarnestCallContextBuilder()
+    context_builder: ServerCallContextBuilder = _HarnestCallContextBuilder(
+        coordinator.principal_policy
+    )
     for binding, path, compat in bindings:
         routes = (
             create_jsonrpc_routes(

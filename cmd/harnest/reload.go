@@ -1,3 +1,5 @@
+// Hot reload for `harnest serve`: rebuilds an artifact generation when files change and swaps the server.
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -131,7 +134,7 @@ func (a *application) reloadBundleAndPython(
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
-	python, err := a.agentPython(command, bundle, runtimeEnvironmentProfile)
+	python, err := a.servePython(command, bundle)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
@@ -146,7 +149,7 @@ func (a *application) reloadBundleAndPython(
 	// Environment synchronization may update the shared framework pin. Resolve once more so
 	// the compiled generation and interpreter share the final dependency identity.
 	python.releaseLease()
-	python, err = a.agentPython(command, refreshed, runtimeEnvironmentProfile)
+	python, err = a.servePython(command, refreshed)
 	if err != nil {
 		return engine.Bundle{}, pythonSelection{}, err
 	}
@@ -155,6 +158,21 @@ func (a *application) reloadBundleAndPython(
 		python.releaseLease()
 	}
 	return final, python, err
+}
+
+// servePython includes the scorer when the Playground has a runnable suite.
+// Ignore scaffold placeholders so agents without suites use the runtime environment.
+func (a *application) servePython(command *cobra.Command, bundle engine.Bundle) (pythonSelection, error) {
+	entries, err := optionalRegularDirectoryEntries(filepath.Join(bundle.Directory, "evals"))
+	if err != nil {
+		return pythonSelection{}, err
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && !isPlaceholderResourceEntry(entry.Name()) && strings.HasSuffix(entry.Name(), ".evalset.json") {
+			return a.agentPython(command, bundle, evalEnvironmentProfile)
+		}
+	}
+	return a.agentPython(command, bundle, runtimeEnvironmentProfile)
 }
 
 // startReloadGeneration starts one process without coupling it to parent cancellation.

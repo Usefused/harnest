@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from harnest.frameworks.registry import framework_names
+
 
 def add_mcp_parser(subparsers: Any) -> None:
     """Share the connection selection and output contract across CLI operations."""
@@ -16,7 +18,7 @@ def add_mcp_parser(subparsers: Any) -> None:
     parser.add_argument("client")
     parser.add_argument("identifier", nargs="?")
     parser.add_argument("--project", type=Path, default=Path("."))
-    parser.add_argument("--framework", choices=("adk", "langgraph"), default="langgraph")
+    parser.add_argument("--framework", choices=framework_names(), default="langgraph")
     parser.add_argument("--arg", action="append", default=[])
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--catalog", choices=("tools", "resources", "resource-templates", "prompts"))
@@ -69,7 +71,11 @@ def _prompt_arguments(values: list[str]) -> dict[str, str]:
 async def _execute(configured: Any, args: Any) -> dict[str, Any]:
     """Use the same transport, credentials, bounds, and allowlists as agent context."""
 
-    async with configured.connect(framework=args.framework) as client:
+    from .mcp_resources import managed_resource_client
+
+    # Inspection has no agent invocation; the CLI owns the already selected
+    # framework while authored connect() calls use the compiler/runtime scope.
+    async with managed_resource_client(configured, framework=args.framework) as client:
         if args.operation == "inspect":
             if args.catalog:
                 operation = "list_" + args.catalog.replace("-", "_")

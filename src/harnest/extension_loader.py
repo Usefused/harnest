@@ -14,13 +14,15 @@ import uuid
 from .assets import AssetStore
 from .authoring_errors import authoring_guidance, inactive_entry_hint
 from .checkpoint import (
-    ADKStore,
+    FrameworkStorage,
     CheckpointAuthority,
     CheckpointStore,
     HarnestStore,
 )
 from .context import ContextValue, registration_for as context_registration_for
 from .credentials import CredentialProvider
+from .frameworks.base import FrameworkConventionError
+from .frameworks.registry import framework_names, get_framework
 from .http_routes import (
     HTTPRouteError,
     HTTPRouteExtension,
@@ -41,7 +43,6 @@ from ._cron_storage import CronStore
 from .memory import MemoryStore
 
 
-_FRAMEWORKS = frozenset({"adk", "langgraph"})
 _IGNORED_NAMES = frozenset({"__init__.py", ".DS_Store", "__pycache__"})
 _STORAGE_PHASES = frozenset(
     {"session_store", "checkpointer", "asset_store", "custom_store", "task_store", "cron_store", "memory_store"}
@@ -87,11 +88,11 @@ class ExtensionSource:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredExtensions:
-    """Ordered portable listeners and instantiated native integrations."""
+    """Ordered portable listeners and instantiated framework integrations."""
 
     listeners: tuple[LifecycleListener, ...] = ()
-    native: tuple[Any, ...] = ()
-    session_store: SessionStore | ADKStore | None = None
+    framework_extensions: tuple[Any, ...] = ()
+    session_store: SessionStore | FrameworkStorage | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
     asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
@@ -123,7 +124,7 @@ def discover_extension_sources(
 ) -> DiscoveredExtensions:
     """Compile ordered extension trees into one globally validated registry."""
 
-    if framework not in _FRAMEWORKS:
+    if framework not in framework_names():
         raise ExtensionDiscoveryError(f"unsupported extension framework: {framework}")
     ordered = _ordered_source_listeners(_validated_sources(sources))
     _validate_context_names(ordered)
@@ -136,16 +137,16 @@ def discover_extension_sources(
     http_routes, remaining = _create_http_routes(remaining)
     output_policy, remaining = _create_output_policy(remaining)
     telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
-    portable, native_listeners = _partition_listeners(remaining, framework)
-    native = tuple(_create_native(item, framework) for item in native_listeners)
-    _validate_native_duplicates(native, framework)
+    portable, framework_listeners = _partition_listeners(remaining)
+    native = tuple(_create_framework_extension(item, framework) for item in framework_listeners)
+    _validate_framework_duplicates(native, framework)
     context_values = _factory_context_values(
         *((listener, _storage_value_for_listener(storage, listener))
           for listener in storage_listeners),
     )
     return DiscoveredExtensions(
         listeners=portable,
-        native=native,
+        framework_extensions=native,
         session_store=storage.sessions,
         checkpointer=storage.checkpoints,
         asset_store=storage.default_assets,
@@ -440,18 +441,19 @@ def _validate_checkpoint_authority(
 def _validate_session_authority(
     value: Any, factory: LifecycleListener, framework: str
 ) -> None:
-    """Accept portable sessions and the explicit advanced ADK wrapper."""
+    """Accept portable sessions and any framework-specific store the adapter allows."""
 
-    # Native ADK storage implements ADK's service contracts rather than the
-    # portable protocol, so it is valid only inside that framework boundary.
-    native_adk_store = framework == "adk" and isinstance(value, ADKStore)
-    if not isinstance(value, SessionStore) and not native_adk_store:
-        raise ExtensionDiscoveryError(
-            f"session store lifecycle factory {factory.identity} must return "
-            f"SessionStore"
-            f"{' or ADKStore' if framework == 'adk' else ''}; "
-            f"got {type(value).__name__}"
-        )
+    # Native storage implements a framework's own service contracts rather than
+    # the portable protocol, so it is valid only inside that framework boundary.
+    adapter = get_framework(framework)
+    if isinstance(value, SessionStore) or adapter.accepts_framework_session_store(value):
+        return
+    label = adapter.framework_session_store_label
+    native = f" or {label}" if label else ""
+    raise ExtensionDiscoveryError(
+        f"session store lifecycle factory {factory.identity} must return "
+        f"SessionStore{native}; got {type(value).__name__}"
+    )
 
 
 def _factory_context_values(
@@ -490,15 +492,17 @@ def _validate_context_names(listeners: tuple[LifecycleListener, ...]) -> None:
 
 
 def _validate_storage_ownership(
-    session_store: SessionStore | ADKStore,
+    session_store: SessionStore | FrameworkStorage,
     checkpointer: CheckpointAuthority,
 ) -> None:
-    """Prevent native ADK from silently ignoring a competing session store."""
+    """Prevent native storage from silently ignoring a competing session store."""
 
-    if isinstance(checkpointer, ADKStore) and session_store is not checkpointer:
+    owns_sessions = isinstance(checkpointer, FrameworkStorage) and checkpointer.owns_sessions
+    if owns_sessions and session_store is not checkpointer:
+        name = type(checkpointer).__name__
         raise ExtensionDiscoveryError(
-            "native ADK storage requires @lifecycle.storage.sessions and "
-            "@lifecycle.storage.checkpoints to return the same ADKStore object"
+            f"native {name} storage requires @lifecycle.storage.sessions and "
+            f"@lifecycle.storage.checkpoints to return the same {name} object"
         )
 
 
@@ -547,22 +551,12 @@ def _ordered_source_listeners(
 
 
 def _partition_listeners(
-    ordered: tuple[LifecycleListener, ...], framework: str
+    ordered: tuple[LifecycleListener, ...],
 ) -> tuple[tuple[LifecycleListener, ...], tuple[LifecycleListener, ...]]:
-    native_phases = frozenset({"adk_plugin", "langgraph_middleware"})
-    selected = "adk_plugin" if framework == "adk" else "langgraph_middleware"
-    wrong = tuple(
-        item
-        for item in ordered
-        if item.phase in native_phases and item.phase != selected
-    )
-    if wrong:
-        raise ExtensionDiscoveryError(
-            f"native lifecycle factory {wrong[0].identity} targets "
-            f"{wrong[0].framework}, but this agent uses {framework}"
-        )
-    portable = tuple(item for item in ordered if item.phase not in native_phases)
-    native = tuple(item for item in ordered if item.phase == selected)
+    """Separate framework-specific extension factories from portable hooks."""
+
+    portable = tuple(item for item in ordered if item.phase != "framework_extension")
+    native = tuple(item for item in ordered if item.phase == "framework_extension")
     return portable, native
 
 
@@ -725,8 +719,7 @@ def _validate_listener_signature(
     """Keep factories declarative while giving event hooks one context pair."""
 
     factory_phases = {
-        "adk_plugin",
-        "langgraph_middleware",
+        "framework_extension",
         "session_store",
         "checkpointer",
         "asset_store",
@@ -905,9 +898,11 @@ def _load_module(path: Path) -> Any:
     return module
 
 
-def _create_native(listener: LifecycleListener, framework: str) -> Any:
-    value = _call_factory(listener, label="native lifecycle")
-    _validate_native_value(value, framework, listener.identity)
+def _create_framework_extension(listener: LifecycleListener, framework: str) -> Any:
+    """Instantiate a synchronous factory and validate the selected framework contract."""
+
+    value = _call_factory(listener, label="framework lifecycle")
+    _validate_framework_extension(value, framework, listener.identity)
     return value
 
 
@@ -934,43 +929,36 @@ def _call_factory(listener: LifecycleListener, *, label: str) -> Any:
     return value
 
 
-def _validate_native_value(value: Any, framework: str, identity: str) -> None:
-    expected = _native_type(framework)
-    if not isinstance(value, expected):
+def _validate_framework_extension(value: Any, framework: str, identity: str) -> None:
+    """Require each framework factory to return the selected framework's extension type."""
+
+    adapter = get_framework(framework)
+    if not isinstance(value, _framework_extension_type(adapter)):
         raise ExtensionDiscoveryError(
-            f"native lifecycle factory {identity} must return {_native_label(framework)}; "
-            f"got {type(value).__name__}"
+            f"framework lifecycle factory {identity} must return "
+            f"{adapter.framework_extension_label}; got {type(value).__name__}"
         )
 
 
-def _native_type(framework: str) -> type[Any]:
+def _framework_extension_type(adapter: Any) -> type[Any]:
+    """Import the framework extension base type only when framework factories exist."""
+
     try:
-        if framework == "adk":
-            from google.adk.plugins.base_plugin import BasePlugin
-
-            return BasePlugin
-        from langchain.agents.middleware import AgentMiddleware
-
-        return AgentMiddleware
+        return adapter.framework_extension_type()
     except ImportError as exc:
         raise ExtensionDiscoveryError(
-            f"{framework}-native lifecycle factories require the {framework} dependencies"
+            f"{adapter.name} framework lifecycle factories require the "
+            f"{adapter.name} dependencies"
         ) from exc
 
 
-def _native_label(framework: str) -> str:
-    return "ADK BasePlugin" if framework == "adk" else "LangChain AgentMiddleware"
+def _validate_framework_duplicates(values: tuple[Any, ...], framework: str) -> None:
+    """Let the framework reject framework extension sets it cannot install together."""
 
-
-def _validate_native_duplicates(values: tuple[Any, ...], framework: str) -> None:
-    if framework != "adk":
-        return
-    names = [getattr(value, "name", None) for value in values]
-    duplicates = sorted({name for name in names if name and names.count(name) > 1})
-    if duplicates:
-        raise ExtensionDiscoveryError(
-            "duplicate ADK native lifecycle plugin names: " + ", ".join(duplicates)
-        )
+    try:
+        get_framework(framework).validate_framework_extensions(values)
+    except FrameworkConventionError as exc:
+        raise ExtensionDiscoveryError(str(exc)) from exc
 
 
 def _ranked_listener_order(

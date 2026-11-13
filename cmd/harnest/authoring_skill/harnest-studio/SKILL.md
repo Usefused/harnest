@@ -9,7 +9,7 @@ Produce a working Studio launch configuration or distributable company pack, wit
 
 ## Choose the configuration owner
 
-- Inspect the requested workspace, existing `studio-pack.yaml` files, launch arguments, and installed CLI capabilities. Preserve unrelated packs and configuration.
+- Inspect the requested workspace, existing pack folders (`pack.yaml`, with Studio content under `studio:`), launch arguments, and installed CLI capabilities. Preserve unrelated packs and configuration.
 - Put shared builder defaults and reusable project resources in a company pack. Use launch environment overrides for device-local settings. Agent `config.yaml` configures the agent being built, not Studio's builder.
 - Use `$harnest-studio-ui` for themes, layouts, custom panels, CSS frameworks, or shell replacement. Use `$harnest-authoring` for agent implementation changes.
 - Coding-agent skills installed by `harnest skills install` live outside runtime `skills/`. A pack's `builder-skill` guides Studio's builder; an `agent-skill` is installed into the selected agent. Do not interchange them.
@@ -24,6 +24,6 @@ Read [references/configuration.md](references/configuration.md) for launch comma
 4. Verify the affected behavior. Model changes need a provider call only when that call is authorized; otherwise distinguish validated configuration from live connectivity. UI defaults and backend authority are separate.
 5. Report changed files, the launch command without credentials, checks performed, and any unverified behavior. When packaging, verify that the wheel contains the declared snapshots and excludes secrets and local build dependencies.
 
-Use `--safe-ui` when diagnosing external pack failures: it excludes all external packs, including resources and builder defaults. Browser `?safe-ui=1` restores only the interface. Do not silently discard company configuration to make a launch succeed.
+To diagnose a failing pack, relaunch without its `--pack` and add packs back one at a time; `harnest pack validate` reports the failing manifest. Browser `?safe-ui=1` restores only the interface. Do not silently discard company configuration to make a launch succeed.
 
 Public documentation: https://usefused.com/docs/harnest/studio/packs

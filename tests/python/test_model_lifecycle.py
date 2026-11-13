@@ -1,4 +1,8 @@
+
+from _framework_testing import build_for_framework
 import asyncio
+import copy
+from harnest.frameworks.adk.lowering import build_agent
 import sys
 import types
 import unittest
@@ -10,7 +14,6 @@ from harnest.model_lifecycle import (
     _LifecycleLiteLLMClient,
     _annotate_anthropic_prompt_cache,
     _attach_lifecycle_resource,
-    _prompt_cache_transformers,
     close_litellm_lifecycles,
 )
 
@@ -424,8 +427,12 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         self.assertEqual([event[0] for event in lifecycle.events][-1], "close")
 
     def test_transport_and_cleanup_are_isolated_per_built_adk_model(self):
+        called_transports = []
+
         class FakeADKClient(_Delegate):
-            pass
+            async def acompletion(self, **kwargs):
+                called_transports.append(kwargs["client"])
+                return await super().acompletion(**kwargs)
 
         class FakeLiteLlm:
             def __init__(self, **kwargs):
@@ -439,12 +446,12 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         second_lifecycle = _AsyncLifecycle("second")
 
         with patch.dict(sys.modules, modules):
-            first = LiteLLMModel(
+            first = build_for_framework(LiteLLMModel(
                 "openai/gpt-test", lifecycle=first_lifecycle
-            ).build()
-            second = LiteLLMModel(
+            ), "adk")
+            second = build_for_framework(LiteLLMModel(
                 "openai/gpt-test", lifecycle=second_lifecycle
-            ).build()
+            ), "adk")
 
         async def exercise():
             await first.llm_client.acompletion(
@@ -456,14 +463,7 @@ class LiteLLMLifecycleTests(unittest.TestCase):
             await close_litellm_lifecycles(first)
 
         asyncio.run(exercise())
-        self.assertIs(
-            first.llm_client.__harnest_controller__._delegate.calls[0]["client"],
-            first_lifecycle.transport,
-        )
-        self.assertIs(
-            second.llm_client.__harnest_controller__._delegate.calls[0]["client"],
-            second_lifecycle.transport,
-        )
+        self.assertEqual(called_transports, [first_lifecycle.transport, second_lifecycle.transport])
         self.assertEqual([event[0] for event in first_lifecycle.events][-1], "close")
         self.assertNotIn("close", [event[0] for event in second_lifecycle.events])
 
@@ -513,11 +513,11 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         }
 
         with patch.dict(sys.modules, modules):
-            built = Agent(
+            built = build_agent(Agent(
                 name="support",
                 model=LiteLLMModel("openai/gpt-test", lifecycle=lifecycle),
                 instruction="Help.",
-            ).build()
+            ))
 
         asyncio.run(close_litellm_lifecycles(built))
         self.assertEqual([event[0] for event in lifecycle.events], ["close"])
@@ -548,19 +548,6 @@ class LiteLLMLifecycleTests(unittest.TestCase):
 
 
 class PromptCacheTransformerTests(unittest.TestCase):
-    def test_selects_anthropic_transformer_only_when_enabled(self):
-        self.assertEqual(
-            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", True),
-            (_annotate_anthropic_prompt_cache,),
-        )
-        self.assertEqual(
-            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", False), ()
-        )
-        self.assertEqual(_prompt_cache_transformers("openai/gpt-4o", True), ())
-        self.assertEqual(
-            _prompt_cache_transformers("gemini/gemini-1.5-pro", True), ()
-        )
-
     def test_annotates_system_and_final_messages(self):
         request = {
             "model": "anthropic/claude-3-5-sonnet",
@@ -569,7 +556,10 @@ class PromptCacheTransformerTests(unittest.TestCase):
                 {"role": "user", "content": "hello"},
             ],
         }
+        authored_messages = request["messages"]
+        original = copy.deepcopy(authored_messages)
         messages = _annotate_anthropic_prompt_cache(request)["messages"]
+        self.assertEqual(authored_messages, original)
         self.assertEqual(
             messages[0]["content"],
             [
@@ -641,13 +631,6 @@ class PromptCacheTransformerTests(unittest.TestCase):
             ),
             {"model": "anthropic/x", "messages": []},
         )
-
-    def test_does_not_mutate_authored_messages(self):
-        original = [{"role": "user", "content": "hello"}]
-        request = {"model": "anthropic/x", "messages": original}
-        _annotate_anthropic_prompt_cache(request)
-        self.assertEqual(original, [{"role": "user", "content": "hello"}])
-
 
 class PromptCacheControllerTests(unittest.TestCase):
     def test_transformers_run_before_authored_hook(self):

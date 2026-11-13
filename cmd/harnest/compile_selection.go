@@ -1,3 +1,5 @@
+// Reads an agent's compile selection (extras and requirements to bundle) without running pack code.
+
 package main
 
 import (
@@ -125,7 +127,13 @@ func inspectProfileDependencyPlan(bundle engine.Bundle, profile environmentProfi
 	if profile == compileEnvironmentProfile {
 		return inspectCompileDependencyPlan(bundle)
 	}
-	return inspectRuntimeDependencyPlan(bundle)
+	plan, err := inspectRuntimeDependencyPlan(bundle)
+	if err != nil || profile != evalEnvironmentProfile {
+		return plan, err
+	}
+	plan.CustomEvalOnly = !bundle.Config.Spec.Evaluation.UsesADK()
+	plan.EvalGroup, err = hasEvalDependencyGroup(plan.ProjectFiles[0])
+	return plan, err
 }
 
 // compileProfile avoids resynchronizing the agent slot when no compile extras are requested.

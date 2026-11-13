@@ -1,3 +1,5 @@
+// `harnest pack` and `harnest pack init NAME`: scaffolds a new Harnest pack (pack.yaml and pack.py).
+
 package main
 
 import (
@@ -8,12 +10,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newPackCommand scaffolds authoring packs without adding a general-purpose Python compiler.
+// newPackCommand groups everything a company needs to author, check and ship one pack.
 func (a *application) newPackCommand() *cobra.Command {
 	var output string
-	command := &cobra.Command{Use: "pack", Short: "Create company project packs"}
+	command := &cobra.Command{
+		Use:   "pack",
+		Short: "Create, validate, build and run company packs",
+		Long: `A pack is a folder with pack.yaml (name, version, branded command and an
+optional studio sub-pack) and an optional pack.py (init and migration hooks and
+company commands). Use it with harnest init|upgrade|studio --pack DIR, or build
+it into a branded command with harnest pack build DIR.`,
+	}
 	initialize := &cobra.Command{
-		Use: "init NAME", Short: "Generate a Python project pack and compile declarations", Args: cobra.ExactArgs(1),
+		Use: "init NAME", Short: "Generate a pack with pack.yaml, pack.py and templates", Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			name := arguments[0]
 			destination := output
@@ -27,12 +36,16 @@ func (a *application) newPackCommand() *cobra.Command {
 			if err = createProjectPackScaffold(absolute, name); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.OutOrStdout(), "Project pack: %s\nPython CLI: %s\nCompile declarations: %s\n", absolute, filepath.Join(absolute, "pack.py"), filepath.Join(absolute, compileSelectionFile))
+			fmt.Fprintf(command.OutOrStdout(),
+				"Pack: %s\nManifest: %s\nHooks: %s\nCompile declarations: %s\n\nTry it: harnest init ./my-agent --pack %s\nBuild the %s command: harnest pack build %s\n",
+				absolute, filepath.Join(absolute, packManifestFile), filepath.Join(absolute, "pack.py"),
+				filepath.Join(absolute, "templates", compileSelectionFile), absolute, name, absolute)
 			return nil
 		},
 	}
 	initialize.Flags().StringVarP(&output, "output", "o", "", "new pack directory (default: NAME-pack)")
-	command.AddCommand(initialize)
+	command.AddCommand(initialize, a.newPackValidateCommand(), a.newPackBuildCommand(),
+		a.newPackRunCommand(), a.newPackTypesCommand())
 	return command
 }
 
@@ -54,6 +67,9 @@ func createProjectPackScaffold(destination, name string) error {
 	}
 	defer os.RemoveAll(stage)
 	files := projectPackScaffoldFiles(name)
+	if err = os.MkdirAll(filepath.Join(stage, "templates"), 0755); err != nil {
+		return err
+	}
 	created := []string{}
 	if err = createScaffoldFiles(stage, files, &created); err != nil {
 		return err
@@ -80,52 +96,61 @@ func requireNewProjectPack(destination string) error {
 	return fmt.Errorf("project pack destination already exists: %s; choose a new directory", destination)
 }
 
-// projectPackScaffoldFiles keeps the editable compile manifest beside its Python authoring entrypoint.
+// projectPackScaffoldFiles writes a pack that already works with harnest init --pack.
 func projectPackScaffoldFiles(name string) map[string]string {
 	return map[string]string{
-		"pack.py":            projectPackPythonScaffold(name),
-		compileSelectionFile: "# Copied into each new agent by pack.py.\nversion: 1\n# Select optional groups declared in the agent's pyproject.toml.\nextras: []\n",
-		"team-guide.md":      "# " + name + " team reference\n\nReplace this sample with setup steps, usage examples, or troubleshooting for teammates.\nThis guide stays in the generated project and is not compiled.\nUse an agent template to provide instructions.md or skills for agent-facing guidance.\n",
+		packManifestFile: projectPackManifestScaffold(name),
+		"pack.py":        projectPackPythonScaffold(name),
+		filepath.ToSlash(filepath.Join("templates", compileSelectionFile)): "# Copied into each new agent by pack.py.\nversion: 1\n# Select optional groups declared in the agent's pyproject.toml.\nextras: []\n",
+		"templates/team-guide.md": "# " + name + " team reference\n\nReplace this sample with setup steps, usage examples, or troubleshooting for teammates.\nThis guide stays in the generated project and is not compiled.\nUse an agent template to provide instructions.md or skills for agent-facing guidance.\n",
 	}
 }
 
-// projectPackPythonScaffold uses the public pack API and copies templates without running build hooks.
+// projectPackManifestScaffold declares identity; Studio reads it without running pack code.
+func projectPackManifestScaffold(name string) string {
+	return fmt.Sprintf(`apiVersion: harnest.dev/pack/v1
+name: %s
+version: 0.1.0
+title: %s agents
+description: Company defaults for new %s agents.
+# Branded command built by harnest pack build (defaults to the pack name).
+command: %s
+# Optional Studio sub-pack: builder defaults, UI and installable resources.
+# studio:
+#   resources:
+#     - id: support-template
+#       kind: template
+#       title: Support agent
+#       files:
+#         agent-card.yaml: studio/support/agent-card.yaml
+`, name, name, name, name)
+}
+
+// projectPackPythonScaffold uses the public pack API; pack.yaml supplies the name.
 func projectPackPythonScaffold(name string) string {
-	return fmt.Sprintf(`"""Company project pack and CLI; keep this directory outside generated agents."""
-from pathlib import Path
-import os
-
-from harnest.authoring import ChangePlan, ProjectCLI, ProjectContext, ProjectPack
+	return fmt.Sprintf(`"""Project hooks for the %s pack. pack.yaml holds its name, version and command."""
+from harnest.authoring import ChangePlan, ProjectContext, ProjectPack
 
 
-pack = ProjectPack(%q, schema_version=1, templates=Path(__file__).parent)
+pack = ProjectPack(schema_version=1, templates="templates")
 
 
 @pack.initialize
 def initialize(context: ProjectContext) -> ChangePlan:
     """Copy team documentation and compile declarations into each new agent."""
     return ChangePlan(
-        context.files.from_file(
-            "docs/team-guide.md", source="team-guide.md",
-        ),
-        context.files.from_template(
-            "harnest-compile.yaml", template="harnest-compile.yaml",
-        ),
+        context.files.from_file("docs/team-guide.md", source="team-guide.md"),
+        context.files.from_template("harnest-compile.yaml", template="harnest-compile.yaml"),
     )
 
 
 # For existing agents, increment schema_version and add a consecutive
-# @pack.migration. Initializers are not replayed by upgrade.
-
-def main() -> int:
-    """Expose init and upgrade through the company CLI."""
-    return ProjectCLI(
-        %q, [pack],
-        harnest_command=(os.environ.get("HARNEST_CLI", "harnest"),),
-    ).run()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-`, name, name+"-agent")
+# @pack.migration(from_version=1, to_version=2). Upgrades never rerun initialize.
+#
+# Company commands become subcommands of the built %s command:
+#
+# @pack.command("check", help="Check this agent against %s standards")
+# def check(args: list[str]) -> int:
+#     return 0
+`, name, name, name)
 }

@@ -37,11 +37,11 @@ class AuthoredLibraryTests(unittest.TestCase):
     def _backend() -> SimpleNamespace:
         return SimpleNamespace(
             lower_managed=lambda value, **_kwargs: value,
-            wrap_managed=lambda target, native_extensions=(): None,
+            wrap_managed=lambda target, framework_extensions=(): None,
             validate_advanced=lambda value, fallback_name: SimpleNamespace(
                 name=fallback_name,
                 target=value.target,
-                native_app=None,
+                framework_app=None,
             ),
         )
 
@@ -88,7 +88,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "def hidden(value):\n"
                 "    return value\n",
             )
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 application = compile_application(
                     root, entrypoint="agent:root_agent"
                 )
@@ -118,7 +118,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             )
             self._write(root / "instructions.md", "Help.\n")
             write_session_store(root)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 application = compile_application(
                     root, entrypoint="agent:root_agent"
                 )
@@ -136,7 +136,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             )
             self._write(root / "lib" / "values.py", "APP = object()\n")
             write_session_store(root)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 application = compile_application(
                     root,
                     entrypoint="agent:root_agent",
@@ -151,7 +151,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             root = workspace / "agent"
             artifact = workspace / "artifact"
             self._write_agent(root, lazy_import=True)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 compile_artifact(root, artifact)
                 application = load_compiled_application(artifact)
             try:
@@ -170,7 +170,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "def destination():\n"
                 "    raise RuntimeError('must run only at runtime')\n",
             )
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 application = compile_application(
                     root, entrypoint="agent:root_agent", framework="langgraph"
                 )
@@ -204,7 +204,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "    input_schema=SupportRequest, output_schema=SupportResponse,\n"
                 ")\n",
             )
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 compile_artifact(root, artifact)
                 application = load_compiled_application(artifact)
             try:
@@ -249,7 +249,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "    output_schema=SupportResponse,\n"
                 ")\n",
             )
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 compile_artifact(root, artifact)
                 application = load_compiled_application(artifact)
             try:
@@ -274,7 +274,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             )
             self._write(root / "tests" / "unit" / "test_lib.py", test_source)
             self._write(root / "tests" / "smoke" / "test_smoke_lib.py", test_source)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 exit_code = run_agent_tests(root, include_smoke=True)
 
         self.assertEqual(exit_code, 0)
@@ -311,7 +311,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "    assert mcp_gateway.starts == 0\n",
             )
             with (
-                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.bundle._lowering_adapter", return_value=self._backend()),
                 patch("harnest.testing.create_fastapi_app") as create_app,
             ):
                 exit_code = run_agent_tests(root)
@@ -362,7 +362,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 second_smoke_test,
             )
             with (
-                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.bundle._lowering_adapter", return_value=self._backend()),
                 patch("harnest.testing.create_fastapi_app", return_value=app),
             ):
                 exit_code = run_agent_tests(root, include_smoke=True)
@@ -382,7 +382,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 "    raise AssertionError('the fixture should reject first')\n",
             )
             with (
-                patch("harnest.bundle.get_backend", return_value=self._backend()),
+                patch("harnest.bundle._lowering_adapter", return_value=self._backend()),
                 patch("harnest.testing.create_fastapi_app") as create_app,
             ):
                 exit_code = run_agent_tests(root)
@@ -460,7 +460,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                 )
                 self._write(nested / "instructions.md", "Help.\n")
                 self._write(nested / folder / "private.py", "VALUE = 1\n")
-                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                     with self.assertRaisesRegex(BundleConventionError, message):
                         compile_application(root, entrypoint="agent:root_agent")
 
@@ -469,7 +469,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             root = Path(directory) / "agent"
             self._write_agent(root)
             self._write(root / "models" / "bad-name.py", "VALUE = 1\n")
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 with self.assertRaisesRegex(
                     BundleConventionError,
                     "authored models module names must be valid Python identifiers",
@@ -510,7 +510,7 @@ class AuthoredLibraryTests(unittest.TestCase):
                     self._write(root / "lib" / "bad-name.py", "VALUE = 1\n")
                 else:
                     self._write(root / "lib" / "storage.py", "VALUE = 1\n")
-                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                     with self.assertRaisesRegex(BundleConventionError, expected):
                         compile_application(root, entrypoint="agent:root_agent")
 
@@ -518,7 +518,7 @@ class AuthoredLibraryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             artifacts = []
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 for name in ("first", "second"):
                     root = workspace / name
                     artifact = workspace / f"{name}-artifact"
@@ -545,7 +545,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "observability failed"):
                     asyncio.run(run_agent_message(first, "hello"))
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 load_compiled_application(second)
             release_authored_library(second / "source")
 
@@ -556,7 +556,7 @@ class AuthoredLibraryTests(unittest.TestCase):
             second = self._compile_named_artifact(workspace, "second")
             with self.assertRaisesRegex(AgentRuntimeError, "agent-card.yaml"):
                 create_fastapi_app(first)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 load_compiled_application(second)
             release_authored_library(second / "source")
 
@@ -564,7 +564,7 @@ class AuthoredLibraryTests(unittest.TestCase):
         root = workspace / name
         artifact = workspace / f"{name}-artifact"
         self._write_agent(root)
-        with patch("harnest.bundle.get_backend", return_value=self._backend()):
+        with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
             compile_artifact(root, artifact)
         return artifact
 

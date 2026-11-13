@@ -1,3 +1,5 @@
+// Lock constraints that decide which agents may share a runtime pack.
+
 package main
 
 import (

@@ -18,7 +18,7 @@ import zipfile
 from fastapi.testclient import TestClient
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from harnest.agent_plugin_langgraph import PortableStdioOwner
+from harnest.frameworks.langgraph.agent_plugins import PortableStdioOwner
 from harnest.agent_plugin_manifest import MCP_SCHEMA, PLUGIN_SCHEMA
 from harnest.agent_plugin_runtime import PortableMCP, installation_id
 from harnest.bundle import compile_artifact

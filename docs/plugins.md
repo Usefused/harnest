@@ -69,5 +69,5 @@ different kind of resource. Plugin source is copied into the compiled artifact
 and included in its digest.
 
 Use [extensions](extensions.md) for lifecycle behavior such as persistence,
-guardrails, auditing, or framework-native middleware. Use `subagents/` for
+guardrails, auditing, or framework-specific middleware. Use `subagents/` for
 additional agent definitions; subagents are deliberately not plugin content.

@@ -14,9 +14,11 @@ from unittest.mock import Mock, patch
 from google.adk.code_executors import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput, File
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
+from harnest.frameworks.adk.sandbox import code_executor
 from harnest.context import activate_context, create_agent_context
 from harnest.agent import Agent
-from harnest.backends.langgraph import _agent_tools
+from harnest.frameworks.langgraph.lowering import _agent_tools
 from harnest.bundle import BundleImportError, compile_application
 from harnest.sandbox import (
     Sandbox,
@@ -79,7 +81,7 @@ class SandboxAdapterTests(unittest.TestCase):
             metadata={"region": "eu"},
             network_policy=policy,
         )
-        executor = sandbox.to_adk_executor()
+        executor = code_executor(sandbox)
         factory.assert_not_called()
         native = SimpleNamespace(
             agent=SimpleNamespace(name="native-agent"), invocation_id="native-call",
@@ -110,7 +112,7 @@ class SandboxAdapterTests(unittest.TestCase):
             metadata={"provider": {"job": "job-1"}},
         ))
         factory = Mock(return_value=backend)
-        tool = Sandbox.provider(factory, metadata={"region": "eu"}).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(factory, metadata={"region": "eu"}))
         self.assertEqual(tool.name, "harnest_execute_python")
         factory.assert_not_called()
         with activate_context(self._context()):
@@ -131,7 +133,7 @@ class SandboxAdapterTests(unittest.TestCase):
     def test_managed_context_takes_precedence_over_native_adk_identity(self):
         """Nested Harnest agent scopes must not fall back to root native identity."""
         backend = RecordingBackend()
-        executor = Sandbox.provider(lambda: backend).to_adk_executor()
+        executor = code_executor(Sandbox.provider(lambda: backend))
         with activate_context(self._context("adk")):
             executor.execute_code(SimpleNamespace(), CodeExecutionInput(code="print(42)"))
         self.assertEqual(backend.requests[0].context.agent_name, "researcher")
@@ -139,7 +141,7 @@ class SandboxAdapterTests(unittest.TestCase):
     def test_adk_preserves_metadata_in_native_result_and_model_output(self):
         """ADK's text-only code-result part must not silently drop provider data."""
         backend = RecordingBackend(SandboxResult(stdout="42", metadata={"job": "job-1"}))
-        executor = Sandbox.provider(lambda: backend).to_adk_executor()
+        executor = code_executor(Sandbox.provider(lambda: backend))
         result = executor.execute_code(None, CodeExecutionInput(code="print(42)"))
         self.assertEqual(result.metadata, {"job": "job-1"})
         self.assertEqual(json.loads(result.stdout), {"stdout": "42", "metadata": {"job": "job-1"}})
@@ -147,7 +149,7 @@ class SandboxAdapterTests(unittest.TestCase):
     def test_adk_error_metadata_does_not_replace_native_stderr(self):
         """Native error outcomes and retry decisions retain their original stderr."""
         backend = RecordingBackend(SandboxResult(stderr="syntax error", metadata={"job": "job-1"}))
-        executor = Sandbox.provider(lambda: backend).to_adk_executor()
+        executor = code_executor(Sandbox.provider(lambda: backend))
         result = executor.execute_code(None, CodeExecutionInput(code="invalid"))
         self.assertEqual(result.stderr, "syntax error")
         self.assertEqual(result.metadata, {"job": "job-1"})
@@ -155,7 +157,7 @@ class SandboxAdapterTests(unittest.TestCase):
     def test_tool_rejects_model_authority_fields_before_provider_creation(self):
         """Models cannot override session identity, metadata, or provider policy."""
         factory = Mock(return_value=RecordingBackend())
-        tool = Sandbox.provider(factory).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(factory))
         for arguments in (
             {"code": 42},
             {"code": "ok", "metadata": {}},
@@ -168,7 +170,7 @@ class SandboxAdapterTests(unittest.TestCase):
 
     def test_legacy_adk_backend_is_not_called_by_langgraph(self):
         """ADK-only providers fail clearly instead of receiving fake context."""
-        tool = Sandbox.provider(LegacyExecutor).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(LegacyExecutor))
         with self.assertRaisesRegex(SandboxExecutionError, "SandboxBackend.execute"):
             tool.invoke({"code": "print(42)"})
 
@@ -176,7 +178,7 @@ class SandboxAdapterTests(unittest.TestCase):
         """Provider return values must satisfy the typed transport boundary."""
         backend = RecordingBackend()
         backend.result = {"stdout": "untyped private result"}
-        tool = Sandbox.provider(lambda: backend).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(lambda: backend))
         with self.assertRaises(SandboxExecutionError) as caught:
             tool.invoke({"code": "print(42)"})
         self.assertNotIn("untyped private result", str(caught.exception))
@@ -185,7 +187,7 @@ class SandboxAdapterTests(unittest.TestCase):
         """Exceptions and audit records must never expose code or credentials."""
         secret = "private-token-and-provider-payload"
         factory = Mock(side_effect=RuntimeError(secret))
-        tool = Sandbox.provider(factory, name=secret, metadata={"token": secret}).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(factory, name=secret, metadata={"token": secret}))
         with patch("harnest.sandbox_runtime._AUDIT") as audit:
             with self.assertRaises(SandboxExecutionError) as caught:
                 tool.invoke({"code": secret})
@@ -197,7 +199,7 @@ class SandboxAdapterTests(unittest.TestCase):
     def test_stderr_emits_failure_audit_without_logging_result(self):
         """A provider-reported execution failure has a failure audit outcome."""
         backend = RecordingBackend(SandboxResult(stderr="private syntax error", status="failed", exit_code=1))
-        tool = Sandbox.provider(lambda: backend).to_langchain_tool()
+        tool = sandbox_tool(Sandbox.provider(lambda: backend))
         with patch("harnest.sandbox_runtime._AUDIT") as audit:
             result = tool.invoke({"code": "invalid"})
         self.assertEqual(result["stderr"], "private syntax error")
@@ -226,10 +228,10 @@ class SandboxAdapterTests(unittest.TestCase):
         """Selecting Runner for sessions or credentials must not break code results."""
         from google.adk.artifacts import InMemoryArtifactService
         from google.adk.sessions import InMemorySessionService
-        from harnest.runtime_adk import _build_adk_runner
+        from harnest.frameworks.adk.runtime import _build_adk_runner
 
         service = InMemorySessionService()
-        application = SimpleNamespace(native_app=SimpleNamespace(name="root"))
+        application = SimpleNamespace(framework_app=SimpleNamespace(name="root"))
         for sessions, credentials in ((service, None), (None, object())):
             with self.subTest(custom_sessions=sessions is not None):
                 runner = Mock()

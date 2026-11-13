@@ -1,7 +1,11 @@
-"""Validate project pack declarations and ownership rules without invoking a CLI."""
+"""Validate pack declarations, pack.yaml loading and ownership rules without invoking a CLI."""
+from pathlib import Path
+import tempfile
+import textwrap
 import unittest
 
-from harnest.authoring import ChangePlan, ProjectError, ProjectPack, WritePolicy
+from harnest.authoring import ChangePlan, ProjectError, ProjectPack, ProjectPlanner, WritePolicy, load_pack
+from harnest.authoring.packs import parse_options
 from harnest.authoring.context import ProjectFiles, ProjectYAML, relative_path
 from harnest.authoring.contracts import _File
 from harnest.authoring.operations import OperationEngine, read_lock
@@ -9,12 +13,27 @@ from harnest.authoring.operations import OperationEngine, read_lock
 
 class ProjectPackContractTests(unittest.TestCase):
     def test_names_and_versions_are_validated(self):
-        for name, version in [('harnest', 1), ('../acme', 1), ('ok', True), ('ok', 0)]:
-            with self.subTest(name=name, version=version), self.assertRaises(ProjectError):
-                ProjectPack(name, version)
+        for version in [True, 0, '1']:
+            with self.subTest(version=version), self.assertRaises(ProjectError):
+                ProjectPack(version)
+        for name in ['harnest', '../acme', 'Bad', '']:
+            with self.subTest(name=name), self.assertRaises(ProjectError):
+                ProjectPack(1).bind(name, Path('.'))
+
+    def test_unbound_packs_cannot_be_planned(self):
+        with self.assertRaisesRegex(ProjectError, 'pack directory'):
+            ProjectPlanner([ProjectPack(1)])
+
+    def test_commands_cannot_shadow_harnest_or_repeat(self):
+        pack = ProjectPack(1)
+        pack.command('whoami', help='who owns this agent')(lambda args: 0)
+        self.assertEqual([(c.name, c.help) for c in pack.commands], [('whoami', 'who owns this agent')])
+        for name in ['whoami', 'init', 'compile', 'Bad', 'bad_name']:
+            with self.subTest(name=name), self.assertRaises(ProjectError):
+                pack.command(name)
 
     def test_registration_rejects_duplicate_and_skipped_migrations(self):
-        pack = ProjectPack('acme', 3)
+        pack = ProjectPack(3)
         pack.initialize(lambda ctx: ChangePlan())
         with self.assertRaises(ProjectError):
             pack.initialize(lambda ctx: ChangePlan())
@@ -111,7 +130,87 @@ class ProjectPackContractTests(unittest.TestCase):
         with self.assertRaises(ProjectError):
             engine.apply('one', files.delete('unowned'))
 
+    def test_version_one_lock_asks_for_upgrade(self):
+        with self.assertRaisesRegex(ProjectError, 'harnest upgrade'):
+            read_lock({'harnest-packs.lock': _File(b'{"version":1,"packs":{},"claims":[]}')})
+        self.assertEqual(read_lock({})['version'], 2)
+
     def test_lock_rejects_malformed_ownership(self):
-        for value in [b'{}', b'[]', b'{"version":1,"packs":{},"claims":[{}]}']:
+        for value in [b'{}', b'[]', b'{"version":2,"packs":{},"claims":[{}],"resources":{}}',
+                      b'{"version":2,"packs":{},"claims":[],"resources":[]}',
+                      b'{"version":2,"packs":{},"claims":[]}']:
             with self.subTest(value=value), self.assertRaises(ProjectError):
                 read_lock({'harnest-packs.lock': _File(value)})
+
+
+def _write(root: Path, files: dict[str, str]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (root / name).write_text(textwrap.dedent(text))
+    return root
+
+
+MANIFEST = "apiVersion: harnest.dev/pack/v1\nname: acme\nversion: '1.0'\ntitle: Acme\n"
+
+
+class PackLoaderTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_pack_yaml_names_the_project_hooks_and_resolves_templates(self):
+        pack = load_pack(_write(self.root / 'acme', {
+            'pack.yaml': MANIFEST,
+            'pack.py': """
+                from harnest.authoring import ProjectPack
+                from helpers import VERSION
+                pack = ProjectPack(VERSION, templates='templates')
+            """,
+            'helpers.py': 'VERSION = 3\n',
+        }))
+        self.assertEqual((pack.name, pack.manifest.version, pack.manifest.command_name), ('acme', '1.0', 'acme'))
+        self.assertEqual((pack.project.name, pack.project.schema_version), ('acme', 3))
+        self.assertEqual(pack.project.templates, pack.root / 'templates')
+
+    def test_manifest_alone_is_a_studio_or_identity_only_pack(self):
+        pack = load_pack(_write(self.root / 'ui', {'pack.yaml': MANIFEST + 'studio: {resources: []}\n'}))
+        self.assertIsNone(pack.project)
+        self.assertEqual(pack.studio, {'resources': []})
+
+    def test_invalid_manifests_and_modules_are_rejected(self):
+        cases = {
+            'unknown key': (MANIFEST + 'surprise: 1\n', None),
+            'old api': (MANIFEST.replace('pack/v1', 'studio-pack/v1'), None),
+            'bad version': (MANIFEST.replace("'1.0'", 'not-a-version'), None),
+            'bad command': (MANIFEST + 'command: Bad\n', None),
+            'future harnest': (MANIFEST + "requires: {harnest: '>=999'}\n", None),
+            'no pack object': (MANIFEST, 'value = 1\n'),
+            'import error': (MANIFEST, 'raise RuntimeError("boom")\n'),
+        }
+        for label, (manifest, module) in cases.items():
+            with self.subTest(label):
+                files = {'pack.yaml': manifest, **({'pack.py': module} if module else {})}
+                with self.assertRaises(ProjectError):
+                    load_pack(_write(self.root / label.replace(' ', '-'), files))
+
+    def test_removed_layouts_explain_the_migration(self):
+        legacy = _write(self.root / 'legacy-studio', {'studio-pack.yaml': 'name: acme\n'})
+        with self.assertRaisesRegex(ProjectError, 'studio-pack.yaml is no longer supported'):
+            load_pack(legacy)
+        cli = _write(self.root / 'legacy-cli', {'pack.py': 'pack = None\n'})
+        with self.assertRaisesRegex(ProjectError, 'pack.yaml is required'):
+            load_pack(cli)
+
+    def test_pack_yaml_is_read_without_running_pack_py(self):
+        pack = load_pack(_write(self.root / 'inert', {'pack.yaml': MANIFEST, 'pack.py': 'raise SystemExit(9)\n'}),
+                         import_project=False)
+        self.assertIsNone(pack.project)
+
+    def test_options_target_one_pack_or_need_a_prefix(self):
+        one = load_pack(_write(self.root / 'one', {'pack.yaml': MANIFEST}))
+        self.assertEqual(parse_options(['team=support', 'tags=["a"]', 'max-items=3'], [one]),
+                         {'acme': {'team': 'support', 'tags': ['a'], 'max_items': '3'}})
+        other = load_pack(_write(self.root / 'two', {'pack.yaml': MANIFEST.replace('acme', 'beta')}))
+        self.assertEqual(parse_options(['beta.team=x'], [one, other]), {'beta': {'team': 'x'}})
+        for values in (['team=x'], ['gamma.team=x'], ['novalue'], ['tags=[oops']):
+            with self.subTest(values=values), self.assertRaises(ProjectError):
+                parse_options(values, [one, other] if values == ['team=x'] else [one])

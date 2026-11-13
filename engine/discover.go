@@ -1,3 +1,5 @@
+// Finds agent directories in a project and loads their bundles.
+
 package engine
 
 import (

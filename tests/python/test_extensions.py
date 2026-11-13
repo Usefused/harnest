@@ -65,7 +65,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             [item.function_name for item in result.listeners],
             ["earliest", "first", "late"],
         )
-        self.assertEqual(result.native, ())
+        self.assertEqual(result.framework_extensions, ())
         self.assertIsInstance(result.session_store, InMemorySessionStore)
 
     def test_multi_root_discovery_preserves_source_order_and_public_identity(self):
@@ -283,7 +283,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
                 )
 
     def test_multi_root_native_names_are_validated_globally(self):
-        """Keep framework-native plugin identity unique across ownership roots."""
+        """Keep framework-specific plugin identity unique across ownership roots."""
 
         try:
             from google.adk.plugins.base_plugin import BasePlugin  # noqa: F401
@@ -292,7 +292,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         native = (
             "from google.adk.plugins.base_plugin import BasePlugin\n"
             "from harnest import lifecycle\n"
-            "@lifecycle.adk_plugin\n"
+            "@lifecycle.framework_extension\n"
             "def native(): return BasePlugin(name='shared-native')\n"
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -304,7 +304,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._write(plugin / "native.py", native)
 
             with self.assertRaisesRegex(
-                ExtensionDiscoveryError, "duplicate ADK native.*shared-native"
+                ExtensionDiscoveryError, "duplicate ADK framework.*shared-native"
             ):
                 discover_extension_sources(
                     (
@@ -600,7 +600,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary)
             root.mkdir(parents=True, exist_ok=True)
             (root / "storage.py").write_text(
-                "from harnest.checkpoint import ADKStore\n"
+                "from harnest.frameworks.adk import ADKStore\n"
                 "from harnest import lifecycle\n"
                 "store = ADKStore(object())\n"
                 "@lifecycle.storage.sessions\n"
@@ -619,7 +619,7 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             root = Path(temporary)
             self._session_store(root)
             (root / "checkpoints.py").write_text(
-                "from harnest.checkpoint import ADKStore\n"
+                "from harnest.frameworks.adk import ADKStore\n"
                 "from harnest import lifecycle\n"
                 "@lifecycle.storage.checkpoints\n"
                 "def checkpointer(): return ADKStore(object())\n",
@@ -768,22 +768,22 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             self._session_store(root)
             (root / "audit.py").write_text(
                 "from harnest import lifecycle\n"
-                "@lifecycle.adk_plugin(order=4)\n"
+                "@lifecycle.framework_extension(order=4)\n"
                 "def plugin():\n"
                 "  from google.adk.plugins.base_plugin import BasePlugin\n"
                 "  return BasePlugin(name='audit')\n",
                 encoding="utf-8",
             )
             result = discover_extensions(root, framework="adk")
-        self.assertEqual([item.name for item in result.native], ["audit"])
+        self.assertEqual([item.name for item in result.framework_extensions], ["audit"])
 
     def test_wrong_native_value_and_factory_arguments_are_rejected(self):
         for source, message in (
             (
-                "@lifecycle.adk_plugin\ndef plugin(value): return value\n",
+                "@lifecycle.framework_extension\ndef plugin(value): return value\n",
                 "no arguments",
             ),
-            ("@lifecycle.adk_plugin\ndef plugin(): return object()\n", "BasePlugin"),
+            ("@lifecycle.framework_extension\ndef plugin(): return object()\n", "BasePlugin"),
         ):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "extensions"
@@ -811,9 +811,9 @@ class ExtensionDiscoveryTests(unittest.TestCase):
         cases = (
             (
                 "native.py",
-                "@lifecycle.langgraph_middleware\n"
+                "@lifecycle.framework_extension\n"
                 "def middleware(): return object()\n",
-                "targets langgraph",
+                "must return ADK BasePlugin",
             ),
             (
                 "listener.py",

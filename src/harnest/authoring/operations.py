@@ -25,12 +25,20 @@ def value_digest(value: Any) -> str:
     return digest(json.dumps(value, sort_keys=True, allow_nan=False).encode())
 
 
+LOCK_VERSION = 2
+
+
 def read_lock(files: dict[str, _File]) -> dict[str, Any]:
     """Validate version and ownership metadata before running any company callback."""
     if LOCK not in files:
-        return {"version": 1, "packs": {}, "claims": []}
+        return {"version": LOCK_VERSION, "packs": {}, "claims": [], "resources": {}}
     try:
         data = json.loads(files[LOCK].content, object_pairs_hook=_unique_pairs)
+    except (ValueError, TypeError) as exc:
+        raise ProjectError(f"invalid {LOCK}") from exc
+    if isinstance(data, dict) and data.get("version") == 1:
+        raise ProjectError(f"{LOCK} is version 1; run `harnest upgrade` on this agent first")
+    try:
         _validate_lock(data)
     except (ValueError, TypeError, KeyError) as exc:
         raise ProjectError(f"invalid {LOCK}") from exc
@@ -49,13 +57,22 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _validate_lock(data: Any) -> None:
     """Reject malformed state rather than silently adopting unknown project versions."""
-    if not isinstance(data, dict) or set(data) != {"version", "packs", "claims"} or type(data['version']) is not int or data['version'] != 1:
+    if (not isinstance(data, dict) or set(data) != {"version", "packs", "claims", "resources"}
+            or type(data['version']) is not int or data['version'] != LOCK_VERSION):
         raise ProjectError("invalid pack lock shape/version")
     if not isinstance(data['packs'], dict) or not isinstance(data['claims'], list):
         raise ProjectError("invalid pack lock members")
+    _validate_resources(data['resources'])
     _validate_versions(data['packs'])
     for claim in data['claims']:
         _validate_claim(claim, data['packs'])
+
+
+def _validate_resources(resources: Any) -> None:
+    """Validate the receipt envelope while leaving Studio-owned contents intact."""
+    if not isinstance(resources, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict) for key, value in resources.items()):
+        raise ProjectError("invalid pack lock resources")
 
 
 def _validate_versions(packs: dict[str, int]) -> None:

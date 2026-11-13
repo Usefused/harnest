@@ -1,14 +1,17 @@
-"""Declarative, versioned Studio Pack contracts and bounded source snapshots."""
+"""The studio sub-pack of a Harnest pack: contracts and bounded source snapshots.
+
+Studio reads only pack.yaml (identity at the top level, Studio content under
+`studio:`) and the files it names. It never imports a pack's pack.py.
+"""
 
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
-import yaml
 
 from .files import LIMIT, read, source_path, validate
 from .builder_config import BuilderDefaults, read_ca
@@ -58,9 +61,16 @@ class Resource(Contract):
             raise ValueError("Resources require files or configuration; only bundles can include resources")
 
 
+class StudioSection(Contract):
+    """The `studio:` section of pack.yaml."""
+    builder: BuilderDefaults = Field(default_factory=BuilderDefaults)
+    ui: UI | None = None
+    resources: list[Resource] = Field(default_factory=list, max_length=100)
+
+
 class Manifest(Contract):
-    """One portable organization contribution pack, independent of deployment."""
-    apiVersion: Literal["harnest.dev/studio-pack/v1"]
+    """Pack identity plus its studio sub-pack, flattened for Studio's catalog."""
+    apiVersion: Literal["harnest.dev/pack/v1"]
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
     version: str
     title: str = Field(min_length=1, max_length=120)
@@ -81,15 +91,32 @@ def load_pack(root: Path) -> dict:
     """Freeze only explicitly referenced text; never import a pack or follow links."""
     if root.is_symlink():
         raise ValueError("Linked pack roots are excluded")
-    root = root.expanduser().resolve()
-    manifest = Manifest.model_validate(yaml.safe_load(read(root, "studio-pack.yaml")["text"]))
+    from harnest.authoring.packs import read_manifest
+
+    root, pack = read_manifest(root)
+    section = StudioSection.model_validate(pack.studio or {})
+    manifest = Manifest(
+        apiVersion=pack.apiVersion, name=pack.name, version=pack.version, title=pack.title,
+        description=pack.description,
+        requires=Compatibility(**{key: value for key, value in pack.requires.model_dump().items() if value is not None}),
+        builder=section.builder, ui=section.ui, resources=section.resources)
     Version(manifest.version)
     if Version(STUDIO_VERSION) not in SpecifierSet(manifest.requires.studio):
         raise ValueError(f"{manifest.name} requires Studio {manifest.requires.studio}")
     if Version(runtime_version()) not in SpecifierSet(manifest.requires.harnest):
         raise ValueError(f"{manifest.name} requires Harnest {manifest.requires.harnest}")
-    entries, total = {}, 0
-    for resource in manifest.resources:
+    entries = _resource_entries(root, manifest.resources)
+    ca = read_ca(root, manifest.builder.ca_bundle) if manifest.builder.ca_bundle else None
+    pack = {"manifest": manifest.model_dump(), "resources": entries, "builder_ca": ca, "ui_assets": snapshot_ui(root, manifest.ui)}
+    pack["digest"] = digest(pack)
+    return pack
+
+
+def _resource_entries(root: Path, resources: list[Resource]) -> dict[str, dict[str, Any]]:
+    """Snapshot unique resources within the pack's aggregate source-size budget."""
+    entries: dict[str, dict[str, Any]] = {}
+    total = 0
+    for resource in resources:
         if resource.id in entries:
             raise ValueError("Duplicate resource id: " + resource.id)
         texts = _resource_files(root, resource)
@@ -99,18 +126,15 @@ def load_pack(root: Path) -> dict:
         payload = {**resource.model_dump(), "files": texts}
         payload["digest"] = digest(payload)
         entries[resource.id] = payload
-    ca = read_ca(root, manifest.builder.ca_bundle) if manifest.builder.ca_bundle else None
-    pack = {"manifest": manifest.model_dump(), "resources": entries, "builder_ca": ca, "ui_assets": snapshot_ui(root, manifest.ui)}
-    pack["digest"] = digest(pack)
-    return pack
+    return entries
 
 
 def _resource_files(root: Path, resource: Resource) -> dict:
     """Apply the native source path and syntax rules before exposing a contribution."""
     files = {}
     for destination, relative in resource.files.items():
-        if destination == "studio-packs.lock":
-            raise ValueError("studio-packs.lock is reserved for installation receipts")
+        if destination in {"harnest-packs.lock", "studio-packs.lock"}:
+            raise ValueError(f"{destination} is reserved for pack installation records")
         text = read(root, relative)["text"]
         if not source_path(root, relative).is_file():
             raise ValueError("Missing pack source: " + relative)

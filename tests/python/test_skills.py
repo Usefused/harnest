@@ -313,7 +313,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
     def _backend() -> SimpleNamespace:
         return SimpleNamespace(
             lower_managed=lambda value, **_kwargs: value,
-            wrap_managed=lambda target, native_extensions=(): None,
+            wrap_managed=lambda target, framework_extensions=(): None,
         )
 
     def _write_dynamic_agent(self, root: Path) -> None:
@@ -350,7 +350,7 @@ class SkillCompilerIntegrationTests(unittest.TestCase):
             with self.subTest(framework=framework), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 self._write_dynamic_agent(root)
-                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                     compiled = compile_application(
                         root, entrypoint="agent:root_agent", framework=framework
                     )

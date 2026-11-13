@@ -236,6 +236,13 @@ def require_customer_facing_output(text: str, result: Any) -> None:
     )
 
 
+
+def _customer_facing_parts(parts: Any) -> tuple[Any, ...]:
+    """Return parts safe for the public response and evaluation boundaries."""
+
+    return tuple(part for part in parts or () if not getattr(part, "thought", False))
+
+
 __all__ = [
     "AgentInfo",
     "InvocationRequest",

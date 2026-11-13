@@ -1,3 +1,5 @@
+// `harnest skills`: shows or installs the embedded Harnest guidance for coding agents.
+
 package main
 
 import (

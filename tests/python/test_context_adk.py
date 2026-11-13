@@ -10,7 +10,7 @@ from harnest.context import (
     create_agent_context,
     revoke_context,
 )
-from harnest.context_adk import adk_agent_context_plugins
+from harnest.frameworks.adk.context import adk_agent_context_plugins
 from harnest.extension_runtime_manager import ExtensionRuntimeManager
 from harnest.extensions import (
     ActivatedExtension,

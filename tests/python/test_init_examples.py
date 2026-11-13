@@ -1,5 +1,7 @@
 """Exercise generated CLI samples through the real managed compiler boundary."""
 
+from _framework_testing import build_for_framework
+
 import ast
 import asyncio
 import json
@@ -249,7 +251,7 @@ class ExampleContractTests(unittest.TestCase):
             self.assertEqual(definition.model.model, "openai/team/chosen")
             self.assertEqual(definition.model.completion_args["api_base"], environment["OPENAI_BASE_URL"])
             # Exercise the connector independently of the example's exact framework pin.
-            adapter = definition.model.build_for("adk")
+            adapter = build_for_framework(definition.model, "adk")
             self.assertEqual(adapter.model, "openai/team/chosen")
         for name in ("agent.py", "config.yaml", "README.md"):
             with self.subTest(file=name):
@@ -266,7 +268,7 @@ class ExampleContractTests(unittest.TestCase):
                 lock_path = config_path.with_name("harnest.lock")
                 self.assertTrue(lock_path.is_file())
                 lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
-                self.assertEqual(lock["projectSchema"], 6)
+                self.assertEqual(lock["projectSchema"], 7)
                 self.assertEqual(
                     lock["framework"]["name"], config["spec"]["framework"]["name"]
                 )

@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START as LANGGRAPH_START
 from langgraph.graph import StateGraph
 
+from harnest.frameworks.adk.mcp_tools import toolset_type
 from harnest.agent import AgentRuntimePermissionError, AgentRuntimePrincipal
 from harnest.agent_principal import (
     activate_agent_principal,
@@ -25,7 +26,7 @@ from harnest.agent_principal import (
     revoke_agent_principal,
 )
 from harnest.agent import Agent
-from harnest.backends.langgraph import (
+from harnest.frameworks.langgraph.lowering import (
     build_agent,
     build_graph,
     _graph_agent_principal_projection_complete,
@@ -53,10 +54,10 @@ from harnest.neutral_runtime import (
     InvocationResult,
 )
 from harnest.lifecycle_runtime import LifecycleRuntimeDriver
-from harnest.runtime_adk import ADKRuntimeDriver
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.frameworks.adk.runtime import ADKRuntimeDriver
+from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 from harnest.agent import tool
-from harnest.tool_adk import _project_model_tools
+from harnest.frameworks.adk.tools import _project_model_tools
 
 
 def _request(principal=None):
@@ -477,7 +478,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             framework="adk",
             mode="managed",
             target=agent,
-            native_app=App(name="projection", root_agent=agent),
+            framework_app=App(name="projection", root_agent=agent),
         )
         driver = LifecycleRuntimeDriver(ADKRuntimeDriver(application), [])
         try:
@@ -535,7 +536,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
                 return [SimpleNamespace(name="read")]
 
         client = MCPClient.sse("https://mcp.invalid/sse")
-        governed = client._adk_toolset_type(Toolset)()
+        governed = toolset_type(client, Toolset)()
         binding = create_agent_principal_binding(AgentRuntimePrincipal.create())
         try:
             with activate_agent_principal(binding):
@@ -564,7 +565,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             permission="billing.connect",
             tool_permissions={"write": "billing.write"},
         )
-        governed = client._adk_toolset_type(Toolset)()
+        governed = toolset_type(client, Toolset)()
         denied = create_agent_principal_binding(AgentRuntimePrincipal.create())
         allowed = create_agent_principal_binding(
             AgentRuntimePrincipal.create(permissions={"billing.connect"})
@@ -594,7 +595,7 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
             prefix="remote",
             tool_permissions={"remote_write": "billing.write"},
         )
-        governed = client._adk_toolset_type(Toolset)()
+        governed = toolset_type(client, Toolset)()
         binding = create_agent_principal_binding(
             AgentRuntimePrincipal.create(permissions={"billing.write"})
         )

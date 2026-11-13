@@ -104,7 +104,7 @@ func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 	})
 	assertFilesContain(t, target, map[string]string{
 		".gitignore":             ".venv",
-		"harnest.lock":           "projectSchema: 6",
+		"harnest.lock":           "projectSchema: 7",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"models/_README.md":      "from harnest.models.support import",
@@ -432,7 +432,7 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"root_agent = Agent.advanced(",
 		"from langchain.agents import create_agent",
 		"from harnest.lib.storage import store",
-		"model=LiteLLMModel.from_openai_environment().build_langgraph(),",
+		"model=LiteLLMModel.from_openai_environment().build(),",
 	})
 	if strings.Contains(string(source), "NativeApp") {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)
@@ -477,11 +477,11 @@ func isRequiredStoreResource(directory, name string) bool {
 
 func TestPythonResolutionPrecedence(t *testing.T) {
 	available := map[string]string{
-		"flag-python":                            "/resolved/flag-python",
-		"env-python":                             "/resolved/env-python",
-		"/runtime/bin/python":                    "/resolved/managed-python",
-		"/home/test/.harnest/runtime/bin/python": "/resolved/default-managed-python",
-		"python3":                                "/resolved/python3",
+		"flag-python":                 "/resolved/flag-python",
+		"env-python":                  "/resolved/env-python",
+		runtimePythonPath("/runtime"): "/resolved/managed-python",
+		runtimePythonPath(filepath.Join("/home/test", ".harnest", "runtime")): "/resolved/default-managed-python",
+		"python3": "/resolved/python3",
 	}
 	environment := map[string]string{
 		"HARNEST_PYTHON":      "env-python",
@@ -513,10 +513,28 @@ func TestPythonResolutionPrecedence(t *testing.T) {
 	if err != nil || selection.Executable != "/resolved/managed-python" {
 		t.Fatalf("managed resolution = %#v, %v", selection, err)
 	}
-	delete(available, "/runtime/bin/python")
+	delete(available, runtimePythonPath("/runtime"))
 	selection, err = app.resolvePython()
 	if err != nil || selection.Executable != "/resolved/python3" {
 		t.Fatalf("PATH resolution = %#v, %v", selection, err)
+	}
+}
+
+func TestPythonLocationsFollowHostLayout(t *testing.T) {
+	directory := filepath.Join("home", ".harnest", "runtime")
+	if got, want := environmentPython("windows", directory), filepath.Join(directory, "Scripts", "python.exe"); got != want {
+		t.Fatalf("windows environment python = %q, want %q", got, want)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got, want := environmentPython(goos, directory), filepath.Join(directory, "bin", "python"); got != want {
+			t.Fatalf("%s environment python = %q, want %q", goos, got, want)
+		}
+	}
+	if got := pathPythonCandidates("windows"); strings.Join(got, ",") != "python,python3" {
+		t.Fatalf("windows PATH candidates = %v", got)
+	}
+	if got := pathPythonCandidates("linux"); strings.Join(got, ",") != "python3" {
+		t.Fatalf("linux PATH candidates = %v", got)
 	}
 }
 
@@ -727,6 +745,14 @@ func TestServeUsesCompiledServerDefaultsWithoutOverrides(t *testing.T) {
 	if len(lines) != 2 || withoutPlaygroundArgument(t, lines[1]) != want {
 		t.Fatalf("serve overrode compiled server.yaml defaults: %q", lines)
 	}
+	// Capture must receive the source agent root, even when output is elsewhere.
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(mustReadTestFile(t, record+".eval-root")); got != resolved {
+		t.Fatalf("eval captures target %q, want %q", got, resolved)
+	}
 }
 
 func serveRecordingFixture(t *testing.T) (string, string, string) {
@@ -741,6 +767,9 @@ func serveRecordingFixture(t *testing.T) (string, string, string) {
 printf 'CALL' >> "$HARNEST_TEST_RECORD"
 for value in "$@"; do printf '\t%s' "$value" >> "$HARNEST_TEST_RECORD"; done
 printf '\n' >> "$HARNEST_TEST_RECORD"
+if [ "$2" = "serve" ]; then
+  printf '%s' "$HARNEST_PLAYGROUND_EVAL_ROOT" > "$HARNEST_TEST_RECORD.eval-root"
+fi
 if [ "$1" = "-m" ]; then
   output=""
   while [ "$#" -gt 0 ]; do

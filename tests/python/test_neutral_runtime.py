@@ -35,7 +35,7 @@ from harnest.neutral_runtime import (
 from harnest.assets import MemoryAssetStore
 from harnest.content import Image, ImageConstraints
 from harnest.checkpoint import MemoryStore, RunScope
-from harnest.durable import ResumeArtifact, native_durable_call
+from harnest.durable import ResumeArtifact, framework_durable_call
 from harnest.external_continuation import ExternalContinuationRuntime
 from harnest.runtime_auth import (
     AuthPrincipal,
@@ -305,7 +305,7 @@ class ExternalLiveDriver(FakeDriver):
         artifact = ResumeArtifact(
             "adk", f"native-{request.invocation_id}", "call-wex", "wex_verify"
         )
-        with native_durable_call(artifact):
+        with framework_durable_call(artifact):
             handle = await self.invocation_port.suspend(
                 f"job-{request.invocation_id}",
                 capability="wex.verify",
@@ -788,158 +788,27 @@ class NeutralRuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(final["nextCursor"])
 
-    def test_development_playground_is_bundled_and_framework_neutral(self):
-        """Serve the shared UI assets and preserve framework-neutral control contracts."""
-
+    def test_development_playground_serves_the_shared_asset_bundle(self):
+        """Keep the HTTP asset contract here; browser tests exercise UI behavior."""
         page = self.client.get("/")
-        stylesheet = self.client.get("/_harnest/playground.css")
-        javascript = self.client.get("/_harnest/playground.js")
-        for asset in ("markdown-it.min.js", "markdown.js"):
-            response = self.client.get(f"/_harnest/{asset}")
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("text/javascript", response.headers["content-type"])
-            self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Harnest Playground", page.text)
+        self.assertEqual(page.headers["cache-control"], "no-store")
+        self.assertIn("default-src 'self'", page.headers["content-security-policy"])
+        for asset, media_type in (
+            ("playground.css", "text/css"), ("selects.css", "text/css"),
+            ("markdown-it.min.js", "text/javascript"), ("markdown.js", "text/javascript"),
+            ("playground.js", "text/javascript"),
+        ):
+            with self.subTest(asset=asset):
+                response = self.client.get(f"/_harnest/{asset}")
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(media_type, response.headers["content-type"])
+                self.assertEqual(response.headers["cache-control"], "no-cache")
         self.assertLess(page.text.index("markdown-it.min.js"), page.text.index("markdown.js"))
         self.assertLess(page.text.index("markdown.js"), page.text.index("playground.js"))
 
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("Harnest Playground", page.text)
-        self.assertIn('id="workspace-eyebrow" class="eyebrow">Playground</span>', page.text)
-        self.assertIn('data-workspace="evals"', page.text)
-        self.assertNotIn("Development playground", page.text)
-        self.assertEqual(page.headers["cache-control"], "no-store")
-        self.assertEqual(stylesheet.headers["cache-control"], "no-cache")
-        self.assertEqual(javascript.headers["cache-control"], "no-cache")
-        self.assertIn("default-src 'self'", page.headers["content-security-policy"])
-        self.assertEqual(stylesheet.status_code, 200)
-        self.assertIn("text/css", stylesheet.headers["content-type"])
-        self.assertEqual(javascript.status_code, 200)
-        self.assertIn("text/javascript", javascript.headers["content-type"])
-        for endpoint in ('"/agent"', '"/sessions"', '"/responses"', '"/live"'):
-            self.assertIn(endpoint, javascript.text)
-        self.assertIn('"/_harnest/evals"', javascript.text)
-        self.assertIn("/approvals/", javascript.text)
-        self.assertIn("Human approval required", javascript.text)
-        self.assertIn(
-            'approvalButton("Approve", "approve", "approval-button approval-button-approve")',
-            javascript.text,
-        )
-        self.assertIn(
-            'approvalButton("Deny", "deny", "approval-button approval-button-deny")',
-            javascript.text,
-        )
-        self.assertIn("function approvalIsUnavailable(error)", javascript.text)
-        self.assertIn("function markApprovalResolved(panel, decision)", javascript.text)
-        self.assertIn("You approved this workflow step", javascript.text)
-        self.assertIn("You denied this workflow step", javascript.text)
-        self.assertIn("function startAgentResume(message)", javascript.text)
-        self.assertIn('startAgentResume("Resuming agent after approval…")', javascript.text)
-        self.assertIn("function renderRequiredAction(action, transport)", javascript.text)
-        self.assertIn('action?.type === "human_approval"', javascript.text)
-        self.assertIn('action?.type === "client_tool"', javascript.text)
-        self.assertIn("/client-tools/", javascript.text)
-        self.assertIn("Client tool · awaiting host result", javascript.text)
-        self.assertIn(
-            "This approval is no longer pending. Send the request again.",
-            javascript.text,
-        )
-        self.assertIn('id="session-state-empty"', page.text)
-        self.assertIn('id="session-menu"', page.text)
-        self.assertIn('id="session-search"', page.text)
-        self.assertIn('id="session-options"', page.text)
-        self.assertIn('id="trace-timeline"', page.text)
-        self.assertIn('id="trace-tab"', page.text)
-        self.assertIn('id="logs-tab"', page.text)
-        self.assertIn('id="logs-view"', page.text)
-        self.assertIn('id="log-search"', page.text)
-        self.assertIn('data-level="warning"', page.text)
-        self.assertIn('aria-haspopup="listbox"', page.text)
-        self.assertIn('data-active="stream"', page.text)
-        self.assertIn('id="theme-trigger"', page.text)
-        self.assertIn('id="theme-menu"', page.text)
-        self.assertIn('data-theme-option="system"', page.text)
-        self.assertIn('role="menuitemradio"', page.text)
-        self.assertIn('data-theme-icon="system"', page.text)
-        self.assertLess(
-            page.text.index('id="session-select"'),
-            page.text.index('<main class="workspace">'),
-        )
-        self.assertIn("height: 100dvh", stylesheet.text)
-        self.assertIn("overscroll-behavior: contain", stylesheet.text)
-        self.assertIn("typing-bubble", stylesheet.text)
-        self.assertIn("typing-label", stylesheet.text)
-        self.assertIn("typing-glow", stylesheet.text)
-        self.assertIn(".send-button { position: absolute", stylesheet.text)
-        self.assertIn(".approval-button-approve", stylesheet.text)
-        self.assertIn('.approval-event[data-status="unavailable"]', stylesheet.text)
-        self.assertIn(".approval-note", stylesheet.text)
-        self.assertIn(".approval-resolution", stylesheet.text)
-        self.assertIn(".approval-resolution-marker", stylesheet.text)
-        self.assertIn(".client-tool-action", stylesheet.text)
-        self.assertIn(".client-tool-result", stylesheet.text)
-        self.assertIn(".composer textarea::placeholder", stylesheet.text)
-        self.assertIn("font-size: 14px; font-weight: 400", stylesheet.text)
-        self.assertIn(':root[data-theme="light"]', stylesheet.text)
-        self.assertIn(".trace-entry", stylesheet.text)
-        self.assertIn(".log-entry", stylesheet.text)
-        self.assertIn(".log-level.active", stylesheet.text)
-        self.assertIn('.tool-event[data-status="completed"]', stylesheet.text)
-        selects = self.client.get("/_harnest/selects.css")
-        self.assertEqual(selects.status_code, 200)
-        self.assertIn("text/css", selects.headers["content-type"])
-        self.assertIn('.harnest-select-option[aria-selected="true"]', selects.text)
-        self.assertIn('.session-option[aria-selected="true"]', selects.text)
-        self.assertIn('data-select-proxy="session-trigger"', page.text)
-        self.assertIn("renderSessionState(session.state || {})", javascript.text)
-        self.assertIn("ui.sessionState.hidden = false", javascript.text)
-        self.assertIn("syncSessionPicker()", javascript.text)
-        self.assertIn('traces: "/_harnest/traces"', javascript.text)
-        self.assertIn("function renderLogs()", javascript.text)
-        self.assertIn('"harnest.playground.theme"', javascript.text)
-        self.assertIn("function selectTheme(theme, persist = true)", javascript.text)
-        self.assertIn("function toggleThemeMenu(force)", javascript.text)
-        self.assertIn('entry.category !== "log"', javascript.text)
-        self.assertIn('selectInspectorView("logs")', javascript.text)
-        self.assertIn('logging ? "Logs" : tracing ? "Trace" : "State"', javascript.text)
-        self.assertIn("appendToolResult", javascript.text)
-        self.assertIn("function attachPendingTools(turn)", javascript.text)
-        self.assertIn("function bindToolAccordion(detail, list)", javascript.text)
-        self.assertIn("function createToolTrayCaret()", javascript.text)
-        self.assertIn("function updateToolTraySummary(tray)", javascript.text)
-        self.assertIn("Used ${tools.length} tools", javascript.text)
-        self.assertIn('aria-label", "Tools called by the agent', javascript.text)
-        self.assertIn(".turn-tools", stylesheet.text)
-        self.assertIn(".turn-tool-list", stylesheet.text)
-        self.assertIn(".turn-tools[open]", stylesheet.text)
-        self.assertIn(".turn-tools > summary:focus-visible", stylesheet.text)
-        self.assertIn('.dataset.active = runtime.transport', javascript.text)
-        self.assertIn("showTypingIndicator()", javascript.text)
-        self.assertIn('label.textContent = "Thinking"', javascript.text)
-        self.assertIn("function appendThinking(delta, agent", javascript.text)
-        self.assertIn('frame.type === "response.thinking.delta"', javascript.text)
-        self.assertIn('frame.type === "response.agent_activity"', javascript.text)
-        self.assertIn('frame.type === "response.agent_metadata"', javascript.text)
-        self.assertIn("function appendAgentActivity(item)", javascript.text)
-        self.assertIn("function appendAgentMetadata(item)", javascript.text)
-        self.assertIn(".thinking-event", stylesheet.text)
-        self.assertIn(".agent-activity", stylesheet.text)
-        self.assertIn(".agent-metadata", stylesheet.text)
-        self.assertIn(
-            "if (runtime.streamingBubble) {\n    clearTypingIndicator();",
-            javascript.text,
-        )
-        self.assertIn(
-            "frame.outputText && !runtime.responseAssistantTurn",
-            javascript.text,
-        )
-        for native_endpoint in ('"/run"', '"/run_sse"', '"/run_live"'):
-            self.assertNotIn(native_endpoint, javascript.text)
-        self.assertEqual(javascript.text.count("window.localStorage"), 2)
-        self.assertNotIn('localStorage.setItem("session', javascript.text)
-        self.assertNotIn('localStorage.setItem("bearer', javascript.text)
-        self.assertNotIn("sessionStorage", javascript.text)
-
-    def test_playground_renders_nested_application_state_updates(self):
+    def test_session_state_round_trips_nested_application_values(self):
         self.client.post(
             "/sessions",
             json={
@@ -974,14 +843,6 @@ class NeutralRuntimeTests(unittest.TestCase):
             self.client.get("/sessions/state-render").json()["state"],
             state_delta,
         )
-        javascript = self.client.get("/_harnest/playground.js").text
-        self.assertIn("renderSessionState(session.state || {})", javascript)
-        self.assertIn(
-            "ui.sessionState.textContent = pretty(state || {})",
-            javascript,
-        )
-        self.assertIn("ui.sessionStateEmpty.hidden = !empty", javascript)
-
     def test_production_runtime_without_assets_has_no_playground_routes(self):
         """Missing production assets disable UI, traces, and eval routes together."""
         with patch("harnest.playground.playground_available", return_value=False):
@@ -1009,99 +870,6 @@ class NeutralRuntimeTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "javascript/playground_markdown.cjs"
         result = subprocess.run([shutil.which("node"), "--test", str(script)], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_playground_new_session_resets_conversation_owned_state(self):
-        javascript = self.client.get("/_harnest/playground.js").text
-
-        self.assertIn("function resetConversation()", javascript)
-        self.assertIn(
-            "ui.conversation.replaceChildren(ui.emptyState)",
-            javascript,
-        )
-        self.assertIn("runtime.toolCards.clear()", javascript)
-        self.assertIn("runtime.clientToolCards.clear()", javascript)
-        self.assertIn(
-            "setActiveSession(session.id, clearConversation)",
-            javascript,
-        )
-        self.assertIn(
-            "await loadSessions(session.id, clearConversation)",
-            javascript,
-        )
-        self.assertIn(
-            "return runtime.sessionId || createSession(false)",
-            javascript,
-        )
-
-    def test_playground_restores_url_addressed_session_transcripts(self):
-        javascript = self.client.get("/_harnest/playground.js").text
-
-        self.assertIn('const sessionQueryKey = "session"', javascript)
-        self.assertIn("function sessionIdFromLocation()", javascript)
-        self.assertIn("window.history.replaceState", javascript)
-        self.assertIn("async function includePreferredSession", javascript)
-        self.assertIn("async function loadSessionMessages()", javascript)
-        self.assertIn("renderSessionMessages(body.messages || [])", javascript)
-        self.assertIn("async function selectSearchedSession()", javascript)
-        self.assertIn(
-            'ui.sessionSearch.addEventListener("input", filterSessionOptions)',
-            javascript,
-        )
-
-    def test_playground_marks_unfinished_tools_failed_on_request_error(self):
-        javascript = self.client.get("/_harnest/playground.js").text
-        stylesheet = self.client.get("/_harnest/playground.css").text
-
-        self.assertIn("detail.open = false", javascript)
-        self.assertNotIn("detail.open = true", javascript)
-        self.assertIn("function failRunningTools()", javascript)
-        self.assertIn(
-            'if (card.detail.dataset.status !== "running") continue',
-            javascript,
-        )
-        self.assertIn('card.detail.dataset.status = "failed"', javascript)
-        self.assertIn('card.status.textContent = "Failed"', javascript)
-        self.assertIn("failRunningTools();", javascript)
-        self.assertIn('.tool-event[data-status="failed"]', stylesheet)
-
-    def test_playground_wraps_tool_payloads_and_expands_long_identifiers(self):
-        javascript = self.client.get("/_harnest/playground.js").text
-        stylesheet = self.client.get("/_harnest/playground.css").text
-
-        self.assertIn("identifier.title = identifier.textContent", javascript)
-        self.assertIn(
-            ".tool-heading small { overflow: hidden", stylesheet
-        )
-        self.assertIn("text-overflow: ellipsis", stylesheet)
-        self.assertIn(
-            ".tool-event[open] .tool-heading small { overflow: visible; "
-            "overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }",
-            stylesheet,
-        )
-        self.assertIn("overflow: visible; overflow-wrap: anywhere", stylesheet)
-        self.assertIn("white-space: pre-wrap", stylesheet)
-        self.assertIn(
-            ".turn-tools, .turn-tools[open] { width: 100%; max-width: 100%; }",
-            stylesheet,
-        )
-
-    def test_playground_preserves_text_and_tool_call_timeline(self):
-        javascript = self.client.get("/_harnest/playground.js").text
-
-        self.assertIn("function beginToolBoundary()", javascript)
-        self.assertIn(
-            "beginToolBoundary();\n    appendToolCall",
-            javascript,
-        )
-        self.assertIn(
-            "placePendingTools(runtime.responseAssistantTurn)",
-            javascript,
-        )
-        self.assertIn("function placePendingTools(turn)", javascript)
-        self.assertNotIn(
-            "runtime.responseAssistantTurn = turn;\n    attachPendingTools(turn)",
-            javascript,
-        )
 
     def test_server_policy_controls_request_limit_and_playground(self):
         app = create_neutral_app(

@@ -1,3 +1,5 @@
+// Validates the services (compose-style containers) that a template declares.
+
 package main
 
 import (

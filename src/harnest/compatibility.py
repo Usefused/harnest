@@ -1,6 +1,7 @@
 """Framework compatibility contract for this Harnest release.
 
-This module is the single source of truth for framework distribution ranges.
+Framework distribution ranges come from ``harnest/frameworks/frameworks.json``,
+the single source of truth shared with the Go CLI.
 Compilation validates the installed distribution before importing authored agent
 code, so managed and advanced agents share the same compatibility boundary.
 """
@@ -14,6 +15,8 @@ from typing import Mapping
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+
+from .frameworks.registry import framework_metadata
 
 
 _SOURCE_VERSION = "1.8.0"  # x-release-please-version
@@ -44,22 +47,17 @@ class FrameworkCompatibilityError(RuntimeError):
     """An installed framework is absent or unsupported by this release."""
 
 
-# Each Harnest release updates this matrix together with its optional dependency
-# ranges. Do not infer compatibility from whichever packages happen to import.
+# Each Harnest release updates frameworks.json together with its optional
+# dependency ranges. Do not infer compatibility from whichever packages import.
 FRAMEWORK_COMPATIBILITY: Mapping[str, FrameworkCompatibility] = MappingProxyType(
     {
-        "adk": FrameworkCompatibility(
-            framework="adk",
-            distribution="google-adk",
-            versions=">=2.8,<3",
-            install_extra="adk",
-        ),
-        "langgraph": FrameworkCompatibility(
-            framework="langgraph",
-            distribution="langgraph",
-            versions=">=1.2,<2",
-            install_extra="langgraph",
-        ),
+        name: FrameworkCompatibility(
+            framework=name,
+            distribution=item.distribution,
+            versions=item.versions,
+            install_extra=item.install_extra,
+        )
+        for name, item in framework_metadata().items()
     }
 )
 

@@ -31,12 +31,13 @@ class SourceProtocolRecovery(BasePlugin):
         key = "temp:studio_lookup_recoveries"
         attempts = tool_context.state.get(key, 0)
         if attempts >= 2:
-            return None
+            # ADK can turn an unhandled lookup error into another model retry.
+            raise error
         tool_context.state[key] = attempts + 1
         return feedback
 
 
-@lifecycle.adk_plugin
+@lifecycle.framework_extension
 def source_protocol_recovery():
     """Register recovery through Harnest's supported native-plugin boundary."""
     return SourceProtocolRecovery()

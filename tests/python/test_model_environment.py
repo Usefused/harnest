@@ -1,5 +1,7 @@
 """Real framework adapters against an intercepted OpenAI-compatible HTTP API."""
 
+from _framework_testing import build_for_framework
+
 import json
 import os
 import tempfile
@@ -14,7 +16,6 @@ from harnest.bundle import EvalSuite
 from harnest.evaluation import eval_config
 from harnest.eval_model_transport import eval_model_transports
 from harnest.model import LiteLLMModel
-from harnest.model_transport import model_transport_bindings
 from test_eval_transport_http import _exercise_models
 
 
@@ -87,8 +88,8 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
             os.environ, environment, clear=True
         ), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
-        ), patch("litellm.telemetry", False):
-            owner = LiteLLMModel.from_openai_environment().build_for(framework)
+        ):
+            owner = build_for_framework(LiteLLMModel.from_openai_environment(), framework)
             config = _authored_eval_config(Path(directory) / "test_config.json")
             # Runtime transport must retain the captured authority, not read
             # a later command's process-wide provider settings.
@@ -123,7 +124,7 @@ class ModelEnvironmentAdapterTests(unittest.IsolatedAsyncioTestCase):
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         }, clear=True), patch("httpx.AsyncClient.send", new=send), patch(
             "httpx.Client.send", side_effect=AssertionError("synchronous HTTP is forbidden")
-        ), patch("litellm.telemetry", False):
+        ):
             config = _authored_eval_config(Path(directory) / "test_config.json")
             with eval_model_transports(SimpleNamespace(), config) as prepared:
                 adapter = LLMRegistry.new_llm(prepared.user_simulator_config.model)
@@ -168,15 +169,6 @@ class ModelDefaultsTests(unittest.TestCase):
             with self.subTest(model=model, endpoint=endpoint), patch.dict(os.environ, {"OPENAI_MODEL": model, "OPENAI_BASE_URL": endpoint}, clear=True):
                 with self.assertRaises(ValueError):
                     LiteLLMModel.from_openai_environment()
-
-    def test_both_frameworks_retain_transport_for_evaluation(self):
-        with patch.dict(os.environ, {"OPENAI_MODEL": "chosen", "OPENAI_BASE_URL": "http://models.test/v1"}, clear=True):
-            connector = LiteLLMModel.from_openai_environment()
-        for adapter in (connector.build(), connector.build_langgraph()):
-            binding, = model_transport_bindings(adapter)
-            self.assertEqual(binding.model, "openai/chosen")
-            self.assertEqual(binding._completion_args["api_base"], "http://models.test/v1")
-            self.assertEqual(binding._completion_args["api_key"], "not-required")
 
     def test_native_connector_is_removed(self):
         import harnest.model

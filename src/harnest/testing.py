@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from collections.abc import Callable
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    contextmanager,
+    nullcontext,
+    redirect_stderr,
+    redirect_stdout,
+)
 from datetime import datetime, timezone
-import importlib
 import json
 import logging
 import os
@@ -35,8 +41,6 @@ from .runtime import (
 from ._library import release_authored_library
 from .logging import get_logger
 from .eval_model_transport import (
-    close_owned_eval_model_transports,
-    eval_model_transports,
     restore_eval_model_names,
 )
 
@@ -308,34 +312,6 @@ def _isolated_eval_logging() -> Iterator[None]:
             _restore_eval_logger(logger, original.get(logger))
 
 
-@contextmanager
-def _adk_eval_output_filter(module_name: str) -> Iterator[None]:
-    """Prepare managed native evaluation without modifying the compiled app."""
-
-    from .evaluation import prepared_adk_eval_app
-
-    agent_module = importlib.import_module(module_name)
-    app = getattr(agent_module, "app", None)
-    plugins = getattr(app, "plugins", None)
-    if not isinstance(plugins, list):
-        raise AgentTestError("compiled ADK eval application has no plugin list")
-    missing = object()
-    original_root = getattr(agent_module, "root_agent", missing)
-    with prepared_adk_eval_app(app) as prepared:
-        agent_module.app = prepared
-        # ADK's evaluator rebuilds App.root_agent from the module export, so
-        # both must point at the isolated legacy cancellation-safe root.
-        agent_module.root_agent = prepared.root_agent
-        try:
-            yield
-        finally:
-            agent_module.app = app
-            if original_root is missing:
-                del agent_module.root_agent
-            else:
-                agent_module.root_agent = original_root
-
-
 class SmokeClient:
     """Small neutral-API helper injected into opted-in smoke tests."""
 
@@ -534,166 +510,6 @@ def _require_eval_trajectory(trajectory: str) -> None:
         raise AgentTestError(str(exc)) from exc
 
 
-def _run_adk_evals(
-    artifact: Path,
-    suite: EvalSuite,
-    *,
-    trajectory: str = "business",
-    print_results: bool = True,
-    result_output: Path | None = None,
-) -> int:
-    """Run validated ADK eval sets with visible setup and suite milestones."""
-
-    _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
-    AgentEvaluator, EvalSet = _eval_dependencies()
-    config = _eval_config(suite, trajectory)
-    module_name = f"{artifact.name}.agent"
-    collector = _EvalResultCollector(framework="adk", trajectory=trajectory)
-
-    async def evaluate_all() -> None:
-        """Keep native evaluation capabilities and model clients in one loop."""
-
-        from .eval_adk import adk_evaluation_runtime
-        from .application import CompiledApplication
-
-        target = getattr(sys.modules.get(module_name), "root_agent", None)
-        application = getattr(sys.modules.get(module_name), "application", None)
-        try:
-            async with adk_evaluation_runtime(application):
-                with eval_model_transports(target, config) as prepared:
-                    await _evaluate_eval_sets(
-                        AgentEvaluator,
-                        EvalSet,
-                        module_name=module_name,
-                        suite=suite,
-                        config=prepared,
-                        trajectory=trajectory,
-                        print_results=print_results,
-                        result_collector=collector,
-                    )
-        finally:
-            # A real compiled application's runtime owns model shutdown. The
-            # bare-module compatibility path has no such owner; close only it
-            # here so custom clients never receive duplicate close calls.
-            if not isinstance(application, CompiledApplication):
-                await close_owned_eval_model_transports(target, primary_error=sys.exc_info()[1])
-
-    import_root = str(artifact.parent)
-    sys.path.insert(0, import_root)
-    try:
-        try:
-            with _isolated_eval_logging(), _adk_eval_output_filter(module_name):
-                asyncio.run(evaluate_all())
-        except AssertionError as exc:
-            print(str(exc), file=sys.stderr)
-            _publish_eval_result(
-                collector,
-                status="failed",
-                print_results=print_results,
-                result_output=result_output,
-            )
-            return 1
-        except Exception as exc:
-            # Preserve any suites completed before an infrastructure failure so
-            # CI can distinguish an execution error from a scored eval failure.
-            _publish_eval_result(
-                collector,
-                status="error",
-                print_results=print_results,
-                result_output=result_output,
-                error=exc,
-            )
-            raise
-        _publish_eval_result(
-            collector,
-            status="passed",
-            print_results=print_results,
-            result_output=result_output,
-        )
-        return 0
-    finally:
-        if sys.path and sys.path[0] == import_root:
-            sys.path.pop(0)
-        else:  # pragma: no cover - defensive against third-party sys.path edits
-            try:
-                sys.path.remove(import_root)
-            except ValueError:
-                pass
-        for name in tuple(sys.modules):
-            if name == artifact.name or name.startswith(f"{artifact.name}."):
-                sys.modules.pop(name, None)
-
-
-def _run_langgraph_evals(
-    application: Any,
-    suite: EvalSuite,
-    *,
-    trajectory: str = "business",
-    print_results: bool = True,
-    result_output: Path | None = None,
-) -> int:
-    """Run LangGraph through the shared evaluator with visible setup milestones."""
-
-    _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
-    AgentEvaluator, EvalSet = _eval_dependencies()
-    config = _eval_config(suite, trajectory)
-    collector = _EvalResultCollector(framework="langgraph", trajectory=trajectory)
-    if config.live_model_config is not None:
-        raise AgentTestError(
-            "LangGraph --evals does not support ADK liveModelConfig; use text "
-            "conversation evals or authored smoke tests for bidirectional media"
-        )
-
-    async def evaluate_all() -> None:
-        """Borrow graph transports until the owning evaluation driver exits."""
-
-        from .eval_langgraph import langgraph_eval_agent_module
-
-        async with langgraph_eval_agent_module(application) as module_name:
-            with eval_model_transports(application.target, config) as prepared:
-                await _evaluate_eval_sets(
-                    AgentEvaluator,
-                    EvalSet,
-                    module_name=module_name,
-                    suite=suite,
-                    config=prepared,
-                    trajectory=trajectory,
-                    print_results=print_results,
-                    result_collector=collector,
-                )
-
-    with _isolated_eval_logging():
-        try:
-            asyncio.run(evaluate_all())
-        except AssertionError as exc:
-            print(str(exc), file=sys.stderr)
-            _publish_eval_result(
-                collector,
-                status="failed",
-                print_results=print_results,
-                result_output=result_output,
-            )
-            return 1
-        except Exception as exc:
-            # Preserve partial framework-neutral results on adapter or provider
-            # errors while allowing the CLI to report the original exception.
-            _publish_eval_result(
-                collector,
-                status="error",
-                print_results=print_results,
-                result_output=result_output,
-                error=exc,
-            )
-            raise
-    _publish_eval_result(
-        collector,
-        status="passed",
-        print_results=print_results,
-        result_output=result_output,
-    )
-    return 0
-
-
 def _eval_dependencies() -> tuple[Any, Any]:
     """Load the single evaluator dependency used by both framework adapters."""
 
@@ -769,6 +585,77 @@ async def _evaluate_eval_sets(
         raise AssertionError("\n\n".join(scored_failures))
 
 
+def _run_eval_suite(
+    framework: str,
+    suite: EvalSuite,
+    eval_target: Callable[[], AbstractAsyncContextManager[tuple[str, Any]]],
+    *,
+    trajectory: str,
+    print_results: bool,
+    result_output: Path | None,
+    scope: Callable[[], AbstractContextManager[Any]] = nullcontext,
+    check_config: Callable[[Any], None] | None = None,
+) -> int:
+    """Score one framework's agent with the built-in evaluator and publish the result.
+
+    Adapters supply only what differs: ``eval_target`` makes the agent
+    importable for the evaluator and yields its module name and the target
+    whose models the evaluator borrows; ``scope`` wraps the run (import paths,
+    output filters); ``check_config`` rejects settings the framework cannot run.
+    """
+
+    import asyncio
+
+    from .eval_model_transport import eval_model_transports
+
+    _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
+    AgentEvaluator, EvalSet = _eval_dependencies()
+    config = _eval_config(suite, trajectory)
+    collector = _EvalResultCollector(framework=framework, trajectory=trajectory)
+    if check_config is not None:
+        check_config(config)
+
+    async def evaluate_all() -> None:
+        """Keep borrowed model transports within the adapter's target lifetime."""
+        async with eval_target() as (module_name, target):
+            with eval_model_transports(target, config) as prepared:
+                await _evaluate_eval_sets(
+                    AgentEvaluator,
+                    EvalSet,
+                    module_name=module_name,
+                    suite=suite,
+                    config=prepared,
+                    trajectory=trajectory,
+                    print_results=print_results,
+                    result_collector=collector,
+                )
+
+    def publish(status: str, error: Exception | None = None) -> None:
+        """Publish accumulated results with the suite's final status."""
+        _publish_eval_result(
+            collector,
+            status=status,
+            print_results=print_results,
+            result_output=result_output,
+            error=error,
+        )
+
+    try:
+        with _isolated_eval_logging(), scope():
+            asyncio.run(evaluate_all())
+    except AssertionError as exc:
+        print(str(exc), file=sys.stderr)
+        publish("failed")
+        return 1
+    except Exception as exc:
+        # Preserve suites completed before an infrastructure failure so CI can
+        # distinguish an execution error from a scored eval failure.
+        publish("error", exc)
+        raise
+    publish("passed")
+    return 0
+
+
 def _eval_progress(message: str, *, enabled: bool) -> None:
     """Flush human progress to stderr without mixing it into structured results."""
 
@@ -794,6 +681,34 @@ def _eval_suite_progress(index: int, total: int, *, enabled: bool) -> Iterator[N
         _eval_progress(
             f"{label} {outcome} ({time.monotonic() - started:.1f}s)", enabled=enabled,
         )
+
+
+def _selected_evaluations(
+    artifact: Path, project: Path, plugin: _HarnestPytestPlugin, framework: str,
+    trajectory: str, quiet: bool, output: Path | None,
+) -> int:
+    """Keep the legacy report for ADK alone and compose reports for installed runners."""
+    from ._eval_runner import run_configured
+    from ._eval_runner_config import read_runners
+
+    runners = read_runners(artifact / "source")
+
+    def run_adk(destination: Path | None) -> int:
+        """Discover ADK inputs only when the built-in evaluator is selected."""
+        suite = discover_evals(artifact / "source" / "agent.py")
+        if not suite.eval_sets:
+            raise AgentTestError("--evals requires evals/ with at least one *.evalset.json")
+        from .frameworks.registry import get_framework
+
+        return get_framework(framework).run_builtin_evals(
+            artifact=artifact, application=plugin.compiled_application, suite=suite,
+            trajectory=trajectory, print_results=not quiet, result_output=destination,
+        )
+
+    with _test_output(suppressed=quiet):
+        if [runner.name for runner in runners] == ["adk"]:
+            return run_adk(output)
+        return run_configured(runners, artifact, project, output, run_adk, _write_eval_result, quiet=quiet)
 
 
 def run_agent_tests(
@@ -843,28 +758,8 @@ def run_agent_tests(
             if test_status != 0 or not include_evals:
                 return test_status
 
-            suite = discover_evals(artifact / "source" / "agent.py")
-            if not suite.eval_sets:
-                raise AgentTestError(
-                    "--evals requires evals/ with at least one *.evalset.json"
-                )
-            if framework == "adk":
-                with _test_output(suppressed=no_output):
-                    return _run_adk_evals(
-                        artifact,
-                        suite,
-                        trajectory=eval_trajectory,
-                        print_results=not no_output,
-                        result_output=eval_output,
-                    )
-            with _test_output(suppressed=no_output):
-                return _run_langgraph_evals(
-                    plugin.compiled_application,
-                    suite,
-                    trajectory=eval_trajectory,
-                    print_results=not no_output,
-                    result_output=eval_output,
-                )
+            return _selected_evaluations(artifact, source_directory, plugin, framework,
+                                         eval_trajectory, no_output, eval_output)
         finally:
             release_authored_library(artifact / "source")
 

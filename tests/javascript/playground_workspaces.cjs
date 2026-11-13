@@ -103,6 +103,99 @@ test("private input displays its schema and clears values before a failed submis
   assert.equal(input.value, "");
 });
 
+test("visible idle tab recovers after reload and shares the check with Send", async () => {
+  const page = workspacePage();
+  let generation = "first", available = true, sessionExists = true, creates = 0, lookups = 0;
+  page.context.fetch = async (path, options) => {
+    if (!available) throw new Error("Restarting");
+    if (path === "/_harnest/generation") return {ok: true, text: async () => generation};
+    if (path === "/sessions/session-kept") {
+      lookups++;
+      return {ok: sessionExists, status: 404, json: async () => ({detail: "Session not found"})};
+    }
+    if (path === "/sessions" && options.method === "POST") {
+      creates++;
+      return {ok: true, json: async () => ({id: "replacement"})};
+    }
+    if (path === "/sessions") return {ok: true, json: async () => ({sessions: [{id: "replacement"}]})};
+    if (path.endsWith("/messages")) return {ok: true, json: async () => ({messages: []})};
+    throw new Error("Unexpected request: " + path);
+  };
+  page.run(`runtime.generation = "first"; ui.input.value = "my draft";
+    ui.sessionSelect.selectedOptions = []; loadTraces = async () => {};
+    window.setInterval = fn => { window.tick = fn; }; monitorReload();`);
+  const tick = async () => { page.window.tick(); await page.run("runtime.reloadCheck"); };
+  await tick();
+  assert.equal(lookups, 0);
+  generation = "second";
+  await tick();
+  assert.equal(lookups, 1);
+  assert.equal(page.run("runtime.sessionId"), "session-kept");
+  available = false;
+  await page.run("submitMessage({preventDefault(){}})");
+  assert.equal(page.run("ui.input.value"), "my draft");
+  assert.equal(creates, 0);
+  available = true; sessionExists = false; generation = "third";
+  page.window.tick();
+  await Promise.all([page.run("checkReload()"), page.run("checkReload()")]);
+  assert.equal(creates, 1);
+  assert.equal(page.run("ui.sessionSelect.value"), "replacement");
+  assert.equal(new URL(page.location.href).searchParams.get("session"), "replacement");
+  assert.equal(page.run("ui.input.value"), "my draft");
+  await tick();
+  assert.equal(lookups, 2);
+});
+
+// Recovery must yield ownership when the user changes sessions or credentials during its list refresh.
+for (const change of ["session", "credentials"]) test(`reload recovery preserves newer ${change} during refresh`, async () => {
+  const page = workspacePage();
+  let release, announce;
+  // Separate request arrival from completion so the user action occurs inside the network round trip.
+  const started = new Promise(resolve => { announce = resolve; });
+  const refresh = new Promise(resolve => { release = resolve; });
+  // Creation completes first; only the list refresh remains in flight during the ownership change.
+  page.context.fetch = async (_path, options) => {
+    if (options.method === "POST") return {ok: true, json: async () => ({id: "replacement"})};
+    announce();
+    return refresh;
+  };
+  page.run(`ui.sessionSelect.selectedOptions = []; ui.input.value = "my draft";
+    let viewLoads = 0;
+    // Stale recovery must not start loading state, messages, or traces for the abandoned selection.
+    loadSessionState = loadSessionMessages = loadTraces = async () => { viewLoads++; };`);
+  const recovery = page.run('replaceMissingSession("session-kept", "")');
+  await started;
+  // Exercise identity and credential changes independently because both invalidate the old request.
+  page.run(change === "session" ? 'setActiveSession("user-selected")' : 'ui.token.value = "new-token"');
+  release({ok: true, json: async () => ({sessions: [{id: "replacement"}, {id: "user-selected"}]})});
+  await recovery;
+  assert.equal(page.run("runtime.sessionId"), change === "session" ? "user-selected" : "replacement");
+  assert.equal(page.run("ui.token.value"), change === "credentials" ? "new-token" : "");
+  assert.equal(page.run("viewLoads"), 0);
+  assert.equal(page.run("ui.input.value"), "my draft");
+});
+
+// Every asynchronous session view must discard a response after its owner changes.
+for (const [loader, renderer] of [["loadSessionState", "renderSessionState"], ["loadSessionMessages", "renderSessionMessages"], ["loadTraces", "renderTraces"]]) test(`${loader} discards a delayed response for an abandoned selection`, async () => {
+  const page = workspacePage();
+  let release, announce;
+  // Hold the response body so the loader has captured its original session before the user switches.
+  const started = new Promise(resolve => { announce = resolve; });
+  const response = new Promise(resolve => { release = resolve; });
+  // The response arrives normally; decoding remains pending until the ownership change.
+  page.context.fetch = async () => ({ok: true, json: () => { announce(); return response; }});
+  page.run(`let viewRenders = 0;
+    // Observe visible updates rather than the loader's internal guard shape.
+    ${renderer} = () => { viewRenders++; };`);
+  const loading = page.run(`${loader}()`);
+  await started;
+  page.run('setActiveSession("user-selected"); ui.token.value = "new-token";');
+  release({id: "session-kept", state: {stale: true}, messages: [{role: "user", content: "stale"}], traces: [{id: "stale"}]});
+  await loading;
+  assert.equal(page.run("viewRenders"), 0);
+  assert.equal(page.run("runtime.sessionId"), "user-selected");
+});
+
 test("switching Playground and Evals preserves conversation and active session", async () => {
   const page = workspacePage();
   const conversation = page.get("#conversation");
@@ -115,6 +208,38 @@ test("switching Playground and Evals preserves conversation and active session",
   assert.equal(page.get("#chat-workspace").hidden, false);
   assert.equal(page.run("runtime.sessionId"), "session-kept");
   assert.equal(conversation.children.length, 1);
+});
+
+test("switching sessions clears prior turns and tool cards and restores a shareable URL", () => {
+  const page = workspacePage();
+  page.location.href = "http://127.0.0.1:28081/?session=selected-session&view=chat";
+  page.run(`
+    ui.conversation.append(document.createElement("article"));
+    runtime.toolCards.set("old-tool", {});
+    runtime.clientToolCards.set("old-client-tool", {});
+    setActiveSession(sessionIdFromLocation());
+    syncSessionUrl(runtime.sessionId);
+  `);
+  assert.equal(page.run("runtime.sessionId"), "selected-session");
+  assert.equal(page.run("ui.conversation.children.length"), 1);
+  assert.equal(page.run("ui.conversation.children[0] === ui.emptyState"), true);
+  assert.equal(page.run("runtime.toolCards.size + runtime.clientToolCards.size"), 0);
+  assert.equal(new URL(page.location.href).searchParams.get("session"), "selected-session");
+});
+
+test("a failed request marks only unfinished tool cards as failed", () => {
+  const page = workspacePage();
+  page.run(`
+    const running = createToolCard("lookup", "running");
+    const completed = createToolCard("lookup", "completed");
+    completed.detail.dataset.status = "completed";
+    runtime.toolCards.set("running", running);
+    runtime.toolCards.set("completed", completed);
+    failRunningTools();
+  `);
+  assert.equal(page.run('runtime.toolCards.get("running").detail.dataset.status'), "failed");
+  assert.equal(page.run('runtime.toolCards.get("running").status.textContent'), "Failed");
+  assert.equal(page.run('runtime.toolCards.get("completed").detail.dataset.status'), "completed");
 });
 
 test("tab navigation and browser history restore Chat and Evals", async () => {
@@ -175,7 +300,7 @@ function builderPage() {
   // Expose editor entrypoints in the VM; generation reload is covered by runtime integration.
   const source = fs.readFileSync(path.join(assets, "builder.js"), "utf8").replace(
     "return {openEvals, captureConversation, syncEvalSelection}",
-    "return {editCase, showError, setup(request) { api = request; saved = async () => {}; }}"
+    "return {editCase, captureConversation, showError, setup(request, capabilities = authoring) { api = request; authoring = capabilities; saved = async () => {}; }}"
   );
   vm.runInContext(source, page.context);
   return page;
@@ -214,6 +339,72 @@ test("case form separates sections and preserves native fields across failed-sav
     assert.deepEqual(copy.conversation[0].userContent.parts[1], original.eval_cases[0].conversation[0].userContent.parts[1]);
     assert.deepEqual(copy.conversation[0].intermediateData, original.eval_cases[0].conversation[0].intermediateData);
   }
+});
+
+test("plain serve offers a workspace save and reports when the suite can run", async () => {
+  const page = builderPage(), writes = [];
+  page.context.document.querySelectorAll = () => [{
+    classList: {contains: role => role === "user"}, querySelector: () => ({textContent: "Hello"}),
+  }];
+  page.context.request = async (url, options) => {
+    writes.push([url, JSON.parse(options.body)]);
+    return {json: async () => ({})};
+  };
+  let review;
+  page.context.setTimeout = callback => { review = callback; };
+  await page.run("harnestBuilder.setup(request, {available:false, captureAvailable:true, suites:[]}); harnestBuilder.captureConversation()");
+  const submit = () => descendants(page.get("builder-dialog")).find(node => node.tag === "form").listeners.submit({preventDefault() {}});
+  await submit();
+  await review();
+  inputByLabel(page, "Suite ID").value = "plain";
+  await submit();
+  const [[url, body]] = writes;
+  assert.equal(url, "/_harnest/authoring/document");
+  assert.equal(body.path, "evals/plain.evalset.json");
+  assert.equal(JSON.parse(body.text).eval_cases[0].conversation[0].userContent.parts[0].text, "Hello");
+  assert.match(page.get("eval-authoring-status").textContent, /Saved to evals\/plain\.evalset\.json.*Restart/);
+});
+
+test("read-only chat capture downloads a reviewed eval suite without a workspace write", async () => {
+  const page = builderPage();
+  const message = (user, text) => ({
+    classList: {contains: role => user && role === "user"},
+    querySelector: () => ({textContent: text, markdownSource: user ? undefined : text}),
+  });
+  page.context.document.querySelectorAll = () => [
+    message(true, "First question"), message(false, "First answer"),
+    message(true, "Follow-up"), message(false, "Second answer"),
+  ];
+  let blob, filename, revoked;
+  page.context.Blob = Blob;
+  page.context.URL = {
+    createObjectURL: value => { blob = value; return "blob:eval"; },
+    revokeObjectURL: url => { revoked = url; },
+  };
+  page.context.setTimeout = fn => fn();
+  page.context.document.createElement = tag => {
+    const node = new Element(tag);
+    if (tag === "a") {
+      node.click = () => { filename = node.download; assert.equal(node.href, "blob:eval"); };
+      node.remove = () => {};
+    }
+    return node;
+  };
+  await page.run("harnestBuilder.captureConversation()");
+  const dialog = page.get("builder-dialog");
+  assert.ok(descendants(dialog).some(node => node.textContent === "Download eval"));
+  inputByLabel(page, "Suite ID").value = "chat_review";
+  inputByLabel(page, "Expected response").value = "Reviewed answer";
+  await descendants(dialog).find(node => node.tag === "form").listeners.submit({preventDefault() {}});
+  assert.equal(dialog.open, false);
+  assert.equal(filename, "chat_review.evalset.json");
+  assert.equal(revoked, "blob:eval");
+  const suite = JSON.parse(await blob.text());
+  assert.equal(suite.eval_set_id, "chat_review");
+  assert.deepEqual(suite.eval_cases[0].conversation.map(turn => [
+    turn.userContent.parts[0].text, turn.finalResponse.parts[0].text,
+  ]), [["First question", "Reviewed answer"], ["Follow-up", "Second answer"]]);
+  assert.match(page.get("eval-authoring-status").textContent, /chat_review\.evalset\.json/);
 });
 
 test("evaluation errors render without the removed Studio status element", () => {

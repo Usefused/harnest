@@ -25,9 +25,9 @@ from .continuation import (
 )
 from .checkpoint import RunRecord, RunScope
 from .durable import (
-    NativeDurableSuspended,
-    NativeResumeInput,
-    current_native_durable_call,
+    FrameworkDurableSuspended,
+    FrameworkResumeInput,
+    current_framework_durable_call,
 )
 from .runtime_contract import InvocationRequest
 
@@ -95,7 +95,7 @@ _CURRENT: ContextVar[_Execution | None] = ContextVar(
 
 
 class ContinuationHandle:
-    """One plugin-owned handle that enters framework-native suspension."""
+    """One plugin-owned handle that enters framework-specific suspension."""
 
     __slots__ = ("_call", "_local_waiter", "_pending")
 
@@ -224,7 +224,7 @@ class ApplicationContinuationPort:
 
 
 class ExternalContinuationRuntime:
-    """Coordinate durable provider state with framework-native resumption."""
+    """Coordinate durable provider state with framework-specific resumption."""
 
     def __init__(
         self,
@@ -345,7 +345,7 @@ class ExternalContinuationRuntime:
         """Verify durable suspension is available before external submission."""
 
         self._require_open()
-        if current_native_durable_call() is None:
+        if current_framework_durable_call() is None:
             raise ExternalContinuationUnavailableError(
                 "unfinished external work requires @tool(durable=True)"
             )
@@ -363,7 +363,7 @@ class ExternalContinuationRuntime:
         """Persist and publish a wait before entering native suspension."""
 
         self._require_open()
-        native = current_native_durable_call()
+        native = current_framework_durable_call()
         self.preflight(execution)
         # The preflight guarantees a native call in this exact synchronous
         # context; retain the explicit check for static narrowing and clarity.
@@ -441,7 +441,7 @@ class ExternalContinuationRuntime:
         self._set_pending_response(request.invocation_id, pending)
         # Native resume already owns the value that consumes this interrupt.
         # Announcing another in-progress boundary would regress the HTTP state.
-        if not isinstance(request.input, NativeResumeInput):
+        if not isinstance(request.input, FrameworkResumeInput):
             execution.run.notifications.put_nowait(
                 ("external_continuation", pending)
             )
@@ -457,7 +457,7 @@ class ExternalContinuationRuntime:
         pending: PendingExternalContinuation,
         local_waiter: asyncio.Future[Any] | None,
     ) -> ContinuationHandle:
-        """Arm an attached ADK wait or retain the framework-native fallback."""
+        """Arm an attached ADK wait or retain the framework-specific fallback."""
 
         if local_waiter is None:
             return ContinuationHandle(native, pending)
@@ -477,7 +477,9 @@ class ExternalContinuationRuntime:
     ) -> asyncio.Future[Any] | None:
         """Retain an ADK tool frame only while its live transport stays attached."""
 
-        if native.artifact.framework != "adk" or request.transport != "live":
+        if request.transport != "live" or not _retains_live_tool_frame(
+            native.artifact.framework
+        ):
             return None
         waiter = asyncio.get_running_loop().create_future()
         with self._response_lock:
@@ -999,7 +1001,7 @@ class ExternalContinuationRuntime:
             )
         value = _resume_value(record)
         request = InvocationRequest(
-            input=NativeResumeInput(record.resume, value),
+            input=FrameworkResumeInput(record.resume, value),
             user_id=record.user_id,
             session_id=record.session_id,
             invocation_id=record.run_id,
@@ -1021,7 +1023,7 @@ class ExternalContinuationRuntime:
         try:
             with self.execution(run, request):
                 result = await self._driver.invoke(request)
-        except NativeDurableSuspended:
+        except FrameworkDurableSuspended:
             await self.arm(
                 response_id=record.run_id,
                 user_id=record.user_id,
@@ -1155,12 +1157,12 @@ def _resume_value(record: ContinuationRecord) -> Any:
 
     if record.failure is None:
         return record.result
-    if record.resume is not None and record.resume.framework == "langgraph":
-        # LangGraph re-enters the tool, so its handle can restore the authored
+    if record.resume is not None and _resume_reenters_tool(record.resume.framework):
+        # Frameworks that re-enter the tool let its handle restore the authored
         # exception contract without placing an exception in the checkpoint.
         return {_FAILURE_KEY: record.failure.code}
-    # ADK resumes the model loop rather than the Python tool frame. Give the
-    # model a payload-free error category as the long-running FunctionResponse.
+    # Frameworks that resume the model loop rather than the Python tool frame
+    # receive a payload-free error category as the long-running tool response.
     return {
         "error": {
             "code": record.failure.code,
@@ -1186,3 +1188,19 @@ __all__ = [
     "InvocationContinuationPort",
     "PendingExternalContinuation",
 ]
+
+
+def _retains_live_tool_frame(framework: str) -> bool:
+    """Report whether a live transport can keep this framework's tool frame waiting."""
+
+    from .frameworks.registry import get_framework
+
+    return get_framework(framework).retains_live_tool_frame
+
+
+def _resume_reenters_tool(framework: str) -> bool:
+    """Report whether resuming re-enters the Python tool rather than the model loop."""
+
+    from .frameworks.registry import get_framework
+
+    return get_framework(framework).resume_reenters_tool
