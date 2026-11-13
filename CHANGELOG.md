@@ -4,25 +4,46 @@
 
 - Artifact compilation warns and ignores `Agent(generate_content_config=...)` for frameworks without generation-config support, including LangGraph, instead of failing the build. ADK continues to apply it.
 
-- Fix managed Python discovery on Windows to use `Scripts\python.exe`; PATH fallback now tries `python` before `python3` on Windows.
-
 - **Breaking:** ADK and LangGraph now use framework adapters with shared Python/Go metadata and capability checks. Harnest selects the framework during compilation and invocation: `Agent.build()`, `Graph.build()`, `ModelConnector.build()`, `resolve_model(model)`, `bundle_agent(anchor, agent)`, `MCPClient.connect()`, and `store.framework_checkpointer()` take no framework argument. Model `build_langgraph()` / `build_for()` and `resolve_model_for()` are removed.
 - `harnest upgrade` now previews and applies the schema 7 framework API migration across authored Python and extension manifests, composing edits into the existing digest-checked backup plan. It preserves aliases, comments and persisted continuation records, removes framework arguments only when they match project selection, and reports ambiguous calls or removed integration APIs for manual repair. Generated environments are pruned before discovery. Graphs and agents with inline instructions can upgrade without an `instructions.md` file.
 - **Framework API migration:** use `@lifecycle.framework_extension` and the `framework.extension` manifest capability instead of `adk_plugin` / `langgraph_middleware` and `native.adk` / `native.langgraph`. Use `MCPClient.connection_options()` instead of `to_langgraph_connection()`; explicit MCP toolset and sandbox conversion methods are removed. Use `store.framework_checkpointer()` instead of `as_langgraph_checkpointer()`. Framework-owned storage wrappers move to `harnest.frameworks.adk` (`ADKStore`, `ADKSessionStorage`) and `harnest.frameworks.langgraph` (`LangGraphStore`), with the shared `FrameworkStorage` base in `harnest.checkpoint`. Serving uses `framework_session_storage=` / `session_store=` instead of `adk_session_storage=` / `langgraph_session_store=`, and `load_framework_app()` replaces `load_compiled_app()`. Durable framework contracts use `FrameworkDurableCall`, `FrameworkDurableSuspended`, `FrameworkResumeInput`, `framework_durable_call()`, and `current_framework_durable_call()` instead of their `Native` / `native_` names. Framework-specific evaluation and durable lowering helpers move into adapters.
 
 - **Breaking, no compatibility:** project packs, company CLIs and Studio Packs are now one thing, a Harnest pack. A pack is a folder with `pack.yaml` (name, version, branded `command`, `requires`, and an optional `studio:` sub-pack holding what used to be `studio-pack.yaml`) and an optional `pack.py` defining `pack = ProjectPack(schema_version=...)` with `@pack.initialize`, `@pack.migration` and the new `@pack.command`. Use it with `harnest init|upgrade|studio --pack DIR` and typed `--option key=value` values, or run `harnest pack build DIR` to get a `harnest-pack-<name>` wheel that installs the branded command (`acme init|upgrade|studio`, company commands, everything else passed to Harnest). New `harnest pack validate|build|run|types` commands. Removed: `ProjectCLI`, `StudioLauncher`, `ProjectPack(name, ...)`, `studio-pack.yaml`, `harnest studio pack validate|package|types` and `harnest-studio pack package`. `harnest upgrade` warns agents that recorded packs. Each agent now has one pack lock: `harnest-packs.lock` version 2 records project-pack versions, ownership claims and Studio install receipts (`resources`). `harnest upgrade` rewrites version 1 locks, moves `studio-packs.lock` receipts in and deletes that file; Studio refuses installs until it has run. Pack versions are kept, so rebuilt packs that keep their names continue from the recorded versions. `harnest studio --safe-ui` was removed; relaunch without the failing `--pack`, or use the browser's "Restore default UI" link (`?safe-ui=1`).
 
-- **Security:** `server.agentPrincipal: required` now refuses new invocations through `/responses`, live, AG-UI, and A2A unless `@lifecycle.http.agent_principal` grants permissions. Add the hook before upgrading deployments that require grants and use these routes. Advanced ADK’s native invocation endpoints stay available outside this grant policy.
-
 - Configure installed evaluation runners in `spec.evaluation.runners` for `harnest test --evals`. Run a company evaluator alone or alongside ADK with evaluation-only package dependencies, independent verdicts, and native report files.
 
-- Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
-
 - The Playground now detects agent reloads and replaces a lost in-memory session before the next send, preserving the draft and any session that survived the restart. Background recovery and delayed view responses preserve newer session and credential choices.
+
+- Add native Windows MSI installation for x64, with per-user PATH registration, runtime bootstrap, repair, upgrade, and uninstall. The optional PowerShell bootstrap verifies and launches the MSI when available, with ZIP support for ARM64 and older releases.
+
+- Respect the device execution policy in documented Windows installer commands. Document checksum-verified ZIP installation for devices that block PowerShell scripts.
+
+- Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
+
+## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
+
+- Package existing Harnest agents as Hostlier container workloads with the optional `hostlier-harnest` executable and its settings under `packages.harnest` in `.hostlier`. Use `harnest_redis.cache.RedisCache` for user-scoped cache entries with TTL and Redis ACL prefix support.
+
+- Add a checksum-verified PowerShell installer for Windows x64 and ARM64. Find the managed Python under `Scripts`, prefer `python.exe` on PATH, read project files as UTF-8, and use portable paths for upgrade moves.
+- Keep capture projection failures off the response path, preserve LangGraph tool errors, and keep unmatched tool results separate from pending calls. Playground errors now appear above the Evals and Work views.
+- **Security:** `server.agentPrincipal: required` now refuses new invocations through `/responses`, live, AG-UI, and A2A unless `@lifecycle.http.agent_principal` grants permissions. Add the hook before upgrading deployments that require grants and use these routes. Advanced ADK’s native invocation endpoints stay available outside this grant policy.
+- Score a single eval set with `evals/<set>.test_config.json`. CLI and Playground use its criteria in place of the shared config for that set.
+- Allow dependency edits during local serving by preparing a replacement environment while the running interpreter is leased.
+- Local commands now use exported model settings when a scaffold still has its example URL or model ID. Calling the example endpoint reports how to configure a provider.
+
+- Playground’s **Save as eval** writes reviewed chat cases directly to the agent’s `evals/` folder with plain local `harnest serve`. Local serving loads evaluation dependencies when the agent has active suites. Restart to run the updated suite, or use `--reload` for automatic updates.
 
 - Repair managed agent environments from their existing lock when an external package operation removes the Harnest CLI.
 - Fix model calls with ordinary function tools after the last MCP connection is removed. Harnest now keeps framework-owned tools out of LiteLLM’s remote MCP gateway.
 - Pin LiteLLM 1.106.6 across serving, compilation, and evaluations for upstream security fixes. Use the Vertex 2.7 SDK for hosted scoring without installing Google’s optional LiteLLM adapter. Hosted Vertex metrics require Google ADK 2.13 or newer. Its informational metrics appear in evaluation results without failing Playground runs.
+
+### Fixes
+
+* complete Windows installation and protect eval capture ([c6cef0c](https://github.com/Usefused/harnest/commit/c6cef0cbf84e76c884d6369ea93defa7a3f9e3f9))
+* enforce runtime grants on built-in Harnest routes ([cdfc232](https://github.com/Usefused/harnest/commit/cdfc2324bdc107587e4ae4654237173b825ad602))
+* isolate eval criteria and handle live dependency and model setup changes ([8ef5375](https://github.com/Usefused/harnest/commit/8ef5375e418162fadf4aa89857cbab92a4b4a2f3))
+* load evaluation dependencies for served suites ([3345808](https://github.com/Usefused/harnest/commit/33458087ac377b3f6ee51e8e044f2b409fe08d98))
+* repair managed environments, tool calls, and Playground eval saves ([53f5c78](https://github.com/Usefused/harnest/commit/53f5c781dd9e8b9a0cef1a07fcf1fa295d7c9119))
 
 ## [1.8.0](https://github.com/Usefused/harnest/compare/v1.7.1...v1.8.0) (2026-11-02)
 

@@ -464,6 +464,7 @@ Small helpers used across areas.
 ### scripts/
 
 - [`build_runtime_wheel.py`](../../scripts/build_runtime_wheel.py): Build the release-matched runtime wheel with Studio and its compiled assistant.
+- [`build_windows_installer.py`](../../scripts/build_windows_installer.py): Package a release CLI as a per-user MSI using the pinned WiX build tool.
 - [`bundle_studio.py`](../../scripts/bundle_studio.py): Stage Studio's server, browser assets, and compiled assistant into the release wheel.
 - [`check_python_complexity.py`](../../scripts/check_python_complexity.py): Fail when a Python function or method exceeds the complexity budget.
 - [`check_python_typing.py`](../../scripts/check_python_typing.py): Require discoverable signatures for every shipped Harnest function and method.
@@ -473,11 +474,13 @@ Small helpers used across areas.
 - [`finalize_release_changelog.py`](../../scripts/finalize_release_changelog.py): Fold authored Unreleased notes into a Release Please version section.
 - [`live_test_dynamic_approval.py`](../../scripts/live_test_dynamic_approval.py): Live HTTP probe for dynamic approval in a compiled Harnest server.
 - [`live_test_telemetry_exporters.py`](../../scripts/live_test_telemetry_exporters.py): Live OTLP fan-out probe for one compiled Harnest agent.
+- [`package_windows_release.py`](../../scripts/package_windows_release.py): Build MSI assets from checksum-verified Windows binaries in an existing release.
 - [`prepare_agent_launchers.py`](../../scripts/prepare_agent_launchers.py): Build dependency-free native agent launchers before embedding release assets.
 - [`prepare_uv_assets.py`](../../scripts/prepare_uv_assets.py): Download, verify, and stage pinned uv executables for Go cross-builds.
 - [`run_python_tests.py`](../../scripts/run_python_tests.py): Run explicitly classified Harnest Python test tiers.
 - [`smoke_agent_executable.py`](../../scripts/smoke_agent_executable.py): Build and launch portable agents on each native CI host, without a model provider.
 - [`smoke_studio_release.py`](../../scripts/smoke_studio_release.py): Exercise the shipped CLI and Studio bundle without source paths or a model provider.
+- [`smoke_windows_installer.py`](../../scripts/smoke_windows_installer.py): Exercise MSI install, repair, upgrade, rollback, and uninstall on a disposable Windows runner.
 
 ### src/harnest_postgres/
 
@@ -486,6 +489,7 @@ Small helpers used across areas.
 ### src/harnest_redis/
 
 - [`__init__.py`](../../src/harnest_redis/__init__.py): Bundled Redis provider for Harnest's public storage contracts.
+- [`cache.py`](../../src/harnest_redis/cache.py): Redis-backed, user-scoped byte cache for a named custom storage role.
 
 ### studio/src/harnest_builder/
 
@@ -617,6 +621,15 @@ Small helpers used across areas.
 - [`main.go`](../../cmd/harnest-agent/main.go): harnest-agent is the dependency-free native launcher embedded in agent executables.
 - [`process_unix.go`](../../cmd/harnest-agent/process_unix.go): Waits for the agent process on macOS and Linux.
 - [`process_windows.go`](../../cmd/harnest-agent/process_windows.go): Runs the agent inside a Windows job object so it stops when the launcher stops.
+
+### cmd/hostlier-harnest/
+
+- [`artifact.go`](../../cmd/hostlier-harnest/artifact.go): Command hostlier-harnest packages a Harnest agent for an ordinary Hostlier container workload.
+- [`base_image.go`](../../cmd/hostlier-harnest/base_image.go): Resolves the pinned Harnest base image for a Hostlier workload.
+- [`hooks.go`](../../cmd/hostlier-harnest/hooks.go): Validates project inputs and prepares the reviewed Hostlier build context.
+- [`init.go`](../../cmd/hostlier-harnest/init.go): Proposes starter agent files and their Hostlier workload settings.
+- [`main.go`](../../cmd/hostlier-harnest/main.go): Dispatches Hostlier package discovery, initialization, and build hooks.
+- [`project.go`](../../cmd/hostlier-harnest/project.go): Reads and validates packages.harnest settings from the Hostlier project.
 
 ### engine/
 

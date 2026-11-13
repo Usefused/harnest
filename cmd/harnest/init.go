@@ -197,7 +197,7 @@ func (a *application) initFromProfile(
 	}
 	fmt.Fprintf(
 		command.OutOrStdout(),
-		"Initialized %s agent %s in %s\n",
+		"Initialized %s agent %s in %s\nBefore the first model call, set OPENAI_BASE_URL and OPENAI_MODEL in your shell or config.yaml.\n",
 		profile, name, absolute,
 	)
 	return nil

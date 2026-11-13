@@ -2826,6 +2826,8 @@ def _langgraph_message_created_at(message: Mapping[str, Any]) -> str | None:
 
 
 def _message_tool_events(message: Any) -> list[dict[str, Any]]:
+    """Preserve native tool errors even when their result is ordinary text."""
+
     events = []
     for call in getattr(message, "tool_calls", ()) or ():
         if isinstance(call, Mapping):
@@ -2851,6 +2853,7 @@ def _message_tool_events(message: Any) -> list[dict[str, Any]]:
             {
                 "type": "tool_result",
                 "id": getattr(message, "tool_call_id", None),
+                **({"status": "error"} if getattr(message, "status", None) == "error" else {}),
                 "name": getattr(message, "name", None),
                 "result": result,
             }

@@ -21,7 +21,7 @@ from .extension_descriptors import (
     discover_upgrade_application_extensions,
     discover_legacy_extensions,
 )
-from .upgrade import UpgradeAction, _file_digest, _tree_digest, _rewrite
+from .upgrade import UpgradeAction, _file_digest, _relative, _tree_digest, _rewrite
 
 
 def plan_application_layout(root: Path, actions: list, blockers: list[str]) -> None:
@@ -75,9 +75,9 @@ def _plan_package(root: Path, descriptor: ExtensionDescriptor, actions: list, bl
         _move(root, hooks, directory / "lifecycle", actions, blockers)
     # The old root must be vacated before it becomes the package container.
     actions.append(UpgradeAction(
-        "relocate_extension", str(directory.relative_to(root)),
+        "relocate_extension", _relative(root, directory),
         "move the runtime package into extensions/ after lifecycle migration",
-        destination=str(destination.relative_to(root)), digest=_tree_digest(directory),
+        destination=_relative(root, destination), digest=_tree_digest(directory),
     ))
 
 
@@ -213,6 +213,6 @@ def _move(root: Path, source: Path, destination: Path, actions: list,
         blockers.append(f"cannot migrate symlinked tree: {source}")
         return
     digest = _tree_digest(source) if source.is_dir() else _file_digest(source)
-    actions.append(UpgradeAction(kind, str(source.relative_to(root)),
+    actions.append(UpgradeAction(kind, _relative(root, source),
                                  "adopt the lifecycle/ and extensions/ folder contract",
-                                 destination=str(destination.relative_to(root)), digest=digest))
+                                 destination=_relative(root, destination), digest=digest))

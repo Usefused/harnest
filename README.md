@@ -23,6 +23,8 @@ curl -fsSL \
 harnest doctor
 ```
 
+On x64 Windows, download the MSI from [Harnest releases](https://github.com/Usefused/harnest/releases/latest) and double-click it. Choose the file ending in `windows_amd64.msi`. The installer sets up the CLI and runtime and adds Harnest to your user PATH. Open a new terminal and run `harnest doctor`. On ARM64, use the [Windows ZIP installation](https://usefused.com/docs/harnest/reference/installation-and-releases#windows-zip-installation).
+
 See [installation options](https://usefused.com/docs/harnest/reference/installation-and-releases) for version pinning and CI.
 
 ## Build your first agent

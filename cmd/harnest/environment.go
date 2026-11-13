@@ -187,7 +187,7 @@ func (a *application) reuseOrRepairAgentEnvironment(
 	paths environmentPaths, plan runtimeDependencyPlan, profile environmentProfile, frozen bool, fingerprint string,
 ) (pythonSelection, error) {
 	selection, found := cachedAgentPython(paths, fingerprint)
-	if found && filepath.Base(filepath.Dir(filepath.Dir(selection.Executable))) == profile.directoryName() {
+	if found && slotMatches(profile.directoryName(), filepath.Base(filepath.Dir(filepath.Dir(selection.Executable)))) {
 		available, err := a.agentCLIAvailable(command, selection.Executable)
 		if err != nil {
 			return pythonSelection{}, err
@@ -530,7 +530,11 @@ func (a *application) stageAgentEnvironment(
 	paths environmentPaths,
 	profile environmentProfile,
 ) (stagedAgentEnvironment, func(), error) {
-	relative := filepath.ToSlash(filepath.Join("environments", profile.directoryName()))
+	slot, err := replacementSlot(paths.root, profile.directoryName())
+	if err != nil {
+		return stagedAgentEnvironment{}, nil, err
+	}
+	relative := filepath.ToSlash(filepath.Join("environments", slot))
 	directory := filepath.Join(paths.root, filepath.FromSlash(relative))
 	if info, statErr := os.Lstat(directory); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return stagedAgentEnvironment{}, nil, fmt.Errorf("agent environment cannot be a symlink: %s", directory)

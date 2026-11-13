@@ -63,12 +63,11 @@ class PlaygroundEvalService:
     def catalog(self) -> dict[str, Any]:
         """Return browser-safe suite and metric metadata without source paths."""
 
-        metrics = _configured_metrics(self._suite)
         return {
             "framework": self._application.framework,
             "trajectories": ["business", "strict"],
             "suites": [_suite_summary(path) for path in self._suite.eval_sets],
-            "metrics": metrics,
+            "metrics": _catalog_metrics(self._suite),
             "supportedMetrics": list(supported_metric_names()),
         }
 
@@ -91,7 +90,7 @@ class PlaygroundEvalService:
 
         evaluator, eval_set_class = eval_dependencies()
         eval_set = eval_set_class.model_validate_json(path.read_text(encoding="utf-8"))
-        selected_suite = EvalSuite((path,), self._suite.config)
+        selected_suite = self._suite.for_set(path)
         config = eval_config(selected_suite, trajectory)
         started = time.monotonic()
         _EVAL_AUDIT.info(
@@ -163,6 +162,18 @@ def _suite_summary(path: Path) -> dict[str, Any]:
             for case in cases
         ],
     }
+
+
+def _catalog_metrics(suite: EvalSuite) -> list[dict[str, Any]]:
+    """Summarize distinct metrics without reporting a set-specific threshold as global."""
+    metrics: dict[str, dict[str, Any]] = {}
+    for group in suite.scoring_groups():
+        for row in _configured_metrics(group):
+            summary = metrics.setdefault(row["name"], row.copy())
+            if summary["threshold"] != row["threshold"]:
+                summary["threshold"] = None
+            summary["custom"] |= row["custom"]
+    return [metrics[name] for name in sorted(metrics)]
 
 
 def _configured_metrics(suite: EvalSuite) -> list[dict[str, Any]]:

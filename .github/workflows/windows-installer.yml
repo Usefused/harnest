@@ -1,0 +1,146 @@
+name: Windows installer
+
+on:
+  pull_request:
+    paths:
+      - packaging/windows/**
+      - scripts/*windows*installer*
+      - scripts/package_windows_release.py
+      - .github/workflows/windows-installer.yml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing stable release to package
+        type: string
+        required: true
+      publish:
+        description: Attach validated installers to the existing release
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      tag_name:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Only one publisher can update a release checksum manifest at a time.
+concurrency:
+  group: windows-installer-${{ inputs.tag_name || github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install pinned MSI build tools
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+      - name: Verify release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name || 'latest' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if ($env:RELEASE_TAG -eq 'latest') {
+            $env:RELEASE_TAG = gh release view --repo $env:REPOSITORY --json tagName --jq .tagName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'A stable release is required' }
+          git merge-base --is-ancestor $env:RELEASE_TAG origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release must belong to main' }
+          "RELEASE_TAG=$env:RELEASE_TAG" >> $env:GITHUB_ENV
+      - name: Build the x64 MSI from verified release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: python scripts/package_windows_release.py --repo $env:REPOSITORY --tag $env:RELEASE_TAG
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            dist/windows-installer/*.msi
+            dist/windows-installer/checksums.txt
+            dist/windows-installer/amd64/harnest.exe
+
+  test:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install pinned MSI build tools
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: dist/windows-installer
+      - name: Test native installation with Restricted PowerShell policy
+        env:
+          INSTALLER_ARCH: ${{ matrix.arch }}
+        run: |
+          $msi = Get-ChildItem "dist/windows-installer/*_$env:INSTALLER_ARCH.msi"
+          python scripts/smoke_windows_installer.py --package $msi.FullName --cli "dist/windows-installer/$env:INSTALLER_ARCH/harnest.exe" --arch $env:INSTALLER_ARCH
+      - name: Retain installer logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-logs-${{ matrix.arch }}
+          path: .cache/windows-installer-smoke/**/*.log
+
+
+  publish:
+    needs: [package, test]
+    if: inputs.publish && (github.event_name == 'release' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: installers
+      - name: Attach native installers and updated checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" installers/*.msi installers/checksums.txt --clobber --repo "$REPOSITORY"

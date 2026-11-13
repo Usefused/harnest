@@ -129,7 +129,7 @@ class AuthoringStore:
             return False
         if path.parent.name == "mcp":
             return path.suffix == ".py" and bool(_NAME.fullmatch(path.stem))
-        return path.parent.name == "evals" and (path.name.endswith(".evalset.json") or path.name == "test_config.json")
+        return path.parent.name == "evals" and (path.name.endswith((".evalset.json", ".test_config.json")) or path.name == "test_config.json")
 
     def read(self, relative: str) -> dict[str, str]:
         """Read bounded current source, using an empty revision for an absent document."""
@@ -246,7 +246,7 @@ def _validate_json(path: Path, text: str) -> None:
         ids = [case.eval_id for case in suite.eval_cases]
         if len(ids) != len(set(ids)):
             raise ValueError("Case IDs must be unique within the suite")
-    elif path.name == "test_config.json":
+    elif path.name == "test_config.json" or path.name.endswith(".test_config.json"):
         from .evaluation import _eval_file_schemas
 
         _eval_set, EvalConfig = _eval_file_schemas()

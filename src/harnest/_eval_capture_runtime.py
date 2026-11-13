@@ -157,17 +157,20 @@ class EvalCaptureRuntimeDriver:
 
         if status == "cancelled":
             return
-        event = _capture_event(
-            self._driver.info, request, events, text, status, error_type
-        )
-        task = asyncio.get_running_loop().create_task(self._capture(event))
+        task = asyncio.create_task(self._capture(request, events, text, status, error_type))
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    async def _capture(self, event: CaptureEvent) -> None:
-        """Run rule, sampling, redaction and storage; log failures and never raise."""
+    async def _capture(
+        self, request: InvocationRequest, events: tuple[RuntimeEvent, ...], text: str | None,
+        status: str, error_type: str | None,
+    ) -> None:
+        """Keep projection failures as well as policy and store failures off the response path."""
 
+        agent_name = "agent"
         try:
+            agent_name = str(getattr(self._driver.info, "name", "agent"))
+            event = _capture_event(agent_name, request, events, text, status, error_type)
             reasons = await self._reasons(event)
             if not reasons:
                 return
@@ -178,7 +181,7 @@ class EvalCaptureRuntimeDriver:
                 "eval.capture.failed",
                 trigger="runtime",
                 outcome="failed",
-                agent=event.agent_name,
+                agent=agent_name,
                 error=type(error).__name__,
             )
             return
@@ -222,7 +225,7 @@ async def _redacted(
 
 
 def _capture_event(
-    info: Any,
+    agent_name: str,
     request: InvocationRequest,
     events: tuple[RuntimeEvent, ...],
     text: str | None,
@@ -232,7 +235,7 @@ def _capture_event(
     """Project framework-neutral events into the facts a rule can judge."""
 
     return CaptureEvent(
-        agent_name=str(getattr(info, "name", "agent")),
+        agent_name=agent_name,
         invocation_id=request.invocation_id,
         session_id=request.session_id,
         user_id=request.user_id,
@@ -313,9 +316,12 @@ def _attach_result(
 ) -> None:
     """Attach one tool result to its call, or record an orphan result."""
 
-    target = by_id.get(event.get("id"))
-    if target is None:
-        target = next((item for item in calls if "result" not in item), None)
+    call_id = event.get("id")
+    target = by_id.get(call_id)
+    if call_id is None:
+        # Only id-less results can use call order. An unknown explicit ID is an orphan.
+        name = event.get("name")
+        target = next((item for item in calls if "result" not in item and (not name or item["name"] == name)), None)
     if target is None:
         target = {"name": str(event.get("name") or "")}
         calls.append(target)

@@ -11,6 +11,22 @@ existing deployment file too. Keep bindings and `depends_on` consistent. Switchi
 to `MemoryStore` removes unused database services and `DATABASE_URL` bindings;
 preserve a database if another component still needs it.
 
+## Hostlier
+
+For an existing agent on Hostlier, select the optional `harnest` project package.
+Run `hostlier package add harnest` to enroll the installed local package. Put the pinned base image, optional
+embedded Linux artifact and required runtime bindings under `packages.harnest`.
+Declare supporting resource packages as workflow steps. Use `hostlier plan` to
+preview the project. The plan reads declarations without importing agent code.
+The package supplies the primary build context during deployment.
+
+Check the actual lifecycle and sandbox factories before choosing bindings.
+A Redis KV cache consumes its URL and, for a prefix-restricted account, its ACL
+key prefix. A sandbox requires an independently authorized execution provider.
+Use the [Hostlier setup and examples](https://usefused.com/docs/harnest/runtime/serving/provisioning#deploy-an-existing-agent-with-hostlier).
+
+## Local and Kubernetes provisioning
+
 `harnest-deployment.yaml` is a **single Harnest deployment document**. It is not a
 Kubernetes manifest. Raw Kubernetes Deployment/Service streams, including `---`
 separators, belong in a separate file such as `deploy/kubernetes.yaml`.

@@ -1932,6 +1932,33 @@ raise SystemExit(main(sys.argv[1:]))
 
         self.assertEqual(calls, ["first", "second"])
 
+    def test_cli_eval_sets_select_their_own_scoring_config(self):
+        """A tool-only set omits the answer metric used for another set on the same run."""
+        observed = {}
+        async def evaluate(*, eval_set, eval_config, **kwargs):
+            observed[eval_set.eval_set_id] = set(eval_config.criteria)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write(root / "agent.py", "")
+            for name in ("answer", "tools"):
+                self._write(root / "evals" / f"{name}.evalset.json", json.dumps({
+                    "eval_set_id": name, "eval_cases": [],
+                }))
+            for file, metric in (("test_config.json", "response_match_score"),
+                                 ("tools.test_config.json", "tool_trajectory_avg_score")):
+                self._write(root / "evals" / file, json.dumps({"criteria": {metric: 1.0}}))
+            suite = discover_evals(root / "agent.py")
+            from google.adk.evaluation.eval_set import EvalSet
+            with patch("harnest.testing._eval_dependencies", return_value=(
+                types.SimpleNamespace(evaluate_eval_set=evaluate), EvalSet,
+            )), patch("harnest.frameworks.adk.evaluation._adk_eval_output_filter"):
+                self.assertEqual(_run_adk_evals(root, suite, print_results=False), 0)
+            (root / "evals" / "tools.evalset.json").unlink()
+            with self.assertRaisesRegex(BundleConventionError, "matching"):
+                discover_evals(root / "agent.py")
+        self.assertEqual(observed, {"answer": {"response_match_score"}, "tools": {"tool_trajectory_avg_score"}})
+
     def test_eval_set_runner_retains_empty_authored_suite(self):
         class EvalSet:
             @classmethod

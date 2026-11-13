@@ -130,3 +130,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-installer:
+    needs: goreleaser
+    uses: ./.github/workflows/windows-installer.yml
+    with:
+      tag_name: ${{ github.event.release.tag_name || inputs.tag_name }}
+      publish: true

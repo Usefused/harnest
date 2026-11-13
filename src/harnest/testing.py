@@ -41,6 +41,7 @@ from .runtime import (
 from ._library import release_authored_library
 from .logging import get_logger
 from .eval_model_transport import (
+    eval_model_transports,
     restore_eval_model_names,
 )
 
@@ -521,6 +522,29 @@ def _eval_dependencies() -> tuple[Any, Any]:
         raise AgentTestError(str(exc)) from exc
 
 
+async def _evaluate_configured_groups(
+    evaluator: Any, eval_set_class: Any, module_name: str, groups: list[tuple[EvalSuite, Any]],
+    target: Any, trajectory: str, print_results: bool, collector: _EvalResultCollector,
+) -> None:
+    """Bind each group's judge transports and collect scored failures across groups."""
+    failures = []
+    offset = 0
+    total = sum(len(group.eval_sets) for group, _ in groups)
+    for group, config in groups:
+        with eval_model_transports(target, config) as prepared:
+            try:
+                await _evaluate_eval_sets(
+                    evaluator, eval_set_class, module_name=module_name, suite=group,
+                    config=prepared, trajectory=trajectory, print_results=print_results,
+                    result_collector=collector, offset=offset, total=total,
+                )
+            except AssertionError as exc:
+                failures.append(str(exc))
+        offset += len(group.eval_sets)
+    if failures:
+        raise AssertionError("\n\n".join(failures))
+
+
 async def _evaluate_eval_sets(
     evaluator: Any,
     eval_set_class: Any,
@@ -531,6 +555,8 @@ async def _evaluate_eval_sets(
     trajectory: str,
     print_results: bool = True,
     result_collector: _EvalResultCollector | None = None,
+    offset: int = 0,
+    total: int | None = None,
 ) -> None:
     """Evaluate every suite with flushed progress, timings, and audit events."""
 
@@ -549,7 +575,7 @@ async def _evaluate_eval_sets(
             "eval.started", trigger="user", outcome="started", suite=path.name
         )
         try:
-            with _eval_suite_progress(index, len(suite.eval_sets), enabled=print_results):
+            with _eval_suite_progress(offset + index, total or len(suite.eval_sets), enabled=print_results):
                 await evaluator.evaluate_eval_set(
                     agent_module=module_name,
                     eval_set=eval_set,
@@ -606,29 +632,21 @@ def _run_eval_suite(
 
     import asyncio
 
-    from .eval_model_transport import eval_model_transports
-
     _eval_progress("Loading evaluator and scoring configuration", enabled=print_results)
     AgentEvaluator, EvalSet = _eval_dependencies()
-    config = _eval_config(suite, trajectory)
+    groups = [(group, _eval_config(group, trajectory)) for group in suite.scoring_groups()]
     collector = _EvalResultCollector(framework=framework, trajectory=trajectory)
     if check_config is not None:
-        check_config(config)
+        for _group, config in groups:
+            check_config(config)
 
     async def evaluate_all() -> None:
         """Keep borrowed model transports within the adapter's target lifetime."""
         async with eval_target() as (module_name, target):
-            with eval_model_transports(target, config) as prepared:
-                await _evaluate_eval_sets(
-                    AgentEvaluator,
-                    EvalSet,
-                    module_name=module_name,
-                    suite=suite,
-                    config=prepared,
-                    trajectory=trajectory,
-                    print_results=print_results,
-                    result_collector=collector,
-                )
+            await _evaluate_configured_groups(
+                AgentEvaluator, EvalSet, module_name, groups, target,
+                trajectory, print_results, collector,
+            )
 
     def publish(status: str, error: Exception | None = None) -> None:
         """Publish accumulated results with the suite's final status."""

@@ -37,6 +37,15 @@ builds:
     ldflags:
       - -s -w -X main.version={{ .Version }}
 
+  - id: hostlier-harnest
+    main: ./cmd/hostlier-harnest
+    binary: hostlier-harnest
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+
 archives:
   - id: harnest
     ids:
@@ -54,6 +63,11 @@ archives:
       - THIRD_PARTY_NOTICES.md
       - licenses/uv-LICENSE-MIT
       - README.md
+
+  - id: hostlier-harnest
+    ids: [hostlier-harnest]
+    formats: [binary]
+    name_template: 'hostlier-harnest_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 
 checksum:
   name_template: checksums.txt

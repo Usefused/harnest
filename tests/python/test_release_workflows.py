@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -200,6 +202,40 @@ class CISelectionTests(unittest.TestCase):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_windows_release_verifies_archive_before_extracting_cli(self):
+        """Reject missing, ambiguous, or mismatched checksums before creating executable files."""
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from package_windows_release import extract_cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "harnest_1.2.3_windows_amd64.zip"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("harnest.exe", b"verified executable")
+                package.writestr("../unrelated.txt", b"do not extract")
+            checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+            valid = f"{checksum}  {archive.name}"
+            for manifest in ("", valid + "\n" + valid, f"{'0' * 64}  {archive.name}"):
+                with self.subTest(manifest=manifest):
+                    with self.assertRaisesRegex(ValueError, "Checksum verification failed"):
+                        extract_cli(archive, manifest, root / "output")
+                    self.assertFalse((root / "output").exists())
+            cli = extract_cli(archive, valid, root / "output")
+            self.assertEqual(cli.read_bytes(), b"verified executable")
+            self.assertEqual(list(cli.parent.iterdir()), [cli])
+            self.assertFalse((root / "unrelated.txt").exists())
+
+    def test_windows_installer_rejects_unrepresentable_versions(self):
+        """Refuse MSI version truncation, which could silently permit an unintended downgrade."""
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from build_windows_installer import build
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for version in ("1.2.3rc1", "1.2.3.4", "256.1.0", "1.256.0", "1.2.65536"):
+                with self.subTest(version=version), self.assertRaises(ValueError):
+                    build(root / "absent.exe", version, "amd64", root / "out")
+            self.assertFalse((root / "out").exists())
+
+
     def test_official_extensions_publish_with_trusted_publishing(self):
         """Share read-only validation while keeping publishing permissions isolated."""
         workflow = load_yaml(".github/workflows/publish-extensions.yml")
@@ -670,7 +706,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         """Keep native execution coverage alongside cross-compilation of release assets."""
         job = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
         self.assertEqual(set(job["strategy"]["matrix"]["os"]),
-                         {"ubuntu-latest", "macos-latest", "windows-latest"})
+                         {"ubuntu-latest", "macos-14", "windows-latest"})
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("scripts/prepare_agent_launchers.py", scripts)
         self.assertIn("go test ./internal/agentpack ./cmd/harnest-agent", scripts)

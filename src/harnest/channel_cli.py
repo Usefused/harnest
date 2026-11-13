@@ -77,7 +77,7 @@ def _test(bindings: tuple[Any, ...], fixture: Path) -> dict[str, Any]:
 
     from .channels import create_channel_adapter
 
-    raw = json.loads(fixture.read_text())
+    raw = json.loads(fixture.read_text(encoding="utf-8"))
     results = []
     for binding in bindings:
         adapter = create_channel_adapter(binding.extension, binding.config)
