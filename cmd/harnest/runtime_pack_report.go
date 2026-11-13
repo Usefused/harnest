@@ -1,3 +1,5 @@
+// Build report for a runtime pack: which distributions were installed, and why.
+
 package main
 
 import (

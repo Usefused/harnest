@@ -1,3 +1,5 @@
+// `harnest add eval NAME`: chooses an eval scaffold, by flag or prompt, and writes it.
+
 package main
 
 import (

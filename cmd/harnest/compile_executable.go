@@ -1,3 +1,5 @@
+// `harnest compile --format executable`: packs a compiled agent and its runtime into one native executable.
+
 package main
 
 import (

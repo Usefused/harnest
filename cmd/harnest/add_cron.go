@@ -1,3 +1,5 @@
+// `harnest add cron NAME`: scaffolds a scheduled task in the agent's cron/ folder.
+
 package main
 
 import (

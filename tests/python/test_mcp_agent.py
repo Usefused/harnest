@@ -13,10 +13,10 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from harnest.agent import AgentDefinition
 from harnest.application import CompiledApplication, RuntimeCapabilities
-from harnest.backends.langgraph import ManagedAgentPlan
+from harnest.frameworks.langgraph.lowering import ManagedAgentPlan
 from harnest.mcp import MCPClient
 from harnest.runtime_contract import InvocationRequest
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 from harnest.runtime_pipeline import build_runtime_pipeline
 
 

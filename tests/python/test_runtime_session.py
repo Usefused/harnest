@@ -1,12 +1,12 @@
-import asyncio
-from contextlib import asynccontextmanager
 import unittest
+
+from harnest.frameworks import RuntimeSessions
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.application import CompiledApplication
+from harnest.frameworks.adk import ADKStore
 from harnest.checkpoint import (
-    ADKStore,
     MemoryStore,
     RunScope,
     get_durable_run_result,
@@ -15,10 +15,8 @@ from harnest.neutral_runtime import AgentInfo, SessionRecord
 from harnest.output import AgentMetadataMode, OutputPolicy, TokenUsage
 from harnest.runtime import (
     AgentRuntimeError,
-    _attach_driver_lifecycle,
     _runtime_driver,
 )
-from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_contract import InvocationRequest, InvocationResult
 from harnest.runtime_session import StorageRuntimeDriver
@@ -331,90 +329,7 @@ class SessionStoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class NativeADKLifespanOwnershipTests(unittest.TestCase):
-    def test_custom_lifespan_closes_owned_storage_once(self):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-
-        events = []
-        store = RecordingStore()
-        inner = _driver()
-        driver = StorageRuntimeDriver(inner, store)
-
-        @asynccontextmanager
-        async def adk_lifespan(_app):
-            events.append("adk-start")
-            try:
-                yield
-            finally:
-                events.append(f"adk-stop:{inner.close.await_count}")
-
-        app = FastAPI(lifespan=adk_lifespan)
-        _attach_driver_lifecycle(app, driver)
-
-        with TestClient(app):
-            self.assertEqual(events, ["adk-start"])
-        asyncio.run(driver.close())
-
-        self.assertEqual(events, ["adk-start", "adk-stop:1"])
-        self.assertEqual(store.closed, 1)
-        inner.close.assert_awaited_once()
-
-
 class SessionStoreRuntimeSelectionTests(unittest.TestCase):
-    def test_langgraph_lifecycle_store_is_used_and_runtime_owned(self):
-        store = RecordingStore()
-        application = CompiledApplication(
-            name="root",
-            framework="langgraph",
-            mode="managed",
-            target=object(),
-            session_store=store,
-        )
-        backend = _driver()
-        with patch(
-            "harnest.runtime_langgraph.LangGraphRuntimeDriver",
-            return_value=backend,
-        ) as constructor:
-            selected = _runtime_driver(application)
-
-        self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIsInstance(selected._driver, LifecycleRuntimeDriver)
-        self.assertIsInstance(
-            selected._driver._driver, DynamicAgentPluginRuntimeDriver
-        )
-        self.assertIs(selected._driver._driver._driver, backend)
-        self.assertIs(constructor.call_args.kwargs["session_store"], store)
-
-    def test_adk_lifecycle_store_is_adapted_and_runtime_owned(self):
-        store = RecordingStore()
-        application = CompiledApplication(
-            name="root",
-            framework="adk",
-            mode="managed",
-            target=object(),
-            native_app=object(),
-            session_store=store,
-        )
-        backend = _driver()
-        service = object()
-        with (
-            patch(
-                "harnest.session_adk.create_adk_session_service",
-                return_value=service,
-            ) as adapt,
-            patch(
-                "harnest.runtime_adk.ADKRuntimeDriver",
-                return_value=backend,
-            ) as constructor,
-        ):
-            selected = _runtime_driver(application)
-
-        self.assertIsInstance(selected, StorageRuntimeDriver)
-        self.assertIsInstance(selected._driver, LifecycleRuntimeDriver)
-        adapt.assert_called_once_with(store)
-        self.assertIs(constructor.call_args.kwargs["session_service"], service)
-
     def test_native_adk_store_uses_one_service_and_one_owned_resource(self):
         service = object()
         store = ADKStore(service)
@@ -423,13 +338,13 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             framework="adk",
             mode="advanced",
             target=object(),
-            native_app=object(),
+            framework_app=object(),
             session_store=store,
             checkpointer=store,
         )
         backend = _driver()
         with patch(
-            "harnest.runtime_adk.ADKRuntimeDriver",
+            "harnest.frameworks.adk.runtime.ADKRuntimeDriver",
             return_value=backend,
         ) as constructor:
             selected = _runtime_driver(application)
@@ -449,7 +364,7 @@ class SessionStoreRuntimeSelectionTests(unittest.TestCase):
             session_store=store,
         )
         with self.assertRaisesRegex(AgentRuntimeError, "cannot be combined"):
-            _runtime_driver(application, langgraph_session_store=Mock())
+            _runtime_driver(application, sessions=RuntimeSessions(store=Mock()))
 
 
 if __name__ == "__main__":

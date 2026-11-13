@@ -1,5 +1,4 @@
 """Exercise real Harnest scaffolds, company migrations and CLI failure recovery."""
-import importlib.util
 import io
 import json
 import os
@@ -14,14 +13,37 @@ from unittest.mock import patch
 from pydantic import BaseModel
 import yaml
 
-from harnest.authoring import ChangePlan, ProjectCLI, ProjectError, ProjectPack, ProjectPlanner, WritePolicy, apply_project_plan
+from harnest.authoring import ChangePlan, ProjectError, ProjectPack, ProjectPlanner, WritePolicy, apply_project_plan, load_pack
 from harnest.authoring.filesystem import atomic_write, snapshot
+from harnest.authoring.pack_cli import run_pack_command
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / 'examples/project-packs/acme.py'
-spec = importlib.util.spec_from_file_location('acme_pack_example', EXAMPLE)
-example = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(example)
+EXAMPLE = ROOT / 'examples/packs/acme'
+
+
+def _pack(name, *args, **options):
+    """A ProjectPack bound to a name, as loading pack.yaml would."""
+    return ProjectPack(*args, **options).bind(name, ROOT)
+
+
+def acme_pack(version=2):
+    """Load either release of the example pack from examples/packs/acme."""
+    with patch.dict(os.environ, {'ACME_DEMO_PACK_VERSION': str(version)}):
+        return load_pack(EXAMPLE).project
+
+
+def write_pack(root, name, module):
+    """Write a pack folder with pack.yaml and the given pack.py."""
+    root.mkdir(parents=True)
+    (root / 'pack.yaml').write_text(f"apiVersion: harnest.dev/pack/v1\nname: {name}\nversion: '1.0'\ntitle: {name}\n")
+    (root / 'pack.py').write_text(module)
+    return root
+
+
+def run(arguments):
+    """Run `harnest pack ...` in process and capture its output streams."""
+    output, errors = io.StringIO(), io.StringIO()
+    return run_pack_command([str(item) for item in arguments], stdout=output, stderr=errors), output.getvalue(), errors.getvalue()
 
 
 _TEMPLATE_CLI = '''"""Stand in for the existing native template downloader at the process boundary."""
@@ -61,7 +83,17 @@ class ProjectPackTemplateTests(unittest.TestCase):
         fixture = workspace / 'template cli.py'
         fixture.write_text(_TEMPLATE_CLI)
         self.command = (sys.executable, str(fixture))
-        self.pack = ProjectPack('team', 1)
+        executable = workspace / 'template-cli'
+        executable.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fixture}" "$@"\n')
+        executable.chmod(0o755)
+        self.harnest = executable
+        self.pack_root = write_pack(workspace / 'team-pack', 'team', (
+            "from harnest.authoring import ChangePlan, ProjectPack\n"
+            "pack = ProjectPack(1)\n"
+            "@pack.initialize\n"
+            "def initialize(context):\n"
+            "    return ChangePlan(context.files.write_text('docs/team-guide.md', 'Team setup guide.'))\n"))
+        self.pack = _pack('team', 1)
         self.seen = []
 
         @self.pack.initialize
@@ -88,14 +120,14 @@ class ProjectPackTemplateTests(unittest.TestCase):
         self.assertEqual(yaml.safe_load((self.root / 'config.yaml').read_text())['spec']['framework']['name'], 'langgraph')
 
     def test_cli_template_preview_and_apply(self):
-        """The embedded CLI exposes template flags without sending its default framework."""
-        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
-        flags = ['init', str(self.root), '--template', 'sales', '--template-sha256', 'b' * 64]
-        output = io.StringIO()
-        self.assertEqual(cli.run([*flags, '--dry-run', '--json'], stdout=output), 0)
+        """`harnest init --pack` forwards template flags without sending a default framework."""
+        flags = ['init', self.root, '--pack', self.pack_root, '--harnest', self.harnest,
+                 '--template', 'sales', '--template-sha256', 'b' * 64]
+        status, output, errors = run([*flags, '--dry-run', '--json'])
+        self.assertEqual(status, 0, errors)
         self.assertFalse(self.root.exists())
-        self.assertIn('docs/team-guide.md', output.getvalue())
-        self.assertEqual(cli.run(flags, stdout=io.StringIO()), 0)
+        self.assertIn('docs/team-guide.md', output)
+        self.assertEqual(run(flags)[0], 0)
         receipt = json.loads((self.root / 'forwarded.json').read_text())
         self.assertEqual(receipt['template'], 'sales')
         self.assertEqual(receipt['sha256'], 'b' * 64)
@@ -128,22 +160,21 @@ class ProjectPackTemplateTests(unittest.TestCase):
 
     def test_cli_rejects_template_conflicts(self):
         """CLI defaults are omitted but an explicitly supplied framework remains a conflict."""
-        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
+        base = ['init', self.root, '--pack', self.pack_root, '--harnest', self.harnest]
         for flags in (['--template', 'sales', '--framework', 'adk'], ['--template', 'sales', '--minimal'], ['--template-sha256', 'a' * 64]):
             with self.subTest(flags=flags), patch('harnest.authoring.planner.subprocess.run') as core:
-                errors = io.StringIO()
-                self.assertEqual(cli.run(['init', str(self.root), *flags], stderr=errors), 1)
-                self.assertIn('template', errors.getvalue())
+                status, _, errors = run([*base, *flags])
+                self.assertEqual(status, 1)
+                self.assertIn('template', errors)
                 core.assert_not_called()
         self.assertFalse(self.root.exists())
 
     def test_core_failure_leaves_target_untouched_and_skips_packs(self):
         """Partially downloaded or rendered templates cannot leak into the live destination."""
-        cli = ProjectCLI('team-agent', [self.pack], harnest_command=self.command)
-        errors = io.StringIO()
-        self.assertEqual(cli.run(['init', str(self.root), '--template', 'failed-template'], stderr=errors), 1)
-        self.assertIn('exit 7', errors.getvalue())
-        self.assertEqual(self.seen, [])
+        status, _, errors = run(['init', self.root, '--pack', self.pack_root, '--harnest', self.harnest,
+                                 '--template', 'failed-template'])
+        self.assertEqual(status, 1)
+        self.assertIn('exit 7', errors)
         self.assertFalse(self.root.exists())
 
 
@@ -164,7 +195,7 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / 'support-bot'
 
     def planner(self, version=2, packs=None):
-        return ProjectPlanner(packs if packs is not None else [example.create_pack(version)], harnest_command=(str(self.binary),))
+        return ProjectPlanner(packs if packs is not None else [acme_pack(version)], harnest_command=(str(self.binary),))
 
     def initialize(self, version=1):
         plan = self.planner(version).plan_init(self.root, options={'acme': {'team': 'support'}}, minimal=True)
@@ -191,12 +222,13 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         pack_root = self.root.parent / 'company pack'
         subprocess.run([str(self.binary), 'pack', 'init', 'acme', '--output', str(pack_root)],
                        check=True, capture_output=True, text=True)
-        (pack_root / 'team-guide.md').write_text('Team-owned documentation before init.\n')
-        environment = dict(os.environ, HARNEST_CLI=str(self.binary), PYTHONPATH=str(ROOT / 'src'))
-        subprocess.run([sys.executable, str(pack_root / 'pack.py'), 'init', str(self.root), '--minimal'],
-                       env=environment, check=True, capture_output=True, text=True)
+        (pack_root / 'templates/team-guide.md').write_text('Team-owned documentation before init.\n')
+        environment = dict(os.environ, HARNEST_PYTHON=sys.executable, PYTHONPATH=str(ROOT / 'src'))
+        result = subprocess.run([str(self.binary), 'init', str(self.root), '--pack', str(pack_root), '--minimal'],
+                                env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual((self.root / 'harnest-compile.yaml').read_bytes(),
-                         (pack_root / 'harnest-compile.yaml').read_bytes())
+                         (pack_root / 'templates/harnest-compile.yaml').read_bytes())
         self.assertEqual((self.root / 'docs/team-guide.md').read_text(), 'Team-owned documentation before init.\n')
         self.assertEqual(json.loads((self.root / 'harnest-packs.lock').read_text())['packs'], {'acme': 1})
         # Compilation must consume generated declarations, without the authoring package.
@@ -218,7 +250,7 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         content = b'%PDF-fixture\x00\xff\xfe\r\n'
         (assets / 'handbook.pdf').write_bytes(content)
         (assets / 'reference.md').write_text('Literal $EXAMPLE and ${VARIABLE} documentation.\n')
-        pack = ProjectPack('references', 1, templates=assets)
+        pack = _pack('references', 1, templates=assets)
         pack.initialize(lambda ctx: ChangePlan(
             ctx.files.from_file('docs/handbook.pdf', source='handbook.pdf'),
             ctx.files.from_file('docs/reference.md', source='reference.md'),
@@ -328,25 +360,25 @@ class ProjectPackIntegrationTests(unittest.TestCase):
     def test_missing_pack_and_migration_and_downgrade_are_blockers(self):
         self.initialize()
         self.assertIn('missing installed', str(self.planner(packs=[]).plan_upgrade(self.root).blockers))
-        missing = ProjectPack('acme', 3)
+        missing = _pack('acme', 3)
         self.assertIn('missing migrations', str(self.planner(packs=[missing]).plan_upgrade(self.root).blockers))
         apply_project_plan(self.planner().plan_upgrade(self.root))
         self.assertIn('newer', str(self.planner(1).plan_upgrade(self.root).blockers))
 
     def test_new_pack_is_not_silently_adopted_during_upgrade(self):
         self.initialize()
-        packs = [example.create_pack(1), ProjectPack('new-pack', 1)]
+        packs = [acme_pack(1), _pack('new-pack', 1)]
         self.assertIn('explicit adoption', str(self.planner(packs=packs).plan_upgrade(self.root).blockers))
 
     def test_multiple_packs_detect_conflicts_before_apply(self):
-        other = ProjectPack('other', 1)
+        other = _pack('other', 1)
         other.initialize(lambda ctx: ChangePlan(ctx.yaml.set('acme-agent.yaml', key=('team',), value='other')))
-        plan = self.planner(packs=[example.create_pack(), other]).plan_init(self.root, options={'acme': {'team': 'support'}})
+        plan = self.planner(packs=[acme_pack(), other]).plan_init(self.root, options={'acme': {'team': 'support'}})
         self.assertIn('overlapping', str(plan.blockers))
         self.assertFalse(self.root.exists())
 
     def test_pack_migrations_see_previous_migration_results(self):
-        pack = ProjectPack('acme', 3)
+        pack = _pack('acme', 3)
         pack.migration(from_version=1, to_version=2)(lambda ctx: ChangePlan(ctx.yaml.rename_key('acme-agent.yaml', source=('owner',), destination=('team',))))
         def step_three(ctx):
             self.assertEqual(ctx.yaml.read('acme-agent.yaml')['team'], 'support')
@@ -397,34 +429,45 @@ class ProjectPackIntegrationTests(unittest.TestCase):
             self.planner().plan_upgrade(self.root)
 
     def test_cli_runs_real_company_init_preview_and_upgrade(self):
-        env = {**os.environ, 'PYTHONPATH': str(ROOT / 'src'), 'HARNEST_CLI': str(self.binary), 'ACME_DEMO_PACK_VERSION': '1'}
-        result = subprocess.run([sys.executable, str(EXAMPLE), 'init', str(self.root), '--team', 'platform', '--minimal'], env=env, capture_output=True, text=True)
+        env = {**os.environ, 'PYTHONPATH': str(ROOT / 'src'), 'HARNEST_PYTHON': sys.executable, 'ACME_DEMO_PACK_VERSION': '1'}
+        harnest = [str(self.binary)]
+        result = subprocess.run([*harnest, 'init', str(self.root), '--pack', str(EXAMPLE), '--option', 'team=platform', '--minimal'], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         env['ACME_DEMO_PACK_VERSION'] = '2'
-        preview = subprocess.run([sys.executable, str(EXAMPLE), 'upgrade', str(self.root), '--json'], env=env, capture_output=True, text=True)
+        preview = subprocess.run([*harnest, 'upgrade', str(self.root), '--pack', str(EXAMPLE), '--json'], env=env, capture_output=True, text=True)
         self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertTrue(json.loads(preview.stdout)['changes'])
+        plan = json.loads(preview.stdout)
+        self.assertTrue(plan['changes'])
+        self.assertTrue(any('Breaking change' in warning for warning in plan['warnings']))
         self.assertIn('owner:', (self.root / 'acme-agent.yaml').read_text())
-        applied = subprocess.run([sys.executable, str(EXAMPLE), 'upgrade', str(self.root), '--apply'], env=env, capture_output=True, text=True)
+        applied = subprocess.run([*harnest, 'upgrade', str(self.root), '--pack', str(EXAMPLE), '--apply'], env=env, capture_output=True, text=True)
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertIn('team: platform', (self.root / 'acme-agent.yaml').read_text())
+        whoami = subprocess.run([*harnest, 'pack', 'run', str(EXAMPLE), 'whoami', str(self.root)], env=env, capture_output=True, text=True)
+        self.assertEqual(whoami.stdout.strip(), 'platform', whoami.stderr)
 
     def test_cli_supports_custom_commands_and_namespaced_options(self):
-        class OtherOptions(BaseModel):
-            team: str
-        other = ProjectPack('other', 1, options=OtherOptions)
-        cli = ProjectCLI('company', [example.create_pack(), other], harnest_command=(str(self.binary),))
-        parser = cli.add_command('hello', lambda args: 7)
-        parser.add_argument('--name')
-        self.assertEqual(cli.run(['hello', '--name', 'user']), 7)
-        output = io.StringIO()
-        status = cli.run(['init', str(self.root), '--acme-team', 'support', '--other-team', 'infra', '--dry-run', '--json'], stdout=output)
-        self.assertEqual(status, 0)
-        self.assertFalse(json.loads(output.getvalue())['blockers'])
+        other = write_pack(self.root.parent / 'other-pack', 'other', (
+            "from pydantic import BaseModel\n"
+            "from harnest.authoring import ProjectPack\n"
+            "class Options(BaseModel):\n"
+            "    team: str\n"
+            "pack = ProjectPack(1, options=Options)\n"
+            "@pack.command('hello', help='say hello')\n"
+            "def hello(args):\n"
+            "    return 7 if args == ['--name', 'user'] else 1\n"))
+        self.assertEqual(run(['run', other, 'hello', '--name', 'user'])[0], 7)
+        status, _, errors = run(['run', other, 'missing'])
+        self.assertEqual(status, 2)
+        self.assertIn('hello', errors)
+        status, output, errors = run(['init', self.root, '--pack', EXAMPLE, '--pack', other, '--harnest', self.binary,
+                                      '--option', 'acme.team=support', '--option', 'other.team=infra', '--dry-run', '--json'])
+        self.assertEqual(status, 0, errors)
+        self.assertFalse(json.loads(output)['blockers'])
         self.assertFalse(self.root.exists())
 
     def test_failed_hook_is_a_blocked_plan_and_does_not_leak_its_error_payload(self):
-        pack = ProjectPack('failure', 1)
+        pack = _pack('failure', 1)
         def fail(ctx):
             raise RuntimeError('secret-input-value')
         pack.initialize(fail)
@@ -443,7 +486,7 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot(self.root), before)
 
     def test_core_edit_conflicts_with_pack_owned_file(self):
-        pack = example.create_pack(1)
+        pack = acme_pack(1)
         initializer = pack._initializer
         def initialize(ctx):
             original = initializer(ctx)
@@ -498,7 +541,7 @@ class ProjectPackIntegrationTests(unittest.TestCase):
     def test_new_file_cannot_replace_an_existing_empty_directory(self):
         self.initialize()
         (self.root / 'user-dir').mkdir()
-        pack = ProjectPack('acme', 2)
+        pack = _pack('acme', 2)
         pack.migration(from_version=1, to_version=2)(lambda ctx: ChangePlan(ctx.files.write_text('user-dir', 'file')))
         plan = self.planner(packs=[pack]).plan_upgrade(self.root)
         before = snapshot(self.root)
@@ -510,9 +553,10 @@ class ProjectPackIntegrationTests(unittest.TestCase):
     def test_optional_string_cli_option_accepts_plain_text(self):
         class Options(BaseModel):
             region: str | None = None
-        pack = ProjectPack('optional', 1, options=Options)
+        pack = _pack('optional', 1, options=Options)
         pack.initialize(lambda ctx: ChangePlan(ctx.yaml.set('company.yaml', key=('region',), value=ctx.options.region)))
-        cli = ProjectCLI('company', [pack], harnest_command=(str(self.binary),))
-        status = cli.run(['init', str(self.root), '--region', 'london'], stdout=io.StringIO())
-        self.assertEqual(status, 0)
+        planner = ProjectPlanner([pack], harnest_command=(str(self.binary),))
+        plan = planner.plan_init(self.root, options={'optional': {'region': 'london'}})
+        self.assertFalse(plan.blockers)
+        apply_project_plan(plan)
         self.assertEqual(yaml.safe_load((self.root / 'company.yaml').read_text()), {'region': 'london'})

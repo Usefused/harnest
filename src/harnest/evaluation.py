@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from functools import lru_cache
 from importlib.metadata import version
 import json
-import sys
-from types import ModuleType
-from typing import Any, Awaitable, Callable, Iterator, Mapping
-import uuid
+from typing import Any, Callable, Mapping
 
 from packaging.version import Version
 
+from ._eval_runner_api import EvalRunnerContext, EvalRunnerResult
 from .eval_metrics import MetricContext, MetricScore, metric
 from .bundle import EvalSuite
 from .model import LiteLLMModel
@@ -216,98 +213,6 @@ def eval_dependencies() -> tuple[Any, Any]:
     return AgentEvaluator, EvalSet
 
 
-def customer_facing_eval_output_plugin() -> Any:
-    """Remove private response parts before ADK metrics inspect model output."""
-
-    from google.adk.plugins import BasePlugin
-    from .runtime_adk import _customer_facing_parts
-
-    class CustomerFacingEvalOutputPlugin(BasePlugin):
-        def __init__(self) -> None:
-            super().__init__(name="_harnest_customer_facing_eval_output")
-
-        async def on_event_callback(
-            self, *, invocation_context: Any, event: Any
-        ) -> None:
-            """Mutate evaluator-owned events without exposing hidden parts."""
-
-            del invocation_context
-            content = getattr(event, "content", None)
-            parts = getattr(content, "parts", None)
-            if parts is None:
-                return
-            visible_parts = list(_customer_facing_parts(parts))
-            if len(visible_parts) != len(parts):
-                content.parts = visible_parts
-
-    return CustomerFacingEvalOutputPlugin()
-
-
-@contextmanager
-def adk_eval_agent_module(application: Any) -> Iterator[str]:
-    """Expose isolated native plugins with managed identity and error reporting."""
-
-    package_name = f"_harnest_adk_eval_{uuid.uuid4().hex}"
-    module_name = f"{package_name}.agent"
-    package = ModuleType(package_name)
-    package.__path__ = []
-    module = ModuleType(module_name)
-    module.root_agent = application.target
-    sys.modules[package_name] = package
-    sys.modules[module_name] = module
-    try:
-        with prepared_adk_eval_app(application.native_app) as app:
-            module.app = app
-            module.root_agent = app.root_agent if app is not None else application.target
-            yield module_name
-    finally:
-        sys.modules.pop(module_name, None)
-        sys.modules.pop(package_name, None)
-
-
-@contextmanager
-def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
-    """Share CLI/playground context setup without mutating the live native app."""
-    if app is None:
-        yield None
-        return
-    from .context_adk import adk_agent_context_plugins
-    from .eval_adk import evaluation_context_plugins
-    from .eval_adk_cleanup import guarded_eval_plugins, guarded_eval_app
-    from .eval_errors import evaluation_error_boundary, evaluation_error_plugin
-
-    enter, exit_plugin = adk_agent_context_plugins(app.root_agent.name)
-    eval_enter, eval_exit = evaluation_context_plugins()
-    observer = evaluation_error_plugin()
-
-    async def close_scope() -> None:
-        """Unwind identity before capabilities when native ADK skips callbacks."""
-        try:
-            await exit_plugin.after_run_callback(invocation_context=None)
-        finally:
-            await eval_exit._close()
-
-    def cleanup_factory() -> Callable[[], Awaitable[None]]:
-        """Bound fallback cleanup to scopes opened by this particular stream."""
-        depth = eval_exit._depth()
-
-        async def close_pending() -> None:
-            """Leave inherited/nested scopes intact if native callbacks already unwound."""
-            if eval_exit._depth() > depth:
-                await close_scope()
-
-        return close_pending
-    # Capability setup precedes authored callbacks; identity and resource
-    # cleanup run last so after/error callbacks can still use session identity.
-    plugins = [
-        customer_facing_eval_output_plugin(), eval_enter, enter, observer,
-        *list(app.plugins), exit_plugin, eval_exit,
-    ]
-    with evaluation_error_boundary(observer):
-        plugins = guarded_eval_plugins(app.root_agent, plugins, close_scope)
-        yield guarded_eval_app(app.model_copy(update={"plugins": plugins}), cleanup_factory)
-
-
 def supported_metric_names() -> tuple[str, ...]:
     """Reflect the installed ADK metric registry instead of freezing an allowlist."""
 
@@ -316,13 +221,27 @@ def supported_metric_names() -> tuple[str, ...]:
     return tuple(sorted(metric.value for metric in PrebuiltMetrics))
 
 
+def _eval_file_schemas() -> tuple[type[Any], type[Any]]:
+    """Return the evaluator's eval-set and test-config schema classes.
+
+    The built-in evaluator is ADK's evaluation library, so ``*.evalset.json``
+    and ``test_config.json`` follow its schemas whatever the agent framework.
+    """
+
+    from google.adk.evaluation.eval_config import EvalConfig
+    from google.adk.evaluation.eval_set import EvalSet
+
+    return EvalSet, EvalConfig
+
+
 __all__ = [
     "EVAL_TRAJECTORIES",
     "EvaluationError",
+    "EvalRunnerContext",
+    "EvalRunnerResult",
     "MetricContext",
     "MetricScore",
     "metric",
-    "adk_eval_agent_module",
     "eval_config",
     "eval_dependencies",
     "require_eval_trajectory",

@@ -1,4 +1,10 @@
-"""CLI for exporting Python orchestrators into the Go runtime protocol."""
+"""Python side of the ``harnest`` CLI.
+
+The Go binary (cmd/harnest) runs ``python -m harnest.cli <command>`` inside the
+agent's managed environment for ``compile``, ``test``, ``mcp``, ``channels``,
+``upgrade``, ``pack`` and ``plan`` (export an orchestrator as JSON). Results go
+to stdout; errors print as ``harnest: ...`` with exit code 2.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+from .frameworks.registry import framework_names
 from .bundle import BundleError, compile_artifact
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
 from .upgrade import UpgradeError, apply_upgrade, plan_upgrade, render_upgrade_plan
@@ -36,6 +43,12 @@ def load_orchestrator(path: Path) -> Orchestrator:
 def main(argv: list[str] | None = None) -> int:
     """Parse one Harnest command and translate expected failures to exit codes."""
 
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["pack"]:
+        # Pack actions forward company arguments verbatim, so they own parsing.
+        from .authoring.pack_cli import run_pack_command
+
+        return run_pack_command(arguments[1:])
     parser = argparse.ArgumentParser(prog="harnest")
     subparsers = parser.add_subparsers(dest="command", required=True)
     from .mcp_cli import add_mcp_parser, run_mcp_command
@@ -58,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         help="root export in agent:<symbol> form (default: agent:root_agent)",
     )
     compile_parser.add_argument(
-        "--framework", choices=("adk", "langgraph"), default="adk"
+        "--framework", choices=framework_names(), default="adk"
     )
     compile_parser.add_argument(
         "--mode", choices=("managed", "advanced"), default="managed"
@@ -79,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run tests/smoke in addition to tests/unit",
     )
     test_parser.add_argument(
-        "--framework", choices=("adk", "langgraph"), default="adk"
+        "--framework", choices=framework_names(), default="adk"
     )
     test_parser.add_argument(
         "--mode", choices=("managed", "advanced"), default="managed"
@@ -120,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="apply the displayed destructive changes after creating backups",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
 
     try:
         if args.command == "mcp":
@@ -156,19 +169,7 @@ def main(argv: list[str] | None = None) -> int:
                 cli_enabled=args.enable_cli,
             )
         if args.command == "upgrade":
-            plan = plan_upgrade(args.agent)
-            if not args.apply:
-                print(render_upgrade_plan(plan), end="")
-                return 2 if plan.blockers else 0
-            # --apply is the consent boundary, but the fresh effective plan is
-            # still flushed first so destructive work is never invisible.
-            print(render_upgrade_plan(plan, applying=True), end="", flush=True)
-            backup = apply_upgrade(plan)
-            if backup is not None:
-                print(f"Upgrade applied. Backup: {backup}")
-            else:
-                print("No changes applied.")
-            return 0
+            return _run_upgrade(args.agent, apply=args.apply)
         orchestrator = load_orchestrator(args.orchestrator)
         print(orchestrator.to_json(project_root=args.orchestrator.resolve().parent))
         return 0
@@ -182,6 +183,22 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         print(f"harnest: {exc}", file=sys.stderr)
         return 2
+
+
+def _run_upgrade(agent: Path, *, apply: bool) -> int:
+    """Display the current migration plan before optionally applying its backed-up changes."""
+    plan = plan_upgrade(agent)
+    if not apply:
+        print(render_upgrade_plan(plan), end="")
+        return 2 if plan.blockers else 0
+    # --apply authorizes the writes; flushing the effective plan keeps them visible.
+    print(render_upgrade_plan(plan, applying=True), end="", flush=True)
+    backup = apply_upgrade(plan)
+    if backup is not None:
+        print(f"Upgrade applied. Backup: {backup}")
+    else:
+        print("No changes applied.")
+    return 0
 
 
 if __name__ == "__main__":

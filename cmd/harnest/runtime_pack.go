@@ -1,3 +1,5 @@
+// `harnest runtime build`: builds a shared, relocatable Python runtime pack for agent executables.
+
 package main
 
 import (

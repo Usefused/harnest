@@ -1,3 +1,5 @@
+// Rejects agent requirements that pin packages the Harnest compiler owns, such as Harnest itself and framework SDKs.
+
 package main
 
 import (
@@ -10,6 +12,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 var (
@@ -86,11 +89,8 @@ func compilerOwnedDistributions(selectedFramework string) (map[string]struct{}, 
 // allCompilerOwnedDistributions identifies packages supplied by Harnest runtime profiles.
 func allCompilerOwnedDistributions() map[string]struct{} {
 	owned := map[string]struct{}{"harnest": {}}
-	for _, compatibility := range frameworkCompatibilityByName {
-		requirements := append(
-			append([]string{}, compatibility.RuntimeRequirements...),
-			compatibility.MCPRequirements...,
-		)
+	for _, framework := range frameworks.All() {
+		requirements := append(framework.RuntimeRequirements(), framework.MCPRequirements...)
 		for _, requirement := range requirements {
 			owned[normalizedRequirementName(requirement)] = struct{}{}
 		}

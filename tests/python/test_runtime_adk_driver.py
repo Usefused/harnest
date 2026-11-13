@@ -1,4 +1,7 @@
+
+from _framework_testing import build_for_framework
 import asyncio
+from harnest.frameworks.adk.lowering import build_agent
 import base64
 import json
 import types as python_types
@@ -17,7 +20,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from pydantic import BaseModel
 
-from harnest._adk_warnings import suppress_adk_warnings
+from harnest.frameworks.adk._warnings import suppress_adk_warnings
 from harnest.agent import Agent, AgentRuntimePrincipal
 from harnest.agent_principal import active_agent_principal
 from harnest.application import CompiledApplication
@@ -26,11 +29,11 @@ from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
 from harnest.checkpoint import MemoryStore, PendingAction, RunScope
 from harnest.content import Image
 from harnest.durable import (
-    NativeDurableSuspended,
-    NativeResumeInput,
-    adk_durable_tool,
-    current_native_durable_call,
+    FrameworkDurableSuspended,
+    FrameworkResumeInput,
+    current_framework_durable_call,
 )
+from harnest.frameworks.adk.durable import adk_durable_tool
 from harnest.external_continuation import (
     ExternalContinuationRuntime,
     PendingExternalContinuation,
@@ -49,7 +52,7 @@ from harnest.neutral_runtime import (
     SessionConflictError,
 )
 from harnest.output import AgentMetadataMode, OutputPolicy
-from harnest.runtime_adk import (
+from harnest.frameworks.adk.runtime import (
     ADKRuntimeDriver,
     _ADKEventNormalizer,
     _asset_content_plugin,
@@ -346,7 +349,7 @@ def _durable_resume_application(
     async def wait_for_job(job_id: str) -> dict[str, Any]:
         """Suspend until an external job supplies its durable result."""
 
-        active = current_native_durable_call()
+        active = current_framework_durable_call()
         assert active is not None
         observations["executions"].append(job_id)
         observations["artifacts"].append(active.artifact)
@@ -400,7 +403,7 @@ def _durable_resume_application(
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=app,
+        framework_app=app,
         checkpointer=store,
     )
 
@@ -431,7 +434,7 @@ def _application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=app,
+        framework_app=app,
     )
 
 
@@ -448,7 +451,7 @@ def _thinking_application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="thinker", root_agent=agent),
+        framework_app=App(name="thinker", root_agent=agent),
     )
 
 
@@ -473,7 +476,7 @@ def _strict_tool_application(executions: list[int]) -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="strict_tools", root_agent=agent),
+        framework_app=App(name="strict_tools", root_agent=agent),
     )
 
 
@@ -491,7 +494,7 @@ def _structured_application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="structured", root_agent=agent),
+        framework_app=App(name="structured", root_agent=agent),
         output_schema=StructuredAnswer,
     )
 
@@ -511,7 +514,7 @@ def _structured_metadata_application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="structured_metadata", root_agent=agent),
+        framework_app=App(name="structured_metadata", root_agent=agent),
         output_schema=StructuredAnswerWithMetadata,
     )
 
@@ -528,13 +531,13 @@ def _structured_graph_application() -> CompiledApplication:
         edges=(Edge(START, "answer"),),
         output_schema=StructuredAnswer,
     )
-    target = graph.build()
+    target = build_for_framework(graph, "adk")
     return CompiledApplication(
         name=graph.name,
         framework="adk",
         mode="managed",
         target=target,
-        native_app=App(name=graph.name, root_agent=target),
+        framework_app=App(name=graph.name, root_agent=target),
         kind="graph",
         output_schema=graph.output_schema,
     )
@@ -553,7 +556,7 @@ def _multimodal_application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="multimodal", root_agent=agent),
+        framework_app=App(name="multimodal", root_agent=agent),
     )
 
 
@@ -570,7 +573,7 @@ def _media_output_application() -> CompiledApplication:
         framework="adk",
         mode="managed",
         target=agent,
-        native_app=App(name="media_output", root_agent=agent),
+        framework_app=App(name="media_output", root_agent=agent),
     )
 
 
@@ -613,10 +616,10 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     part = types.Part(function_call=types.FunctionCall(name="schema", args={}))
                 yield LlmResponse(content=types.Content(role="model", parts=[part]))
 
-        target = Agent(name="schema_reader", instruction="Read the schema tool.",
-                       model=SchemaToolLlm(model="test"), tools=[schema]).build()
+        target = build_agent(Agent(name="schema_reader", instruction="Read the schema tool.",
+                       model=SchemaToolLlm(model="test"), tools=[schema]))
         application = CompiledApplication(name="schema_reader", framework="adk", mode="managed",
-                                          target=target, native_app=App(name="schema_reader", root_agent=target))
+                                          target=target, framework_app=App(name="schema_reader", root_agent=target))
         driver = ADKRuntimeDriver(application)
         try:
             await driver.create_session(session_id="schema", user_id="test-user", state={})
@@ -643,10 +646,10 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             return Event(output="done", state_delta={"visible": 42})
 
         graph = Graph(name="state_ui", nodes={"answer": answer}, edges=(Edge(START, "answer"),))
-        target = graph.build()
+        target = build_for_framework(graph, "adk")
         driver = ADKRuntimeDriver(CompiledApplication(
             name=graph.name, framework="adk", mode="managed", kind="graph",
-            target=target, native_app=App(name=graph.name, root_agent=target),
+            target=target, framework_app=App(name=graph.name, root_agent=target),
         ))
         try:
             await driver.create_session(session_id="state", user_id="test-user", state={})
@@ -882,18 +885,18 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         """Keep ADK's workflow-only single_turn mode away from app roots."""
 
         RecordingTurnLlm.seen.clear()
-        agent = Agent(
+        agent = build_agent(Agent(
             name="turn_root",
             model=RecordingTurnLlm(model="recording-turn"),
             instruction="Answer only the current turn.",
             history="turn",
-        ).build()
+        ))
         application = CompiledApplication(
             name="turn_root",
             framework="adk",
             mode="managed",
             target=agent,
-            native_app=App(name="turn_root", root_agent=agent),
+            framework_app=App(name="turn_root", root_agent=agent),
         )
         driver = ADKRuntimeDriver(application)
         try:
@@ -933,7 +936,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
             await first_driver.create_session(
                 session_id="durable-session", user_id="test-user", state={}
             )
-            with self.assertRaises(NativeDurableSuspended):
+            with self.assertRaises(FrameworkDurableSuspended):
                 await first_driver.invoke(
                     InvocationRequest(
                         input="start",
@@ -977,7 +980,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         try:
             resumed = await second_driver.invoke(
                 InvocationRequest(
-                    input=NativeResumeInput(artifact, {"report": "ready"}),
+                    input=FrameworkResumeInput(artifact, {"report": "ready"}),
                     user_id="test-user",
                     session_id="durable-session",
                     invocation_id="portable-run",
@@ -1011,7 +1014,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state["count"], 1)
         self.assertEqual(
             {event.invocation_id for event in session.events},
-            {artifact.native_invocation_id},
+            {artifact.framework_invocation_id},
         )
         completed = await store.get_run(scope=scope)
         self.assertIsNotNone(completed)
@@ -1143,7 +1146,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 state={},
             )
             with first_runtime.execution(run, request), self.assertRaises(
-                NativeDurableSuspended
+                FrameworkDurableSuspended
             ):
                 await first_pipeline.invoke(request)
             await first_runtime.arm(
@@ -1347,7 +1350,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 state_delta={},
             )
             with patch(
-                "harnest.runtime_adk.current_transient_media",
+                "harnest.frameworks.adk.runtime.current_transient_media",
                 return_value=access,
             ):
                 await driver.invoke(request)
@@ -1421,7 +1424,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         first = python_types.SimpleNamespace(contents=[original])
 
         with patch(
-            "harnest.runtime_adk.current_transient_media", return_value=access
+            "harnest.frameworks.adk.runtime.current_transient_media", return_value=access
         ):
             await plugin.before_model_callback(
                 callback_context=callback, llm_request=first
@@ -1454,7 +1457,7 @@ class ADKRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(access.peek(lease.lease_id))
         stale = python_types.SimpleNamespace(contents=[original])
         with patch(
-            "harnest.runtime_adk.current_transient_media", return_value=access
+            "harnest.frameworks.adk.runtime.current_transient_media", return_value=access
         ):
             await plugin.before_model_callback(
                 callback_context=callback, llm_request=stale

@@ -1,5 +1,7 @@
 """Offline HTTP coverage for evals borrowing custom lifecycle authentication."""
 
+from _framework_testing import build_for_framework
+
 import json
 import os
 import unittest
@@ -192,9 +194,9 @@ class EvalTransportHTTPTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "httpx.Client.send", side_effect=AssertionError("sync HTTP is forbidden")
         ):
-            owner = LiteLLMModel(
+            owner = build_for_framework(LiteLLMModel(
                 "openai/gpt-4.1", lifecycle=lifecycle, temperature=0.1
-            ).build_for(framework)
+            ), framework)
             try:
                 score, follow_up, model_names = await _exercise_models(
                     owner, framework, _explicit_eval_config()

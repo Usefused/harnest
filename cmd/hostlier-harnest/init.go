@@ -1,3 +1,4 @@
+// Proposes starter agent files and their Hostlier workload settings.
 package main
 
 import (

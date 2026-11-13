@@ -1,3 +1,4 @@
+// Resolves the pinned Harnest base image for a Hostlier workload.
 package main
 
 import (

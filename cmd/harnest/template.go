@@ -1,3 +1,5 @@
+// Agent templates published as wheels: resolves, downloads, and scaffolds an agent from one.
+
 package main
 
 import (
@@ -19,6 +21,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+	"harnest.dev/harnest/internal/agentscaffold"
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 const (
@@ -519,7 +523,7 @@ func readBoundedTemplateFile(file *zip.File, remaining *int64) ([]byte, error) {
 // renderTemplateResources substitutes only the allowlisted scaffold data set.
 func renderTemplateResources(resources map[string][]byte, name string) (map[string][]byte, error) {
 	data := templateData{
-		Name: name, AdkName: adkName(name), DisplayName: displayName(name),
+		Name: name, AdkName: agentscaffold.Identifier(name), DisplayName: agentscaffold.Title(name),
 	}
 	rendered := make(map[string][]byte, len(resources))
 	for relative, contents := range resources {
@@ -581,8 +585,8 @@ func validateTemplateAgent(resources map[string][]byte) (string, error) {
 		return "", fmt.Errorf("template config.yaml must declare kind: Agent")
 	}
 	framework := document.Spec.Framework.Name
-	if framework != "adk" && framework != "langgraph" {
-		return "", fmt.Errorf("template config.yaml must select an adk or langgraph framework")
+	if !frameworks.Known(framework) {
+		return "", fmt.Errorf("template config.yaml must select an %s framework", frameworks.Choices())
 	}
 	if dependency := document.Spec.Runtime.DependencyFile; dependency != "" {
 		if _, ok := resources[dependency]; !ok {

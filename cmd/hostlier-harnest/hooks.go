@@ -1,3 +1,4 @@
+// Validates project inputs and prepares the reviewed Hostlier build context.
 package main
 
 import (

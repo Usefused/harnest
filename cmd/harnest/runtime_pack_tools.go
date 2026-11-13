@@ -1,3 +1,5 @@
+// Makes console scripts in a runtime pack relocatable, including Windows launchers.
+
 package main
 
 import (

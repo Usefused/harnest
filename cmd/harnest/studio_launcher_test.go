@@ -31,22 +31,37 @@ func TestStudioDefaultsToCallerDirectory(t *testing.T) {
 	if err := os.Mkdir(selected, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(selected, "studio-pack.yaml"), []byte("name: company"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(selected, packManifestFile), []byte("name: company"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940", "--pack", selected, "--trust-ui-pack", "company")
+	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "--workspace", selected, "--port", "2940", "--pack", selected, "--option", "team=support", "--trust-ui-pack", "company")
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940", "--pack\n" + selected, "--trust-ui-pack\ncompany"})
-	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "studio", "pack", "validate", selected)
+	assertContainsAll(t, "explicit Studio workspace", string(mustReadTestFile(t, record)), []string{"--workspace\n" + selected, "--port\n2940", "--pack\n" + selected, "--option\nteam=support", "--trust-ui-pack\ncompany"})
+	_, _, err = executeForTest(t, defaultSystem(), "--python", python, "pack", "validate", selected)
 	if err != nil {
 		t.Fatal(err)
 	}
 	invocation := string(mustReadTestFile(t, record))
-	assertContainsAll(t, "pack validation", invocation, []string{"harnest_builder\npack\nvalidate\n" + selected})
+	assertContainsAll(t, "pack validation", invocation, []string{"-m\nharnest.cli\npack\nvalidate\n" + selected})
 	if strings.Contains(invocation, "--python") {
 		t.Fatal("inherited Python option leaked into pack arguments")
+	}
+}
+
+// TestStudioRejectsLegacyStudioPack points old studio-pack.yaml folders at pack.yaml.
+func TestStudioRejectsLegacyStudioPack(t *testing.T) {
+	legacy := t.TempDir()
+	if err := os.WriteFile(filepath.Join(legacy, "studio-pack.yaml"), []byte("name: company"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := executeForTest(t, defaultSystem(), "studio", "--pack", legacy)
+	if err == nil || !strings.Contains(err.Error(), "studio-pack.yaml is no longer supported") {
+		t.Fatalf("legacy Studio Pack accepted: %v", err)
+	}
+	if _, _, err := executeForTest(t, defaultSystem(), "studio", "pack", "validate", legacy); err == nil {
+		t.Fatal("removed `harnest studio pack` command still exists")
 	}
 }
 
@@ -56,7 +71,7 @@ func TestStudioPackTypes(t *testing.T) {
 	t.Setenv("HARNEST_STUDIO_TEST_RECORD", record)
 	python := writeExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HARNEST_STUDIO_TEST_RECORD\"\n")
 	output := filepath.Join(t.TempDir(), "types with spaces")
-	_, _, err := executeForTest(t, defaultSystem(), "--python", python, "studio", "pack", "types", "--output", output)
+	_, _, err := executeForTest(t, defaultSystem(), "--python", python, "pack", "types", "--output", output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,24 +82,9 @@ func TestStudioPackTypes(t *testing.T) {
 	}
 }
 
-// TestStudioSafeModeBypassesMissingPacks keeps recovery independent of publisher directories.
-func TestStudioSafeModeBypassesMissingPacks(t *testing.T) {
-	record := filepath.Join(t.TempDir(), "argv")
-	t.Setenv("HARNEST_STUDIO_TEST_RECORD", record)
-	python := writeExecutable(t, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HARNEST_STUDIO_TEST_RECORD\"\n")
-	_, _, err := executeForTest(t, defaultSystem(), "--python", python, "studio", "--safe-ui", "--pack", filepath.Join(t.TempDir(), "missing"), "--trust-ui-pack", "company")
-	if err != nil {
-		t.Fatal(err)
-	}
-	safe := string(mustReadTestFile(t, record))
-	if !strings.Contains(safe, "--safe-ui") || strings.Contains(safe, "--pack") || strings.Contains(safe, "--trust-ui-pack") {
-		t.Fatalf("safe launch did not bypass external packs: %s", safe)
-	}
-}
-
 // TestStudioRejectsInvalidLaunchBeforeBootstrapping protects unrelated directories and avoids unnecessary installs.
 func TestStudioRejectsInvalidLaunchBeforeBootstrapping(t *testing.T) {
-	for _, arguments := range [][]string{{"--port", "80"}, {"--port", "65536"}, {"--workspace", filepath.Join(t.TempDir(), "absent")}, {"unexpected"}} {
+	for _, arguments := range [][]string{{"--port", "80"}, {"--port", "65536"}, {"--workspace", filepath.Join(t.TempDir(), "absent")}, {"unexpected"}, {"--safe-ui"}} {
 		_, _, err := executeForTest(t, defaultSystem(), append([]string{"studio"}, arguments...)...)
 		if err == nil {
 			t.Fatalf("accepted invalid arguments: %v", arguments)

@@ -1,3 +1,5 @@
+// Example files `harnest init` writes into a managed agent's optional folders.
+
 package main
 
 // managedExampleScaffoldFiles adds inert samples only where the default profile

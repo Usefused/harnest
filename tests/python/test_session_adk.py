@@ -4,7 +4,7 @@ from google.adk.events import Event, EventActions
 from google.adk.sessions.base_session_service import GetSessionConfig
 
 from harnest.session import InMemorySessionStore
-from harnest.session_adk import (
+from harnest.frameworks.adk.sessions import (
     create_adk_session_service,
     register_adk_session_service,
 )
@@ -20,6 +20,7 @@ class ADKSessionStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
 
     async def test_crud_and_events_use_the_neutral_store(self):
+        self.assertIs(self.service.session_context_store, self.store)
         session = await self.service.create_session(
             app_name="support",
             user_id="user-1",
@@ -89,9 +90,6 @@ class ADKSessionStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
             config=GetSessionConfig(num_recent_events=1),
         )
         self.assertEqual(len(filtered.events), 1)
-
-    def test_service_exposes_only_its_portable_context_store(self):
-        self.assertIs(self.service.session_context_store, self.store)
 
     async def test_service_can_be_shared_with_adks_native_fastapi_factory(self):
         from google.adk.cli.utils.service_factory import (

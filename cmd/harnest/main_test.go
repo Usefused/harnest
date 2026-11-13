@@ -104,7 +104,7 @@ func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 	})
 	assertFilesContain(t, target, map[string]string{
 		".gitignore":             ".venv",
-		"harnest.lock":           "projectSchema: 6",
+		"harnest.lock":           "projectSchema: 7",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"models/_README.md":      "from harnest.models.support import",
@@ -432,7 +432,7 @@ func assertAdvancedLangGraphScaffold(t *testing.T, directory string) {
 		"root_agent = Agent.advanced(",
 		"from langchain.agents import create_agent",
 		"from harnest.lib.storage import store",
-		"model=LiteLLMModel.from_openai_environment().build_langgraph(),",
+		"model=LiteLLMModel.from_openai_environment().build(),",
 	})
 	if strings.Contains(string(source), "NativeApp") {
 		t.Fatalf("advanced scaffold still exposes NativeApp:\n%s", source)

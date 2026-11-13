@@ -7,8 +7,9 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
+from .frameworks.base import FrameworkName
 from ._json import json_value
 from .logging import get_logger
 from .output import (
@@ -16,17 +17,11 @@ from .output import (
     TokenUsage,
     _agent_metadata_from_runtime_event,
 )
-from .session import InMemorySessionStore
-
-try:
-    from langgraph.checkpoint.base import BaseCheckpointSaver as _LangGraphSaverBase
-except ImportError:  # ADK-only environments must still import checkpoint authorities.
-    class _LangGraphSaverBase:
-        def __init__(self, *, serde: Any = None) -> None:
-            self.serde = serde
+from .session import InMemorySessionStore, SessionStore
 
 RunStatus = Literal["running", "waiting", "completed", "failed", "cancelled"]
-CheckpointOwner = Literal["harnest", "langgraph", "adk"]
+# "harnest" for Harnest-owned stores, otherwise the owning framework's name.
+CheckpointOwner = str
 
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
 _AUDIT = get_logger("checkpoint.audit")
@@ -275,7 +270,7 @@ class RunRecord:
     user_id: str
     session_id: str
     run_id: str
-    framework: Literal["adk", "langgraph"]
+    framework: FrameworkName
     status: RunStatus = "running"
     revision: int = 0
     pending_action: PendingAction | None = None
@@ -324,7 +319,7 @@ class CheckpointRecord:
     run_id: str
     checkpoint_id: str
     namespace: str
-    framework: Literal["adk", "langgraph"]
+    framework: FrameworkName
     type_name: str
     payload: bytes
     metadata_type: str
@@ -352,7 +347,7 @@ class CheckpointStore(Protocol):
         user_id: str,
         session_id: str,
         run_id: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
     ) -> RunRecord:
         """Create or recover the active checkpoint run for a session."""
 
@@ -501,6 +496,27 @@ class CheckpointAuthority:
     schema_id: str
 
 
+class FrameworkStorage(CheckpointAuthority):
+    """Framework-native persistence declared through lifecycle storage factories.
+
+    Framework adapters provide the concrete wrappers, for example
+    ``harnest.frameworks.adk.ADKStore`` or
+    ``harnest.frameworks.langgraph.LangGraphStore``. Native storage is valid
+    only in advanced mode, where the framework owns its own persistence.
+    """
+
+    owns_sessions: ClassVar[bool] = False
+    """Whether this one object is both the session and checkpoint authority."""
+
+
+def is_session_authority(value: Any) -> bool:
+    """Accept the portable session protocol or native storage that owns sessions."""
+
+    return isinstance(value, SessionStore) or (
+        isinstance(value, FrameworkStorage) and value.owns_sessions
+    )
+
+
 class HarnestStore(CheckpointAuthority):
     """Base for framework-neutral stores owned by the Harnest runtime."""
 
@@ -508,16 +524,20 @@ class HarnestStore(CheckpointAuthority):
     framework = None
     schema_id = "harnest-checkpoint/v1"
 
-    def as_langgraph_checkpointer(self) -> Any:
-        """Return one stable native saver for advanced LangGraph construction."""
+    def framework_checkpointer(self) -> Any:
+        """Adapt this store for an advanced target using Harnest's selected framework."""
 
-        saver = getattr(self, "_harnest_langgraph_saver", None)
-        if saver is None:
-            from .checkpoint_langgraph import HarnestCheckpointSaver
+        from .frameworks.base import UnsupportedFrameworkFeature
+        from .frameworks.context import current_framework
 
-            saver = HarnestCheckpointSaver(self)
-            setattr(self, "_harnest_langgraph_saver", saver)
-        return saver
+        adapter = current_framework()
+        checkpointer = adapter.managed_checkpointer(self)
+        if checkpointer is None:
+            raise UnsupportedFrameworkFeature(
+                f"{adapter.metadata.display_name} does not accept a graph checkpointer; "
+                "declare this store through lifecycle storage factories instead"
+            )
+        return checkpointer
 
 
 @dataclass(slots=True)
@@ -654,7 +674,7 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         user_id: str,
         session_id: str,
         run_id: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
     ) -> RunRecord:
         """Claim the session for one idempotent invocation run."""
 
@@ -1218,159 +1238,6 @@ class MemoryStore(HarnestStore, InMemorySessionStore):
         self._closed = True
 
 
-class LangGraphStore(CheckpointAuthority, _LangGraphSaverBase):
-    """Explicit lifecycle ownership wrapper for a native LangGraph saver."""
-
-    owner: CheckpointOwner = "langgraph"
-    framework = "langgraph"
-    schema_id = "langgraph-native"
-
-    def __init__(self, checkpointer: Any) -> None:
-        """Wrap the exact saver used by an advanced compiled graph."""
-
-        if checkpointer is None:
-            raise ValueError("LangGraphStore requires a native checkpointer")
-        self.checkpointer = checkpointer
-
-        # LangGraph validates the lifecycle value with isinstance before it can
-        # use delegation, so the wrapper implements its native saver base class.
-        _LangGraphSaverBase.__init__(
-            self, serde=getattr(checkpointer, "serde", None)
-        )
-
-    @property
-    def config_specs(self) -> list[Any]:
-        """Expose the wrapped saver configuration fields to LangGraph."""
-
-        return self.checkpointer.config_specs
-
-    def get_tuple(self, config: Any) -> Any:
-        """Delegate synchronous checkpoint lookup to the wrapped saver."""
-
-        return self.checkpointer.get_tuple(config)
-
-    def list(self, config: Any, **options: Any) -> Any:
-        """Delegate synchronous checkpoint listing to the wrapped saver."""
-
-        return self.checkpointer.list(config, **options)
-
-    def put(
-        self,
-        config: Any,
-        checkpoint: Any,
-        metadata: Any,
-        new_versions: Any,
-    ) -> Any:
-        """Delegate synchronous checkpoint persistence to the wrapped saver."""
-
-        return self.checkpointer.put(
-            config, checkpoint, metadata, new_versions
-        )
-
-    def put_writes(
-        self,
-        config: Any,
-        writes: Sequence[tuple[str, Any]],
-        task_id: str,
-        task_path: str = "",
-    ) -> None:
-        """Delegate synchronous pending-write persistence to the wrapped saver."""
-
-        self.checkpointer.put_writes(config, writes, task_id, task_path)
-
-    def delete_thread(self, thread_id: str) -> None:
-        """Delete all checkpoints for a LangGraph thread."""
-
-        self.checkpointer.delete_thread(thread_id)
-
-    async def aget_tuple(self, config: Any) -> Any:
-        """Delegate asynchronous checkpoint lookup to the wrapped saver."""
-
-        return await self.checkpointer.aget_tuple(config)
-
-    async def alist(self, config: Any, **options: Any) -> AsyncIterator[Any]:
-        """Stream checkpoints from the wrapped asynchronous saver."""
-
-        async for value in self.checkpointer.alist(config, **options):
-            yield value
-
-    async def aput(
-        self,
-        config: Any,
-        checkpoint: Any,
-        metadata: Any,
-        new_versions: Any,
-    ) -> Any:
-        """Delegate asynchronous checkpoint persistence to the wrapped saver."""
-
-        return await self.checkpointer.aput(
-            config, checkpoint, metadata, new_versions
-        )
-
-    async def aput_writes(
-        self,
-        config: Any,
-        writes: Sequence[tuple[str, Any]],
-        task_id: str,
-        task_path: str = "",
-    ) -> None:
-        """Delegate asynchronous pending-write persistence to the wrapped saver."""
-
-        await self.checkpointer.aput_writes(
-            config, writes, task_id, task_path
-        )
-
-    async def adelete_thread(self, thread_id: str) -> None:
-        """Asynchronously delete all checkpoints for a LangGraph thread."""
-
-        await self.checkpointer.adelete_thread(thread_id)
-
-    def get_next_version(self, current: Any, channel: Any) -> Any:
-        """Ask the wrapped saver to derive the next channel version."""
-
-        return self.checkpointer.get_next_version(current, channel)
-
-    def __getattr__(self, name: str) -> Any:
-        # Delegation makes the lifecycle-owned wrapper usable directly in
-        # builder.compile(checkpointer=...) without hiding its ownership.
-        return getattr(self.checkpointer, name)
-
-    async def start(self) -> None:
-        """Initialize the wrapped saver when it owns a start hook."""
-
-        await _optional_async_call(self.checkpointer, "start")
-
-    async def close(self) -> None:
-        """Release resources owned by the wrapped saver."""
-
-        await _optional_async_call(self.checkpointer, "close")
-
-
-class ADKStore(CheckpointAuthority):
-    """Explicit lifecycle ownership wrapper for native ADK persistence."""
-
-    owner: CheckpointOwner = "adk"
-    framework = "adk"
-    schema_id = "adk-native"
-
-    def __init__(self, session_service: Any) -> None:
-        """Declare one native ADK service as both session and checkpoint authority."""
-
-        if session_service is None:
-            raise ValueError("ADKStore requires a native session service")
-        self.session_service = session_service
-
-    async def start(self) -> None:
-        """Initialize the wrapped ADK session service when supported."""
-
-        await _optional_async_call(self.session_service, "start")
-
-    async def close(self) -> None:
-        """Release resources owned by the wrapped ADK session service."""
-
-        await _optional_async_call(self.session_service, "close")
-
-
 def checkpoint_metadata(authority: CheckpointAuthority) -> dict[str, str]:
     """Return immutable, non-secret ownership metadata for an artifact."""
 
@@ -1397,7 +1264,7 @@ def _validate_same_run(
     application_id: str,
     user_id: str,
     session_id: str,
-    framework: Literal["adk", "langgraph"],
+    framework: FrameworkName,
 ) -> RunRecord:
     """Keep idempotent run creation scoped to the original execution."""
 
@@ -1875,7 +1742,6 @@ __all__ = [
     "A2ATaskPage",
     "A2ATaskPersistence",
     "A2ATaskRecord",
-    "ADKStore",
     "CheckpointConflictError",
     "CheckpointError",
     "CheckpointAuthority",
@@ -1883,7 +1749,7 @@ __all__ = [
     "CheckpointStore",
     "CheckpointWrite",
     "HarnestStore",
-    "LangGraphStore",
+    "FrameworkStorage",
     "MemoryStore",
     "PendingAction",
     "RunRecord",

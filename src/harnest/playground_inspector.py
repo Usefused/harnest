@@ -39,7 +39,6 @@ _DECORATOR_KINDS = {
 }
 _LIFECYCLE_ROLES = frozenset(
     {
-        "adk_plugin",
         "agent.after",
         "agent.before",
         "agent.on_event",
@@ -51,7 +50,7 @@ _LIFECYCLE_ROLES = frozenset(
         "http.before",
         "http.on_error",
         "http_routes",
-        "langgraph_middleware",
+        "framework_extension",
         "mcp.after",
         "mcp.before",
         "mcp.on_error",

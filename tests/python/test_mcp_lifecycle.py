@@ -1,4 +1,6 @@
 import asyncio
+from harnest.frameworks.adk.mcp_tools import build_toolset
+from harnest.frameworks.adk.lowering import build_agent
 import os
 import unittest
 from typing import Any
@@ -8,6 +10,8 @@ import httpx
 
 from harnest.agent import AgentDefinition
 from harnest.mcp import MCPClient
+from harnest.context import activate_context, create_agent_context, revoke_context
+from harnest.frameworks.context import framework_scope
 from harnest.mcp_lifecycle import (
     MCPClientContext,
     MCPClientLifecycle,
@@ -132,6 +136,45 @@ def _binding(
 
 
 class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_uses_compiler_and_invocation_selection(self):
+        """Author calls inherit selection without silently using LangGraph lifecycle identity."""
+
+        for framework in ("adk", "langgraph"):
+            for source in ("compiler", "invocation"):
+                with self.subTest(framework=framework, source=source):
+                    lifecycle = _RecordingLifecycle()
+                    configured = MCPClient.streamable_http(
+                        "https://gateway.invalid/mcp", lifecycle=lifecycle
+                    )
+                    active = create_agent_context(
+                        framework=framework, agent_name="root", invocation_id="run",
+                        user_id="user", session_id="session", metadata={}, resources={},
+                    )
+                    scope = (
+                        framework_scope(framework)
+                        if source == "compiler" else activate_context(active)
+                    )
+                    try:
+                        with scope:
+                            async with configured.connect():
+                                self.assertEqual(lifecycle.events, [("start", framework)])
+                        self.assertEqual(
+                            lifecycle.events, [("start", framework), ("close", framework)]
+                        )
+                    finally:
+                        revoke_context(active)
+
+    def test_connect_requires_selection_before_starting_credentials(self):
+        """Unmanaged calls cannot guess a framework or acquire a credential lifecycle."""
+
+        lifecycle = _RecordingLifecycle()
+        configured = MCPClient.streamable_http(
+            "https://gateway.invalid/mcp", lifecycle=lifecycle
+        )
+        with self.assertRaisesRegex(RuntimeError, "requires Harnest compilation"):
+            configured.connect()
+        self.assertEqual(lifecycle.events, [])
+
     async def test_default_client_supports_environment_socks_proxies(self):
         """Default MCP sessions inherit uppercase and lowercase SOCKS proxies."""
 
@@ -312,8 +355,8 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
             _RecordingType,
         )
 
-        with patch("harnest.mcp._adk_mcp_classes", return_value=classes):
-            toolset = client.to_adk_toolset()
+        with patch("harnest.frameworks.adk.mcp_tools._mcp_classes", return_value=classes):
+            toolset = build_toolset(client)
 
         bindings = mcp_lifecycle_bindings(toolset)
         self.assertEqual(len(bindings), 1)
@@ -329,7 +372,7 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_managed_adk_agent_owns_its_mcp_lifecycle(self):
         lifecycle = _RecordingLifecycle()
-        built = AgentDefinition(
+        built = build_agent(AgentDefinition(
             name="gateway_agent",
             model="openai:test",
             instruction="Use the gateway.",
@@ -339,7 +382,7 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     lifecycle=lifecycle,
                 ),
             ),
-        ).build()
+        ))
 
         bindings = mcp_lifecycle_bindings(built)
         self.assertEqual(len(bindings), 1)
@@ -361,7 +404,7 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
         assert binding is not None
         await binding.start()
 
-        connection = client.to_langgraph_connection()
+        connection = client.connection_options()
         factory = connection["httpx_client_factory"]
         http_client = factory(headers={"X-Adapter": "langgraph"}, timeout=1.0)
 

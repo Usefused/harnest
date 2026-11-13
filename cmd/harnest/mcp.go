@@ -1,3 +1,5 @@
+// `harnest mcp`: forwards MCP operations to the Python runtime.
+
 package main
 
 import "github.com/spf13/cobra"

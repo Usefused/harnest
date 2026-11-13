@@ -18,9 +18,9 @@ from harnest import context
 from harnest.agent import tool
 from harnest.context import ContextUnavailableError, optional_active_context
 from harnest.credentials import Credential, CredentialProvider
-from harnest.eval_adk import adk_evaluation_runtime
+from harnest.frameworks.adk.evaluation import adk_evaluation_runtime
 from harnest.eval_errors import EvaluationExecutionError
-from harnest.evaluation import prepared_adk_eval_app
+from harnest.frameworks.adk.evaluation import prepared_adk_eval_app
 from harnest.runtime import _runtime_driver
 from harnest.runtime_pipeline import start_runtime_pipeline
 from test_eval_adk_context import _application, _eval_set, _evaluate
@@ -90,7 +90,7 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         application = _application(identity_tool)
         plugin = _IdentityPlugin()
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
         self._run(_evaluate(application, _eval_set("identity_tool")))
         self.assertEqual([row[0] for row in plugin.seen], ["before", "after"])
         self.assertIs(plugin.seen[0][1], plugin.seen[1][1])
@@ -104,7 +104,7 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         application = _application(unavailable_tool)
         plugin = _IdentityPlugin()
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
         with self.assertRaises(EvaluationExecutionError) as caught:
             self._run(_evaluate(application, _eval_set("unavailable_tool")))
         message = str(caught.exception)
@@ -148,11 +148,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         plugin = _IdentityPlugin()
         application = self._execution_application(identity_tool, sequential)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     try:
                         await anext(stream)
@@ -182,11 +182,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         application = _application(identity_tool)
         plugin = _IdentityPlugin()
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     try:
                         await anext(stream)
@@ -221,8 +221,8 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
-                    for selected in (application.native_app, app, application.native_app):
+                with prepared_adk_eval_app(application.framework_app) as app:
+                    for selected in (application.framework_app, app, application.framework_app):
                         runner, stream = await self._native_stream(selected)
                         try:
                             async for _ in stream:
@@ -253,11 +253,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
             return "unreachable"
 
         application = self._execution_application(waiting_tool, sequential)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     if skip_completion:
                         # ADK's newer node runner intentionally omits after_run
@@ -294,7 +294,7 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
             return application
         root = SequentialAgent(name="workflow_probe", sub_agents=[application.target])
         return replace(application, name=root.name, target=root,
-                       native_app=App(name=root.name, root_agent=root))
+                       framework_app=App(name=root.name, root_agent=root))
 
     def test_before_run_cancellation_revokes_context(self):
         """Cancellation can occur after context entry but before agent dispatch."""
@@ -316,11 +316,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         plugin = CancelBeforeRun()
         application = self._execution_application(identity_tool, sequential=sequential)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     try:
                         with self.assertRaises(asyncio.CancelledError):
@@ -349,14 +349,14 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         plugin = CloseProbe()
         application = _application(identity_tool)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             driver = _runtime_driver(application)
             try:
                 await start_runtime_pipeline(driver)
                 async with adk_evaluation_runtime(application, driver):
-                    with prepared_adk_eval_app(application.native_app) as app:
+                    with prepared_adk_eval_app(application.framework_app) as app:
                         runner, stream = await self._native_stream(app)
                         try:
                             async for _ in stream:
@@ -386,11 +386,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         plugin = ReplaceBeforeRun()
         application = self._execution_application(identity_tool, sequential=True)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     try:
                         with self.assertRaises(RuntimeError) as caught:
@@ -425,11 +425,11 @@ class ADKEvaluationContextEdgeTests(unittest.TestCase):
 
         plugin = BrokenErrorHook()
         application = self._execution_application(broken_tool, sequential=sequential)
-        application.native_app.plugins.append(plugin)
+        application.framework_app.plugins.append(plugin)
 
         async def run():
             async with adk_evaluation_runtime(application):
-                with prepared_adk_eval_app(application.native_app) as app:
+                with prepared_adk_eval_app(application.framework_app) as app:
                     runner, stream = await self._native_stream(app)
                     try:
                         with self.assertRaisesRegex(ValueError, "original-tool-failure"):

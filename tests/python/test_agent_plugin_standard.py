@@ -11,12 +11,14 @@ import unittest
 from unittest.mock import patch
 import warnings
 
+from harnest.frameworks.adk.mcp_tools import build_toolset
 from harnest.agent_plugin_manifest import AgentPluginError, MCP_SCHEMA, PLUGIN_SCHEMA
 from harnest.agent_plugin_runtime import (
     PortableMCP, installation_id, plugin_installation, portable_http_factory,
 )
 from harnest.bundle import _copy_agent_source
-from harnest.mcp import MCPClient, _adk_mcp_toolset_metadata
+from harnest.frameworks.adk.mcp_tools import toolset_metadata
+from harnest.mcp import MCPClient
 from harnest.plugin import discover_plugins
 from harnest.extensions import activate_extensions, release_extensions
 from harnest.extension_descriptors import discover_application_extensions
@@ -259,7 +261,7 @@ capabilities: []
         self._servers(root, server={"type": "streamable-http", "url": url, "headers": headers})
         result, _ = self._discover()
         with patch.dict(os.environ, {"SECRET": "must-not-expand"}):
-            connection = result[0].mcp_clients[0].to_langgraph_connection()
+            connection = result[0].mcp_clients[0].connection_options()
         self.assertEqual(connection["url"], url)
         self.assertEqual(connection["headers"], headers)
         self.assertFalse(self.data.exists())
@@ -406,9 +408,9 @@ capabilities: []
         self.data.symlink_to(outside, target_is_directory=True)
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always")
-            toolset = client.to_adk_toolset()
+            toolset = build_toolset(client)
         self.assertEqual(asyncio.run(toolset.get_tools()), [])
-        self.assertEqual(_adk_mcp_toolset_metadata(toolset),
+        self.assertEqual(toolset_metadata(toolset),
                          (client.identity, client.capability_id, False))
         asyncio.run(toolset.close())
         self.assertEqual(list(outside.iterdir()), [])
@@ -417,9 +419,9 @@ capabilities: []
     def test_native_adk_construction_failure_still_raises(self):
         """Portable best-effort loading must not weaken authored native client errors."""
         client = MCPClient.stdio("python")
-        with patch.object(MCPClient, "_adk_connection", side_effect=ValueError("invalid native connection")):
+        with patch("harnest.frameworks.adk.mcp_tools._connection", side_effect=ValueError("invalid native connection")):
             with self.assertRaisesRegex(ValueError, "invalid native connection"):
-                client.to_adk_toolset()
+                build_toolset(client)
 
     def test_http_adapter_blocks_cross_origin_without_sending_requests(self):
         """SSE endpoint changes cannot forward package headers to another origin."""

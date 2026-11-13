@@ -18,7 +18,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "studio/src"))
 from harnest_builder.app import create_app
-from harnest_builder.pack_distribution import package_packs
+from harnest.authoring.distribution import build_pack
+from harnest.authoring import ProjectError
 from harnest_builder.pack_manifest import STUDIO_VERSION
 from harnest_builder.packs import Packs
 from harnest_builder.ui_packs import DEFAULT_ROOT, UIPacks
@@ -34,7 +35,7 @@ class StudioUIPackTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.pack = self.root / "blueprint"
-        shutil.copytree(ROOT / "examples/studio-packs/blueprint-ui", self.pack)
+        shutil.copytree(ROOT / "examples/packs/blueprint-ui", self.pack)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
 
@@ -47,10 +48,14 @@ class StudioUIPackTests(unittest.TestCase):
 
     def manifest(self, change):
         """Mutate publisher inputs without changing an already loaded source snapshot."""
-        path = self.pack / "studio-pack.yaml"
-        value = yaml.safe_load(path.read_text())
+        path = self.pack / "pack.yaml"
+        document = yaml.safe_load(path.read_text())
+        studio = document.pop("studio", None) or {}
+        # Tests edit one flat view; Studio keys go back under `studio:`.
+        value = {**document, **studio}
         change(value)
-        path.write_text(yaml.safe_dump(value))
+        sections = {key: value.pop(key) for key in ("builder", "ui", "resources") if key in value}
+        path.write_text(yaml.safe_dump({**value, "studio": sections}))
 
     def test_types_export_is_an_installable_versioned_npm_archive(self):
         """Authors get the declarations shipped by their host, without npm or network access."""
@@ -62,9 +67,8 @@ class StudioUIPackTests(unittest.TestCase):
             package = json.load(archive.extractfile("package/package.json"))
             self.assertEqual(package["name"], "@harnest/studio-ui")
             self.assertEqual(package["version"], STUDIO_VERSION)
-            declarations = archive.extractfile("package/index.d.ts").read().decode()
-            self.assertIn("export interface StudioContext", declarations)
-            self.assertIn("export type Activate", declarations)
+            declarations = archive.extractfile("package/index.d.ts").read()
+            self.assertEqual(declarations, (ROOT / "studio/src/harnest_builder/ui_sdk/index.d.ts").read_bytes())
         original = target.read_bytes()
         with self.assertRaises(SystemExit), redirect_stdout(StringIO()):
             pack_main(["types", "--output", str(target.parent)])
@@ -83,7 +87,7 @@ class StudioUIPackTests(unittest.TestCase):
         self.assertIn(standalone["digest"], shell["base"])
         source = client.get(shell["base"] + shell["entry"])
         self.assertEqual(source.status_code, 200)
-        self.assertIn("export async function activate", source.text)
+        self.assertEqual(source.content, (DEFAULT_ROOT / shell["entry"]).read_bytes())
         self.assertEqual(client.get(shell["base"] + "assets/not-declared.js").status_code, 404)
         self.assertEqual(client.get("/assets/app.js").status_code, 404)
         self.assertFalse(catalog["themes"][0]["tokens"].get("studio-areas"))
@@ -129,12 +133,12 @@ class StudioUIPackTests(unittest.TestCase):
         trusted = self.client(packs, trusted_ui=["blueprint-ui"])
         self.assertEqual(trusted.get(url).status_code, 200)
         self.assertIn("blueprint-ui/welcome", [item["id"] for item in trusted.get("/api/ui").json()["contributions"]])
-        safe = self.client(packs, trusted_ui=["blueprint-ui"], safe_ui=True)
-        self.assertEqual(safe.get(url).status_code, 404)
+        untrusted_launch = self.client(packs)
+        self.assertEqual(untrusted_launch.get(url).status_code, 403)
 
     def test_tailwind_example_replaces_only_welcome_with_compiled_isolated_css(self):
         """A framework-built section uses existing pack boundaries without global styles or trust."""
-        packs = Packs([ROOT / "examples/studio-packs/tailwind-welcome"])
+        packs = Packs([ROOT / "examples/packs/tailwind-welcome"])
         client = self.client(packs)
         catalog = client.get("/api/ui").json()
         safe = client.get("/api/ui?safe=true").json()
@@ -148,7 +152,6 @@ class StudioUIPackTests(unittest.TestCase):
         self.assertEqual(welcome["permissions"], ["state.connection"])
         response = client.get(welcome["base"] + welcome["entry"])
         self.assertEqual(response.status_code, 200)
-        self.assertIn("tailwindcss v4.3.3", response.text)
         self.assertIn(".bg-slate-950", response.text)
         self.assertNotIn("STUDIO_TAILWIND_CSS", response.text)
         self.assertNotIn('<link ', response.text)
@@ -165,12 +168,12 @@ class StudioUIPackTests(unittest.TestCase):
         self.assertEqual(result.status_code, 422)
         self.assertIn("Conflicting", result.json()["detail"])
         self.assertEqual(client.get("/api/ui?safe=true").status_code, 200)
-        with self.assertRaisesRegex(ValueError, "Conflicting"):
-            package_packs([self.pack], self.root / "dist", "conflicting-ui", "1.0.0")
+        with self.assertRaisesRegex(ProjectError, "Conflicting"):
+            build_pack(self.pack, self.root / "dist")
 
     def test_bad_theme_assets_and_replacement_graphs_are_rejected(self):
         """Validation blocks CSS injection, traversal, missing assets, and cyclic ownership."""
-        original = (self.pack / "studio-pack.yaml").read_text()
+        original = (self.pack / "pack.yaml").read_text()
         changes = [
             lambda value: value["ui"]["themes"][0]["tokens"].update(accent="url(https://example.invalid)"),
             lambda value: value["ui"]["assets"].append("assets/../../outside.js"),
@@ -178,11 +181,11 @@ class StudioUIPackTests(unittest.TestCase):
             lambda value: value["ui"]["layouts"][0].update(order=["sidebar", "sidebar", "workspace"]),
         ]
         for change in changes:
-            (self.pack / "studio-pack.yaml").write_text(original)
+            (self.pack / "pack.yaml").write_text(original)
             self.manifest(change)
             with self.assertRaises((ValueError, HTTPException)):
                 Packs([self.pack])
-        (self.pack / "studio-pack.yaml").write_text(original)
+        (self.pack / "pack.yaml").write_text(original)
         self.manifest(lambda value: value["ui"]["contributions"][0].update(replaces="blueprint-ui/welcome"))
         with self.assertRaisesRegex(ValueError, "Cyclic"):
             UIPacks(Packs([self.pack])).catalog()
@@ -190,17 +193,17 @@ class StudioUIPackTests(unittest.TestCase):
     def test_wheel_contains_exact_ui_snapshot_and_round_trips(self):
         """Company packaging preserves frame sources and UI declarations without installing them."""
         before = Packs([self.pack]).packs["blueprint-ui"]
-        wheel = package_packs([self.pack], self.root / "dist", "blueprint-team", "1.0.0")
+        wheel = build_pack(self.pack, self.root / "dist")
         extracted = self.root / "installed"
         with ZipFile(wheel) as archive:
             archive.extractall(extracted)
-        after = Packs([extracted / "blueprint_team_studio/packs/blueprint-ui"]).packs["blueprint-ui"]
+        after = Packs([extracted / "harnest_pack_blueprint_ui/pack"]).packs["blueprint-ui"]
         self.assertEqual(before["digest"], after["digest"])
         self.assertEqual(json.dumps(before["ui_assets"]), json.dumps(after["ui_assets"]))
 
     def test_deployment_service_replacement_requires_trust_and_recovers_default(self):
         """Replacement removes the default service alone while backend deployment remains gated."""
-        packs = Packs([ROOT / "examples/studio-packs/team-deployment"])
+        packs = Packs([ROOT / "examples/packs/team-deployment"])
         untrusted = self.client(packs)
         original = untrusted.get("/api/ui").json()["contributions"]
         self.assertIn("fused-studio/deployment", [item["id"] for item in original])

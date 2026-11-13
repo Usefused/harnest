@@ -1,0 +1,19 @@
+apiVersion: harnest.dev/pack/v1
+name: tailwind-welcome
+version: 1.0.0
+title: Tailwind welcome
+studio:
+  ui:
+    apiVersion: harnest.dev/studio-ui/v1
+    assets:
+    - assets/welcome.html
+    contributions:
+    - id: welcome
+      title: Tailwind welcome
+      slot: welcome
+      mode: frame
+      entry: assets/welcome.html
+      replaces: fused-studio/welcome
+      permissions:
+      - state.connection
+  resources: []

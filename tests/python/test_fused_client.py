@@ -37,7 +37,7 @@ class FusedClientTests(unittest.TestCase):
         self.assertEqual(configured.specs, client.specs)
         self.assertEqual(configured.required_permissions_for("execute"), {"crm.use", "crm.execute"})
         with patch.dict(os.environ, HARNEST_FUSED_BUSINESS_URL="https://engine.test/mcp/pinned", HARNEST_FUSED_BUSINESS_TOKEN="private-token", CUSTOMER_ID="customer"):
-            connection = configured.to_langgraph_connection()
+            connection = configured.connection_options()
         self.assertEqual(connection["url"], "https://engine.test/mcp/pinned")
         self.assertEqual(connection["headers"]["Authorization"], "Bearer private-token")
         self.assertEqual(connection["headers"]["X-Fused-End-User-Ref"], "customer")

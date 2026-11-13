@@ -20,7 +20,7 @@ from harnest.durable import ResumeArtifact
 
 _RESUME = ResumeArtifact(
     framework="langgraph",
-    native_invocation_id="reports/user-1/session-1",
+    framework_invocation_id="reports/user-1/session-1",
     tool_call_id="call-1",
     tool_name="report",
 )

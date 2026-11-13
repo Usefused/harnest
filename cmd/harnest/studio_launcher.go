@@ -1,3 +1,5 @@
+// `harnest studio`: starts Harnest Studio against a workspace, optionally with a pack.
+
 package main
 
 import (
@@ -15,8 +17,7 @@ import (
 // newStudioCommand starts the bundled local server against the caller's workspace.
 func (a *application) newStudioCommand() *cobra.Command {
 	var workspace string
-	var packs, trustedUI []string
-	var safeUI bool
+	var packs, trustedUI, options []string
 	var port int
 	command := &cobra.Command{
 		Use: "studio", Short: "Start Harnest Studio in the current folder or a selected workspace", Args: cobra.NoArgs,
@@ -25,7 +26,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			packArguments, err := studioPackArguments(studioPackRoots(packs, safeUI))
+			packArguments, err := studioPackArguments(packs, options)
 			if err != nil {
 				return err
 			}
@@ -39,7 +40,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 			}
 			arguments := []string{"-m", "harnest_builder", "--workspace", directory, "--port", strconv.Itoa(port), "--cli", executable}
 			arguments = append(arguments, packArguments...)
-			arguments = append(arguments, studioUIArguments(trustedUI, safeUI)...)
+			arguments = append(arguments, studioUIArguments(trustedUI)...)
 			if python.Source == "Studio environment" {
 				arguments = append([]string{"-I"}, arguments...)
 			}
@@ -68,10 +69,9 @@ func (a *application) newStudioCommand() *cobra.Command {
 	}
 	command.Flags().StringVar(&workspace, "workspace", ".", "existing workspace folder (default: current working directory)")
 	command.Flags().IntVar(&port, "port", 1940, "local Studio port (1024-65535)")
-	command.Flags().StringArrayVar(&packs, "pack", nil, "local Studio Pack folder (repeatable)")
-	command.Flags().BoolVar(&safeUI, "safe-ui", false, "start with only the bundled default Studio pack")
-	command.Flags().StringArrayVar(&trustedUI, "trust-ui-pack", nil, "allow a named UI pack full Studio JavaScript access (repeatable)")
-	command.AddCommand(a.newStudioPackCommand())
+	command.Flags().StringArrayVar(&packs, "pack", nil, "company pack folder (repeatable): its studio sub-pack loads in Studio and its hooks run when Studio creates or upgrades agents")
+	command.Flags().StringArrayVar(&options, "option", nil, "pack option for agents Studio creates, as key=value (repeatable)")
+	command.Flags().StringArrayVar(&trustedUI, "trust-ui-pack", nil, "allow a named pack's studio UI full Studio JavaScript access (repeatable)")
 	return command
 }
 
@@ -92,67 +92,19 @@ func studioWorkspace(workspace string, port int) (string, error) {
 }
 
 // studioPackArguments resolves company packs before bootstrapping the Studio environment.
-func studioPackArguments(packs []string) ([]string, error) {
+func studioPackArguments(packs, options []string) ([]string, error) {
+	folders, err := resolvePackFolders(packs)
+	if err != nil {
+		return nil, err
+	}
 	var arguments []string
-	for _, path := range packs {
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			return nil, err
-		}
-		info, err := os.Stat(filepath.Join(absolute, "studio-pack.yaml"))
-		if err != nil || !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("Studio pack must contain studio-pack.yaml: %s", path)
-		}
-		arguments = append(arguments, "--pack", absolute)
+	for _, folder := range folders {
+		arguments = append(arguments, "--pack", folder)
+	}
+	for _, option := range options {
+		arguments = append(arguments, "--option", option)
 	}
 	return arguments, nil
-}
-
-// newStudioPackCommand keeps inherited CLI options separate from pack arguments.
-func (a *application) newStudioPackCommand() *cobra.Command {
-	command := &cobra.Command{Use: "pack", Short: "Validate, package, or export types for Studio Packs"}
-	validate := &cobra.Command{Use: "validate PACK...", Short: "Validate local Studio Packs", Args: cobra.MinimumNArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			return a.runStudioPack(command, append([]string{"validate"}, args...))
-		},
-	}
-	command.AddCommand(validate, a.newStudioPackPackageCommand(), a.newStudioPackTypesCommand())
-	return command
-}
-
-// newStudioPackTypesCommand exports the declarations from the selected Studio runtime.
-func (a *application) newStudioPackTypesCommand() *cobra.Command {
-	var output string
-	command := &cobra.Command{Use: "types", Short: "Export the matching Studio UI TypeScript package", Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			return a.runStudioPack(command, []string{"types", "--output", output})
-		},
-	}
-	command.Flags().StringVar(&output, "output", "dist", "Output directory")
-	return command
-}
-
-// newStudioPackPackageCommand exposes only the options supported by the distribution contract.
-func (a *application) newStudioPackPackageCommand() *cobra.Command {
-	var packs []string
-	var name, version, output string
-	command := &cobra.Command{Use: "package", Short: "Build a company launcher wheel with embedded packs", Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			arguments := []string{"package", "--name", name, "--version", version, "--output", output}
-			for _, pack := range packs {
-				arguments = append(arguments, "--pack", pack)
-			}
-			return a.runStudioPack(command, arguments)
-		},
-	}
-	command.Flags().StringArrayVar(&packs, "pack", nil, "Studio Pack folder (repeatable)")
-	command.Flags().StringVar(&name, "name", "", "Company distribution name")
-	command.Flags().StringVar(&version, "version", "", "Company distribution version")
-	command.Flags().StringVar(&output, "output", "dist", "Output directory")
-	for _, flag := range []string{"pack", "name", "version"} {
-		_ = command.MarkFlagRequired(flag)
-	}
-	return command
 }
 
 // runStudioPack uses the same installed Studio runtime as the local server.
@@ -169,22 +121,11 @@ func (a *application) runStudioPack(command *cobra.Command, args []string) error
 	return runCommand(process, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
 }
 
-// studioUIArguments keeps code trust explicit while recovery bypasses custom UI modules.
-func studioUIArguments(trusted []string, safe bool) []string {
-	if safe {
-		return []string{"--safe-ui"}
-	}
+// studioUIArguments keeps code trust explicit: only named packs may run UI modules.
+func studioUIArguments(trusted []string) []string {
 	var arguments []string
 	for _, identity := range trusted {
 		arguments = append(arguments, "--trust-ui-pack", identity)
 	}
 	return arguments
-}
-
-// studioPackRoots avoids touching missing mod folders during recovery.
-func studioPackRoots(packs []string, safe bool) []string {
-	if safe {
-		return nil
-	}
-	return packs
 }

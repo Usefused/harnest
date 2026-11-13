@@ -45,9 +45,12 @@ spec:
     mode: managed      # managed | advanced; omitted means managed
 ```
 
-Both fields are part of the current `harnest.dev/v1alpha1` contract. In managed
+Both fields are part of the current `harnest.dev/v1alpha1` contract. Each
+framework is implemented by one adapter under `src/harnest/frameworks/<name>/`
+and described by the shared `frameworks.json` metadata; see
+[frameworks.md](frameworks.md) for the adapter contract. In managed
 mode Harnest composes and lowers source. In advanced mode it validates a
-framework-native application created with `Agent.advanced(...)`; it does not
+framework-specific application created with `Agent.advanced(...)`; it does not
 discover or wire managed resource folders. The compiled manifest records the
 effective framework name and mode, so the Go engine can reject a mismatched
 artifact.
@@ -57,7 +60,7 @@ package metadata declares supported `google-adk` and `langgraph` ranges. Before
 importing the configured entrypoint, compilation reads the selected installed
 framework distribution and rejects missing, malformed, or out-of-range
 versions. This check applies to both managed lowering and advanced targets:
-advanced mode exposes framework-native APIs but does not opt out of Harnest's
+advanced mode exposes framework-specific APIs but does not opt out of Harnest's
 tested dependency range.
 
 Environment sync records the installed framework distribution and exact version in
@@ -439,9 +442,9 @@ subagent, or a LangGraph node; Harnest does not inspect opaque native targets to
 discover capabilities automatically. Managed
 LangGraph sandbox grants use the same portable provider contract as ADK;
 neither framework accepts the removed `Agent(sandbox=...)` argument. Managed
-LangGraph rejects `output_key`,
-`generate_content_config`, and implicit subagent delegation rather than
-silently ignoring them.
+LangGraph rejects `output_key` and implicit subagent delegation rather than
+silently ignoring them. It ignores `generate_content_config`, and the compiler
+warns which agents set it.
 
 Skills expose progressive list, load, and resource tools instead of placing
 every skill body in the root prompt. `FilesystemSkillSource` validates static

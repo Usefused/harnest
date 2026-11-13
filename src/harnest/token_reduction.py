@@ -7,6 +7,7 @@ from dataclasses import replace
 import json
 from typing import Any
 
+from .frameworks.registry import get_framework
 from .tokens import TokenCount, TokenPolicy, TokenPolicyError, TokenRequest
 
 
@@ -32,18 +33,13 @@ def reduce_request(request: TokenRequest, policy: TokenPolicy) -> TokenRequest:
 
 
 def _is_user_turn(message: dict[str, Any], framework: str) -> bool:
-    """Distinguish human turns from ADK user-role function responses."""
-    if framework == "langgraph":
-        return message.get("type") == "human"
-    return message.get("role") == "user" and not any(
-        part.get("function_response") for part in message.get("parts", ())
-    )
+    """Distinguish human turns using the framework's own message shape."""
+    return get_framework(framework).is_user_turn(message)
 
 
 def _is_instruction(message: dict[str, Any], framework: str) -> bool:
     """Pin system/developer messages independently of conversation retention."""
-    role = message.get("type") if framework == "langgraph" else message.get("role")
-    return role in {"system", "developer"}
+    return get_framework(framework).is_instruction(message)
 
 
 def _recent_turns(request: TokenRequest, keep: int) -> TokenRequest:
@@ -85,24 +81,10 @@ def _short_strings(value: Any, limit: int) -> Any:
 
 def _tool_text(request: TokenRequest, limit: int) -> TokenRequest:
     """Reduce tool response content only; keep call identifiers and metadata."""
+    adapter = get_framework(request.framework)
     for message in request.messages:
-        if request.framework == "langgraph":
-            _langgraph_tool_text(message, limit)
-        else:
-            _adk_tool_text(message, limit)
+        adapter.reduce_tool_result(message, limit)
     return request
-
-
-def _langgraph_tool_text(message: dict[str, Any], limit: int) -> None:
-    """Keep non-text content blocks intact, including media and provider data."""
-    if message.get("type") != "tool":
-        return
-    data = message["data"]
-    content = data.get("content")
-    if isinstance(content, str):
-        data["content"] = _short_text(content, limit)
-    elif isinstance(content, list):
-        data["content"] = [_short_block(block, limit) for block in content]
 
 
 def _short_block(block: Any, limit: int) -> Any:
@@ -112,14 +94,6 @@ def _short_block(block: Any, limit: int) -> Any:
     if isinstance(block, dict) and block.get("type") == "text":
         return {**block, "text": _short_text(block["text"], limit)}
     return block
-
-
-def _adk_tool_text(message: dict[str, Any], limit: int) -> None:
-    """Retain function response identity while reducing its JSON text leaves."""
-    for part in message.get("parts", ()):
-        response = part.get("function_response")
-        if response:
-            response["response"] = _short_strings(response.get("response"), limit)
 
 
 def selected_tools(request: TokenRequest, names: Any) -> TokenRequest:

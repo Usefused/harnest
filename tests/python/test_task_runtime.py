@@ -10,7 +10,7 @@ from unittest.mock import patch
 from harnest.application import CompiledApplication
 from harnest import cron
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.durable import ResumeArtifact, native_durable_call
+from harnest.durable import ResumeArtifact, framework_durable_call
 from harnest.runtime_task import TaskRuntimeError, TaskExecutionError
 from harnest.runtime_task_store import ProviderTaskRuntimeManager
 from harnest.runtime_contract import InvocationResult
@@ -142,10 +142,10 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.addCleanup(revoke_context, active)
         artifact = ResumeArtifact("langgraph", "thread", "call", "report")
-        with activate_context(active), native_durable_call(artifact):
+        with activate_context(active), framework_durable_call(artifact):
             first = await authored.defer("same")
         await self.execute_next(manager, store)
-        with activate_context(active), native_durable_call(artifact):
+        with activate_context(active), framework_durable_call(artifact):
             replay = await authored.defer("same")
             distinct = await authored.defer("different")
         self.assertEqual(first.id, replay.id)

@@ -1,5 +1,6 @@
 """Native ADK evaluation must run real managed tools, not only score canned text."""
 
+from harnest.frameworks.adk.lowering import build_agent
 import asyncio
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
@@ -24,15 +25,15 @@ from harnest.agent import Agent
 from harnest.application import CompiledApplication
 from harnest.bundle import EvalSuite
 from harnest.context import ContextUnavailableError, ContextValue, optional_active_context
-from harnest.eval_adk import adk_evaluation_runtime
+from harnest.frameworks.adk.evaluation import adk_evaluation_runtime
 from harnest.eval_errors import EvaluationExecutionError, evaluation_error_boundary
-from harnest.evaluation import adk_eval_agent_module
+from harnest.frameworks.adk.evaluation import adk_eval_agent_module
 from harnest.lifecycle import LifecycleListener
 from harnest.runtime import _runtime_driver
 from harnest.runtime_pipeline import start_runtime_pipeline
 from harnest.session import InMemorySessionStore
 from harnest.skills import SkillScope, create_skill_tools
-from harnest.testing import _run_adk_evals
+from harnest.frameworks.adk.evaluation import run_builtin_evals as _run_adk_evals
 
 
 class _ToolModel(BaseLlm):
@@ -52,12 +53,12 @@ class _ToolModel(BaseLlm):
 
 def _application(function, **kwargs):
     """Use the same managed native agent type exported by the compiler."""
-    root = Agent(name="context_probe", instruction="Call the tool once.",
+    root = build_agent(Agent(name="context_probe", instruction="Call the tool once.",
                  model=_ToolModel(model="offline", tool_name=function.__name__),
-                 tools=[function]).build()
+                 tools=[function]))
     return CompiledApplication(
         name=root.name, framework="adk", mode="managed", target=root,
-        native_app=App(name=root.name, root_agent=root), **kwargs,
+        framework_app=App(name=root.name, root_agent=root), **kwargs,
     )
 
 
@@ -100,7 +101,7 @@ class ADKEvalContextTests(unittest.TestCase):
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             asyncio.run(_evaluate(application, _eval_set(function.__name__)))
         self.assertIsNone(optional_active_context())
-        self.assertEqual(application.native_app.plugins, [])
+        self.assertEqual(application.framework_app.plugins, [])
 
     def test_cli_resources_session_identity_and_cleanup(self):
         """CLI evaluation binds static/dynamic resources and revokes every case."""
@@ -180,7 +181,7 @@ class ADKEvalContextTests(unittest.TestCase):
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             asyncio.run(run())
         self.assertEqual(lifecycle, ["open", "close"])
-        self.assertEqual(application.native_app.plugins, [])
+        self.assertEqual(application.framework_app.plugins, [])
 
     def test_unhandled_tool_error_is_not_a_scored_failure(self):
         """Native ADK's unscored assertion becomes a redacted execution error."""
@@ -311,7 +312,7 @@ class ADKEvalContextTests(unittest.TestCase):
         module_name = f"{artifact.name}.agent"
         module = ModuleType(module_name)
         module.root_agent = application.target
-        module.app = application.native_app
+        module.app = application.framework_app
         module.application = application
         path = artifact / "probe.evalset.json"
         path.write_text(eval_set.model_dump_json(), encoding="utf-8")

@@ -7,6 +7,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from harnest.frameworks import framework_names
 from .catalog import COMMANDS, resource_name
 from pathlib import Path, PurePosixPath
 
@@ -81,7 +82,7 @@ def _initialize(workspace, command: Command) -> tuple[list[str], str]:
     root = parent / command.name
     if root.exists():
         raise HTTPException(409, "That project directory already exists; open it instead.")
-    if command.framework not in {"adk", "langgraph"} or command.mode not in {"managed", "advanced"}:
+    if command.framework not in framework_names() or command.mode not in {"managed", "advanced"}:
         raise HTTPException(422, "Choose ADK or LangGraph and managed or advanced mode.")
     if command.profile not in {"minimal", "guided", "example"}:
         raise HTTPException(422, "Choose a supported scaffold profile.")

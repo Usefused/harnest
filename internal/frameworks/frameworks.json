@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "shared_runtime_requirements": [
+    "asyncpg>=0.30,<1",
+    "redis>=6,<8"
+  ],
+  "frameworks": [
+    {
+      "name": "adk",
+      "display_name": "Google ADK",
+      "distribution": "google-adk",
+      "versions": ">=2.8,<3",
+      "install_extra": "adk",
+      "requirements": [
+        "google-adk>=2.8,<3"
+      ],
+      "mcp_requirements": [
+        "google-adk[mcp]>=2.8,<3"
+      ],
+      "doctor_modules": [
+        {"module": "google.adk", "distribution": "google-adk"}
+      ],
+      "capabilities": [
+        "graphs",
+        "framework-api-server",
+        "framework-session-service",
+        "root-agent-subagents",
+        "evals",
+        "generate-content-config"
+      ]
+    },
+    {
+      "name": "langgraph",
+      "display_name": "LangGraph",
+      "distribution": "langgraph",
+      "versions": ">=1.2,<2",
+      "install_extra": "langgraph",
+      "requirements": [
+        "langgraph>=1.2,<2",
+        "langchain>=1.3,<2",
+        "langchain-litellm>=0.7,<1"
+      ],
+      "mcp_requirements": [
+        "langchain-mcp-adapters>=0.3,<1"
+      ],
+      "doctor_modules": [
+        {"module": "langgraph", "distribution": "langgraph"},
+        {"module": "langchain", "distribution": "langchain"},
+        {"module": "langchain_litellm", "distribution": "langchain-litellm"}
+      ],
+      "capabilities": [
+        "graphs",
+        "evals"
+      ]
+    }
+  ]
+}

@@ -113,5 +113,5 @@ const harnestAgui = (() => {
     label.append(field); form.append(label); return field;
   }
 
-  return {run, pending:threadId => pending.has(threadId)};
+  return {run, pending:threadId => pending.has(threadId), forget:threadId => pending.delete(threadId)};
 })();

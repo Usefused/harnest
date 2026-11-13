@@ -1,3 +1,5 @@
+// Chooses the Python interpreter for a command and loads the agent bundle it runs against.
+
 package main
 
 import (
@@ -26,6 +28,7 @@ func (p pythonSelection) releaseLease() {
 	}
 }
 
+// resolvePython prefers explicit overrides, then the managed runtime and host PATH.
 func (a *application) resolvePython() (pythonSelection, error) {
 	if value := strings.TrimSpace(a.pythonFlag); value != "" {
 		return a.resolvePythonCandidate(value, "--python")

@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
-from typing import Any, Literal
+from typing import Any
 
+from .frameworks.base import FrameworkName
 from ._json import json_value
 from .checkpoint import (
     A2ATaskConflictError,
@@ -406,7 +407,7 @@ class PostgresStore(HarnestStore):
         user_id: str,
         session_id: str,
         run_id: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
     ) -> RunRecord:
         """Create an idempotent run while allowing one active run per session."""
 

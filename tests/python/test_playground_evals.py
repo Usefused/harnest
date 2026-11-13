@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 
 from harnest.bundle import compile_artifact
-from harnest.evaluation import adk_eval_agent_module
+from harnest.frameworks.adk.evaluation import adk_eval_agent_module
 from harnest.runtime import create_fastapi_app
 
 
@@ -160,7 +160,7 @@ class PlaygroundEvalTests(unittest.TestCase):
 
         root = LlmAgent(name="root", model="gemini-test")
         live_app = App(name="eval_test", root_agent=root, plugins=[])
-        application = SimpleNamespace(target=root, native_app=live_app)
+        application = SimpleNamespace(target=root, framework_app=live_app)
 
         with adk_eval_agent_module(application) as module_name:
             module = importlib.import_module(module_name)

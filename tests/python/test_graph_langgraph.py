@@ -17,7 +17,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         from langchain_core.messages import AIMessage
         from langchain_core.runnables import RunnableLambda
         from pydantic import BaseModel
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         class Answer(BaseModel):
             text: str
@@ -43,7 +43,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_incomplete_agent_messages_do_not_become_graph_answers(self):
         """Preserve incomplete state without promoting user input or tool calls to replies."""
         from langchain_core.messages import AIMessage, HumanMessage
-        from harnest.backends.langgraph import _graph_agent_output
+        from harnest.frameworks.langgraph.lowering import _graph_agent_output
 
         cases = [
             {}, {"messages": []}, {"messages": [HumanMessage(content="ticket")]},
@@ -55,7 +55,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_managed_callable_rejects_unknown_arguments_before_filtering(self):
         from langchain_core.messages import ToolMessage
 
-        from harnest.backends.langgraph import _langchain_tools
+        from harnest.frameworks.langgraph.lowering import _langchain_tools
 
         async def search_threads(limit: int = 50):
             """Return a bounded thread page."""
@@ -82,7 +82,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
 
     def test_pydantic_output_schema_is_passed_as_response_format(self):
         from pydantic import BaseModel
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
 
         class Answer(BaseModel):
             value: str
@@ -100,7 +100,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
 
     def test_runtime_metadata_is_not_provider_generated(self):
         from pydantic import BaseModel
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
         from harnest.structured import FrameworkMetadata
 
         class Details(BaseModel):
@@ -125,7 +125,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     def test_native_middleware_is_passed_to_create_agent(self):
         from langchain.agents.middleware import AgentMiddleware
         from harnest.agent import AgentDefinition
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
 
         definition = AgentDefinition(
             name="root", model="test:model", instruction="Answer."
@@ -141,7 +141,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_portable_middleware_is_bound_to_managed_agent_name(self):
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
 
         bound = object()
 
@@ -167,7 +167,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_base_tool_uses_one_derived_agent_lifecycle(self):
         from pydantic import BaseModel
         from langchain_core.tools import StructuredTool
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
         from harnest.context import (
             activate_context,
             create_agent_context,
@@ -244,7 +244,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel
 
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
         from harnest.context import (
             activate_context,
             create_agent_context,
@@ -319,7 +319,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         from langchain_core.messages import ToolMessage
         from langchain_core.tools import StructuredTool
 
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
         from harnest.context import (
             activate_context,
             create_agent_context,
@@ -388,7 +388,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.runnables import RunnableLambda
         from langgraph.checkpoint.memory import MemorySaver
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         messages = [
             HumanMessage(content="first"),
@@ -441,7 +441,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_consumes_predecessor_output_with_selected_history(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.runnables import RunnableLambda
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         messages = [
             HumanMessage(content="first"),
@@ -490,7 +490,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
                 expected,
             )
     async def test_mcp_agent_lowers_to_inert_runtime_plan(self):
-        from harnest.backends.langgraph import ManagedAgentPlan, build_agent
+        from harnest.frameworks.langgraph.lowering import ManagedAgentPlan, build_agent
 
         definition = AgentDefinition(
             name="portable",
@@ -508,7 +508,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(plan, "astream"))
 
     async def test_graph_with_mcp_agent_lowers_to_inert_runtime_plan(self):
-        from harnest.backends.langgraph import ManagedGraphPlan, build_graph
+        from harnest.frameworks.langgraph.lowering import ManagedGraphPlan, build_graph
 
         agent = AgentDefinition(
             name="nested",
@@ -530,7 +530,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(plan, "ainvoke"))
 
     async def test_build_agent_does_not_create_hidden_checkpoint_state(self):
-        from harnest.backends.langgraph import build_agent
+        from harnest.frameworks.langgraph.lowering import build_agent
 
         sentinel = object()
         with patch("langchain.agents.create_agent", return_value=sentinel) as create:
@@ -546,7 +546,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("checkpointer", create.call_args.kwargs)
 
     async def test_build_graph_runs_deterministic_sequence(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         def double(value: int) -> int:
             return value * 2
@@ -571,7 +571,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["messages"][-1].content, "sequence complete")
 
     async def test_callable_context_reads_and_merges_session_state(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         def remember(value: str, context: GraphContext) -> Event:
             count = int(context.state.get("count", 0)) + 1
@@ -595,7 +595,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_harnest_state"], {"count": 3, "tenant": "one"})
 
     async def test_build_graph_selects_only_matching_routed_branch(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         visited: list[str] = []
 
@@ -629,7 +629,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visited, ["high"])
 
     async def test_parallel_branches_rejoin_without_state_write_conflicts(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
 
         visited: list[str] = []
 
@@ -670,7 +670,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_native_pregel_is_validated_and_passed_through(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
         from langgraph.graph import END, START as LANGGRAPH_START, StateGraph
 
         builder = StateGraph(dict)
@@ -682,7 +682,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(build_graph(native), native)
 
     async def test_agent_advanced_can_embed_native_pregel_as_a_graph_node(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
         from langgraph.graph import END, START as LANGGRAPH_START, StateGraph
 
         visited = []
@@ -711,7 +711,7 @@ class LangGraphBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"], "hello")
 
     async def test_embedded_advanced_pregel_rejects_root_adapters(self):
-        from harnest.backends.langgraph import build_graph
+        from harnest.frameworks.langgraph.lowering import build_graph
         from langgraph.graph import END, START as LANGGRAPH_START, StateGraph
 
         builder = StateGraph(dict)

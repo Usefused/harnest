@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -129,7 +129,7 @@ class _EvalTransportScope:
 def _judge_final_response(response: Any) -> Any | None:
     """Exclude provider thoughts and intermediate chunks without editing final prose."""
 
-    from .runtime_adk import _customer_facing_parts
+    from .runtime_contract import _customer_facing_parts
 
     # ADK's non-streaming judge loop parses its first yielded response. A
     # provider can still emit an initial thought-only or partial event.
@@ -288,3 +288,27 @@ async def close_owned_eval_model_transports(
             add_note("evaluation model transport cleanup also failed")
     elif failures:
         _raise_cleanup_failures(failures)
+
+
+def build_judge_model(
+    model_name: str, *, transport_options: Mapping[str, Any], borrowed_client: Any
+) -> Any:
+    """Build the ADK evaluator's LiteLLM judge on the agent's transport.
+
+    Agent generation settings must not replace a judge's temperature,
+    sampling, or output contract; only transport and auth choices are shared,
+    and no lifecycle resource is attached to this borrower.
+    """
+
+    from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+
+    from .model_transport import _borrow_adk_client, framework_adk_client
+
+    arguments = dict(transport_options)
+    if borrowed_client is not None:
+        # Hooks and lazy initialization belong to the original controller;
+        # constructing another lifecycle would create a second transport.
+        arguments["llm_client"] = _borrow_adk_client(borrowed_client, LiteLLMClient)
+    else:
+        arguments["llm_client"] = framework_adk_client(LiteLLMClient)
+    return LiteLlm(model=model_name, **arguments)

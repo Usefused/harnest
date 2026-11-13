@@ -169,8 +169,10 @@ GoReleaser refuses to package a tag unless both checked-in version sources match
 it. It builds the embedded wheel from disposable staged inputs; this preserves
 the reviewed source version for releases while allowing local snapshot versions
 without modifying the checkout. Whenever framework support changes, update the
-bounded `google-adk` and `langgraph` constraints together in `pyproject.toml`,
-the Python compatibility matrix, and the Go init compatibility table. A release
+bounded framework constraints together in `pyproject.toml` and
+`src/harnest/frameworks/frameworks.json`, then copy that file to
+`internal/frameworks/frameworks.json`; Python and Go tests fail if they drift.
+See [frameworks.md](frameworks.md). A release
 machine needs Go 1.24 or newer, Python 3.11 or newer, the build dependencies
 from `.[adk,quality]` with `requirements/frameworks.txt` constraints, GoReleaser, and permission to download the pinned `uv` assets and
 publish to the GitHub repository.

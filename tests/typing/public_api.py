@@ -93,12 +93,12 @@ def after_model(value: int) -> int:
     return value
 
 
-@lifecycle.adk_plugin
+@lifecycle.framework_extension
 def plugin_factory(value: str) -> CompanyService:
     return CompanyService()
 
 
-@lifecycle.langgraph_middleware(order=1)
+@lifecycle.framework_extension(order=1)
 def middleware_factory(value: int) -> CompanyService:
     return CompanyService()
 

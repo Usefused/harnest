@@ -10,7 +10,7 @@ import tomllib
 
 # These are Studio's supported embedding and pack-authoring modules. Route and
 # process internals are not a public Python SDK; consumer probes cover this boundary.
-STUDIO_API = ("__main__.py", "app.py", "packs.py", "pack_distribution.py", "pack_cli.py",
+STUDIO_API = ("__main__.py", "app.py", "packs.py", "pack_cli.py",
               "mcp_credentials.py", "types.py", "ui_types.py")
 
 

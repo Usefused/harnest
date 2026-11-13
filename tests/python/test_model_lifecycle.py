@@ -1,4 +1,8 @@
+
+from _framework_testing import build_for_framework
 import asyncio
+import copy
+from harnest.frameworks.adk.lowering import build_agent
 import sys
 import types
 import unittest
@@ -10,7 +14,6 @@ from harnest.model_lifecycle import (
     _LifecycleLiteLLMClient,
     _annotate_anthropic_prompt_cache,
     _attach_lifecycle_resource,
-    _prompt_cache_transformers,
     close_litellm_lifecycles,
 )
 
@@ -443,12 +446,12 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         second_lifecycle = _AsyncLifecycle("second")
 
         with patch.dict(sys.modules, modules):
-            first = LiteLLMModel(
+            first = build_for_framework(LiteLLMModel(
                 "openai/gpt-test", lifecycle=first_lifecycle
-            ).build()
-            second = LiteLLMModel(
+            ), "adk")
+            second = build_for_framework(LiteLLMModel(
                 "openai/gpt-test", lifecycle=second_lifecycle
-            ).build()
+            ), "adk")
 
         async def exercise():
             await first.llm_client.acompletion(
@@ -510,11 +513,11 @@ class LiteLLMLifecycleTests(unittest.TestCase):
         }
 
         with patch.dict(sys.modules, modules):
-            built = Agent(
+            built = build_agent(Agent(
                 name="support",
                 model=LiteLLMModel("openai/gpt-test", lifecycle=lifecycle),
                 instruction="Help.",
-            ).build()
+            ))
 
         asyncio.run(close_litellm_lifecycles(built))
         self.assertEqual([event[0] for event in lifecycle.events], ["close"])
@@ -545,19 +548,6 @@ class LiteLLMLifecycleTests(unittest.TestCase):
 
 
 class PromptCacheTransformerTests(unittest.TestCase):
-    def test_selects_anthropic_transformer_only_when_enabled(self):
-        self.assertEqual(
-            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", True),
-            (_annotate_anthropic_prompt_cache,),
-        )
-        self.assertEqual(
-            _prompt_cache_transformers("anthropic/claude-3-5-sonnet", False), ()
-        )
-        self.assertEqual(_prompt_cache_transformers("openai/gpt-4o", True), ())
-        self.assertEqual(
-            _prompt_cache_transformers("gemini/gemini-1.5-pro", True), ()
-        )
-
     def test_annotates_system_and_final_messages(self):
         request = {
             "model": "anthropic/claude-3-5-sonnet",
@@ -566,7 +556,10 @@ class PromptCacheTransformerTests(unittest.TestCase):
                 {"role": "user", "content": "hello"},
             ],
         }
+        authored_messages = request["messages"]
+        original = copy.deepcopy(authored_messages)
         messages = _annotate_anthropic_prompt_cache(request)["messages"]
+        self.assertEqual(authored_messages, original)
         self.assertEqual(
             messages[0]["content"],
             [
@@ -638,13 +631,6 @@ class PromptCacheTransformerTests(unittest.TestCase):
             ),
             {"model": "anthropic/x", "messages": []},
         )
-
-    def test_does_not_mutate_authored_messages(self):
-        original = [{"role": "user", "content": "hello"}]
-        request = {"model": "anthropic/x", "messages": original}
-        _annotate_anthropic_prompt_cache(request)
-        self.assertEqual(original, [{"role": "user", "content": "hello"}])
-
 
 class PromptCacheControllerTests(unittest.TestCase):
     def test_transformers_run_before_authored_hook(self):

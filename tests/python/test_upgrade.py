@@ -247,6 +247,38 @@ class RepositoryUpgradeTests(unittest.TestCase):
                     apply_upgrade(plan)
                 self.assertEqual((root / "agent.py").read_text(), source)
 
+    def test_studio_receipts_merge_into_the_single_pack_lock(self):
+        """Version 1 locks become version 2 and studio-packs.lock is folded in, then removed."""
+
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            apply_upgrade(plan_upgrade(root))
+            receipt = {"version": "1.0.0", "digest": "d", "files": {"tools/x.py": "e"}}
+            self.write(root / "harnest-packs.lock", json.dumps({"version": 1, "packs": {"acme": 2}, "claims": []}))
+            self.write(root / "studio-packs.lock", json.dumps({"version": 1, "resources": {"support/x": receipt}}))
+            plan = plan_upgrade(root)
+            self.assertFalse(plan.blockers)
+            self.assertTrue(any("Breaking change" in warning and "acme" in warning for warning in plan.warnings))
+            self.assertEqual({(a.kind, a.path) for a in plan.actions if "packs.lock" in a.path},
+                             {("rewrite", "harnest-packs.lock"), ("delete", "studio-packs.lock")})
+            apply_upgrade(plan)
+            lock = json.loads((root / "harnest-packs.lock").read_text())
+            self.assertEqual(lock, {"version": 2, "packs": {"acme": 2}, "claims": [], "resources": {"support/x": receipt}})
+            self.assertFalse((root / "studio-packs.lock").exists())
+            self.assertFalse([a for a in plan_upgrade(root).actions if "packs.lock" in a.path])
+
+            # A Studio-only agent gets a new lock that holds just the receipts.
+            (root / "harnest-packs.lock").unlink()
+            self.write(root / "studio-packs.lock", json.dumps({"version": 1, "resources": {"support/x": receipt}}))
+            apply_upgrade(plan_upgrade(root))
+            self.assertEqual(json.loads((root / "harnest-packs.lock").read_text())["resources"], {"support/x": receipt})
+
+            self.write(root / "studio-packs.lock", "not json")
+            self.assertTrue(any("studio-packs.lock" in item for item in plan_upgrade(root).blockers))
+
     def write(self, path: Path, value: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")
@@ -361,7 +393,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
             native = (root / "lifecycle" / "audit" / "adk.py").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("@_harnest_lifecycle.adk_plugin", native)
+            self.assertIn("@_harnest_lifecycle.framework_extension", native)
             self.assertTrue((root / "lifecycle" / "audit" / "_langgraph.py").is_file())
             self.assertFalse((root / "server.yaml").exists())
             self.assertTrue((root / "harnest.lock").is_file())
@@ -510,7 +542,7 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 6",
+                "projectSchema: 7",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
             )
 

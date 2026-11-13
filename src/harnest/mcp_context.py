@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .frameworks.registry import framework_names
 from .lifecycle_transition import _after_transition
 
 import asyncio
@@ -22,7 +23,6 @@ from .tool_lifecycle import wrap_lifecycle_tool
 
 
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,127}$")
-_FRAMEWORKS = frozenset({"adk", "langgraph"})
 _PHASES = frozenset({"before_mcp", "after_mcp", "on_mcp_error"})
 _AUDIT = get_logger("mcp.audit")
 _MCPCall = Callable[[Mapping[str, Any]], Awaitable[Any]]
@@ -76,7 +76,7 @@ class MCPToolLifecycleContext(TransitionContext):
     def __post_init__(self) -> None:
         """Validate only stable identity and never accept transport metadata."""
 
-        if self.framework not in _FRAMEWORKS:
+        if self.framework not in framework_names():
             raise ValueError(f"unsupported MCP lifecycle framework {self.framework!r}")
         for field_name in (
             "agent_name",

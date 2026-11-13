@@ -80,12 +80,12 @@ class Conversion(BaseModel):
 def create_app(root: Path, cli: str | list[str] | tuple[str, ...], *, token: str | None = None,
                completion: Completion | None = None, connector: FusedConnectorsService | None = None,
                credentials: CredentialStore | None = None, packs: Packs | None = None,
-               trusted_ui: Sequence[str] = (), safe_ui: bool = False, init_args: Sequence[str] = ()) -> FastAPI:
+               trusted_ui: Sequence[str] = (), init_args: Sequence[str] = ()) -> FastAPI:
     """Compose workspace services and the shared host for bundled and custom UI packs."""
     style_nonce = secrets.token_urlsafe(24)
     workspace = Workspace(root)
-    workspace.packs = Packs() if safe_ui else packs or Packs()
-    ui_packs = UIPacks(workspace.packs, () if safe_ui else trusted_ui)
+    workspace.packs = packs or Packs()
+    ui_packs = UIPacks(workspace.packs, trusted_ui)
     credentials = credentials or CredentialStore()
     jobs = Jobs(cli, workspace, credentials, init_args=init_args)
     mcp = MCPService(workspace, jobs, credentials, connector)
@@ -159,7 +159,7 @@ def create_app(root: Path, cli: str | list[str] | tuple[str, ...], *, token: str
     def ui_catalog(safe: bool = False) -> dict[str, Any]:
         """Expose validated composition only after workspace authentication."""
         try:
-            return ui_packs.catalog(safe or safe_ui)
+            return ui_packs.catalog(safe)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 

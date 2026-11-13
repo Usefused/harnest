@@ -1,3 +1,5 @@
+// Long-lived Python compiler process (harnest.compiler_daemon) that hot reload uses for fast recompiles.
+
 package main
 
 import (

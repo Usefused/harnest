@@ -17,7 +17,10 @@ import yaml
 from .files import Workspace, read, source_path, validate
 from .pack_manifest import load_pack, text_digest
 
-LOCK = "studio-packs.lock"
+# Studio install receipts live in the agent's single pack lock, beside the
+# project-pack versions and ownership claims that Harnest maintains.
+LOCK = "harnest-packs.lock"
+LEGACY_LOCK = "studio-packs.lock"
 
 
 class Packs:
@@ -78,9 +81,7 @@ class Packs:
         """Produce deterministic native files and receipts; local edits block destructive upgrades."""
         selected = self.expand(identities)
         lock = read(root, LOCK)
-        receipt = json.loads(lock["text"]) if lock["text"] else {"version": 1, "resources": {}}
-        if receipt.get("version") != 1 or not isinstance(receipt.get("resources"), dict):
-            raise ValueError("Invalid Studio pack installation receipt")
+        receipt = _read_receipts(root, lock["text"])
         changes, owners = {}, {}
         for identity in selected:
             self._resource_changes(root, identity, receipt, changes, owners)
@@ -186,6 +187,16 @@ def _create_project(workspace: Workspace, destination: Path, changes: list[dict[
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return workspace.register(destination)
+
+
+def _read_receipts(root: Path, text: str) -> dict[str, Any]:
+    """Validate the whole pack lock with Harnest's own rules before adding receipts."""
+    from harnest.authoring.contracts import _File
+    from harnest.authoring.operations import read_lock
+
+    if source_path(root, LEGACY_LOCK).exists():
+        raise ValueError(f"This agent still has {LEGACY_LOCK}. Run `harnest upgrade` to move its receipts into {LOCK}.")
+    return read_lock({LOCK: _File(text.encode())} if text else {})
 
 
 def _finalize_receipts(receipt: dict[str, Any], selected: list[str], changes: dict[str, dict[str, str]]) -> None:

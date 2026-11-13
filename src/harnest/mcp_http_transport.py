@@ -70,7 +70,7 @@ async def _client(configured: Any, framework: str) -> AsyncIterator[tuple[httpx.
     import httpx
     from mcp.shared._httpx_utils import create_mcp_http_client
 
-    options = configured.to_langgraph_connection()
+    options = configured.connection_options()
     factory = options.get("httpx_client_factory", create_mcp_http_client)
     binding = configured._lifecycle_binding(framework)
     if binding is not None:

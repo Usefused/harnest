@@ -17,6 +17,8 @@ from typing import Any, Mapping, Sequence
 
 from opentelemetry import trace
 
+from harnest.frameworks.registry import require_framework
+
 
 _LOCK = threading.Lock()
 _STATE: "TelemetryState | None" = None
@@ -445,8 +447,7 @@ def _validated_configuration(
 
     if not isinstance(service_name, str) or not service_name.strip():
         raise ValueError("telemetry service_name must be a non-empty string")
-    if framework not in {"adk", "langgraph"}:
-        raise ValueError("telemetry framework must be adk or langgraph")
+    require_framework(framework, "telemetry framework")
     return _validated_destinations(exporters)
 
 

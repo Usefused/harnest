@@ -118,24 +118,15 @@ class ModelTransportBinding:
         }
 
     def build_eval_model(self, model_name: str) -> Any:
-        """Build an ADK adapter sharing transport but never cleanup ownership."""
+        """Build an evaluator judge model sharing transport but never cleanup ownership."""
 
-        from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+        from .eval_model_transport import build_judge_model
 
-        # Agent generation settings must not replace a judge's temperature,
-        # sampling, or output contract; only transport/auth choices are shared.
-        arguments = self._transport_options()
-        if self._borrowed_client is not None:
-            # Hooks and lazy initialization belong to the original controller;
-            # constructing another lifecycle would create a second transport.
-            arguments["llm_client"] = _borrow_adk_client(
-                self._borrowed_client, LiteLLMClient
-            )
-        else:
-            arguments["llm_client"] = framework_adk_client(LiteLLMClient)
-        # Explicit native `client` options remain untouched in the arguments.
-        # In particular, no lifecycle resource is attached to this borrower.
-        return LiteLlm(model=model_name, **arguments)
+        return build_judge_model(
+            model_name,
+            transport_options=self._transport_options(),
+            borrowed_client=self._borrowed_client,
+        )
 
 
 def _same_transport_value(left: Any, right: Any) -> bool:

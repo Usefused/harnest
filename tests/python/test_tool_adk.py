@@ -12,7 +12,7 @@ from harnest.context import (
 )
 from harnest.lifecycle import LifecycleListener
 from harnest.mcp_context import _mark_governed_mcp_operation
-from harnest.tool_adk import ADKPortableToolLifecyclePlugin
+from harnest.frameworks.adk.tools import ADKPortableToolLifecyclePlugin
 
 
 def _listener(phase, callback, *, order=0, name="hook"):

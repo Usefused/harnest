@@ -182,9 +182,8 @@ class CaptureStore(Protocol):
 def default_redactor(record: CaptureRecord) -> CaptureRecord:
     """Omit all input, output and tool payloads, preserving only structure.
 
-    This existing helper name remains importable, but no longer guesses which
-    substrings contain personal data. Register ``@lifecycle.evals.redact`` to
-    retain content under a team-owned policy instead.
+    Register ``@lifecycle.evals.redact`` with a team-owned policy to retain
+    selected content.
     """
 
     return replace(
@@ -200,7 +199,7 @@ def default_redactor(record: CaptureRecord) -> CaptureRecord:
 
 
 def redact_text(value: str) -> str:
-    """Omit an entire string; retained for import compatibility, not PII detection."""
+    """Return an empty string, omitting the entire input."""
 
     del value
     return ""

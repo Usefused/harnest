@@ -1,3 +1,5 @@
+// README guides `harnest init` writes into each optional agent folder.
+
 package main
 
 // scaffoldLibraryGuide explains the optional compiler-owned helper namespace.

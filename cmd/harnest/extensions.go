@@ -1,3 +1,5 @@
+// `harnest extensions`: searches the PyPI extension catalog and lists installed extensions.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// Reusable environment slots: replacing an environment safely and migrating legacy layouts.
+
 package main
 
 import (

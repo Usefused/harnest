@@ -1,3 +1,5 @@
+// `harnest env` and the managed per-agent Python environments that every command runs in.
+
 package main
 
 import (
@@ -276,6 +278,9 @@ func environmentFingerprint(
 		digest.Write([]byte{0})
 	}
 	digest.Write(wheel.Contents)
+	if plan.CustomEvalOnly {
+		digest.Write([]byte("\x00eval-without-adk"))
+	}
 	for _, requirement := range plan.CompileRequirements {
 		digest.Write([]byte("\x00compile:" + requirement))
 	}

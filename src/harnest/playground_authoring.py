@@ -237,7 +237,9 @@ def _validate_json(path: Path, text: str) -> None:
 
     payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
     if path.name.endswith(".evalset.json"):
-        from google.adk.evaluation.eval_set import EvalSet
+        from .evaluation import _eval_file_schemas
+
+        EvalSet, _config = _eval_file_schemas()
         suite = EvalSet.model_validate(payload)
         if suite.eval_set_id != path.name.removesuffix(".evalset.json"):
             raise ValueError("eval_set_id must match the filename")
@@ -245,7 +247,9 @@ def _validate_json(path: Path, text: str) -> None:
         if len(ids) != len(set(ids)):
             raise ValueError("Case IDs must be unique within the suite")
     elif path.name == "test_config.json" or path.name.endswith(".test_config.json"):
-        from google.adk.evaluation.eval_config import EvalConfig
+        from .evaluation import _eval_file_schemas
+
+        _eval_set, EvalConfig = _eval_file_schemas()
         EvalConfig.model_validate(payload)
 
 

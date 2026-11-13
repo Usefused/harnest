@@ -14,11 +14,11 @@ from harnest.credentials import (
     CredentialProviderError,
     credentials,
 )
-from harnest.credentials_adk import AdkCredentialPlugin
+from harnest.frameworks.adk.credentials import AdkCredentialPlugin
 from harnest.extension_loader import ExtensionDiscoveryError, discover_extensions
 from harnest.neutral_runtime import AgentInfo, InvocationResult
 from harnest.lifecycle_runtime import LifecycleRuntimeDriver
-from harnest.runtime import _create_adk_fastapi_app
+from harnest.frameworks.adk.server import _create_adk_fastapi_app
 
 
 class _Provider(CredentialProvider):
@@ -166,7 +166,7 @@ class CredentialLifecycleTests(unittest.IsolatedAsyncioTestCase):
             root_agent=SimpleNamespace(name="root", description="Root"),
         )
         application = SimpleNamespace(
-            native_app=native,
+            framework_app=native,
             credential_provider=provider,
         )
 
@@ -200,7 +200,7 @@ class CredentialLifecycleTests(unittest.IsolatedAsyncioTestCase):
             root_agent=SimpleNamespace(name="root", description="Root"),
         )
         application = SimpleNamespace(
-            native_app=native,
+            framework_app=native,
             credential_provider=provider,
         )
 
@@ -328,7 +328,7 @@ class CredentialDiscoveryTests(unittest.TestCase):
             )
 
         self.assertIsInstance(application.credential_provider, CredentialProvider)
-        self.assertIsInstance(application.native_app.plugins[0], AdkCredentialPlugin)
+        self.assertIsInstance(application.framework_app.plugins[0], AdkCredentialPlugin)
 
     def test_compiler_attaches_provider_to_advanced_adk_app(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -364,8 +364,8 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 mode="advanced",
             )
 
-        self.assertIsInstance(application.native_app.plugins[0], AdkCredentialPlugin)
-        self.assertEqual(application.native_app.plugins[1].name, "existing")
+        self.assertIsInstance(application.framework_app.plugins[0], AdkCredentialPlugin)
+        self.assertEqual(application.framework_app.plugins[1].name, "existing")
 
 
 if __name__ == "__main__":

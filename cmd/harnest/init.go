@@ -1,17 +1,20 @@
+// `harnest init`: creates a new agent from a scaffold profile, a template, or a pack.
+
 package main
 
 import (
 	"errors"
 	"fmt"
+	"harnest.dev/harnest/internal/agentscaffold"
+	"harnest.dev/harnest/internal/frameworks"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/spf13/cobra"
 )
@@ -34,17 +37,31 @@ func (a *application) newInitCommand() *cobra.Command {
 	var minimal bool
 	var templateRef string
 	var templateSHA256 string
+	var packs, options []string
+	var dryRun, asJSON bool
 	command := &cobra.Command{
 		Use:   "init [directory]",
 		Short: "Scaffold a self-contained filesystem agent",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
+			if len(packs) > 0 {
+				return a.runPackInit(command, arguments, packs, options, dryRun, asJSON)
+			}
+			for _, flag := range []string{"option", "dry-run", "json"} {
+				if command.Flags().Changed(flag) {
+					return fmt.Errorf("--%s requires --pack", flag)
+				}
+			}
 			return a.runInit(
 				command, arguments, framework, mode, example, minimal, templateRef, templateSHA256,
 			)
 		},
 	}
-	command.Flags().StringVar(&framework, "framework", "adk", "agent framework: adk or langgraph")
+	command.Flags().StringArrayVar(&packs, "pack", nil, "apply a company pack folder (repeatable); runs its init hooks")
+	command.Flags().StringArrayVar(&options, "option", nil, "pack option as key=value, or pack.key=value with several packs (repeatable)")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "with --pack: print the combined plan without creating the agent")
+	command.Flags().BoolVar(&asJSON, "json", false, "with --pack: print the plan as JSON")
+	command.Flags().StringVar(&framework, "framework", "adk", "agent framework: "+frameworks.Choices())
 	command.Flags().StringVar(&mode, "mode", "managed", "authoring mode: managed or advanced")
 	command.Flags().BoolVar(
 		&example,
@@ -72,6 +89,54 @@ func (a *application) newInitCommand() *cobra.Command {
 	)
 	command.MarkFlagsMutuallyExclusive("example", "minimal")
 	return command
+}
+
+// runPackInit stages the core scaffold, runs the packs' init hooks and applies one reviewed plan.
+func (a *application) runPackInit(
+	command *cobra.Command, arguments, packs, options []string, dryRun, asJSON bool,
+) error {
+	folders, err := resolvePackFolders(packs)
+	if err != nil {
+		return err
+	}
+	target := "."
+	if len(arguments) == 1 {
+		target = arguments[0]
+	}
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve scaffold directory: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve Harnest executable: %w", err)
+	}
+	python := packPlanArguments("init", absolute, executable, folders, options)
+	python = append(python, packInitScaffoldArguments(command)...)
+	if dryRun {
+		python = append(python, "--dry-run")
+	}
+	if asJSON {
+		python = append(python, "--json")
+	}
+	return a.runPackPython(command, python)
+}
+
+// packInitScaffoldArguments leaves default choices to the planner and forwards explicit overrides.
+func packInitScaffoldArguments(command *cobra.Command) []string {
+	var arguments []string
+	for _, flag := range []string{"framework", "mode", "template", "template-sha256"} {
+		if command.Flags().Changed(flag) {
+			value, _ := command.Flags().GetString(flag)
+			arguments = append(arguments, "--"+flag, value)
+		}
+	}
+	for _, flag := range []string{"minimal", "example"} {
+		if value, _ := command.Flags().GetBool(flag); value {
+			arguments = append(arguments, "--"+flag)
+		}
+	}
+	return arguments
 }
 
 // runInit dispatches one init invocation to the template or built-in scaffold path.
@@ -120,8 +185,8 @@ func (a *application) initFromTemplate(
 func (a *application) initFromProfile(
 	command *cobra.Command, absolute, name, framework, mode string, example, minimal bool,
 ) error {
-	if framework != "adk" && framework != "langgraph" {
-		return fmt.Errorf("--framework must be adk or langgraph")
+	if !frameworks.Known(framework) {
+		return fmt.Errorf("--framework must be %s", frameworks.Choices())
 	}
 	if mode != "managed" && mode != "advanced" {
 		return fmt.Errorf("--mode must be managed or advanced")
@@ -182,23 +247,6 @@ func deploymentName(base string) (string, error) {
 		)
 	}
 	return name, nil
-}
-
-func adkName(deploymentName string) string {
-	return strings.ReplaceAll(deploymentName, "-", "_")
-}
-
-func displayName(deploymentName string) string {
-	words := strings.Split(deploymentName, "-")
-	for index, word := range words {
-		if word == "" {
-			continue
-		}
-		letters := []rune(word)
-		letters[0] = unicode.ToUpper(letters[0])
-		words[index] = string(letters)
-	}
-	return strings.Join(words, " ")
 }
 
 func createScaffold(directory, name string) (returnErr error) {
@@ -398,58 +446,9 @@ func scaffoldFilesForProfile(
 	name, framework, mode string,
 	profile scaffoldProfile,
 ) map[string]string {
-	adkIdentifier := adkName(name)
-	title := displayName(name)
-	files := map[string]string{
-		".gitignore": `.harnest/
-.venv
-__pycache__/
-.pytest_cache/
-`,
-		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
-kind: ProjectLock
-projectSchema: 6
-`,
-		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
-kind: Agent
-metadata:
-  name: %s
-  displayName: %s
-spec:
-  enabled: true
-  entrypoint: agent:root_agent
-  framework:
-    name: %s
-    mode: managed
-  runtime:
-    version: "3.12"
-    dependencyFile: pyproject.toml
-  # Set your OpenAI-compatible endpoint and model before making live calls.
-  environment:
-    OPENAI_MODEL: your-model
-    OPENAI_BASE_URL: https://models.example.invalid/v1
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
-    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
-`, name, title, framework),
-		"agent-card.yaml": fmt.Sprintf(`name: %s
-description: A self-contained Harnest agent.
-version: 0.1.0
-supportedInterfaces:
-  - url: http://127.0.0.1:1907
-    protocolBinding: HTTP+JSON
-    protocolVersion: "1.0"
-capabilities:
-  streaming: true
-defaultInputModes:
-  - text/plain
-defaultOutputModes:
-  - text/plain
-skills:
-  - id: respond
-    name: Respond
-    description: Responds clearly to user requests.
-    tags: [assistant]
-`, title),
+	adkIdentifier := agentscaffold.Identifier(name)
+	files := agentscaffold.ManagedFiles(name, framework, 1907)
+	maps.Copy(files, map[string]string{
 		"agent.py": fmt.Sprintf(`
 from harnest.agent import Agent
 from harnest.graph import START, Edge, Graph
@@ -511,16 +510,6 @@ plugin.json manifest.
 @lifecycle.agent.after
 def observe_result(_context, _result):
     """Observe completed invocations without replacing their result."""
-`,
-		"lifecycle/storage.py": `from harnest import lifecycle
-from harnest.store import MemoryStore
-
-
-@lifecycle.storage.sessions
-@lifecycle.storage.checkpoints
-def state_store():
-    """Share one lifecycle-owned store without placing it in lib."""
-    return MemoryStore()
 `,
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
@@ -588,11 +577,6 @@ calculations = docker.sandbox(
     max_output_bytes=1_048_576,
 )
 `,
-		"instructions.md": fmt.Sprintf(`You are %s.
-
-Answer clearly, acknowledge uncertainty, and use discovered tools when they are relevant.
-`, title),
-		"pyproject.toml": agentPyproject(name),
 		"skills/getting-started/SKILL.md": `---
 name: getting-started
 description: Apply the agent's core instructions when answering a general request that does not require a more specialized skill.
@@ -631,16 +615,8 @@ description: Apply the agent's core instructions when answering a general reques
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 		`,
-	}
-	if framework == "langgraph" {
-		delete(files, "subagents/__init__.py")
-		files["subagents/_README.md"] = optionalFolderGuide("subagents", mode)
-		files["evals/_README.md"] = optionalFolderGuide("evals", mode)
-		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_agent_name(agent, tools):
-    assert agent.name == %q
-    assert tools["echo"]("hello") == "hello"
-`, adkIdentifier)
-	}
+	})
+	applyFrameworkStarterFiles(files, framework, adkIdentifier, mode)
 	if mode == "advanced" {
 		files["config.yaml"] = strings.Replace(
 			files["config.yaml"], "    mode: managed", "    mode: advanced", 1,
@@ -663,66 +639,8 @@ description: Apply the agent's core instructions when answering a general reques
 		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_advanced_agent_name(agent):
     assert agent.name == %q
 `, adkIdentifier)
-		if framework == "adk" {
-			files["agent.py"] = fmt.Sprintf(`from google.adk.agents import LlmAgent
-from google.adk.apps import App
-from google.adk.apps.app import ResumabilityConfig
-from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
-# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
-root_agent = Agent.advanced(
-    name=%q,
-    target=App(
-        name=%q,
-        resumability_config=ResumabilityConfig(is_resumable=True),
-        root_agent=LlmAgent(
-            name=%q,
-            model=LiteLLMModel.from_openai_environment().build(),
-            instruction="You are a clear and helpful assistant.",
-        ),
-    )
-)
-`, adkIdentifier, adkIdentifier, adkIdentifier)
-		} else {
-			// Advanced LangGraph passes the same lifecycle-owned store into native
-			// graph compilation, so the authored library module is required source.
-			files["lib/storage.py"] = `from harnest.store import MemoryStore
-
-
-store = MemoryStore()
-`
-			files["lifecycle/storage.py"] = `from harnest import lifecycle
-from harnest.lib.storage import store
-
-
-@lifecycle.storage.sessions
-@lifecycle.storage.checkpoints
-def state_store():
-    """Share the store passed to the native LangGraph checkpointer."""
-    return store
-`
-			files["agent.py"] = fmt.Sprintf(`from langchain.agents import create_agent
-from harnest.agent import Agent
-from harnest.lib.storage import store
-from harnest.model import LiteLLMModel
-
-
-# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
-# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
-root_agent = Agent.advanced(
-    name=%q,
-    target=create_agent(
-        model=LiteLLMModel.from_openai_environment().build_langgraph(),
-        tools=[],
-        system_prompt="You are a clear and helpful assistant.",
-        name=%q,
-        checkpointer=store.as_langgraph_checkpointer(),
-    )
-)
-`, adkIdentifier, adkIdentifier)
+		for path, content := range scaffoldFor(framework).advanced(adkIdentifier) {
+			files[path] = content
 		}
 	}
 	if profile == scaffoldMinimalProfile {
@@ -780,40 +698,10 @@ func guidedScaffoldFiles(
 	files["tests/unit/_README.md"] = scaffoldTestGuide("unit")
 	files["tests/smoke/_README.md"] = scaffoldTestGuide("smoke")
 	if mode == "managed" {
-		files["agent.py"] = minimalManagedAgentSource(agentName)
+		files["agent.py"] = agentscaffold.ManagedAgentSource(agentName)
 	}
-	if framework == "langgraph" {
-		files["evals/_README.md"] = optionalFolderGuide("evals", mode)
+	if minimal := scaffoldFor(framework).minimal; minimal != nil {
+		minimal(files, mode)
 	}
 	return files
-}
-
-func agentPyproject(name string) string {
-	return fmt.Sprintf(`[project]
-name = %s
-version = "0.1.0"
-requires-python = ">=3.12,<3.13"
-dependencies = []
-
-[dependency-groups]
-dev = ["pytest>=8,<9"]
-
-[tool.uv]
-package = false
-`, strconv.Quote(name))
-}
-
-// minimalManagedAgentSource keeps model environment policy in the shared
-// connector used by both runtime frameworks and evaluation models.
-func minimalManagedAgentSource(agentName string) string {
-	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-root_agent = Agent(
-    name=%q,
-    history="session",
-    model=LiteLLMModel.from_openai_environment(),
-)
-`, agentName)
 }

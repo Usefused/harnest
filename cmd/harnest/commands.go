@@ -1,3 +1,5 @@
+// `harnest compile`, `harnest test`, and `harnest serve`: the commands that hand an agent to the Python compiler and runtime.
+
 package main
 
 import (

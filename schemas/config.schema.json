@@ -47,6 +47,27 @@
             "mode": { "enum": ["managed", "advanced"], "default": "managed" }
           }
         },
+        "evaluation": {
+          "type": "object", "required": ["runners"], "additionalProperties": false,
+          "properties": {
+            "runners": {
+              "type": "array", "minItems": 1,
+              "description": "Run in declaration order. Names must be unique.",
+              "items": {
+                "oneOf": [
+                  {"type": "object", "additionalProperties": false, "required": ["name"],
+                   "properties": {"name": {"const": "adk"}}},
+                  {"type": "object", "additionalProperties": false, "required": ["name", "entrypoint"],
+                   "properties": {
+                     "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$", "not": {"const": "adk"}},
+                     "entrypoint": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"},
+                     "options": {"type": "object"}
+                   }}
+                ]
+              }
+            }
+          }
+        },
         "interfaces": {
           "type": "object",
           "description": "Explicit opt-ins for non-server invocation surfaces.",

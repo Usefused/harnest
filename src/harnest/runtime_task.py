@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .frameworks.registry import framework_names
 from ._exception_notes import capture_cleanup_failure as _cleanup_failure
 
 import asyncio
@@ -35,7 +36,7 @@ from .continuation import (
 )
 from .cron import CompiledCron, _activate_runtime as activate_cron_runtime
 from .credentials import _activate_credential_provider
-from .durable import current_native_durable_call
+from .durable import current_framework_durable_call
 from .external_continuation import (
     ExternalContinuationFailed,
     ExternalContinuationRuntime,
@@ -198,7 +199,7 @@ class TaskExecutionRuntime:
         outcome = await self._read_outcome(handle)
         if outcome[0] != "pending":
             return _task_result(outcome)
-        if current_native_durable_call() is None:
+        if current_framework_durable_call() is None:
             raise TaskUnavailableError(
                 "unfinished task result requires an async @tool(durable=True)"
             )
@@ -757,7 +758,7 @@ def _validated_snapshot(value: Any) -> Mapping[str, Any] | None:
     }
     if set(value) != expected:
         raise ValueError("task invocation snapshot fields are invalid")
-    if value["framework"] not in {"adk", "langgraph"}:
+    if value["framework"] not in framework_names():
         raise ValueError("task invocation framework is invalid")
     for field in expected - {"framework", "metadata"}:
         if not isinstance(value[field], str) or not value[field]:
@@ -788,7 +789,7 @@ def _native_idempotency_key(
 ) -> str | None:
     """Derive replay-stable queue ownership inside a native durable tool call."""
 
-    native = current_native_durable_call()
+    native = current_framework_durable_call()
     if native is None or snapshot is None:
         return None
     # Including safe arguments distinguishes separate submissions from one tool

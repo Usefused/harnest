@@ -108,7 +108,7 @@ and backs up all affected paths plus `plan.json` under
 recognizes removed Harnest conventions such as `mcp_servers/`, legacy
 `requirements.txt` manifests, filename-named MCP exports,
 `Extension(...)` lifecycle aggregation, and old
-framework-native extension exports. It adds missing current root contracts and
+framework-specific extension exports. It adds missing current root contracts and
 records the committed repository schema in `harnest.lock`. Ambiguous authored
 code becomes a blocker instead of being guessed.
 
@@ -268,7 +268,7 @@ visible output plus tool activity.
 Select **Evals** to discover and run root `evals/*.evalset.json` suites locally,
 choose business or strict tool trajectories, and inspect case, metric, response,
 and tool-call evidence in the browser.
-The UI never calls framework-native endpoints. Bearer tokens stay in page memory
+The UI never calls framework-specific endpoints. Bearer tokens stay in page memory
 for HTTP/SSE; authenticated browser WebSockets require a same-origin cookie.
 
 ## Change checklist

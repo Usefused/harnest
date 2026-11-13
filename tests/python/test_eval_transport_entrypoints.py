@@ -17,7 +17,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from harnest.bundle import EvalSuite
-from harnest.eval_langgraph import _adk_events
+from harnest.frameworks.langgraph.evaluation import _adk_events
 from harnest.eval_model_transport import (
     close_owned_eval_model_transports,
     restore_eval_model_names,
@@ -29,7 +29,9 @@ from harnest.model_transport import (
     propagate_model_transport_bindings,
 )
 from harnest.runtime_contract import InvocationResult
-from harnest.testing import _model_json, _run_adk_evals, _run_langgraph_evals
+from harnest.frameworks.adk.evaluation import run_builtin_evals as _run_adk_evals
+from harnest.frameworks.langgraph.evaluation import run_builtin_evals as _run_langgraph_evals
+from harnest.testing import _model_json
 
 
 def _target():
@@ -171,9 +173,9 @@ class EvalTransportEntrypointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch(
             "harnest.testing._eval_dependencies", return_value=(object(), object())
         ), patch("harnest.testing._eval_config", side_effect=lambda *_: _config()), patch(
-            "harnest.testing._adk_eval_output_filter", imported
+            "harnest.frameworks.adk.evaluation._adk_eval_output_filter", imported
         ), patch("harnest.testing._evaluate_eval_sets", evaluate), patch(
-            "harnest.testing.close_owned_eval_model_transports", close
+            "harnest.eval_model_transport.close_owned_eval_model_transports", close
         ), redirect_stderr(StringIO()):
             if failure is None:
                 self.assertEqual(_run_adk_evals(
@@ -211,9 +213,9 @@ class EvalTransportEntrypointTests(unittest.TestCase):
         with patch(
             "harnest.testing._eval_dependencies", return_value=(object(), object())
         ), patch("harnest.testing._eval_config", side_effect=lambda *_: _config()), patch(
-            "harnest.eval_langgraph.langgraph_eval_agent_module", driver
+            "harnest.frameworks.langgraph.evaluation.langgraph_eval_agent_module", driver
         ), patch("harnest.testing._evaluate_eval_sets", evaluate), patch(
-            "harnest.testing.close_owned_eval_model_transports", new_callable=AsyncMock
+            "harnest.eval_model_transport.close_owned_eval_model_transports", new_callable=AsyncMock
         ) as cli_close:
             self.assertEqual(_run_langgraph_evals(
                 application, EvalSuite((), None), print_results=False

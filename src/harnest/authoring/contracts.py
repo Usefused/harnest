@@ -74,50 +74,96 @@ class ProjectPlan:
     _before: Mapping[str, _File] = field(repr=False)
     _after: Mapping[str, _File] = field(repr=False)
     _root_existed: bool = field(repr=False)
+    notes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
         """Return a machine-readable preview without file contents or option values."""
         return {"apiVersion": "harnest.dev/v1alpha1", "kind": "ProjectPlan",
                 "directory": str(self.root), "blockers": list(self.blockers),
+                "notes": list(self.notes), "warnings": list(self.warnings),
                 "changes": [{"kind": c.kind.value, "path": c.path, "owners": list(c.owners)}
                             for c in self.changes]}
 
     def render(self) -> str:
         """Render the same combined plan used by interactive and automated clients."""
         lines = [f"Project plan: {self.root}"]
+        if self.warnings:
+            lines.extend(("Warnings:", *(f"  ! {warning}" for warning in self.warnings), ""))
         lines.extend(f"  {c.kind.value}: {c.path} ({', '.join(c.owners)})" for c in self.changes)
         lines.extend(f"  BLOCKED: {item}" for item in self.blockers)
         if not self.changes and not self.blockers:
             lines.append("  No changes required.")
+        if self.notes:
+            lines.extend(("", "Notes:", *(f"  - {note}" for note in self.notes)))
         return "\n".join(lines) + "\n"
 
 
 Hook = Callable[["ProjectContext"], ChangePlan]
+CommandHandler = Callable[[list[str]], "int | None"]
+
+_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
+# A branded pack command forwards everything else to Harnest, so a custom
+# command may never hide a Harnest command of the same name.
+RESERVED_COMMANDS = frozenset({
+    "add", "agent-plugins", "channels", "compile", "completion", "doctor", "env",
+    "extensions", "help", "init", "mcp", "mode", "pack", "provision", "run",
+    "runtime", "serve", "skills", "studio", "template", "test", "upgrade", "version",
+})
+
+
+def validate_pack_name(name: str) -> str:
+    """Pack names become lock keys, command names and wheel names."""
+    if not isinstance(name, str) or not _NAME.fullmatch(name) or name == "harnest":
+        raise ProjectError("pack name must be a non-reserved kebab-case identifier")
+    return name
+
+
+@dataclass(frozen=True)
+class PackCommand:
+    """One company command exposed by the pack's branded executable."""
+    name: str
+    handler: CommandHandler
+    help: str = ""
 
 
 class ProjectPack:
-    """Company-owned scaffolding and consecutive schema migrations, never auto-discovered."""
+    """Project hooks of one Harnest pack; identity comes from the pack's pack.yaml."""
 
-    def __init__(self, name: str, schema_version: int, *, options: type[BaseModel] | None = None,
+    def __init__(self, schema_version: int, *, options: type[BaseModel] | None = None,
                  templates: str | Path | None = None, config_file: str | None = None,
                  config_model: type[BaseModel] | None = None) -> None:
-        """Declare pack identity, optional typed inputs, templates and configuration validation."""
-        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", name) or name == "harnest":
-            raise ProjectError("pack name must be a non-reserved kebab-case identifier")
+        """Declare the project schema, optional typed inputs, templates and configuration validation."""
         if type(schema_version) is not int or schema_version < 1:
             raise ProjectError("schema_version must be a positive integer")
         if (config_file is None) != (config_model is None):
             raise ProjectError("config_file and config_model must be supplied together")
-        self.name, self.schema_version = name, schema_version
+        self.name: str | None = None
+        self.schema_version = schema_version
         self.options, self.templates = options, Path(templates) if templates is not None else None
         self.config_file, self.config_model = config_file, config_model
         self._initializer: Hook | None = None
         self._migrations: dict[int, Hook] = {}
+        self._commands: dict[str, PackCommand] = {}
+
+    @property
+    def commands(self) -> tuple[PackCommand, ...]:
+        """Return company commands in registration order."""
+        return tuple(self._commands.values())
+
+    def bind(self, name: str, root: Path) -> "ProjectPack":
+        """Attach pack.yaml identity and resolve relative templates against the pack root."""
+        if self.name is not None and self.name != name:
+            raise ProjectError(f"project pack is already bound to {self.name!r}")
+        self.name = validate_pack_name(name)
+        if self.templates is not None and not self.templates.is_absolute():
+            self.templates = root / self.templates
+        return self
 
     def initialize(self, function: Hook) -> Hook:
         """Register the single initializer used only when creating a new project."""
         if self._initializer is not None:
-            raise ProjectError(f"{self.name}: initializer already registered")
+            raise ProjectError("initializer already registered")
         self._initializer = function
         return function
 
@@ -133,6 +179,23 @@ class ProjectPack:
             if from_version in self._migrations:
                 raise ProjectError("duplicate migration")
             self._migrations[from_version] = function
+            return function
+        return register
+
+    def command(self, name: str, *, help: str = "") -> Callable[[CommandHandler], CommandHandler]:
+        """Register a company command; the handler receives its arguments and returns an exit code."""
+        if not isinstance(name, str) or not _NAME.fullmatch(name):
+            raise ProjectError("command name must be a kebab-case identifier")
+        if name in RESERVED_COMMANDS:
+            raise ProjectError(f"command name {name!r} is reserved by Harnest")
+        if name in self._commands:
+            raise ProjectError(f"command {name!r} already registered")
+
+        def register(function: CommandHandler) -> CommandHandler:
+            """Keep the handler callable as ordinary Python."""
+            if not callable(function):
+                raise ProjectError("pack commands must be callable")
+            self._commands[name] = PackCommand(name, function, help)
             return function
         return register
 

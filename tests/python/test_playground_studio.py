@@ -167,6 +167,7 @@ class PlaygroundStudioTests(unittest.TestCase):
                     source = client.get("/_harnest/studio/source", params={"path": "instructions.md"})
                     self.assertEqual(source.json()["text"], "Compiled instructions")
                     page = client.get("/").text
+                    self.assertNotIn("data-reload-generation", page)
                     self.assertNotIn('data-workspace="studio"', page)
                     self.assertNotIn('id="studio-workspace"', page)
                     self.assertNotIn('/_harnest/studio.js', page)
@@ -186,6 +187,10 @@ class PlaygroundStudioTests(unittest.TestCase):
         with authoring_workspace(authored):
             app = create_fastapi_app(artifact)
         with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 1234)) as client:
+            generation = client.get("/_harnest/generation")
+            self.assertRegex(generation.text, r"^[0-9a-f]{32}$")
+            self.assertEqual(generation.headers["cache-control"], "no-store")
+            self.assertIn(f'data-reload-generation="{generation.text}"', client.get("/").text)
             self.assertTrue(client.get("/_harnest/authoring").json()["available"])
             document = client.get("/_harnest/authoring/document?path=instructions.md").json()
             self.assertEqual(document["text"], "Uncompiled changes")

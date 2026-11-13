@@ -1,3 +1,5 @@
+// `harnest run`: sends one message to an agent and prints the reply.
+
 package main
 
 import (

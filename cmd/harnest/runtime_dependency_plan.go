@@ -1,3 +1,5 @@
+// Works out the runtime packages an agent needs from its agents, MCP clients, extensions, and packages.
+
 package main
 
 import (
@@ -22,6 +24,8 @@ type runtimeDependencyPlan struct {
 	ProjectFiles        []string
 	CompileRequirements []string
 	HasMCP              bool
+	CustomEvalOnly      bool
+	EvalGroup           bool
 }
 
 // inspectRuntimeDependencyPlan joins declared dependencies without guessing a
@@ -379,4 +383,18 @@ func replaceRegularFileMode(path string, contents []byte, mode os.FileMode) erro
 	}
 	removeTemporary = false
 	return nil
+}
+
+// hasEvalDependencyGroup leaves package metadata and nested group expansion to uv.
+func hasEvalDependencyGroup(project string) (bool, error) {
+	data, err := readRegularDependencyFile(project)
+	if err != nil {
+		return false, err
+	}
+	var doc map[string]any
+	if err := toml.Unmarshal(data, &doc); err != nil {
+		return false, err
+	}
+	_, present := tomlTable(doc["dependency-groups"])["eval"]
+	return present, nil
 }

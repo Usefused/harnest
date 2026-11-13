@@ -1,3 +1,5 @@
+// `harnest provision`: forwards provisioning to the Python provisioner.
+
 package main
 
 import (

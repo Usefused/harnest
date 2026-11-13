@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from google.adk.code_executors import BaseCodeExecutor
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
+from harnest.frameworks.adk.sandbox import code_executor
 from harnest.agent import AgentDefinition
 from harnest.bundle import (
     BundleExportError,
@@ -67,7 +69,7 @@ class SandboxTests(unittest.TestCase):
         return root
 
     def _definition(self, root: Path) -> AgentDefinition:
-        with patch.object(AgentDefinition, "build", lambda definition: definition):
+        with patch("harnest.frameworks.adk.lowering.build_agent", lambda definition: definition):
             return compile_agent(root)
 
     def test_provider_backend_is_lazy_and_validated(self):
@@ -78,7 +80,7 @@ class SandboxTests(unittest.TestCase):
             return _RecordingExecutor()
 
         definition = Sandbox.provider(factory, name="recording", timeout_seconds=7)
-        executor = definition.to_adk_executor()
+        executor = code_executor(definition)
         self.assertEqual(calls, [])
         self.assertEqual(executor.timeout_seconds, 7)
         self.assertEqual(executor.execute_code("context", "input"), ("context", "input"))
@@ -100,7 +102,7 @@ class SandboxTests(unittest.TestCase):
             lambda: provider, name="policy", network_policy=policy,
         )
 
-        result = definition.to_langchain_tool().invoke({"code": "print('ok')"})
+        result = sandbox_tool(definition).invoke({"code": "print('ok')"})
 
         self.assertEqual(result["stdout"], "ok")
         self.assertIs(provider.requests[0].network_policy, policy)
@@ -201,7 +203,7 @@ class SandboxTests(unittest.TestCase):
                 "code_block_delimiters": [("<python>", "</python>")],
             },
         )
-        executor = definition.to_adk_executor()
+        executor = code_executor(definition)
         self.assertEqual(executor.error_retry_attempts, 3)
         self.assertEqual(executor.code_block_delimiters, [("<python>", "</python>")])
 

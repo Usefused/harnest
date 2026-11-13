@@ -1,4 +1,5 @@
 import asyncio
+from harnest.frameworks.adk.lowering import build_agent
 import importlib.util
 from importlib import metadata
 import tempfile
@@ -697,12 +698,12 @@ class FrameworkArtifactTests(unittest.TestCase):
         from harnest.agent import Agent
 
         def build(child):
-            return Agent(
+            return build_agent(Agent(
                 name="managed_root",
                 model="gemini-test",
                 instruction="Delegate.",
                 subagents=[child],
-            ).build()
+            ))
 
         with self.assertRaisesRegex(ValueError, "name must match.*native_child"):
             build(
@@ -722,7 +723,7 @@ class FrameworkArtifactTests(unittest.TestCase):
             build(
                 Agent.advanced(
                     App(
-                        name="native_app",
+                        name="framework_app",
                         root_agent=LlmAgent(
                             name="native_child", model="gemini-test"
                         ),
@@ -799,7 +800,7 @@ class FrameworkArtifactTests(unittest.TestCase):
 
 
                 graph = builder.compile(
-                    checkpointer=checkpoints.as_langgraph_checkpointer()
+                    checkpointer=checkpoints.framework_checkpointer()
                 )
 
 
@@ -880,7 +881,7 @@ class FrameworkArtifactTests(unittest.TestCase):
 
 
                 graph = builder.compile(
-                    checkpointer=checkpoints.as_langgraph_checkpointer()
+                    checkpointer=checkpoints.framework_checkpointer()
                 )
 
 

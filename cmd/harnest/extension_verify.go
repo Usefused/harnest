@@ -1,3 +1,5 @@
+// Verifies a PyPI extension before installing it: release files, wheel names, hashes, and entry points.
+
 package main
 
 import (

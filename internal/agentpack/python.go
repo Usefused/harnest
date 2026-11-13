@@ -1,3 +1,5 @@
+// Python command and environment for running an unpacked agent.
+
 package agentpack
 
 import (

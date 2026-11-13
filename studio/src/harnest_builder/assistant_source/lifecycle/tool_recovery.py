@@ -37,7 +37,7 @@ class SourceProtocolRecovery(BasePlugin):
         return feedback
 
 
-@lifecycle.adk_plugin
+@lifecycle.framework_extension
 def source_protocol_recovery():
     """Register recovery through Harnest's supported native-plugin boundary."""
     return SourceProtocolRecovery()

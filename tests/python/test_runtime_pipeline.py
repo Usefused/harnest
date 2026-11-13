@@ -13,7 +13,6 @@ from harnest.application import RuntimeCapabilities
 from harnest import context
 from harnest.credentials import Credential, CredentialProvider
 from harnest.lifecycle import LifecycleListener
-from harnest.extension_runtime_driver import ExtensionHostRuntimeDriver
 from harnest.extension_runtime_manager import ExtensionRuntimeManager
 from harnest.extensions import ActivatedExtension, Extension, ExtensionContext
 from harnest.runtime import _attach_driver_lifecycle
@@ -25,10 +24,8 @@ from harnest.runtime_contract import (
     SessionMessage,
     SessionRecord,
 )
-from harnest.lifecycle_runtime import LifecycleRuntimeDriver
 from harnest.runtime_pipeline import build_runtime_pipeline, start_runtime_pipeline
 from harnest.extension_descriptors import ExtensionDescriptor
-from harnest.runtime_session import StorageRuntimeDriver
 from harnest.session import InMemorySessionStore
 from harnest.neutral_runtime import create_neutral_app
 
@@ -245,9 +242,6 @@ class HarnestExtensionPipelineTests(unittest.IsolatedAsyncioTestCase):
             listeners,
             extension_manager=manager,
         )
-        self.assertIsInstance(pipeline, StorageRuntimeDriver)
-        self.assertIsInstance(pipeline._driver, ExtensionHostRuntimeDriver)
-        self.assertIsInstance(pipeline._driver._driver, LifecycleRuntimeDriver)
 
         try:
             await pipeline.create_session(

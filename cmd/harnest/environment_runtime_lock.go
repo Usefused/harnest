@@ -1,3 +1,5 @@
+// Resolves and validates the hashed requirements lock for an agent's runtime environment.
+
 package main
 
 import (
@@ -70,6 +72,10 @@ func (a *application) resolveRuntimeLock(
 	arguments := []string{
 		"pip", "compile", "--python", staged.python, "--generate-hashes", "--no-header", "--no-annotate",
 		"--output-file", candidate, input,
+	}
+	if plan.EvalGroup {
+		// uv owns group includes and relative requirement resolution in the authored project.
+		arguments = append(arguments, "--group", plan.ProjectFiles[0]+":eval")
 	}
 	arguments = append(arguments, plan.ProjectFiles...)
 	if err := a.runRuntimeCommandWithEnvironment(
@@ -183,6 +189,9 @@ func runtimeLockInputFingerprint(
 		digest.Write([]byte{0})
 	}
 	digest.Write(wheel.Contents)
+	if plan.CustomEvalOnly {
+		digest.Write([]byte("\x00eval-without-adk"))
+	}
 	for _, requirement := range plan.CompileRequirements {
 		digest.Write([]byte("\x00compile:" + requirement))
 	}
