@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
 - Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.
 
@@ -27,9 +27,6 @@
 - Respect the device execution policy in documented Windows installer commands. Document checksum-verified ZIP installation for devices that block PowerShell scripts.
 
 - Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
-
-## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
-
 
 ### ⚠ BREAKING CHANGES
 
