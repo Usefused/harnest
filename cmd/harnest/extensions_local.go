@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"harnest.dev/harnest/internal/pysource"
 	"harnest.dev/harnest/schemas"
 )
 
@@ -267,18 +268,7 @@ package = false
 
 // extensionPythonScaffold gives the package a local public class and singleton.
 func extensionPythonScaffold(name string) string {
-	className := extensionClassName(name)
-	return fmt.Sprintf(`"""Application-local %s Harnest Extension."""
-
-from harnest.extensions import Extension
-
-
-class %s(Extension):
-    """Own application-scoped behavior without importing a framework."""
-
-
-extension = %s()
-`, name, className, className)
+	return pysource.Render("extension/extension.py.tmpl", map[string]any{"Name": name, "ClassName": extensionClassName(name)})
 }
 
 // extensionClassName maps snake-case package identity to a readable Python type.

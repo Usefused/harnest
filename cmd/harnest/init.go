@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"harnest.dev/harnest/internal/pysource"
 )
 
 var scaffoldNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -449,48 +450,13 @@ func scaffoldFilesForProfile(
 	adkIdentifier := agentscaffold.Identifier(name)
 	files := agentscaffold.ManagedFiles(name, framework, 1907)
 	maps.Copy(files, map[string]string{
-		"agent.py": fmt.Sprintf(`
-from harnest.agent import Agent
-from harnest.graph import START, Edge, Graph
-from harnest.model import LiteLLMModel
-
-
-root_agent = Graph(
-    name=%q,
-    description="A self-contained Harnest agent graph.",
-    nodes={
-        "respond": Agent(
-            name="responder",
-            model=LiteLLMModel.from_openai_environment(),
-            instruction="Answer clearly and use available tools when they help.",
-            history="session",
-        ),
-    },
-    edges=(Edge(START, "respond"),),
-)
-`, adkIdentifier),
-		"tools/echo.py": `from harnest.logging import get_logger
-from harnest.agent import tool
-from harnest.tracing import span
-
-
-logger = get_logger("tools.echo")
-
-
-@tool
-def echo(message: str) -> str:
-    """Return a message unchanged."""
-
-    with span("tool.echo", message_length=len(message)):
-        logger.info("tool.echo.completed", message_length=len(message))
-        return message
-`,
-		"lib/_README.md":    scaffoldLibraryGuide(),
-		"models/_README.md": scaffoldModelsGuide(),
-		"tasks/_README.md":  optionalFolderGuide("tasks", mode),
-		"cron/_README.md":   optionalFolderGuide("cron", mode),
-		"subagents/__init__.py": `"""Add direct graph agents here and reference them explicitly as Graph nodes."""
-`,
+		"agent.py":              pysource.Render("init/agent.py.tmpl", map[string]any{"Name": adkIdentifier}),
+		"tools/echo.py":         pysource.File("init/tools/echo.py"),
+		"lib/_README.md":        scaffoldLibraryGuide(),
+		"models/_README.md":     scaffoldModelsGuide(),
+		"tasks/_README.md":      optionalFolderGuide("tasks", mode),
+		"cron/_README.md":       optionalFolderGuide("cron", mode),
+		"subagents/__init__.py": pysource.File("init/subagents/__init__.py"),
 		"mcp/_README.md": `Run harnest add mcp NAME --url URL to scaffold a direct connection. Add
 --token-env ENV for bearer authentication, or choose --token-header and
 --token-prefix to match the server. The command stores only an environment
@@ -504,13 +470,7 @@ plugin.json manifest.
   "name": "starter"
 }
 `,
-		"lifecycle/starter.py": `from harnest import lifecycle
-
-
-@lifecycle.agent.after
-def observe_result(_context, _result):
-    """Observe completed invocations without replacing their result."""
-`,
+		"lifecycle/starter.py": pysource.File("init/lifecycle/starter.py"),
 		"plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
 description: Answer clearly, distinguish verified facts from assumptions, and identify missing information.
@@ -555,28 +515,7 @@ Sandbox.provider(factory, name="provider-name") contract. Installed extensions
 own provider SDKs and enforcement details. The Docker extension requires Docker
 only when a sandbox executes and defaults to no network access.
 `,
-		"sandbox/_example.py": `"""Rename to calculations.py, then assign sandboxes=["calculations"] on Agent.
-
-From an authored tool, use context.sandboxes["calculations"].execute(code)
-or await its aexecute(code). Import context from harnest; check result.stderr
-and choose which output to return. No model tool is created automatically.
-
-Install first with harnest extensions install docker --project <agent-root>,
-then run harnest env sync <agent-root>. Docker is required only on execution;
-the extension owns its isolation and resource enforcement.
-"""
-
-from harnest.extensions.docker import docker
-from harnest.sandbox import SandboxNetworkPolicy
-
-
-calculations = docker.sandbox(
-    image="python:3.12-slim",
-    network_policy=SandboxNetworkPolicy.none(),
-    timeout_seconds=120,
-    max_output_bytes=1_048_576,
-)
-`,
+		"sandbox/_example.py": pysource.File("init/sandbox/_example.py"),
 		"skills/getting-started/SKILL.md": `---
 name: getting-started
 description: Apply the agent's core instructions when answering a general request that does not require a more specialized skill.
@@ -606,15 +545,9 @@ description: Apply the agent's core instructions when answering a general reques
   ]
 }
 `, adkIdentifier),
-		"tests/unit/test_agent.py": fmt.Sprintf(`def test_agent_name(agent, tools):
-    assert agent.name == %q
-    assert tools["echo"]("hello") == "hello"
-`, adkIdentifier),
-		"tests/smoke/test_health.py": `def test_health(client):
-    response = client.get("/healthz")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-		`,
+		"tests/unit/test_agent.py": pysource.Render("init/tests/unit/test_agent.py.tmpl", map[string]any{"Name": adkIdentifier}),
+		// The two trailing tabs predate the move to pysource; kept so output is unchanged.
+		"tests/smoke/test_health.py": pysource.File("init/tests/smoke/test_health.py") + "\t\t",
 	})
 	applyFrameworkStarterFiles(files, framework, adkIdentifier, mode)
 	if mode == "advanced" {
@@ -636,9 +569,7 @@ description: Apply the agent's core instructions when answering a general reques
 		for _, directory := range managedResourceDirectories {
 			files[directory+"/_README.md"] = optionalFolderGuide(directory, mode)
 		}
-		files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_advanced_agent_name(agent):
-    assert agent.name == %q
-`, adkIdentifier)
+		files["tests/unit/test_agent.py"] = pysource.Render("init/advanced/tests/unit/test_agent.py.tmpl", map[string]any{"Name": adkIdentifier})
 		for path, content := range scaffoldFor(framework).advanced(adkIdentifier) {
 			files[path] = content
 		}

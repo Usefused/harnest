@@ -1,0 +1,7 @@
+from harnest.task import task
+
+
+@task(queue="default", max_retries=3)
+async def {{.Name}}(payload: str) -> dict[str, str]:
+    """Perform one durable {{words .Name}} operation."""
+    return {"payload": payload, "status": "completed"}

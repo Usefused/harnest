@@ -1,0 +1,7 @@
+from harnest import lifecycle
+
+
+@lifecycle.agent.after
+def {{.Name}}(_context, result):
+    """Observe a completed invocation without changing its result."""
+    return result

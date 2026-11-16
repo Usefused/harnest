@@ -25,7 +25,7 @@ common changes. To use Harnest rather than change it, read the public docs at
 | `cmd/harnest-agent/` | The small native launcher placed inside agent executables |
 | `cmd/hostlier-harnest/` | The Hostlier package that turns a Harnest agent into a container workload |
 | `engine/` | Go library shared by the CLI and deployment tooling: load bundles, compile through Python, deploy |
-| `internal/` | Go internals: `frameworks` (framework metadata), `runtimewheel` (the Python wheel embedded in release CLIs), `uvbootstrap` (embedded uv), `agentpack` and `agentlauncher` (agent executables), `agentscaffold`, `features` |
+| `internal/` | Go internals: `frameworks` (framework metadata), `runtimewheel` (the Python wheel embedded in release CLIs), `uvbootstrap` (embedded uv), `agentpack` and `agentlauncher` (agent executables), `agentscaffold`, `pysource` (the Python files the CLI writes into agents or runs, see [its README](../../internal/pysource/README.md)), `features` |
 | `src/harnest/` | The Python package: the authoring API agents import, the compiler, the runtime, and the framework adapters |
 | `studio/` | Harnest Studio: its Python server (`src/harnest_builder`) and editor frontend |
 | `packages/` | Companion Python distributions released separately (`harnest-fused`, `harnest-threadify`) |
@@ -147,6 +147,7 @@ dependencies; the CLI is one package, so its files call each other directly.
 | --- | --- |
 | Support a new agent framework | [../frameworks.md](../frameworks.md#adding-a-framework) |
 | Add a `harnest` subcommand | A new `cmd/harnest/<name>.go` with `newXCommand`, registered in [root.go](../../cmd/harnest/root.go). If it needs agent code, add a subcommand to [cli.py](../../src/harnest/cli.py) and call it with `runPythonCLI`; [mcp.go](../../cmd/harnest/mcp.go) is a short example |
+| Change the Python that `harnest init`, `harnest add`, extensions or packs write | Edit the file under [internal/pysource/files/](../../internal/pysource/README.md); `.py.tmpl` files are Go templates |
 | Ship your own module or package with your build | [adding-a-package.md](adding-a-package.md) |
 | Give your company a branded command and defaults | [packs.md](packs.md) |
 | Add a storage backend, sandbox provider, or other plug-in | [../extensions.md](../extensions.md) |

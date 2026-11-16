@@ -1,0 +1,7 @@
+from harnest.cron import cron
+
+
+@cron({{if not .Dynamic}}{{quote .Schedule}}, {{end}}queue="default", max_retries=3)
+async def {{.Name}}() -> dict[str, str]:
+    """Perform the scheduled work and return a serializable result."""
+    return {"status": "completed"}

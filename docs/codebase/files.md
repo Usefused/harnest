@@ -681,6 +681,10 @@ Small helpers used across areas.
 
 - [`frameworks.go`](../../internal/frameworks/frameworks.go): Package frameworks exposes the release-owned agent framework metadata shared with the Python compiler.
 
+### internal/pysource/
+
+- [`pysource.go`](../../internal/pysource/pysource.go): Package pysource holds the Python files the Harnest CLI writes into agents or runs, kept as real files under files/.
+
 ### internal/runtimewheel/
 
 - [`wheel.go`](../../internal/runtimewheel/wheel.go): Package runtimewheel owns the Python wheel embedded in release CLI binaries.

@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/pysource"
 	"harnest.dev/harnest/internal/runtimewheel"
 	"harnest.dev/harnest/internal/uvbootstrap"
 )
@@ -204,11 +205,7 @@ func (a *application) reuseOrRepairAgentEnvironment(
 // agentCLIAvailable distinguishes a missing module from a failure to execute the probe.
 func (a *application) agentCLIAvailable(command *cobra.Command, python string) (bool, error) {
 	// -I excludes the current checkout, PYTHONPATH and user-installed packages.
-	const probe = `from importlib.util import find_spec
-import sys
-if find_spec("harnest") is None or find_spec("harnest.cli") is None:
-    sys.exit(42)
-`
+	probe := pysource.File("probes/harnest_cli_available.py")
 	err := a.system.commandContext(command.Context(), python, "-I", "-c", probe).Run()
 	if err == nil {
 		return true, nil

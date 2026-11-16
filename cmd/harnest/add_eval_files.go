@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"harnest.dev/harnest/internal/pysource"
 )
 
 // addEvalResource applies the same root, naming, and no-overwrite rules as other resources.
@@ -144,14 +146,7 @@ func publishEvalConfig(path string, previous, updated []byte) error {
 
 // customEvalSource leaves scoring and registration to the author, with no passing placeholder.
 func customEvalSource(name string) string {
-	return fmt.Sprintf(`from harnest.evaluation import MetricContext, MetricScore, metric
-
-
-@metric
-async def %s(context: MetricContext) -> MetricScore:
-    """Score one conversation using your own rules or service."""
-    raise NotImplementedError("Implement this metric before registering it")
-`, name)
+	return pysource.Render("add/metric.py.tmpl", map[string]any{"Name": name})
 }
 
 // evalSetSource chooses evidence appropriate to static, multi-turn, or simulated metrics.

@@ -1,0 +1,7 @@
+from harnest.agent import tool
+
+
+@tool
+def {{.Name}}(request: str) -> str:
+    """Handle one {{words .Name}} request."""
+    return request

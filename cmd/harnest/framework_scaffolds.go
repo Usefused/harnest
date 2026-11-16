@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"harnest.dev/harnest/internal/frameworks"
+	"harnest.dev/harnest/internal/pysource"
 )
 
 // frameworkScaffold owns the starter files that differ by agent framework.
@@ -50,28 +51,7 @@ func applyFrameworkStarterFiles(files map[string]string, framework, identifier, 
 }
 
 func adkAdvancedFiles(identifier string) map[string]string {
-	return map[string]string{"agent.py": fmt.Sprintf(`from google.adk.agents import LlmAgent
-from google.adk.apps import App
-from google.adk.apps.app import ResumabilityConfig
-from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
-# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
-root_agent = Agent.advanced(
-    name=%q,
-    target=App(
-        name=%q,
-        resumability_config=ResumabilityConfig(is_resumable=True),
-        root_agent=LlmAgent(
-            name=%q,
-            model=LiteLLMModel.from_openai_environment().build(),
-            instruction="You are a clear and helpful assistant.",
-        ),
-    )
-)
-`, identifier, identifier, identifier)}
+	return map[string]string{"agent.py": pysource.Render("init/adk/advanced/agent.py.tmpl", map[string]any{"Name": identifier})}
 }
 
 // langGraphStarterFiles keeps subagents as explicit Graph nodes, because a
@@ -80,10 +60,7 @@ func langGraphStarterFiles(files map[string]string, identifier, mode string) {
 	delete(files, "subagents/__init__.py")
 	files["subagents/_README.md"] = optionalFolderGuide("subagents", mode)
 	files["evals/_README.md"] = optionalFolderGuide("evals", mode)
-	files["tests/unit/test_agent.py"] = fmt.Sprintf(`def test_agent_name(agent, tools):
-    assert agent.name == %q
-    assert tools["echo"]("hello") == "hello"
-`, identifier)
+	files["tests/unit/test_agent.py"] = pysource.Render("init/langgraph/tests/unit/test_agent.py.tmpl", map[string]any{"Name": identifier})
 }
 
 // Advanced LangGraph passes the same lifecycle-owned store into native graph
@@ -92,40 +69,9 @@ func langGraphAdvancedFiles(identifier string) map[string]string {
 	files := map[string]string{}
 	// Advanced LangGraph passes the same lifecycle-owned store into native
 	// graph compilation, so the authored library module is required source.
-	files["lib/storage.py"] = `from harnest.store import MemoryStore
-
-
-store = MemoryStore()
-`
-	files["lifecycle/storage.py"] = `from harnest import lifecycle
-from harnest.lib.storage import store
-
-
-@lifecycle.storage.sessions
-@lifecycle.storage.checkpoints
-def state_store():
-    """Share the store passed to the native LangGraph checkpointer."""
-    return store
-`
-	files["agent.py"] = fmt.Sprintf(`from langchain.agents import create_agent
-from harnest.agent import Agent
-from harnest.lib.storage import store
-from harnest.model import LiteLLMModel
-
-
-# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
-# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
-root_agent = Agent.advanced(
-    name=%q,
-    target=create_agent(
-        model=LiteLLMModel.from_openai_environment().build(),
-        tools=[],
-        system_prompt="You are a clear and helpful assistant.",
-        name=%q,
-        checkpointer=store.framework_checkpointer(),
-    )
-)
-`, identifier, identifier)
+	files["lib/storage.py"] = pysource.File("init/langgraph/advanced/lib/storage.py")
+	files["lifecycle/storage.py"] = pysource.File("init/langgraph/advanced/lifecycle/storage.py")
+	files["agent.py"] = pysource.Render("init/langgraph/advanced/agent.py.tmpl", map[string]any{"Name": identifier})
 	return files
 }
 

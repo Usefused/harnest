@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"harnest.dev/harnest/internal/pysource"
 )
 
 // ExampleModel and ExampleBaseURL are the placeholder model settings new agents
@@ -71,16 +73,7 @@ skills:
     description: Responds clearly to user requests.
     tags: [assistant]
 `, title, port),
-		"lifecycle/storage.py": `from harnest import lifecycle
-from harnest.store import MemoryStore
-
-
-@lifecycle.storage.sessions
-@lifecycle.storage.checkpoints
-def state_store():
-    """Share one lifecycle-owned store without placing it in lib."""
-    return MemoryStore()
-`,
+		"lifecycle/storage.py": pysource.File("managed/lifecycle/storage.py"),
 		"instructions.md": fmt.Sprintf(`You are %s.
 
 Answer clearly, acknowledge uncertainty, and use discovered tools when they are relevant.
@@ -127,14 +120,5 @@ package = false
 // ManagedAgentSource keeps model environment policy in the shared
 // connector used by both runtime frameworks and evaluation models.
 func ManagedAgentSource(agentName string) string {
-	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-root_agent = Agent(
-    name=%q,
-    history="session",
-    model=LiteLLMModel.from_openai_environment(),
-)
-`, agentName)
+	return pysource.Render("managed/agent.py.tmpl", map[string]any{"Name": agentName})
 }

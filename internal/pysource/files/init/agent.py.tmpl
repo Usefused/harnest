@@ -1,0 +1,19 @@
+
+from harnest.agent import Agent
+from harnest.graph import START, Edge, Graph
+from harnest.model import LiteLLMModel
+
+
+root_agent = Graph(
+    name={{quote .Name}},
+    description="A self-contained Harnest agent graph.",
+    nodes={
+        "respond": Agent(
+            name="responder",
+            model=LiteLLMModel.from_openai_environment(),
+            instruction="Answer clearly and use available tools when they help.",
+            history="session",
+        ),
+    },
+    edges=(Edge(START, "respond"),),
+)

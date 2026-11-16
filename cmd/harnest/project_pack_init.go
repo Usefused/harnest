@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"harnest.dev/harnest/internal/pysource"
 )
 
 // newPackCommand groups everything a company needs to author, check and ship one pack.
@@ -128,29 +130,5 @@ command: %s
 
 // projectPackPythonScaffold uses the public pack API; pack.yaml supplies the name.
 func projectPackPythonScaffold(name string) string {
-	return fmt.Sprintf(`"""Project hooks for the %s pack. pack.yaml holds its name, version and command."""
-from harnest.authoring import ChangePlan, ProjectContext, ProjectPack
-
-
-pack = ProjectPack(schema_version=1, templates="templates")
-
-
-@pack.initialize
-def initialize(context: ProjectContext) -> ChangePlan:
-    """Copy team documentation and compile declarations into each new agent."""
-    return ChangePlan(
-        context.files.from_file("docs/team-guide.md", source="team-guide.md"),
-        context.files.from_template("harnest-compile.yaml", template="harnest-compile.yaml"),
-    )
-
-
-# For existing agents, increment schema_version and add a consecutive
-# @pack.migration(from_version=1, to_version=2). Upgrades never rerun initialize.
-#
-# Company commands become subcommands of the built %s command:
-#
-# @pack.command("check", help="Check this agent against %s standards")
-# def check(args: list[str]) -> int:
-#     return 0
-`, name, name, name)
+	return pysource.Render("pack/pack.py.tmpl", map[string]any{"Name": name})
 }

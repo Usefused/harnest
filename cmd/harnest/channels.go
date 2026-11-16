@@ -4,10 +4,11 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"harnest.dev/harnest/internal/pysource"
 )
 
 type addChannelOptions struct {
@@ -72,20 +73,7 @@ func addChannelResource(options addChannelOptions, requestedName string) (string
 
 // channelResourceSource emits only a provider-neutral policy declaration.
 func channelResourceSource(name string, options addChannelOptions) string {
-	return fmt.Sprintf(`"""Bind the %s channel to this agent."""
-
-from harnest.channels import ChannelBinding
-
-
-def binding() -> ChannelBinding:
-    """Declare the %s channel binding for the %s extension."""
-
-    return ChannelBinding(
-        platform=%s,
-        extension=%s,
-    )
-`, strings.ReplaceAll(name, "_", " "), strings.ReplaceAll(name, "_", " "), options.Via,
-		strconv.Quote(name), strconv.Quote(options.Via))
+	return pysource.Render("add/channel.py.tmpl", map[string]any{"Name": name, "Via": options.Via})
 }
 
 // newChannelsCommand inspects and fixture-tests authored bindings without a live provider.

@@ -1,0 +1,13 @@
+"""Connect to the {{words .Name}} MCP server."""
+
+from harnest.mcp import MCPClient
+
+
+def client() -> MCPClient:
+    """Create the remote MCP client from non-secret authored configuration."""
+
+    return MCPClient.{{.Constructor}}(
+        {{quote .URL}},{{if .TokenEnv}}
+        headers={ {{- quote .TokenHeader}}: {{quote .TokenValue}}},{{end}}
+        prefix={{quote .Name}},
+    )

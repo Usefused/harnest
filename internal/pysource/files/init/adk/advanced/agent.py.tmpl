@@ -1,0 +1,21 @@
+from google.adk.agents import LlmAgent
+from google.adk.apps import App
+from google.adk.apps.app import ResumabilityConfig
+from harnest.agent import Agent
+from harnest.model import LiteLLMModel
+
+
+# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
+# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
+root_agent = Agent.advanced(
+    name={{quote .Name}},
+    target=App(
+        name={{quote .Name}},
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        root_agent=LlmAgent(
+            name={{quote .Name}},
+            model=LiteLLMModel.from_openai_environment().build(),
+            instruction="You are a clear and helpful assistant.",
+        ),
+    )
+)
