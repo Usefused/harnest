@@ -23,6 +23,7 @@ common changes. To use Harnest rather than change it, read the public docs at
 | --- | --- |
 | `cmd/harnest/` | The `harnest` CLI, written in Go: commands, managed Python environments, scaffolding, packaging, hot reload |
 | `cmd/harnest-agent/` | The small native launcher placed inside agent executables |
+| `cmd/hostlier-harnest/` | The Hostlier package that turns a Harnest agent into a container workload |
 | `engine/` | Go library shared by the CLI and deployment tooling: load bundles, compile through Python, deploy |
 | `internal/` | Go internals: `frameworks` (framework metadata), `runtimewheel` (the Python wheel embedded in release CLIs), `uvbootstrap` (embedded uv), `agentpack` and `agentlauncher` (agent executables), `agentscaffold`, `features` |
 | `src/harnest/` | The Python package: the authoring API agents import, the compiler, the runtime, and the framework adapters |

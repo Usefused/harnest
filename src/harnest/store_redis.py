@@ -1377,9 +1377,12 @@ def _run_load(value: Any) -> RunRecord:
 def _continuation_dump(
     value: ContinuationRecord, external_id: str
 ) -> str:
-    """Store provider-only reconciliation data outside the portable action."""
+    """Encode the private envelope with stable durable resume field names."""
 
-    return _json_dump({"record": asdict(value), "external_id": external_id})
+    data = asdict(value)
+    # Dataclass field names can change independently of the v1 storage format.
+    data["resume"] = None if value.resume is None else value.resume.public_dict()
+    return _json_dump({"record": data, "external_id": external_id})
 
 
 def _continuation_load(value: Any) -> ProviderPendingContinuation:

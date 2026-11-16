@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix Redis continuation persistence to preserve the v1 resume identity format after the framework API rename, allowing durable waits to be suspended, resumed, and deleted.
+
 - The official Docker (0.4.3), Hatchet (0.2.3) and RAG (0.1.4) extensions, `harnest-fused` and `harnest-threadify` accept Harnest 2.x as well as 1.x. Hatchet works with both durable-call names.
 
 - Artifact compilation warns and ignores `Agent(generate_content_config=...)` for frameworks without generation-config support, including LangGraph, instead of failing the build. ADK continues to apply it.
