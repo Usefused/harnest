@@ -9,6 +9,7 @@ import sys
 import tempfile
 import tarfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from fastapi import HTTPException
@@ -20,7 +21,7 @@ sys.path.insert(0, str(ROOT / "studio/src"))
 from harnest_builder.app import create_app
 from harnest.authoring.distribution import build_pack
 from harnest.authoring import ProjectError
-from harnest_builder.pack_manifest import STUDIO_VERSION
+from harnest_builder.pack_manifest import STUDIO_VERSION, load_pack
 from harnest_builder.packs import Packs
 from harnest_builder.ui_packs import DEFAULT_ROOT, UIPacks
 from harnest_builder.pack_cli import main as pack_main
@@ -93,6 +94,29 @@ class StudioUIPackTests(unittest.TestCase):
         self.assertFalse(catalog["themes"][0]["tokens"].get("studio-areas"))
         client.headers.clear()
         self.assertEqual(client.get("/api/ui").status_code, 401)
+
+    def test_shipped_packs_support_harnest_one_and_two(self):
+        """Exercise real pack snapshots across supported majors before a release bump."""
+        roots = [DEFAULT_ROOT, *(path.parent for path in sorted((ROOT / "examples/packs").glob("*/pack.yaml")))]
+        for version in ("1.5.0", "1.8.1", "2.0.0", "2.9.0"):
+            with patch("harnest.authoring.packs.installed_version", return_value=version), \
+                    patch("harnest_builder.pack_manifest.runtime_version", return_value=version):
+                for root in roots:
+                    with self.subTest(version=version, pack=root.name):
+                        self.assertTrue(load_pack(root)["manifest"]["name"])
+
+    def test_pack_compatibility_keeps_bounds_and_publisher_overrides(self):
+        """Supporting 2.x must retain default bounds and explicit publisher restrictions."""
+        for version in ("1.4.0", "3.0.0"):
+            with self.subTest(version=version), \
+                    patch("harnest_builder.pack_manifest.runtime_version", return_value=version), \
+                    self.assertRaisesRegex(ValueError, "requires Harnest"):
+                load_pack(DEFAULT_ROOT)
+        self.manifest(lambda value: value.update(requires={"harnest": ">=1.5,<2"}))
+        with patch("harnest.authoring.packs.installed_version", return_value="2.0.0"), \
+                patch("harnest_builder.pack_manifest.runtime_version", return_value="2.0.0"), \
+                self.assertRaisesRegex(ProjectError, "requires Harnest >=1.5,<2"):
+            load_pack(self.pack)
 
     def test_example_replaces_a_view_and_themes_without_installing_project_files(self):
         """Frame authority stays separate from project installation and launch credentials."""
@@ -214,6 +238,5 @@ class StudioUIPackTests(unittest.TestCase):
                          [item for item in replaced if item["id"] != "team-deployment/deployment"])
         safe = trusted.get("/api/ui?safe=true").json()["contributions"]
         self.assertIn("fused-studio/deployment", [item["id"] for item in safe])
-        from unittest.mock import patch
         with patch.dict("os.environ", {"HARNEST_ENABLE_DEPLOYMENT": "false"}):
             self.assertEqual(trusted.get("/api/deployment/inspect?project=.").status_code, 403)

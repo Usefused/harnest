@@ -27,9 +27,9 @@ class Contract(BaseModel):
 
 
 class Compatibility(Contract):
-    """Keep Studio and compiler compatibility explicit and independently versioned."""
+    """Accept supported compiler majors independently of the Studio API version."""
     studio: str = ">=0.1,<0.2"
-    harnest: str = ">=1.5,<2"
+    harnest: str = ">=1.5,<3"
 
 
 class Resource(Contract):

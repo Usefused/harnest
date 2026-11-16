@@ -5,7 +5,7 @@ title: Company support
 description: An offline example pack for local Harnest Studio.
 requires:
   studio: '>=0.1,<0.2'
-  harnest: '>=1.5,<2'
+  harnest: '>=1.5,<3'
 studio:
   resources:
   - id: support-agent

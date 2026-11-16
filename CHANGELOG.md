@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.
+
 - `MCPClient.connection_options()` and `MCPResourceClient(configured)` now use the framework Harnest is compiling or invoking. MCP lifecycle hooks under ADK see `framework="adk"` where they previously saw `"langgraph"`. Like the other framework calls, `MCPResourceClient(configured)` without `framework=` raises outside compilation or an invocation, and so does `connection_options()` on a client with lifecycle hooks.
 
 - Fix Redis continuation persistence to preserve the v1 resume identity format after the framework API rename, allowing durable waits to be suspended, resumed, and deleted.
