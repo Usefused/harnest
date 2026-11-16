@@ -12,6 +12,15 @@ from harnest.authoring.operations import OperationEngine, read_lock
 
 
 class ProjectPackContractTests(unittest.TestCase):
+    def test_plan_shows_core_upgrade_review_items(self):
+        from types import MappingProxyType
+        from harnest.authoring.contracts import ProjectPlan
+
+        plan = ProjectPlan(Path("agent"), (), (), MappingProxyType({}), MappingProxyType({}), True,
+                           reviews=("agent.py:3: `build_langgraph` may be retired",))
+        self.assertIn("? agent.py:3: `build_langgraph` may be retired", plan.render())
+        self.assertEqual(plan.public()["manualReview"], ["agent.py:3: `build_langgraph` may be retired"])
+
     def test_names_and_versions_are_validated(self):
         for version in [True, 0, '1']:
             with self.subTest(version=version), self.assertRaises(ProjectError):

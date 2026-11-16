@@ -8,6 +8,15 @@ import (
 	"unicode"
 )
 
+// ExampleModel and ExampleBaseURL are the placeholder model settings new agents
+// start with, so they compile offline before a model is configured. The CLI
+// lets a real shell value replace them, and src/harnest/model_transport.py
+// rejects calls to ExampleBaseURL with setup advice (a test keeps them equal).
+const (
+	ExampleModel   = "your-model"
+	ExampleBaseURL = "https://models.example.invalid/v1"
+)
+
 // ManagedFiles returns editable starter sources without touching the destination project.
 func ManagedFiles(name, framework string, port int) map[string]string {
 	title := Title(name)
@@ -38,11 +47,11 @@ spec:
     dependencyFile: pyproject.toml
   # Set your OpenAI-compatible endpoint and model before making live calls.
   environment:
-    OPENAI_MODEL: your-model
-    OPENAI_BASE_URL: https://models.example.invalid/v1
+    OPENAI_MODEL: %s
+    OPENAI_BASE_URL: %s
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
-`, name, title, framework),
+`, name, title, framework, ExampleModel, ExampleBaseURL),
 		"agent-card.yaml": fmt.Sprintf(`name: %s
 description: A self-contained Harnest agent.
 version: 0.1.0

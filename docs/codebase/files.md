@@ -359,6 +359,7 @@ Docker Compose and Kubernetes deployment.
 - [`upgrade.py`](../../src/harnest/upgrade.py): Plan and apply explicit filesystem-contract upgrades for Harnest agents.
 - [`upgrade_cron.py`](../../src/harnest/upgrade_cron.py): Explain optional cron migrations without changing durable schedule identities.
 - [`upgrade_framework_names.py`](../../src/harnest/upgrade_framework_names.py): Reviewed compatibility inventory for the framework-adapter project migration.
+- [`upgrade_framework_review.py`](../../src/harnest/upgrade_framework_review.py): Point out retired framework API names that harnest upgrade could not trace and left in place.
 - [`upgrade_framework_source.py`](../../src/harnest/upgrade_framework_source.py): Rewrite reviewed framework APIs without importing or reformatting authored code.
 - [`upgrade_frameworks.py`](../../src/harnest/upgrade_frameworks.py): Plan framework API and manifest migrations in the existing backup transaction.
 - [`upgrade_layout.py`](../../src/harnest/upgrade_layout.py): Backed-up, collision-checked migration to lifecycle and extension packages.

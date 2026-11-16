@@ -352,14 +352,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
             },
         }
         expected_requirements = {
-            "docker": {"docker": "<8,>=7.1", "harnest": "<2,>=1.0.0"},
+            "docker": {"docker": "<8,>=7.1", "harnest": "<3,>=1.0.0"},
             "hatchet": {
-                "harnest": "<2,>=1.0.0",
+                "harnest": "<3,>=1.0.0",
                 "hatchet-sdk": "<2,>=1.38",
             },
             "rag": {
                 "asyncpg": "<1,>=0.30",
-                "harnest": "<2,>=1.0.0",
+                "harnest": "<3,>=1.0.0",
             },
         }
         for slug in ("docker", "hatchet", "rag"):
@@ -437,12 +437,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 )
 
     def test_official_extension_harnest_version_bounds(self):
-        """Accept Harnest 1.x while excluding pre-1.0 and the next major release."""
-        for slug in ("docker", "hatchet", "rag"):
-            project = tomllib.loads((ROOT / "official-extensions" / slug / "pyproject.toml").read_text())
+        """Accept Harnest 1.x and 2.x while excluding pre-1.0 and the next major release."""
+        projects = [ROOT / "official-extensions" / slug for slug in ("docker", "hatchet", "rag")]
+        # Companion packages share the bounds so one Harnest major release never strands them.
+        projects += [ROOT / "packages" / name for name in ("harnest-fused", "harnest-threadify")]
+        for folder in projects:
+            slug = folder.name
+            project = tomllib.loads((folder / "pyproject.toml").read_text())
             requirements = [Requirement(value) for value in project["project"]["dependencies"]]
             bounds = next(item.specifier for item in requirements if item.name == "harnest")
-            for version, allowed in (("0.23.0", False), ("0.99.99", False), ("1.0.0", True), ("1.0.1", True), ("1.1.0", True), ("1.99.99", True), ("2.0.0", False), ("24.0.0", False)):
+            for version, allowed in (("0.23.0", False), ("0.99.99", False), ("1.0.0", True), ("1.0.1", True), ("1.1.0", True), ("1.99.99", True), ("2.0.0", True), ("2.99.99", True), ("3.0.0", False), ("24.0.0", False)):
                 with self.subTest(extension=slug, version=version):
                     self.assertEqual(bounds.contains(version), allowed)
 

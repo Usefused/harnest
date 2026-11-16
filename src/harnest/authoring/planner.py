@@ -246,7 +246,8 @@ class ProjectPlanner:
         blockers.extend(_structural_conflicts(before, engine.files))
         return ProjectPlan(root, _changes(before, engine.files, engine.owners), tuple(blockers),
                            MappingProxyType(before), MappingProxyType(dict(engine.files)), existed,
-                           core.notes if core else (), core.warnings if core else ())
+                           core.notes if core else (), core.warnings if core else (),
+                           core.reviews if core else ())
 
     def _compose(self, engine: OperationEngine, name: str, options: Mapping[str, Mapping[str, Any]],
                  initializing: bool, blocked: bool) -> list[str]:

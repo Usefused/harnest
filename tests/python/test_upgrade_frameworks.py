@@ -230,6 +230,49 @@ def extension(): return plugin
             self.assertFalse((root / ".harnest").exists())
 
 
+class FrameworkManualReviewTests(unittest.TestCase):
+    """Retired names upgrade cannot trace are reported, never rewritten or blocked."""
+
+    def _plan(self, source):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        _project(root)
+        _write(root, "tools/legacy.py", source)
+        return plan_upgrade(root)
+
+    def test_untraceable_retired_names_are_listed_for_review(self):
+        plan = self._plan(
+            "from harnest import lifecycle\n"
+            "def build(model):\n"
+            "    return model.build_langgraph()\n"
+            "decorator = getattr(lifecycle, 'adk_plugin')\n"
+        )
+
+        self.assertEqual(plan.blockers, ())
+        self.assertEqual(len(plan.reviews), 2)
+        self.assertIn("tools/legacy.py:3: `build_langgraph`", plan.reviews[0])
+        self.assertIn("now `build`", plan.reviews[0])
+        self.assertIn("tools/legacy.py:4: `adk_plugin`", plan.reviews[1])
+        self.assertEqual(plan.public()["manualReview"], list(plan.reviews))
+        from harnest.upgrade import render_upgrade_plan
+
+        self.assertIn("Review manually", render_upgrade_plan(plan))
+
+    def test_rewritten_and_self_defined_names_are_not_reported(self):
+        plan = self._plan(
+            "from harnest import lifecycle\n"
+            "@lifecycle.adk_plugin\n"
+            "def plugin():\n"
+            "    return None\n"
+            "class Builder:\n"
+            "    def build_for(self, value):\n"
+            "        return self.build_for(value)\n"
+        )
+
+        self.assertEqual(plan.reviews, ())
+
+
 class FrameworkManifestTests(unittest.TestCase):
     def test_literal_lists_merge_capabilities_without_changing_comments_or_other_values(self):
         for capabilities in (

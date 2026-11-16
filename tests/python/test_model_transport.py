@@ -54,6 +54,20 @@ class _RecordingLifecycle(LiteLLMLifecycle):
         self.closed += 1
 
 
+class ScaffoldEndpointTests(unittest.TestCase):
+    def test_python_check_uses_the_endpoint_init_writes(self):
+        from pathlib import Path
+        import re
+
+        from harnest.model_transport import SCAFFOLD_BASE_URL, _check_model_endpoint
+
+        source = (Path(__file__).resolve().parents[2] / "internal" / "agentscaffold" / "managed.go").read_text()
+        self.assertEqual(re.search(r'ExampleBaseURL\s*=\s*"([^"]+)"', source).group(1), SCAFFOLD_BASE_URL)
+        with self.assertRaisesRegex(ValueError, "Set OPENAI_BASE_URL"):
+            _check_model_endpoint({"api_base": SCAFFOLD_BASE_URL})
+        _check_model_endpoint({"api_base": "https://gateway.invalid/v1"})
+
+
 class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         """Keep optional LiteLLM imports fully offline in isolated test runs."""

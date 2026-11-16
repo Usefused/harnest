@@ -167,6 +167,24 @@ class _Transport:
 
 
 class HatchetHarnestExtensionExampleTests(unittest.IsolatedAsyncioTestCase):
+    def test_extension_loads_with_the_harnest_1x_durable_call_name(self):
+        """The CLI installs the latest release for any Harnest, so both names must load."""
+
+        import harnest.durable as durable
+
+        legacy = Mock(name="current_native_durable_call")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(durable.__dict__):
+            del durable.__dict__["current_framework_durable_call"]
+            durable.__dict__["current_native_durable_call"] = legacy
+            root = Path(directory) / "extensions"
+            shutil.copytree(_SOURCE, root / "hatchet")
+            descriptors = discover_application_extensions(root.parent)
+            try:
+                module = activate_extensions(descriptors)[0].module
+                self.assertIs(module.current_framework_durable_call, legacy)
+            finally:
+                release_extensions(descriptors)
+
     def test_extension_contributes_no_agent_tools(self):
         """Keep domain tool ownership in the consuming agent."""
 

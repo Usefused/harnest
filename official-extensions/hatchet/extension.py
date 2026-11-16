@@ -9,7 +9,10 @@ from typing import Any
 
 from harnest.continuation import ContinuationConflictError
 from harnest import context
-from harnest.durable import current_framework_durable_call
+try:
+    from harnest.durable import current_framework_durable_call
+except ImportError:  # Harnest 1.x; the CLI installs the latest release for any Harnest.
+    from harnest.durable import current_native_durable_call as current_framework_durable_call
 from harnest.extensions import Extension, ExtensionContext, extension_mutation
 
 from .lib.client import (

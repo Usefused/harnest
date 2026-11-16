@@ -20,11 +20,11 @@ type Capability string
 
 // Capabilities shared with harnest.frameworks.base.Capability.
 const (
-	Graphs               Capability = "graphs"
-	NativeAPIServer      Capability = "framework-api-server"
-	NativeSessionService Capability = "framework-session-service"
-	RootAgentSubagents   Capability = "root-agent-subagents"
-	Evals                Capability = "evals"
+	Graphs                  Capability = "graphs"
+	FrameworkAPIServer      Capability = "framework-api-server"
+	FrameworkSessionService Capability = "framework-session-service"
+	RootAgentSubagents      Capability = "root-agent-subagents"
+	Evals                   Capability = "evals"
 	// GenerateContentConfig marks frameworks whose models use Agent(generate_content_config=...).
 	GenerateContentConfig Capability = "generate-content-config"
 )

@@ -76,12 +76,14 @@ class ProjectPlan:
     _root_existed: bool = field(repr=False)
     notes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    reviews: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
         """Return a machine-readable preview without file contents or option values."""
         return {"apiVersion": "harnest.dev/v1alpha1", "kind": "ProjectPlan",
                 "directory": str(self.root), "blockers": list(self.blockers),
                 "notes": list(self.notes), "warnings": list(self.warnings),
+                "manualReview": list(self.reviews),
                 "changes": [{"kind": c.kind.value, "path": c.path, "owners": list(c.owners)}
                             for c in self.changes]}
 
@@ -92,6 +94,9 @@ class ProjectPlan:
             lines.extend(("Warnings:", *(f"  ! {warning}" for warning in self.warnings), ""))
         lines.extend(f"  {c.kind.value}: {c.path} ({', '.join(c.owners)})" for c in self.changes)
         lines.extend(f"  BLOCKED: {item}" for item in self.blockers)
+        from ..upgrade import render_manual_review
+
+        lines.extend(render_manual_review(self.reviews))
         if not self.changes and not self.blockers:
             lines.append("  No changes required.")
         if self.notes:

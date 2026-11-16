@@ -45,9 +45,14 @@ class FrameworkToolClient:
         return self._delegate.completion(*args, **kwargs)
 
 
+# The placeholder endpoint `harnest init` writes; equal to the Go constant
+# agentscaffold.ExampleBaseURL (test_model_transport keeps the two in step).
+SCAFFOLD_BASE_URL = "https://models.example.invalid/v1"
+
+
 def _check_model_endpoint(arguments: Mapping[str, Any]) -> None:
     """Catch the scaffold endpoint at invocation so offline compilation still works."""
-    if arguments.get("api_base") == "https://models.example.invalid/v1":
+    if arguments.get("api_base") == SCAFFOLD_BASE_URL:
         raise ValueError(
             "The example model endpoint cannot serve requests. Set OPENAI_BASE_URL "
             "to your OpenAI-compatible API and OPENAI_MODEL to a model it serves."

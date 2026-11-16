@@ -2632,7 +2632,7 @@ def _eval_inputs(directory: Path) -> tuple[list[Path], dict[str, Path]]:
     sets = [path for path, kind in files if kind == "eval"]
     configs = {path.name: path for path, kind in files if kind == "config"}
     allowed = {"test_config.json", *(path.name.removesuffix(".evalset.json") + ".test_config.json" for path in sets)}
-    for orphan in configs.keys() - allowed:
+    for orphan in sorted(configs.keys() - allowed):
         raise BundleConventionError(f"eval config {orphan} needs a matching *.evalset.json")
     return sets, configs
 

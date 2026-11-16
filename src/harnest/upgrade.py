@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import textwrap
 import uuid
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
@@ -315,6 +315,8 @@ class UpgradePlan:
     notes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     source_checks: tuple[tuple[str, str], ...] = ()
+    reviews: tuple[str, ...] = ()
+    """Retired API names upgrade left in place because it could not trace them."""
 
     def public(self) -> dict[str, Any]:
         """Expose optional migration guidance separately from mutations and blockers."""
@@ -329,6 +331,7 @@ class UpgradePlan:
             "blockers": list(self.blockers),
             "notes": list(self.notes),
             "warnings": list(self.warnings),
+            "manualReview": list(self.reviews),
             "sourceChecks": dict(self.source_checks),
         }
 
@@ -356,7 +359,8 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
     _plan_authoring_namespaces(root, actions, blockers)
     from .upgrade_frameworks import plan_framework_upgrade
 
-    source_checks = plan_framework_upgrade(root, framework, actions, blockers)
+    reviews: list[str] = []
+    source_checks = plan_framework_upgrade(root, framework, actions, blockers, reviews)
     from .upgrade_cron import cron_migration_notes
 
     return UpgradePlan(
@@ -367,6 +371,7 @@ def plan_upgrade(directory: str | Path) -> UpgradePlan:
         cron_migration_notes(root),
         pack_merge_warnings(root),
         (("config.yaml", config_digest), *source_checks),
+        tuple(reviews),
     )
 
 
@@ -389,6 +394,7 @@ def render_upgrade_plan(plan: UpgradePlan, *, applying: bool = False) -> str:
         lines.extend(("Warnings:", *(f"  ! {warning}" for warning in plan.warnings), ""))
     lines.extend(_render_actions(plan.actions))
     lines.extend(_render_blockers(plan.blockers))
+    lines.extend(render_manual_review(plan.reviews))
     # Supported authoring forms should surface alternatives without making a
     # safe project fail upgrade or silently changing persisted task identities.
     if plan.notes:
@@ -398,6 +404,18 @@ def render_upgrade_plan(plan: UpgradePlan, *, applying: bool = False) -> str:
     elif not applying and not plan.blockers:
         lines.extend(("", "Run the same command with --apply to perform exactly these classes of changes."))
     return "\n".join(lines) + "\n"
+
+
+def render_manual_review(reviews: Sequence[str]) -> list[str]:
+    """List references to check by hand; upgrade could not prove they are Harnest's."""
+
+    if not reviews:
+        return []
+    return [
+        "",
+        "Review manually (upgrade could not prove these are Harnest objects, so it left them unchanged):",
+        *(f"  ? {review}" for review in reviews),
+    ]
 
 
 PACK_LOCK = "harnest-packs.lock"

@@ -29,14 +29,20 @@ class _Source:
 
 
 def plan_framework_upgrade(
-    root: Path, framework: str, actions: list[UpgradeAction], blockers: list[str]
+    root: Path, framework: str, actions: list[UpgradeAction], blockers: list[str],
+    reviews: list[str] | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Compose alias-aware source changes and capability renames before planned moves."""
+    """Compose alias-aware source changes and capability renames before planned moves.
+
+    ``reviews`` receives retired API names left in migrated sources because no
+    rewrite could be proven safe; they are for a person to check, not blockers.
+    """
 
     sources = _read_sources(root, actions, blockers)
     imported_types = _imported_types(sources, root, blockers)
     for source in sources:
-        _plan_file(root, source, framework, imported_types, actions, blockers)
+        _plan_file(root, source, framework, imported_types, actions, blockers,
+                   reviews if reviews is not None else [])
     return tuple((source.path.relative_to(root).as_posix(), source.digest) for source in sources)
 
 
@@ -192,10 +198,11 @@ def _removed_by_plan(root: Path, path: Path, actions: Sequence[UpgradeAction]) -
 
 def _plan_file(
     root: Path, snapshot: _Source, framework: str, imported_types: dict[str, str],
-    actions: list[UpgradeAction], blockers: list[str],
+    actions: list[UpgradeAction], blockers: list[str], reviews: list[str],
 ) -> None:
     """Record one digest-bound rewrite using the latest pending source."""
 
+    from .upgrade_framework_review import framework_review_notes
     from .upgrade_framework_source import migrate_framework_source
 
     path, source, pending = snapshot.path, snapshot.content, snapshot.pending
@@ -211,6 +218,9 @@ def _plan_file(
     except (UpgradeError, OSError, UnicodeError) as error:
         blockers.append(str(error))
         return
+    if path.suffix == ".py":
+        # Review what remains after every proven rewrite, not the original text.
+        reviews.extend(framework_review_notes(updated, relative))
     if updated != source:
         _record_composed_rewrite(root, path, updated, pending, actions,
                                  "migrate framework APIs to compiler-selected adapters")
