@@ -1,4 +1,4 @@
-"""Portable model-call lifecycle and framework-native adapters."""
+"""Portable model-call lifecycle and framework-specific adapters."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from collections.abc import Iterator
 import inspect
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
 from typing import Any, Awaitable, Callable, Sequence
 
 from .lifecycle import (
@@ -15,10 +14,8 @@ from .lifecycle import (
     ModelCallRequest,
     ModelCallResponse,
     ModelLifecycleContext,
-    ModelMessage,
 )
 from .lifecycle_transition import Finish, Next, UNCHANGED
-from .context import activate_agent_scope
 
 
 class ModelLifecycleError(TypeError):
@@ -193,7 +190,9 @@ def portable_model_extension(
     if not selected:
         return None
     pipeline = ModelLifecyclePipeline(selected, framework=framework)
-    return _adk_plugin(pipeline) if framework == "adk" else _langgraph_middleware(pipeline)
+    from .frameworks.registry import get_framework
+
+    return get_framework(framework).model_lifecycle_extension(pipeline)
 
 
 def bind_model_extension(extension: Any, *, agent_name: str) -> Any:
@@ -272,316 +271,6 @@ def _sync(value: Any, listener: LifecycleListener) -> Any:
         closer()
     raise RuntimeError(
         f"model listener {listener.identity} is async; use async model execution"
-    )
-
-
-def _adk_plugin(pipeline: ModelLifecyclePipeline) -> Any:
-    from google.adk.plugins.base_plugin import BasePlugin
-
-    class PortableModelPlugin(BasePlugin):
-        def __init__(self) -> None:
-            super().__init__(name="_harnest_portable_model_lifecycle")
-
-        async def before_model_callback(self, *, callback_context: Any, llm_request: Any) -> Any:
-            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
-                request = _adk_request(llm_request)
-
-                async def handler(updated: ModelCallRequest) -> ModelCallResponse:
-                    _apply_adk_request(llm_request, request, updated)
-                    return ModelCallResponse("")
-
-                updated, short = await pipeline._before(
-                    _adk_context(callback_context), request
-                )
-                if short is not None:
-                    return _adk_response(short)
-                _apply_adk_request(llm_request, request, updated)
-                return None
-
-        async def after_model_callback(self, *, callback_context: Any, llm_response: Any) -> Any:
-            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
-                original = _adk_response_view(llm_response)
-                updated = await pipeline._after(
-                    _adk_context(callback_context), original
-                )
-                return (
-                    None
-                    if updated == original
-                    else _apply_adk_response(llm_response, updated)
-                )
-
-        async def on_model_error_callback(
-            self, *, callback_context: Any, llm_request: Any, error: Exception
-        ) -> Any:
-            del llm_request
-            with activate_agent_scope(getattr(callback_context, "agent_name", None)):
-                await pipeline._notify(_adk_context(callback_context), error)
-                return None
-
-    return PortableModelPlugin()
-
-
-def _adk_context(value: Any) -> ModelLifecycleContext:
-    current = current_model_context("adk")
-    updates: dict[str, Any] = {
-        name: getattr(value, name, None)
-        for name in ("invocation_id", "user_id", "session_id")
-        if getattr(current, name) is None and getattr(value, name, None) is not None
-    }
-    # ADK's callback context identifies the agent executing this particular
-    # model call. It must replace the invocation-level root name for managed
-    # subagents, while authenticated invocation ownership remains fill-only.
-    agent_name = getattr(value, "agent_name", None)
-    if agent_name is not None:
-        updates["agent_name"] = agent_name
-    return replace(current, **updates) if updates else current
-
-
-def _adk_request(value: Any) -> ModelCallRequest:
-    return ModelCallRequest(
-        model=getattr(value, "model", None),
-        messages=tuple(
-            ModelMessage(getattr(content, "role", "user") or "user", _parts_text(content))
-            for content in value.contents
-        ),
-    )
-
-
-def _apply_adk_request(value: Any, original: ModelCallRequest, updated: ModelCallRequest) -> None:
-    if len(updated.messages) != len(original.messages):
-        raise ModelLifecycleError("before_model cannot add or remove ADK messages")
-    value.model = updated.model
-    for content, before, after in zip(value.contents, original.messages, updated.messages):
-        if before.role != after.role:
-            raise ModelLifecycleError("before_model cannot change ADK message roles")
-        if before.text != after.text:
-            _replace_parts_text(content, after.text, phase="before_model")
-
-
-def _parts_text(content: Any) -> str:
-    return "".join(
-        part.text for part in getattr(content, "parts", ()) if isinstance(getattr(part, "text", None), str)
-    )
-
-
-def _replace_parts_text(content: Any, text: str, *, phase: str) -> None:
-    """Replace existing ADK text while preserving the responsible hook phase."""
-
-    text_parts = [part for part in content.parts if isinstance(getattr(part, "text", None), str)]
-    if not text_parts:
-        raise ModelLifecycleError(
-            f"{phase} cannot add text to a non-text ADK message"
-        )
-    text_parts[0].text = text
-    for part in text_parts[1:]:
-        part.text = ""
-
-
-def _adk_response_view(value: Any) -> ModelCallResponse:
-    return ModelCallResponse(_parts_text(getattr(value, "content", None)))
-
-
-def _adk_response(value: ModelCallResponse) -> Any:
-    from google.adk.models.llm_response import LlmResponse
-    from google.genai import types
-
-    return LlmResponse(
-        content=types.Content(role="model", parts=[types.Part(text=value.text)])
-    )
-
-
-def _apply_adk_response(native: Any, updated: ModelCallResponse) -> Any:
-    replacement = native.model_copy(deep=True)
-    if replacement.content is None:
-        raise ModelLifecycleError("after_model cannot add text to an empty ADK response")
-    _replace_parts_text(replacement.content, updated.text, phase="after_model")
-    return replacement
-
-
-def _langgraph_middleware(
-    pipeline: ModelLifecyclePipeline, *, agent_name: str | None = None
-) -> Any:
-    from langchain.agents.middleware import AgentMiddleware
-
-    class PortableModelMiddleware(AgentMiddleware):
-        def _harnest_bind_agent(self, value: str) -> Any:
-            return _langgraph_middleware(pipeline, agent_name=value)
-
-        def _context(self) -> ModelLifecycleContext:
-            current = current_model_context("langgraph")
-            return (
-                replace(current, agent_name=agent_name)
-                if agent_name is not None
-                else current
-            )
-
-        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-            with activate_agent_scope(agent_name):
-                original = _langgraph_request(request)
-                context = self._context()
-                try:
-                    updated_request, short = await pipeline._before(context, original)
-                    if short is not None:
-                        return _langgraph_short_response(short)
-                    native = await handler(
-                        _apply_langgraph_request(request, original, updated_request)
-                    )
-                    response = _langgraph_response_view(native)
-                    updated = await pipeline._after(context, response)
-                    return (
-                        native
-                        if updated == response
-                        else _apply_langgraph_response(native, updated)
-                    )
-                except BaseException as error:
-                    await pipeline._notify(context, error)
-                    raise
-
-        def wrap_model_call(self, request: Any, handler: Any) -> Any:
-            with activate_agent_scope(agent_name):
-                original = _langgraph_request(request)
-                context = self._context()
-                try:
-                    updated_request, short = pipeline._before_sync(context, original)
-                    if short is not None:
-                        return _langgraph_short_response(short)
-                    native = handler(
-                        _apply_langgraph_request(request, original, updated_request)
-                    )
-                    response = _langgraph_response_view(native)
-                    updated = pipeline._after_sync(context, response)
-                    return (
-                        native
-                        if updated == response
-                        else _apply_langgraph_response(native, updated)
-                    )
-                except BaseException as error:
-                    pipeline._notify_sync(context, error)
-                    raise
-
-    return PortableModelMiddleware()
-
-
-def _langgraph_request(value: Any) -> ModelCallRequest:
-    model = getattr(value.model, "model_name", None) or getattr(value.model, "model", None)
-    return ModelCallRequest(
-        model=str(model) if model is not None else None,
-        messages=tuple(
-            ModelMessage(getattr(message, "type", "user"), _message_text(message))
-            for message in value.messages
-        ),
-    )
-
-
-def _apply_langgraph_request(value: Any, original: ModelCallRequest, updated: ModelCallRequest) -> Any:
-    if updated.model != original.model:
-        raise ModelLifecycleError("before_model cannot replace a LangGraph model by name")
-    if len(updated.messages) != len(original.messages):
-        raise ModelLifecycleError("before_model cannot add or remove LangGraph messages")
-    messages = []
-    for native, before, after in zip(value.messages, original.messages, updated.messages):
-        if before.role != after.role:
-            raise ModelLifecycleError("before_model cannot change LangGraph message roles")
-        messages.append(
-            native
-            if before.text == after.text
-            else _replace_langgraph_message_text(native, after.text)
-        )
-    if all(before is after for before, after in zip(value.messages, messages)):
-        return value
-    return value.override(messages=messages)
-
-
-def _message_text(value: Any) -> str:
-    content = getattr(value, "content", "")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "".join(_content_block_text(block) for block in content)
-
-
-def _content_block_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict) and isinstance(value.get("text"), str):
-        return value["text"]
-    return ""
-
-
-def _replace_langgraph_message_text(message: Any, text: str) -> Any:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return message.model_copy(update={"content": text})
-    if not isinstance(content, list):
-        raise ModelLifecycleError("model hook cannot add text to a non-text LangGraph message")
-    replacement = _replace_content_block_text(content, text)
-    return message.model_copy(update={"content": replacement})
-
-
-def _replace_content_block_text(content: list[Any], text: str) -> list[Any]:
-    replaced = False
-    result = []
-    for block in content:
-        current = _content_block_text(block)
-        if not current and not _is_text_content_block(block):
-            result.append(block)
-            continue
-        value = text if not replaced else ""
-        result.append(_updated_content_block(block, value))
-        replaced = True
-    if not replaced:
-        raise ModelLifecycleError("model hook cannot add text to a non-text LangGraph message")
-    return result
-
-
-def _is_text_content_block(value: Any) -> bool:
-    return isinstance(value, str) or (
-        isinstance(value, dict)
-        and value.get("type") in {"text", "text_delta"}
-        and "text" in value
-    )
-
-
-def _updated_content_block(value: Any, text: str) -> Any:
-    if isinstance(value, str):
-        return text
-    return {**value, "text": text}
-
-
-def _langgraph_response_view(value: Any) -> ModelCallResponse:
-    return ModelCallResponse("".join(_message_text(item) for item in value.result))
-
-
-def _langgraph_short_response(value: ModelCallResponse) -> Any:
-    from langchain.agents.middleware.types import ModelResponse
-    from langchain_core.messages import AIMessage
-
-    return ModelResponse(result=[AIMessage(content=value.text)])
-
-
-def _apply_langgraph_response(native: Any, updated: ModelCallResponse) -> Any:
-    text_indices = [
-        index
-        for index, message in enumerate(native.result)
-        if _message_has_text(message)
-    ]
-    if not text_indices:
-        raise ModelLifecycleError("after_model cannot add text to a non-text LangGraph response")
-    messages = list(native.result)
-    first = text_indices[0]
-    messages[first] = _replace_langgraph_message_text(messages[first], updated.text)
-    for index in text_indices[1:]:
-        messages[index] = _replace_langgraph_message_text(messages[index], "")
-    return type(native)(result=messages, structured_response=native.structured_response)
-
-
-def _message_has_text(value: Any) -> bool:
-    content = getattr(value, "content", None)
-    if isinstance(content, str):
-        return True
-    return isinstance(content, list) and any(
-        _is_text_content_block(block) for block in content
     )
 
 

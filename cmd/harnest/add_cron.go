@@ -1,3 +1,5 @@
+// `harnest add cron NAME`: scaffolds a scheduled task in the agent's cron/ folder.
+
 package main
 
 import (
@@ -5,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/pysource"
 )
 
 // newAddCronCommand creates one scheduled function without a separate task file.
@@ -49,16 +52,5 @@ whose schedule is created later with harnest.cron.create.`,
 
 // cronResourceSource keeps fixed and dynamic targets on the same task contract.
 func cronResourceSource(name, schedule string, dynamic bool) string {
-	options := `queue="default", max_retries=3`
-	if !dynamic {
-		options = fmt.Sprintf("%q, %s", schedule, options)
-	}
-	return fmt.Sprintf(`from harnest.cron import cron
-
-
-@cron(%s)
-async def %s() -> dict[str, str]:
-    """Perform the scheduled work and return a serializable result."""
-    return {"status": "completed"}
-`, options, name)
+	return pysource.Render("add/cron.py.tmpl", map[string]any{"Name": name, "Schedule": schedule, "Dynamic": dynamic})
 }

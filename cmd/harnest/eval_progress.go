@@ -1,3 +1,5 @@
+// Terminal progress display for `harnest test --evals`.
+
 package main
 
 import (

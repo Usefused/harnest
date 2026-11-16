@@ -1,0 +1,18 @@
+from langchain.agents import create_agent
+from harnest.agent import Agent
+from harnest.lib.storage import store
+from harnest.model import LiteLLMModel
+
+
+# Advanced mode keeps Harnest's neutral server/auth boundaries, while this file
+# owns native graph, checkpoint, middleware, and arbitrary model-call behavior.
+root_agent = Agent.advanced(
+    name={{quote .Name}},
+    target=create_agent(
+        model=LiteLLMModel.from_openai_environment().build(),
+        tools=[],
+        system_prompt="You are a clear and helpful assistant.",
+        name={{quote .Name}},
+        checkpointer=store.framework_checkpointer(),
+    )
+)

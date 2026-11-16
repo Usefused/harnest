@@ -297,7 +297,7 @@ The compiler imports providers without connecting to external services.
 
 Harnest binds the context around `/responses`, `/live`, direct
 `run_agent_message` calls, and their managed nodes, tools, lifecycle listeners,
-and subagents. A framework-native endpoint or native ADK/LangGraph target called
+and subagents. A framework-specific endpoint or native ADK/LangGraph target called
 outside that boundary has no Harnest context. Advanced code that needs context
 must therefore run through the compiled Harnest application.
 
@@ -358,19 +358,19 @@ Use a native decorator for structural control. Arbitrary advanced native model
 calls do not receive portable hooks automatically; configure Harnest's LiteLLM
 lifecycle or a native plugin/middleware explicitly.
 
-## Native integrations
+## Framework extensions
 
 Use an explicit synchronous zero-argument factory when portable hooks cannot
 express a framework feature:
 
 ```python
-@lifecycle.adk_plugin(order=30)
+@lifecycle.framework_extension(order=30)
 def audit_plugin():
     from google.adk.plugins.base_plugin import BasePlugin
     return BasePlugin(name="audit")
 
 
-@lifecycle.langgraph_middleware(order=30)
+@lifecycle.framework_extension(order=30)
 def guardrail_middleware():
     from langchain.agents.middleware import AgentMiddleware
     return AgentMiddleware()

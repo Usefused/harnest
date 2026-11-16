@@ -1,3 +1,5 @@
+// File permission and Windows path safety rules for packed files.
+
 package agentpack
 
 import (

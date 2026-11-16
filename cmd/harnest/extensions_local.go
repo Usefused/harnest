@@ -1,3 +1,5 @@
+// `harnest extensions init|install`: creates a local extension project and installs extensions into an agent.
+
 package main
 
 import (
@@ -16,6 +18,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"harnest.dev/harnest/internal/pysource"
+	"harnest.dev/harnest/schemas"
 )
 
 const maxExtensionManifestBytes = 1024 * 1024
@@ -34,19 +39,6 @@ var pythonKeywords = map[string]struct{}{
 	"from": {}, "global": {}, "if": {}, "import": {}, "in": {}, "is": {},
 	"lambda": {}, "nonlocal": {}, "not": {}, "or": {}, "pass": {}, "raise": {},
 	"return": {}, "try": {}, "while": {}, "with": {}, "yield": {},
-}
-
-var extensionCapabilities = map[string]struct{}{
-	"context.assets": {}, "context.credentials": {}, "context.continuations": {},
-	"context.mcp": {}, "context.resources": {}, "context.session": {},
-	"context.skills": {}, "context.storage": {}, "content.mcp": {},
-	"content.skills": {}, "content.subagents": {}, "content.tools": {},
-	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.session": {},
-	"lifecycle.mcp": {}, "lifecycle.model": {}, "lifecycle.skills": {},
-	"lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
-	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {},
-	"storage.checkpoints": {}, "storage.custom": {}, "storage.sessions": {},
-	"storage.tasks": {}, "storage.cron": {}, "storage.memory": {}, "telemetry.exporter": {},
 }
 
 var extensionRootEntries = map[string]bool{
@@ -276,18 +268,7 @@ package = false
 
 // extensionPythonScaffold gives the package a local public class and singleton.
 func extensionPythonScaffold(name string) string {
-	className := extensionClassName(name)
-	return fmt.Sprintf(`"""Application-local %s Harnest Extension."""
-
-from harnest.extensions import Extension
-
-
-class %s(Extension):
-    """Own application-scoped behavior without importing a framework."""
-
-
-extension = %s()
-`, name, className, className)
+	return pysource.Render("extension/extension.py.tmpl", map[string]any{"Name": name, "ClassName": extensionClassName(name)})
 }
 
 // extensionClassName maps snake-case package identity to a readable Python type.
@@ -794,11 +775,12 @@ func validateExtensionDependencies(names []string) error {
 }
 
 // validateExtensionCapabilities enforces the closed authority vocabulary.
+// validateExtensionCapabilities accepts only capabilities declared by the shared schema.
 func validateExtensionCapabilities(values []string) ([]string, error) {
 	result := append([]string(nil), values...)
 	seen := make(map[string]struct{}, len(result))
 	for _, capability := range result {
-		if _, known := extensionCapabilities[capability]; !known {
+		if !schemas.KnownExtensionCapability(capability) {
 			return nil, fmt.Errorf("unknown Harnest Extension capability %q", capability)
 		}
 		if _, duplicate := seen[capability]; duplicate {

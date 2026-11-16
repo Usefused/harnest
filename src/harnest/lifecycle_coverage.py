@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from types import MappingProxyType
-from typing import Literal, Mapping, cast
+from typing import Literal, Mapping
+
+from .frameworks.base import FrameworkName
+from .frameworks.registry import require_framework
 
 from enum import StrEnum
 
@@ -23,7 +26,7 @@ class CoverageLevel(StrEnum):
 class LifecycleCoverage:
     """Stable report of lifecycle boundaries Harnest can actually guarantee."""
 
-    framework: Literal["adk", "langgraph"]
+    framework: FrameworkName
     mode: Literal["managed", "advanced"]
     application: CoverageLevel
     http: CoverageLevel
@@ -97,11 +100,10 @@ def lifecycle_coverage(
 ) -> LifecycleCoverage:
     """Build conservative defaults and apply adapter-observed coverage limits."""
 
-    if framework not in {"adk", "langgraph"}:
-        raise ValueError("lifecycle coverage framework must be adk or langgraph")
+    require_framework(framework, "lifecycle coverage framework")
     if mode not in {"managed", "advanced"}:
         raise ValueError("lifecycle coverage mode must be managed or advanced")
-    selected = cast(Literal["adk", "langgraph"], framework)
+    selected = framework
     coverage = (
         _managed_coverage(selected)
         if mode == "managed"
@@ -111,7 +113,7 @@ def lifecycle_coverage(
 
 
 def _managed_coverage(
-    framework: Literal["adk", "langgraph"],
+    framework: FrameworkName,
 ) -> LifecycleCoverage:
     """Report full coverage where Harnest constructs every managed boundary."""
 
@@ -136,7 +138,7 @@ def _managed_coverage(
 
 
 def _advanced_coverage(
-    framework: Literal["adk", "langgraph"],
+    framework: FrameworkName,
 ) -> LifecycleCoverage:
     """Keep Harnest-owned edges explicit while native internals stay native."""
 

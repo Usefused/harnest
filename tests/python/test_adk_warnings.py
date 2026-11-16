@@ -2,7 +2,7 @@ import logging
 import unittest
 import warnings
 
-from harnest._adk_warnings import (
+from harnest.frameworks.adk._warnings import (
     suppress_adk_warnings,
     suppress_managed_transfer_cache_warning,
 )

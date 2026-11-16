@@ -1,0 +1,18 @@
+apiVersion: harnest.dev/pack/v1
+name: acme
+version: 2.0.0
+title: Acme agents
+description: Acme's defaults, configuration contract and CI for new agents, plus its Studio workspace.
+# `harnest pack build` turns this pack into the `acme` command.
+command: acme
+studio:
+  ui:
+    apiVersion: harnest.dev/studio-ui/v1
+    assets: [assets/welcome.html]
+    contributions:
+      - id: welcome
+        slot: welcome
+        mode: frame
+        entry: assets/welcome.html
+        replaces: fused-studio/welcome
+        title: Acme workspace

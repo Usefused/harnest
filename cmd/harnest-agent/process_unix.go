@@ -1,5 +1,7 @@
 //go:build !windows
 
+// Waits for the agent process on macOS and Linux.
+
 package main
 
 import (

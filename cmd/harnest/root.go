@@ -1,3 +1,5 @@
+// Builds the root `harnest` command, registers every subcommand, and holds shared process settings.
+
 package main
 
 import (

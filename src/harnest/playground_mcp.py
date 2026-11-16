@@ -38,12 +38,13 @@ class PlaygroundMCPService:
 
         from ._library import authored_library
         from .bundle import _discover_mcp
+        from .mcp_resources import managed_resource_client
 
         if name not in self.clients():
             raise KeyError(name)
         with authored_library(self.source):
             configured = next(item for item in _discover_mcp(self.source / "mcp") if item.identity == name)
-            async with configured.connect(framework=self.framework) as client:
+            async with managed_resource_client(configured, framework=self.framework) as client:
                 if request.operation == "inspect":
                     return await client.inspect()
                 if request.operation == "read_resource":

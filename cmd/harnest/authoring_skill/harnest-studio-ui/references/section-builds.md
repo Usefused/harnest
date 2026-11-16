@@ -4,13 +4,13 @@ Studio accepts built assets, not a framework name. Select the requested framewor
 
 ## Isolated welcome workflow
 
-In a Harnest source checkout, inspect `examples/studio-packs/tailwind-welcome/`. Otherwise use the complete public walkthrough at https://usefused.com/docs/harnest/studio/tailwind. Do not assume example files are installed alongside the CLI.
+In a Harnest source checkout, inspect `examples/packs/tailwind-welcome/`. Otherwise use the complete public walkthrough at https://usefused.com/docs/harnest/studio/tailwind. Do not assume example files are installed alongside the CLI.
 
 The example's exact files are:
 
 | File | Purpose |
 | --- | --- |
-| `studio-pack.yaml` | `welcome` frame replacing `fused-studio/welcome`, requesting connection state |
+| `pack.yaml` | `studio.ui`: `welcome` frame replacing `fused-studio/welcome`, requesting connection state |
 | `package.json`, `package-lock.json` | Pinned Tailwind CLI and compiler; `build` and `check` commands |
 | `src/input.css` | Tailwind import and explicit source detection |
 | `src/welcome.html` | Section markup, complete utility class names, CSS marker, state listener |
@@ -33,7 +33,7 @@ From the example directory:
 npm ci
 npm run build
 npm run check
-harnest studio pack validate .
+harnest pack validate .
 mkdir -p /tmp/harnest-tailwind-agents
 harnest studio --workspace /tmp/harnest-tailwind-agents --pack .
 ```

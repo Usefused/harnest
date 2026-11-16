@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from packaging.version import Version, InvalidVersion
 
+from .frameworks.registry import framework_names
 from .compatibility import FrameworkCompatibilityError, validate_framework_compatibility
 from .upgrade import PROJECT_SCHEMA
 
@@ -100,7 +101,7 @@ def main() -> None:
     """Run inside the installed project interpreter, never the CLI bootstrap Python."""
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
-    parser.add_argument("framework", choices=("adk", "langgraph"))
+    parser.add_argument("framework", choices=framework_names())
     parser.add_argument("--frozen", action="store_true")
     args = parser.parse_args()
     resolve_project_lock(args.directory, args.framework, frozen=args.frozen)

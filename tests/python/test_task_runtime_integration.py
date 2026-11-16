@@ -25,7 +25,7 @@ from harnest.agent_principal import (
     revoke_agent_principal,
 )
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.durable import NativeResumeInput, ResumeArtifact, native_durable_call
+from harnest.durable import FrameworkResumeInput, ResumeArtifact, framework_durable_call
 from harnest.external_continuation import ExternalContinuationRuntime
 from harnest.external_continuation_driver import ExternalContinuationRuntimeDriver
 from harnest.neutral_runtime import create_neutral_app
@@ -112,7 +112,7 @@ class _A2ADurableTaskDriver(FakeDriver):
         artifact = ResumeArtifact(
             "adk", request.invocation_id, "task-call", "deliver"
         )
-        with native_durable_call(artifact):
+        with framework_durable_call(artifact):
             handle = await self.authored_task.defer(
                 request.input,
                 schedule_in=self.schedule_in,
@@ -124,8 +124,8 @@ class _A2ADurableTaskDriver(FakeDriver):
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         """Return the resumed result; outer storage owns durable completion."""
 
-        if not isinstance(request.input, NativeResumeInput):
-            raise AssertionError("durable callback did not use NativeResumeInput")
+        if not isinstance(request.input, FrameworkResumeInput):
+            raise AssertionError("durable callback did not use FrameworkResumeInput")
         value = request.input.value
         events = _result_events(value)
         # Match native adapters: StorageRuntimeDriver commits the result before

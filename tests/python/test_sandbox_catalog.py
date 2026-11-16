@@ -1,12 +1,14 @@
 """Verify named sandbox assignment is opt-in across recursive agent composition."""
 
+from _framework_testing import bundle_for_framework
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from harnest.agent import Agent
-from harnest.bundle import BundleConventionError, BundleExportError, bundle_agent
+from harnest.bundle import BundleConventionError, BundleExportError
 from harnest.bundle import _discover_sandboxes, _resolve_graph_resources
 from harnest.graph import Edge, Graph, START
 from harnest.sandbox_catalog import sandbox_catalog_scope
@@ -41,9 +43,9 @@ class SandboxCatalogTests(unittest.TestCase):
 
     def compose(self, names=(), **kwargs):
         """Exercise the public composition boundary rather than resolver internals."""
-        with patch.object(Agent, "build", lambda definition: definition):
-            return bundle_agent(
-                self.root / "agent.py", Agent(name="root", model="unused", sandboxes=names, **kwargs),
+        with patch("harnest.frameworks.adk.lowering.build_agent", lambda definition: definition):
+            return bundle_for_framework(
+                self.root / "agent.py", Agent(name="root", model="unused", sandboxes=names, **kwargs), framework="adk",
             )
 
     def test_flat_children_require_their_own_assignments(self):
@@ -92,7 +94,7 @@ class SandboxCatalogTests(unittest.TestCase):
         (other / "agent.py").write_text("# anchor\n")
         (other / "instructions.md").write_text("Work.\n")
         with self.assertRaisesRegex(BundleConventionError, "Available names: none"):
-            bundle_agent(other / "agent.py", Agent(name="other", model="unused", sandboxes=["research"]))
+            bundle_for_framework(other / "agent.py", Agent(name="other", model="unused", sandboxes=["research"]), framework="adk")
 
     def test_named_export_and_single_declaration_per_file_are_required(self):
         self.write("sandbox/wrong.py", "from harnest.sandbox import Sandbox\nother = Sandbox.provider(lambda: None)\n")
@@ -109,7 +111,7 @@ class SandboxCatalogTests(unittest.TestCase):
         (other / "instructions.md").write_text("Work.\n")
         with sandbox_catalog_scope(self.root, _discover_sandboxes):
             with self.assertRaisesRegex(BundleConventionError, "Available names: none"):
-                bundle_agent(other / "agent.py", Agent(name="other", model="unused", sandboxes=["research"]))
+                bundle_for_framework(other / "agent.py", Agent(name="other", model="unused", sandboxes=["research"]), framework="adk")
 
     def test_repeated_folder_scope_reuses_exact_provider_declarations(self):
         """Graph references may revisit a folder without recreating its factories."""

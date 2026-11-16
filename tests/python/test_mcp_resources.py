@@ -1,5 +1,7 @@
 """Real MCP subprocess coverage for discovery, retrieval, policy, and subscriptions."""
 
+from harnest.frameworks.adk.mcp_tools import build_toolset
+from harnest.frameworks.adk.lowering import build_agent
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -10,7 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from harnest.mcp import MCPClient, MCPResourceError, MCPSubscription
-from harnest.mcp_capability_tools import adk_capability_tools, langgraph_capability_tools
+from harnest.frameworks.context import framework_scope
+from harnest.frameworks.adk.mcp_tools import adk_capability_tools
+from harnest.frameworks.langgraph.mcp_capability_tools import langgraph_capability_tools
 from harnest.mcp_lifecycle import close_mcp_lifecycles, start_mcp_lifecycles
 
 SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "mcp_capabilities_server.py"
@@ -25,10 +29,10 @@ async def projected_client(configured, framework):
     """Exercise real framework discovery and retain its separate developer registry."""
 
     if framework == "adk":
-        from harnest.mcp_adk import _discover_adk_mcp_clients
+        from harnest.frameworks.adk.mcp_tools import _discover_adk_mcp_clients
         from test_mcp_adk import _native_invocation
 
-        toolset = configured.to_adk_toolset()
+        toolset = build_toolset(configured)
         try:
             tools = await toolset.get_tools_with_prefix()
             target = SimpleNamespace(tools=[toolset], sub_agents=[])
@@ -39,8 +43,8 @@ async def projected_client(configured, framework):
         return
     from harnest.agent import AgentDefinition
     from harnest.application import CompiledApplication
-    from harnest.backends.langgraph import ManagedAgentPlan
-    from harnest.runtime_langgraph import LangGraphRuntimeDriver
+    from harnest.frameworks.langgraph.lowering import ManagedAgentPlan
+    from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 
     definition = AgentDefinition(name="projection", model="unused", instruction="Inspect capabilities.")
     app = CompiledApplication(name="projection", framework="langgraph", mode="managed", target=ManagedAgentPlan(definition))
@@ -53,6 +57,11 @@ async def projected_client(configured, framework):
 
 
 class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        """Give authored connect calls the selection normally owned by compilation."""
+
+        self.enterContext(framework_scope("langgraph"))
+
     async def test_both_frameworks_expose_only_advertised_model_helpers(self):
         """Cover tools-only, resource-only, prompt-only, and mixed real MCP servers."""
 
@@ -208,9 +217,9 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
         from google.adk.apps import App
         from harnest.agent import AgentDefinition
         from harnest.application import CompiledApplication
-        from harnest.backends.langgraph import ManagedAgentPlan
-        from harnest.runtime_adk import ADKRuntimeDriver
-        from harnest.runtime_langgraph import LangGraphRuntimeDriver
+        from harnest.frameworks.langgraph.lowering import ManagedAgentPlan
+        from harnest.frameworks.adk.runtime import ADKRuntimeDriver
+        from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
         from harnest.runtime_pipeline import build_runtime_pipeline
 
         for framework in ("adk", "langgraph"):
@@ -220,9 +229,9 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
                 received.append(event)
 
             definition = AgentDefinition(name="listener", model="unused", instruction="Listen without invoking the model.", mcp=(client(subscriptions=[MCPSubscription("knowledge://handbook", handler)]),))
-            target = definition.build() if framework == "adk" else ManagedAgentPlan(definition)
-            native_app = App(name="listener", root_agent=target) if framework == "adk" else None
-            application = CompiledApplication(name="listener", framework=framework, mode="managed", target=target, native_app=native_app)
+            target = build_agent(definition) if framework == "adk" else ManagedAgentPlan(definition)
+            framework_app = App(name="listener", root_agent=target) if framework == "adk" else None
+            application = CompiledApplication(name="listener", framework=framework, mode="managed", target=target, framework_app=framework_app)
             backend = ADKRuntimeDriver(application) if framework == "adk" else LangGraphRuntimeDriver(application)
             driver = build_runtime_pipeline(backend, application.runtime_capabilities, ())
             try:
@@ -327,7 +336,7 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resource_only_server_still_exposes_agent_context_tools(self):
         configured = MCPClient.stdio(sys.executable, str(SERVER), "--resources-only")
-        toolset = configured.to_adk_toolset()
+        toolset = build_toolset(configured)
         try:
             tools = await toolset.get_tools()
             self.assertEqual(len(tools), 3)

@@ -147,19 +147,22 @@ def validate_backend(
     if isinstance(value, SandboxBackend) and callable(value.execute):
         _validate_network_capabilities(value, network_policy)
         return value
-    # Portable providers do not require importing either framework. Native ADK
-    # compatibility is checked only when the portable protocol is absent.
-    try:
-        from google.adk.code_executors import BaseCodeExecutor
-    except ImportError:
-        BaseCodeExecutor = ()
-    if isinstance(value, BaseCodeExecutor):
-        if network_policy is not None:
-            raise SandboxPolicyUnsupportedError(
-                "native ADK sandbox providers cannot declare Harnest network-policy capabilities"
-            )
-        return value
-    raise TypeError("sandbox provider must return SandboxBackend or ADK BaseCodeExecutor")
+    # Portable providers do not require importing any framework. A framework's
+    # native code executor is accepted only when the portable protocol is absent.
+    from .frameworks.registry import framework_names, get_framework
+
+    adapters = [get_framework(name) for name in framework_names()]
+    for adapter in adapters:
+        if adapter.is_framework_code_executor(value):
+            if network_policy is not None:
+                raise SandboxPolicyUnsupportedError(
+                    f"native {adapter.framework_code_executor_label} sandbox providers "
+                    "cannot declare Harnest network-policy capabilities"
+                )
+            return value
+    labels = [adapter.framework_code_executor_label for adapter in adapters]
+    accepted = " or ".join(["SandboxBackend", *(label for label in labels if label)])
+    raise TypeError(f"sandbox provider must return {accepted}")
 
 
 def _validate_network_capabilities(

@@ -1,0 +1,11 @@
+from harnest.agent import Agent
+from harnest.model import LiteLLMModel
+
+
+{{.Name}} = Agent(
+    name={{quote .Name}},
+    model=LiteLLMModel.from_openai_environment(),
+    description="Handles delegated {{words .Name}} work.",
+    instruction="Complete the delegated task clearly and return the result to the parent agent.",
+    history="session",
+)

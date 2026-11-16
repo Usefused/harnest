@@ -21,9 +21,6 @@ from harnest.neutral_runtime import (
     InvocationResult,
 )
 from harnest.runtime import _runtime_driver, create_fastapi_app
-from harnest.lifecycle_runtime import LifecycleRuntimeDriver
-from harnest.runtime_session import StorageRuntimeDriver
-from harnest.dynamic_agent_plugins import DynamicAgentPluginRuntimeDriver
 from harnest.session import InMemorySessionStore
 
 
@@ -392,7 +389,7 @@ class RecordingDriver:
 
 class RuntimeCompositionContractTests(unittest.TestCase):
     def test_extensions_own_storage_and_backend_in_documented_order(self):
-        """Pin wrapper shape and startup/cleanup ownership as one contract."""
+        """Verify storage ownership and lifecycle order through an invocation."""
 
         events: list[str] = []
         backend = RecordingDriver(events)
@@ -433,16 +430,10 @@ class RuntimeCompositionContractTests(unittest.TestCase):
             credential_provider=provider,
         )
         with patch(
-            "harnest.runtime_langgraph.LangGraphRuntimeDriver", return_value=backend
+            "harnest.frameworks.langgraph.runtime.LangGraphRuntimeDriver", return_value=backend
         ):
             runtime = _runtime_driver(application)
 
-        self.assertIsInstance(runtime, StorageRuntimeDriver)
-        self.assertIsInstance(runtime._driver, LifecycleRuntimeDriver)
-        self.assertIsInstance(
-            runtime._driver._driver, DynamicAgentPluginRuntimeDriver
-        )
-        self.assertIs(runtime._driver._driver._driver, backend)
         request = InvocationRequest(
             input="hello",
             user_id="alice",

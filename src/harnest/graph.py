@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import json
 from dataclasses import dataclass, field
@@ -255,23 +254,14 @@ class Graph:
             )
 
 
-    def build(self, backend: str = "adk") -> Any:
-        """Lower this graph with the named runtime backend."""
+    def build(self) -> Any:
+        """Lower this graph using the framework selected by Harnest."""
 
-        if not isinstance(backend, str) or not backend.isidentifier():
-            raise ValueError("graph backend must be a Python identifier")
-        try:
-            module = importlib.import_module(f"harnest.backends.{backend}")
-        except ModuleNotFoundError as exc:
-            if exc.name == f"harnest.backends.{backend}":
-                raise ValueError(f"unknown graph backend: {backend}") from exc
-            raise
-        lower_graph = getattr(module, "lower_graph", None)
-        if not callable(lower_graph):
-            raise RuntimeError(
-                f"graph backend {backend!r} does not export lower_graph"
-            )
-        return lower_graph(self)
+        from .frameworks.context import current_framework
+
+        return current_framework().lower_graph(
+            self, framework_extensions=(), checkpointer=None
+        )
 
 
 __all__ = ["START", "Edge", "Event", "Graph", "GraphContext", "Join"]

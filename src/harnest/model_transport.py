@@ -45,9 +45,14 @@ class FrameworkToolClient:
         return self._delegate.completion(*args, **kwargs)
 
 
+# The placeholder endpoint `harnest init` writes; equal to the Go constant
+# agentscaffold.ExampleBaseURL (test_model_transport keeps the two in step).
+SCAFFOLD_BASE_URL = "https://models.example.invalid/v1"
+
+
 def _check_model_endpoint(arguments: Mapping[str, Any]) -> None:
     """Catch the scaffold endpoint at invocation so offline compilation still works."""
-    if arguments.get("api_base") == "https://models.example.invalid/v1":
+    if arguments.get("api_base") == SCAFFOLD_BASE_URL:
         raise ValueError(
             "The example model endpoint cannot serve requests. Set OPENAI_BASE_URL "
             "to your OpenAI-compatible API and OPENAI_MODEL to a model it serves."
@@ -117,25 +122,17 @@ class ModelTransportBinding:
             if key in _TRANSPORT_ARGUMENTS
         }
 
-    def build_eval_model(self, model_name: str) -> Any:
-        """Build an ADK adapter sharing transport but never cleanup ownership."""
+    @property
+    def transport_options(self) -> dict[str, Any]:
+        """Transport and auth settings an evaluator judge may share with this model."""
 
-        from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+        return self._transport_options()
 
-        # Agent generation settings must not replace a judge's temperature,
-        # sampling, or output contract; only transport/auth choices are shared.
-        arguments = self._transport_options()
-        if self._borrowed_client is not None:
-            # Hooks and lazy initialization belong to the original controller;
-            # constructing another lifecycle would create a second transport.
-            arguments["llm_client"] = _borrow_adk_client(
-                self._borrowed_client, LiteLLMClient
-            )
-        else:
-            arguments["llm_client"] = framework_adk_client(LiteLLMClient)
-        # Explicit native `client` options remain untouched in the arguments.
-        # In particular, no lifecycle resource is attached to this borrower.
-        return LiteLlm(model=model_name, **arguments)
+    @property
+    def borrowed_client(self) -> Any:
+        """The model's client, which a judge may use but never closes."""
+
+        return self._borrowed_client
 
 
 def _same_transport_value(left: Any, right: Any) -> bool:

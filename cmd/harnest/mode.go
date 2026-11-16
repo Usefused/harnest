@@ -1,3 +1,5 @@
+// `harnest mode advanced --check`: reports what moving an agent from managed to advanced mode would change.
+
 package main
 
 import (

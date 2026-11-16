@@ -1,3 +1,4 @@
+// Reads and validates packages.harnest settings from the Hostlier project.
 package main
 
 import (

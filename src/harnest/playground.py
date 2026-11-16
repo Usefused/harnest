@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,18 +75,30 @@ def create_playground_router(
 
     try:
         from fastapi import APIRouter, HTTPException
-        from fastapi.responses import FileResponse, HTMLResponse
+        from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("The development playground requires FastAPI") from exc
 
     router = APIRouter()
     directory = _asset_path("index.html").parent
+    from .playground_authoring import configured_workspace
+
+    # Only the reload supervisor supplies an authoring workspace. A process token
+    # lets idle tabs detect its replacement without repeatedly reading session state.
+    generation = uuid4().hex if configured_workspace() is not None else ""
+
+    @router.get("/_harnest/generation", include_in_schema=False)
+    async def playground_generation() -> Any:
+        """Identify this Playground process without consulting the agent or its store."""
+        return PlainTextResponse(generation, headers=_headers(cache=False))
 
     @router.get("/", include_in_schema=False)
     async def playground() -> Any:
         """Omit disabled API links even before JavaScript loads."""
 
         contents = (directory / "index.html").read_text(encoding="utf-8")
+        if generation:
+            contents = contents.replace("<body>", f'<body data-reload-generation="{generation}">', 1)
         if not openapi_enabled:
             before, _, remainder = contents.partition("<!-- openapi:start -->")
             _, _, after = remainder.partition("<!-- openapi:end -->")

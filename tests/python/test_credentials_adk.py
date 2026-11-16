@@ -27,7 +27,7 @@ from harnest.credentials import (
     CredentialRequest,
     credentials,
 )
-from harnest.credentials_adk import (
+from harnest.frameworks.adk.credentials import (
     AdkCredentialBindingError,
     AdkCredentialServiceError,
     AdkContextCredentialService,
@@ -123,7 +123,7 @@ class AdkCredentialPluginTests(unittest.IsolatedAsyncioTestCase):
 
         revoke_context(managed)
 
-    async def test_managed_context_allows_adk_native_invocation_identifier(self):
+    async def test_managed_context_allows_adk_framework_invocation_identifier(self):
         """Keep portable correlation while using ADK's ID only for plugin cleanup."""
 
         provider = _RecordingProvider()

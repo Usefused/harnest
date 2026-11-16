@@ -1,3 +1,5 @@
+// Downloads and stages Harnest Extensions published on PyPI.
+
 package main
 
 import (

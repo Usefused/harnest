@@ -12,7 +12,7 @@ from harnest.checkpoint import (
     get_durable_run_result,
     put_durable_run_result,
 )
-from harnest.checkpoint_langgraph import HarnestCheckpointSaver, managed_run_config
+from harnest.frameworks.langgraph.checkpoint import HarnestCheckpointSaver, managed_run_config
 from harnest.output import TokenUsage
 
 

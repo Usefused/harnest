@@ -18,32 +18,6 @@ _PRIVATE_SESSION_APPLICATION_KEYS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ADKSessionStorage:
-    """Deployment-owned ADK session backend configuration."""
-
-    uri: str
-    database_kwargs: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.uri, str) or not self.uri.strip():
-            raise ValueError("ADK session storage uri must be non-empty")
-
-    def create_service(self, base_directory: str) -> Any:
-        """Create the native ADK session service for a compiled application."""
-
-        from google.adk.cli.utils.service_factory import (
-            create_session_service_from_options,
-        )
-
-        return create_session_service_from_options(
-            base_dir=base_directory,
-            session_service_uri=self.uri,
-            session_db_kwargs=dict(self.database_kwargs),
-            use_local_storage=False,
-        )
-
-
 @runtime_checkable
 class SessionLease(Protocol):
     """Exclusive session access held across one graph execution."""
@@ -328,7 +302,6 @@ def _timestamp() -> str:
 
 
 __all__ = [
-    "ADKSessionStorage",
     "InMemorySessionStore",
     "SessionLease",
     "SessionStore",

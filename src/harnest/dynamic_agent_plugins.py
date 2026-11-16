@@ -560,21 +560,21 @@ def _plugin_application(
         tools=tools,
         mcp=(*definition.mcp, *clients),
     )
-    from .backends import get_backend
+    from .frameworks.registry import get_framework
 
-    backend = get_backend(application.framework)
+    backend = get_framework(application.framework)
     target = backend.lower_managed(
         dynamic,
-        native_extensions=application.native_extensions,
-        checkpointer=application.native_checkpointer,
+        framework_extensions=application.framework_extensions,
+        checkpointer=application.framework_checkpointer,
     )
-    native_app = backend.wrap_managed(
-        target, native_extensions=application.native_extensions
+    framework_app = backend.wrap_managed(
+        target, framework_extensions=application.framework_extensions
     )
     return replace(
         application,
         target=target,
-        native_app=native_app,
+        framework_app=framework_app,
         managed_definition=dynamic,
     )
 

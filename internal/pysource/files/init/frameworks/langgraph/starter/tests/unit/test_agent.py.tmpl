@@ -1,0 +1,3 @@
+def test_agent_name(agent, tools):
+    assert agent.name == {{quote .Name}}
+    assert tools["echo"]("hello") == "hello"

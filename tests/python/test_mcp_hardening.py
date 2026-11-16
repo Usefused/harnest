@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from harnest.frameworks.adk.mcp_tools import toolset_type
 from harnest.agent.approval import ApprovalPolicy
 from harnest.bundle import (
     BundleDuplicateError,
@@ -15,7 +16,7 @@ from harnest.bundle import (
     _merge_mcp_sources,
 )
 from harnest.mcp import MCPClient
-from harnest.runtime_langgraph import _mcp_connections, _validate_mcp_approval
+from harnest.frameworks.langgraph.runtime import _mcp_connections, _validate_mcp_approval
 
 
 class MCPCompilerHardeningTests(unittest.TestCase):
@@ -121,7 +122,7 @@ class MCPApprovalDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             async def get_tools(self, _readonly_context=None):
                 return [SimpleNamespace(name="merge", run_async=lambda **_kwargs: None)]
 
-        guarded = client._adk_toolset_type(Toolset)
+        guarded = toolset_type(client, Toolset)
         with self.assertRaisesRegex(ValueError, "unavailable tools: missing"):
             await guarded().get_tools()
 

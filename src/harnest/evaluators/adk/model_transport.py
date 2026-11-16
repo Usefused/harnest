@@ -1,0 +1,324 @@
+"""ADK evaluation engine: run-scoped judge and simulator models that borrow an agent's transport."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from google.adk.models.llm_response import LlmResponse
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import lru_cache
+from typing import Any, Iterator
+import uuid
+
+from ...evaluation import EvaluationError
+from ...model_transport import model_transport_bindings
+
+
+_ACTIVE_SCOPE: ContextVar[Any] = ContextVar("harnest_eval_model_transports", default=None)
+
+
+def _model_owners(target: Any) -> Iterator[Any]:
+    """Walk native ADK ownership and propagated managed graph metadata once."""
+
+    pending = [target]
+    visited: set[int] = set()
+    while pending:
+        value = pending.pop()
+        if value is None or id(value) in visited:
+            continue
+        visited.add(id(value))
+        yield value
+        pending.extend(getattr(value, "sub_agents", ()) or ())
+        pending.extend(
+            getattr(value, name, None) for name in ("model", "root_agent")
+        )
+
+
+def _transport_bindings(target: Any) -> tuple[Any, ...]:
+    """Deduplicate transports propagated through several enclosing targets."""
+
+    found: dict[int, Any] = {}
+    for owner in _model_owners(target):
+        for binding in model_transport_bindings(owner):
+            found[id(binding)] = binding
+    return tuple(found.values())
+
+
+def _select_binding(bindings: tuple[Any, ...], model: str) -> Any | None:
+    """Prefer an exact model and otherwise require one compatible transport."""
+
+    exact = [binding for binding in bindings if binding.model == model]
+    provider, separator, _ = model.partition("/")
+    compatible = [
+        binding for binding in bindings
+        if separator and binding.model.partition("/")[0] == provider
+    ]
+    candidates = exact or compatible
+    return _require_single_authority(candidates)
+
+
+def _require_single_authority(candidates: list[Any]) -> Any | None:
+    """Collapse repeated static defaults without choosing between different gateways."""
+
+    if candidates and any(
+        not candidates[0].same_authority_as(candidate) for candidate in candidates[1:]
+    ):
+        # Authenticated clients are authority boundaries. Picking a convenient
+        # graph node could silently send evaluation data to the wrong gateway.
+        raise EvaluationError(
+            "ambiguous agent model transport for evaluation; select a model ID "
+            "with one matching transport or use a single shared model transport"
+        )
+    return candidates[0] if candidates else None
+
+
+class _EvalTransportScope:
+    """Keep authenticated bindings out of ADK's process-wide model registry."""
+
+    def __init__(self, bindings: tuple[Any, ...], defaults: tuple[Any, ...] = ()) -> None:
+        """Allocate a unique run namespace without retaining any global authority."""
+
+        self.active = True
+        self.bindings = bindings
+        self.defaults = defaults
+        self.prefix = f"harnest_eval/{uuid.uuid4().hex}/"
+        self.aliases: dict[str, tuple[str, Any, bool]] = {}
+        self._model_aliases: dict[tuple[str, int, bool], str] = {}
+
+    def alias(self, model: str, *, judge: bool = False) -> str:
+        """Scope judge output independently from optional borrowed transport authority."""
+
+        binding = _select_binding(self.bindings, model)
+        if binding is None:
+            # A agent using another provider still needs the default evaluator's configured
+            # endpoint; never replace authored gateway authority with defaults.
+            binding = _select_binding(self.defaults, model)
+        if binding is None and not judge:
+            return model
+        key = (model, id(binding), judge)
+        if key in self._model_aliases:
+            return self._model_aliases[key]
+        alias = f"{self.prefix}{len(self.aliases)}"
+        self.aliases[alias] = (model, binding, judge)
+        self._model_aliases[key] = alias
+        return alias
+
+    def require(self, alias: str) -> tuple[str, Any, bool]:
+        """Reject escaped adapters and aliases belonging to another invocation."""
+
+        if not self.active or _ACTIVE_SCOPE.get() is not self:
+            raise EvaluationError("evaluation model transport scope is no longer active")
+        if alias not in self.aliases:
+            raise EvaluationError("evaluation model transport belongs to another run")
+        return self.aliases[alias]
+
+    def revoke(self) -> None:
+        """Drop borrowed authority without closing the runtime-owned clients."""
+
+        self.active = False
+        self.bindings = ()
+        self.defaults = ()
+        self.aliases.clear()
+        self._model_aliases.clear()
+
+
+def _judge_final_response(response: Any) -> Any | None:
+    """Exclude provider thoughts and intermediate chunks without editing final prose."""
+
+    from ...runtime_contract import _customer_facing_parts
+
+    # ADK's non-streaming judge loop parses its first yielded response. A
+    # provider can still emit an initial thought-only or partial event.
+    if getattr(response, "partial", False):
+        return None
+    content = getattr(response, "content", None)
+    parts = getattr(content, "parts", None)
+    if not parts:
+        return response
+    visible = list(_customer_facing_parts(parts))
+    if not visible:
+        return None
+    if len(visible) == len(parts):
+        return response
+    # Preserve usage, finish/error metadata and the provider-owned response;
+    # only the copy lent to a judge parser loses private reasoning parts.
+    return response.model_copy(update={"content": content.model_copy(update={"parts": visible})})
+
+
+@lru_cache(maxsize=1)
+def _register_proxy_model() -> type[Any]:
+    """Register one stateless Harnest namespace, never replace a provider mapping."""
+
+    from google.adk.models import BaseLlm
+    from google.adk.models.registry import LLMRegistry
+    from pydantic import PrivateAttr
+
+    class HarnestEvalTransportModel(BaseLlm):
+        _scope: Any = PrivateAttr()
+        _alias: str = PrivateAttr()
+        _delegate: Any = PrivateAttr()
+
+        def __init__(self, *, model: str, **kwargs: Any) -> None:
+            """Construct a borrowing adapter only inside its authorized eval run."""
+
+            scope = _ACTIVE_SCOPE.get()
+            if scope is None:
+                raise EvaluationError("evaluation model transport scope is unavailable")
+            original, binding, _ = scope.require(model)
+            super().__init__(model=original, **kwargs)
+            self._scope = scope
+            self._alias = model
+            # Unbound native judges keep exactly ADK's original model factory
+            # and credential path; only their output boundary is wrapped.
+            self._delegate = (
+                build_binding_judge(binding, original) if binding is not None
+                else LLMRegistry.resolve(original)(model=original)
+            )
+
+        @classmethod
+        def supported_models(cls) -> list[str]:
+            """Reserve only Harnest's opaque evaluation alias namespace."""
+
+            return [r"^harnest_eval/[a-f0-9]{32}/[0-9]+$"]
+
+        @property
+        def capabilities(self) -> Any:
+            """Preserve the original adapter's schema and tool capabilities."""
+
+            return self._delegate.capabilities
+
+        async def generate_content_async(self, llm_request: Any, stream: bool = False) -> AsyncIterator[LlmResponse]:
+            """Forward requests and expose only final, non-thought output to judges."""
+
+            original, _, judge = self._scope.require(self._alias)
+            request = llm_request.model_copy(update={"model": original})
+            async for response in self._delegate.generate_content_async(request, stream):
+                self._scope.require(self._alias)
+                prepared = _judge_final_response(response) if judge else response
+                if prepared is not None:
+                    yield prepared
+
+    LLMRegistry.register(HarnestEvalTransportModel)
+    return HarnestEvalTransportModel
+
+
+def _bind_criterion(criterion: Any, scope: _EvalTransportScope) -> Any:
+    """Replace judge IDs in a copied criterion while preserving all other options."""
+
+    if isinstance(criterion, (int, float)):
+        return criterion
+    payload = criterion.model_dump(by_alias=True)
+    options = payload.get("judgeModelOptions", payload.get("judge_model_options"))
+    if isinstance(options, dict):
+        key = "judgeModel" if "judge_model" not in options else "judge_model"
+        if isinstance(options.get(key), str):
+            options[key] = scope.alias(options[key], judge=True)
+    return type(criterion).model_validate(payload)
+
+
+@contextmanager
+def eval_model_transports(target: Any, config: Any) -> Iterator[Any]:
+    """Protect judge verdicts and scope authored or default evaluator transports."""
+
+    bindings = _transport_bindings(target)
+    defaults = model_transport_bindings(config)
+    _register_proxy_model()
+    scope = _EvalTransportScope(bindings, defaults)
+    token = _ACTIVE_SCOPE.set(scope)
+    try:
+        prepared = config.model_copy(deep=True)
+        prepared.criteria = {
+            name: _bind_criterion(criterion, scope)
+            for name, criterion in prepared.criteria.items()
+        }
+        simulator = prepared.user_simulator_config
+        if simulator is not None and isinstance(getattr(simulator, "model", None), str):
+            simulator.model = scope.alias(simulator.model)
+        yield prepared
+    finally:
+        # Revocation also protects background tasks that inherited a copy of
+        # this context; resetting the ContextVar alone would leave them usable.
+        scope.revoke()
+        _ACTIVE_SCOPE.reset(token)
+
+
+def restore_eval_model_names(value: Any) -> Any:
+    """Remove internal aliases from structured diagnostic results before persistence."""
+
+    scope = _ACTIVE_SCOPE.get()
+    if scope is None:
+        return value
+    if isinstance(value, str):
+        original = scope.aliases.get(value)
+        return original[0] if original else value
+    if isinstance(value, dict):
+        return {key: restore_eval_model_names(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [restore_eval_model_names(item) for item in value]
+    return value
+
+
+async def close_owned_eval_model_transports(
+    target: Any, *, primary_error: BaseException | None = None
+) -> None:
+    """Close CLI-owned model resources once after all borrowing eval calls finish."""
+
+    from ...model_lifecycle import _lifecycle_resources, _raise_cleanup_failures
+
+    resources = {
+        id(resource): resource
+        for owner in _model_owners(target)
+        for resource in _lifecycle_resources(owner)
+    }
+    failures = []
+    for resource in reversed(tuple(resources.values())):
+        try:
+            await resource.aclose()
+        except BaseException as error:
+            failures.append(error)
+    if failures and primary_error is not None:
+        # Cleanup must not replace the scored failure or cancellation that
+        # caused shutdown, and exception text may contain provider credentials.
+        add_note = getattr(primary_error, "add_note", None)
+        if callable(add_note):
+            add_note("evaluation model transport cleanup also failed")
+    elif failures:
+        _raise_cleanup_failures(failures)
+
+
+def build_judge_model(
+    model_name: str, *, transport_options: Mapping[str, Any], borrowed_client: Any
+) -> Any:
+    """Build the ADK evaluator's LiteLLM judge on the agent's transport.
+
+    Agent generation settings must not replace a judge's temperature,
+    sampling, or output contract; only transport and auth choices are shared,
+    and no lifecycle resource is attached to this borrower.
+    """
+
+    from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+
+    from ...model_transport import _borrow_adk_client, framework_adk_client
+
+    arguments = dict(transport_options)
+    if borrowed_client is not None:
+        # Hooks and lazy initialization belong to the original controller;
+        # constructing another lifecycle would create a second transport.
+        arguments["llm_client"] = _borrow_adk_client(borrowed_client, LiteLLMClient)
+    else:
+        arguments["llm_client"] = framework_adk_client(LiteLLMClient)
+    return LiteLlm(model=model_name, **arguments)
+
+
+def build_binding_judge(binding: Any, model_name: str) -> Any:
+    """Build an evaluator judge sharing one agent model's transport, never its cleanup."""
+
+    return build_judge_model(
+        model_name,
+        transport_options=binding.transport_options,
+        borrowed_client=binding.borrowed_client,
+    )

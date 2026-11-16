@@ -90,7 +90,7 @@ class OpenAPITests(unittest.TestCase):
                                            headers={'X-Key': '${TOKEN}'})
             token = 'quoted"and\\escaped'
             with patch.dict(os.environ, TOKEN=token):
-                connection = client.to_langgraph_connection()
+                connection = client.connection_options()
             with patch.dict(os.environ, connection['env']):
                 _, base, headers = runtime_configuration()
             self.assertEqual(base, 'https://tenant.example.test')
@@ -130,7 +130,7 @@ class OpenAPITransportTests(unittest.IsolatedAsyncioTestCase):
             # Reconnecting must reload the spec, without caching generated files.
             for token in ('first-token', 'second-token'):
                 with patch.dict(os.environ, CATALOG_TOKEN=token):
-                    options = client.to_langgraph_connection()
+                    options = client.connection_options()
                 parameters = StdioServerParameters(command=options['command'], args=options['args'], env=options['env'])
                 async with stdio_client(parameters) as streams:
                     async with ClientSession(*streams) as session:

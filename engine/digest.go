@@ -1,3 +1,5 @@
+// Content digest of an agent bundle, used to detect source changes.
+
 package engine
 
 import (

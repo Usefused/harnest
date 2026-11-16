@@ -200,9 +200,9 @@ class AgentBuilderAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.thread = threading.Thread(target=self.provider.serve_forever, daemon=True)
         self.thread.start()
         endpoint = f"https://127.0.0.1:{self.provider.server_port}/v1"
-        (pack / "studio-pack.yaml").write_text(yaml.safe_dump({
-            "apiVersion": "harnest.dev/studio-pack/v1", "name": "company", "title": "Company", "version": "1.0.0",
-            "builder": {"model": "openai/company", "api_base": endpoint, "ca_bundle": "ca.pem", "max_tokens": 2048}}))
+        (pack / "pack.yaml").write_text(yaml.safe_dump({
+            "apiVersion": "harnest.dev/pack/v1", "name": "company", "title": "Company", "version": "1.0.0",
+            "studio": {"builder": {"model": "openai/company", "api_base": endpoint, "ca_bundle": "ca.pem", "max_tokens": 2048}}}))
         # Prove this server cannot be reached with ordinary public trust roots.
         async with httpx.AsyncClient(trust_env=False) as client:
             with self.assertRaises(httpx.ConnectError):

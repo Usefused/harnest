@@ -1,5 +1,6 @@
 """Native model-loop integration for opt-in skill selection on ADK and LangGraph."""
 
+from harnest.frameworks.adk.lowering import build_agent
 import unittest
 
 from google.adk.apps import App
@@ -10,12 +11,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from harnest.agent import Agent
 from harnest.application import CompiledApplication
-from harnest.backends.langgraph import lower_agent
+from harnest.frameworks.langgraph.lowering import lower_agent
 from harnest.context import ContextValue
 from harnest.decisions import Decisions
 from harnest.lifecycle_runtime import LifecycleRuntimeDriver
-from harnest.runtime_adk import ADKRuntimeDriver
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.frameworks.adk.runtime import ADKRuntimeDriver
+from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 from harnest.runtime_contract import InvocationRequest
 from harnest.skills import DecisionSkillSelector, SkillContext, SkillRegistry, SkillScope
 from test_skill_selection import Provider, Source
@@ -57,9 +58,9 @@ def driver_for(framework, selector, source, provider, *, loop=False):
     registry = SkillRegistry({"root": SkillScope({"remote": source})})
     if framework == "adk":
         model = TwoPassADK(model="test") if loop else RecordingADK(model="test")
-        target = Agent(name="root", model=model, instruction="Base instruction", skill_selection=selector, tools=[lookup] if loop else []).build()
+        target = build_agent(Agent(name="root", model=model, instruction="Base instruction", skill_selection=selector, tools=[lookup] if loop else []))
         application = CompiledApplication(name="root", framework=framework, mode="managed", target=target,
-                                          native_app=App(name="root", root_agent=target))
+                                          framework_app=App(name="root", root_agent=target))
         native = ADKRuntimeDriver(application)
     else:
         responses = [AIMessage(content="", tool_calls=[{"name": "lookup", "args": {}, "id": "call"}])] if loop else []

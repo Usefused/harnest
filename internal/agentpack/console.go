@@ -1,3 +1,5 @@
+// Command line that starts an agent from an unpacked executable.
+
 package agentpack
 
 import (

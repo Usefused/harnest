@@ -1,3 +1,5 @@
+// Records the agent's framework version in harnest.lock and checks that the installed version matches.
+
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 var lockedFrameworkVersion = regexp.MustCompile(`^[0-9][A-Za-z0-9.!+_-]*$`)
@@ -51,9 +54,8 @@ func parseFrameworkRequirement(data []byte, framework string) (string, error) {
 	if pin == nil {
 		return "", nil
 	}
-	distributions := map[string]string{"adk": "google-adk", "langgraph": "langgraph"}
-	distribution, known := distributions[pin.Name]
-	if !known || pin.Distribution != distribution || !lockedFrameworkVersion.MatchString(pin.Version) {
+	selected, known := frameworks.Lookup(pin.Name)
+	if !known || pin.Distribution != selected.Distribution || !lockedFrameworkVersion.MatchString(pin.Version) {
 		return "", fmt.Errorf("invalid resolved framework in harnest.lock")
 	}
 	if pin.Name != framework {

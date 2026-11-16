@@ -79,6 +79,12 @@ private wrapper shapes or mocked delegation. When removing overlapping tests,
 identify the retained test and preserve any unique assertions. Shared fixtures
 and tables should reduce maintenance; fewer test methods alone is not a goal.
 
+Every source file describes itself: a module docstring in Python, or a comment
+above the `package` clause in Go. `make codebase-map` turns those descriptions
+into `docs/codebase/files.md`, and the unit test `test_codebase_map` fails when
+a file has none or the map is stale. The guide for changing Harnest starts at
+[codebase/README.md](codebase/README.md).
+
 Every Python test module is assigned exactly one default tier in
 `tests/python/suites.json`. A narrow override may assign an individual class or
 method to a broader tier when a module contains both local and external-provider
@@ -147,25 +153,38 @@ code from a CDN. After changing `studio/frontend/`, run `npm ci` and
 Ruff runs in the Studio Python environment on unsaved stdin with isolated
 correctness rules; diagnostics never execute source or apply fixes.
 
-## Studio Pack implementation contract
+## Pack implementation contract
 
-The browser host owns authentication, composition, state/command boundaries,
-and recovery. The bundled `ui_packs/default/studio-pack.yaml` uses the ordinary
-pack loader; UI feature code and styling belong to that pack. Trusted modules
+A Harnest pack is one folder: an inert `pack.yaml` (identity, compatibility,
+branded `command`, and an optional `studio:` sub-pack) and optional trusted
+`pack.py` hooks (`ProjectPack` init, migrations and `@pack.command`).
+`harnest.authoring.packs.read_manifest` is the single parser for the top level;
+Studio validates only the `studio:` section. `harnest init|upgrade --pack` run
+`python -m harnest.cli pack ...`, which stages core init or upgrade before any
+pack hook and prints one combined plan. `harnest pack build` writes a wheel
+named `harnest-pack-<name>` whose stdlib-only launcher forwards to the
+`harnest` executable. There is no compatibility path for `ProjectCLI`,
+`StudioLauncher` or `studio-pack.yaml`; `harnest upgrade` warns agents that
+recorded either pack lock.
+
+The Studio browser host owns authentication, composition, state/command
+boundaries, and recovery. The bundled `ui_packs/default/pack.yaml` uses the
+ordinary pack loader; UI feature code and styling belong to that pack. Trusted modules
 receive the same host context as the default UI. Never add default-pack-only
 transport or composition shortcuts. UI assets are immutable declared snapshots
 under `assets/`, separate from installed project resources. Frame entries always
 receive sandbox policy, including direct navigation. Test composition conflicts,
-explicit code trust, default recovery, and company-wheel round trips when changing
+explicit code trust, default recovery, and pack-wheel round trips when changing
 these boundaries. Public authoring documentation belongs in the canonical
 Mintlify `harnest/studio/mods.mdx` page.
 
-Studio Pack manifests and source snapshots are parsed without importing pack
+Studio sub-pack manifests and source snapshots are parsed without importing pack
 code. The UI and builder consume the same catalog. Pack reviews retain exact
 source revisions and installation receipts; upgrades must not overwrite locally
-modified installed files. Company wheels include only manifest-referenced pack
-files and depend on an exact Studio package version. They do not vendor Python,
-the Harnest CLI, credentials, or third-party runtime dependencies.
+modified installed files. Pack wheels ship the pack folder except caches, build
+output, virtual environments and `.env` files, are byte-reproducible, and have
+no dependencies. They do not vendor Python, the Harnest CLI, Studio,
+credentials, or third-party runtime dependencies.
 
 Builder defaults are app-scoped: loaded packs overlay fields in launch order,
 then explicit `HARNEST_BUILDER_*` environment settings override them. Request

@@ -1,4 +1,4 @@
-"""Small authored metric contracts adapted to the existing ADK evaluator."""
+"""Small authored metric contracts adapted to the ADK evaluation engine's custom-metric hook."""
 
 from __future__ import annotations
 

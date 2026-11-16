@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .frameworks.registry import DEFAULT_FRAMEWORK
 from .logging import get_logger
 
 from .playground_studio import _SOURCE_LIMIT, _SOURCE_SUFFIXES
@@ -149,7 +150,7 @@ class AuthoringStore:
         if len(text.encode()) > _SOURCE_LIMIT:
             raise HTTPException(413, "Source exceeds 1 MiB")
         path = self.path(relative)
-        validate_document(path, text)
+        validate_document(path, text, framework=getattr(self.studio, "framework", DEFAULT_FRAMEWORK))
         with self._lock:
             self._check_revision(relative, revision)
             self._replace(path, text)
@@ -214,14 +215,14 @@ class AuthoringStore:
         return {"available": True, "scopes": self.scopes, "connectionScopes": self.connection_scopes, "suites": suites, "files": sorted(self.paths), "reload": True}
 
 
-def validate_document(path: Path, text: str) -> None:
+def validate_document(path: Path, text: str, *, framework: str = DEFAULT_FRAMEWORK) -> None:
     """Validate native formats without executing authored Python during a save."""
 
     try:
         if path.suffix == ".py":
             ast.parse(text)
         elif path.suffix == ".json":
-            _validate_json(path, text)
+            _validate_json(path, text, framework)
         elif path.suffix in {".yaml", ".yml"}:
             yaml.safe_load(text)
         elif path.suffix == ".toml":
@@ -230,14 +231,14 @@ def validate_document(path: Path, text: str) -> None:
         raise HTTPException(422, f"Invalid {path.name}: {exc}") from exc
 
 
-def _validate_json(path: Path, text: str) -> None:
-    """Reuse ADK's authoring schema, preserving advanced fields and rejecting duplicate IDs."""
+def _validate_json(path: Path, text: str, framework: str) -> None:
+    """Reuse the evaluation engine's schemas, preserving advanced fields and rejecting duplicate IDs."""
 
-    from .bundle import _reject_duplicate_json_keys
+    from .bundle import _eval_file_schemas, _reject_duplicate_json_keys
 
     payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
     if path.name.endswith(".evalset.json"):
-        from google.adk.evaluation.eval_set import EvalSet
+        EvalSet, _config = _eval_file_schemas(framework)
         suite = EvalSet.model_validate(payload)
         if suite.eval_set_id != path.name.removesuffix(".evalset.json"):
             raise ValueError("eval_set_id must match the filename")
@@ -245,7 +246,7 @@ def _validate_json(path: Path, text: str) -> None:
         if len(ids) != len(set(ids)):
             raise ValueError("Case IDs must be unique within the suite")
     elif path.name == "test_config.json" or path.name.endswith(".test_config.json"):
-        from google.adk.evaluation.eval_config import EvalConfig
+        _eval_set, EvalConfig = _eval_file_schemas(framework)
         EvalConfig.model_validate(payload)
 
 

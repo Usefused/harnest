@@ -1,3 +1,5 @@
+// `harnest template package`: packages an agent directory as a reusable template wheel.
+
 package main
 
 import (

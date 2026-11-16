@@ -1,3 +1,5 @@
+// Stages the embedded development playground UI used by `harnest serve`.
+
 package main
 
 import (

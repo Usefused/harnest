@@ -15,7 +15,7 @@ from harnest.context import (
     revoke_context,
 )
 from harnest.lifecycle import LifecycleListener
-from harnest.mcp_adk import (
+from harnest.frameworks.adk.mcp_tools import (
     _discover_adk_mcp_clients,
     adk_mcp_context_plugins,
 )

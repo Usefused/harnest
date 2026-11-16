@@ -2,7 +2,7 @@ apiVersion: harnest.dev/v1alpha1
 kind: Extension
 metadata:
   name: docker
-  version: 0.4.2
+  version: 0.4.3
 runtime:
   entrypoint: extension:extension
 capabilities:

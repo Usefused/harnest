@@ -1,3 +1,5 @@
+// Copies a local package tree (plugin or extension) into an agent safely: no links, no paths outside the tree.
+
 package main
 
 import (

@@ -7,8 +7,10 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from harnest.agent import Agent
-from harnest.bundle import BundleConventionError, bundle_agent
+from harnest.bundle import BundleConventionError
 from harnest._library import _AuthoredNamespace, _validate_namespace_file
+from _framework_testing import bundle_for_framework
+
 from harnest.bundle import (
     _discover_evals, _discover_sandboxes, _eval_file_kind, _load_export,
     _nested_subagent_entry, _resource_files, _skill_directories,
@@ -123,7 +125,7 @@ class AuthoringErrorTests(unittest.TestCase):
 
     def test_eval_config_without_cases_explains_next_step(self):
         path = self.write("evals/test_config.json", "{}")
-        message = self.diagnostic(_discover_evals, path.parent)
+        message = self.diagnostic(_discover_evals, path.parent, "adk")
         self.assertIn("not a set of test cases", message)
         self.assertIn("quality.evalset.json", message)
         self.assertIn("_test_config.json", message)
@@ -133,7 +135,7 @@ class AuthoringErrorTests(unittest.TestCase):
         self.write("instructions.md", "Be useful.\n")
         bad = self.write("sandbox/README.md")
         definition = Agent(name="test", model="unused")
-        message = self.diagnostic(bundle_agent, anchor, definition)
+        message = self.diagnostic(bundle_for_framework, anchor, definition, framework="adk")
         self.assertIn(str(bad), message)
         self.assertIn("_README.md", message)
         self.assertTrue(bad.exists(), "diagnostics must not change user files")

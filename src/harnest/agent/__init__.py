@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import functools
-import inspect
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
-
-from pydantic import BaseModel
 
 from ..agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
 from .._agent_tool import tool
@@ -28,17 +24,13 @@ from ..client_input import client_input
 # modules depend on which public import a developer happens to write first.
 if TYPE_CHECKING:
     from ..mcp import MCPClient
-from ..mcp_lifecycle import propagate_mcp_lifecycles
-from ..model import ModelInput, resolve_model
+from ..model import ModelInput
 from ..tokens import TokenPolicy
 from ..skill_selection import DecisionSkillSelector
-from ..model_lifecycle import propagate_litellm_lifecycles
-from ..durable import adk_durable_tool, is_durable_tool
 from ..sandbox import Sandbox
 from ..structured import (
     PydanticModel,
     framework_metadata_field,
-    provider_output_schema,
     validate_output_schema,
 )
 from ..tool_lifecycle import (
@@ -94,6 +86,15 @@ class AgentDefinition:
     sandboxes: Sequence[str] = field(default_factory=tuple)
     _sandbox_bindings: Mapping[str, Sandbox] = field(default_factory=dict, repr=False)
 
+    def build(self) -> Any:
+        """Build this definition using the framework selected by Harnest."""
+
+        from ..frameworks.context import current_framework
+
+        return current_framework().lower_agent(
+            self, framework_extensions=(), checkpointer=None
+        )
+
     @classmethod
     def advanced(
         cls,
@@ -103,7 +104,7 @@ class AgentDefinition:
         input_adapter: Callable[[str, Mapping[str, Any]], Any] | None = None,
         output_adapter: Callable[[Any], Any] | None = None,
     ) -> "_AdvancedAgentDefinition":
-        """Wrap a framework-native root, subagent, or graph node.
+        """Wrap a framework-specific root, subagent, or graph node.
 
         Export the wrapper as the root in advanced mode, or embed it in a
         managed agent/graph when only one component needs native behavior.
@@ -181,151 +182,6 @@ class AgentDefinition:
         object.__setattr__(self, "sandboxes", names)
         object.__setattr__(self, "_sandbox_bindings", MappingProxyType(dict(self._sandbox_bindings)))
 
-    def build(self) -> Any:
-        """Build the underlying ADK agent.
-
-        ADK is imported lazily so config generation and validation do not need
-        model/runtime dependencies loaded. Sandbox agents retain native flows
-        with a scoped consumed-code continuation compatibility adapter.
-        """
-
-        if self.instruction is None:
-            raise ValueError(
-                "agent instruction is unresolved; provide instruction or use "
-                "bundle_agent(__file__, agent) with a sibling instructions.md"
-            )
-
-        try:
-            from google.adk.agents import LlmAgent
-        except ImportError as exc:  # pragma: no cover - depends on optional runtime
-            raise RuntimeError(
-                "google-adk is required to build an agent; install the harnest package"
-            ) from exc
-
-        kwargs = self._build_kwargs()
-        from ..agent_scope_adk import managed_adk_agent_type
-
-        native_type = managed_adk_agent_type(LlmAgent)
-        built = native_type(**kwargs)
-        propagate_litellm_lifecycles(kwargs["model"], built)
-        propagate_mcp_lifecycles(kwargs["tools"], built)
-        for child in kwargs["sub_agents"]:
-            propagate_litellm_lifecycles(child, built)
-            propagate_mcp_lifecycles(child, built)
-        return built
-
-    def _build_kwargs(self) -> dict[str, Any]:
-        """Translate the portable definition into ADK constructor arguments."""
-
-        children = [_build_adk_subagent(child) for child in self.subagents]
-        runtime_tools = [
-            *(_adk_runtime_tool(tool) for tool in self.tools),
-            *(client.to_adk_toolset() for client in self.mcp),
-        ]
-        from ..sandbox_assignments import assigned_sandboxes
-        from ..token_adk import wrap_adk_model
-
-        # Named declarations are capabilities for authored tools, never an
-        # implicit model-facing execute-code tool or native code executor.
-        assigned_sandboxes(self)
-        kwargs: dict[str, Any] = {
-            "name": self.name,
-            "model": wrap_adk_model(resolve_model(self.model), self.token_policy, self.name),
-            "instruction": self.instruction,
-            "description": self.description,
-            "tools": runtime_tools,
-            "sub_agents": children,
-            # ADK rejects single_turn at an application root. Excluding prior
-            # contents preserves the portable turn-only contract there; the
-            # graph backend selects single_turn when this agent is a node.
-            "mode": "chat",
-            "include_contents": "default"
-            if self.history == "session"
-            else "none",
-        }
-        if self.skill_selection is not None:
-            from ..skill_selection_adapters import adk_selection_callback
-            kwargs["before_model_callback"] = adk_selection_callback(self.skill_selection)
-        if self.output_key is not None:
-            kwargs["output_key"] = self.output_key
-        kwargs.update(self._schema_kwargs())
-        if self.generate_content_config is not None:
-            kwargs["generate_content_config"] = self._content_config()
-        return kwargs
-
-    def _schema_kwargs(self) -> dict[str, PydanticModel]:
-        """Expose only provider-owned output fields to the ADK node boundary.
-
-        Harnest validates portable request models before framework lowering.
-        Passing that schema to ADK would make ADK concatenate multipart content
-        into text and reject otherwise-valid media references before its model
-        callback can materialize them.
-        """
-
-        return {
-            name: schema
-            for name, schema in (
-                (
-                    "output_schema",
-                    provider_output_schema(self.output_schema)
-                    if self.output_schema is not None
-                    else None,
-                ),
-            )
-            if schema is not None
-        }
-
-    def _content_config(self) -> Any:
-        """Translate authored mappings while preserving native ADK configuration."""
-
-        config = self.generate_content_config
-        if not isinstance(config, Mapping):
-            return config
-        try:
-            from google.genai import types
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError(
-                "google-genai is required for generate_content_config"
-            ) from exc
-        return types.GenerateContentConfig(**dict(config))
-
-
-def _adk_runtime_tool(tool: Tool) -> Tool:
-    """Serialize validated Pydantic tool values before ADK wraps responses."""
-
-    if not callable(tool):
-        return tool
-    runtime_tool = _adk_serializing_tool(tool)
-    return adk_durable_tool(runtime_tool) if is_durable_tool(tool) else runtime_tool
-
-
-def _adk_serializing_tool(tool: Tool) -> Tool:
-    """Build the value adapter that executes inside any durable ADK boundary."""
-
-    if getattr(tool, "__harnest_output_schema__", None) is None:
-        return tool
-    if inspect.iscoroutinefunction(tool):
-
-        @functools.wraps(tool)
-        async def async_call(*args: Any, **kwargs: Any) -> Any:
-            return _adk_tool_result(await tool(*args, **kwargs))
-
-        return async_call
-
-    @functools.wraps(tool)
-    def sync_call(*args: Any, **kwargs: Any) -> Any:
-        return _adk_tool_result(tool(*args, **kwargs))
-
-    return sync_call
-
-
-def _adk_tool_result(value: Any) -> Any:
-    """Avoid ADK's generic ``result`` envelope for Pydantic model values."""
-
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json", by_alias=True)
-    return value
-
 
 @dataclass(frozen=True, slots=True)
 class _AdvancedAgentDefinition:
@@ -345,49 +201,7 @@ class _AdvancedAgentDefinition:
             raise ValueError("Agent.advanced name must be a non-empty string")
 
 
-def _build_adk_subagent(value: Any) -> Any:
-    """Build or unwrap one value for ADK's native subagent collection."""
-
-    if isinstance(value, AgentDefinition):
-        return value.build()
-    from ..agent_scope_adk import scope_native_adk_agent
-
-    if not isinstance(value, _AdvancedAgentDefinition):
-        return scope_native_adk_agent(value)
-    # Input and output adapters transform Harnest's root transport boundary;
-    # applying them inside a parent would silently change the component contract.
-    if value.input_adapter is not None or value.output_adapter is not None:
-        raise ValueError(
-            "embedded Agent.advanced subagents cannot use root input/output adapters"
-        )
-    try:
-        from google.adk.agents import BaseAgent
-        from google.adk.apps import App
-    except ImportError as exc:  # pragma: no cover - optional runtime
-        raise RuntimeError("advanced ADK subagents require google-adk") from exc
-    # An App owns plugins and application services that cannot be preserved when
-    # it is inserted into another application's delegation hierarchy.
-    if isinstance(value.target, App):
-        raise TypeError(
-            "embedded Agent.advanced ADK subagents require a BaseAgent target; "
-            "ADK App targets are root-only"
-        )
-    target = value.target
-    if not isinstance(target, BaseAgent):
-        raise TypeError(
-            "embedded Agent.advanced ADK subagents require a BaseAgent target"
-        )
-    # ADK routes delegation by the native agent name. Accepting a different
-    # wrapper identity would make discovery and runtime routing disagree.
-    if value.name is not None and value.name != target.name:
-        raise ValueError(
-            "embedded Agent.advanced subagent name must match its native ADK "
-            f"agent name {target.name!r}; got {value.name!r}"
-        )
-    return scope_native_adk_agent(target)
-
-
-# A short alias reads naturally in agent.py: Agent(...).build().
+# A short alias reads naturally in agent.py: Agent(...).
 Agent = AgentDefinition
 
 # Approval is an agent-owned capability namespace rather than a root domain.

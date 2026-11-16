@@ -2,7 +2,7 @@
 
 ## IDE types
 
-Export the matching type-only package with `harnest studio pack types --output ./types`,
+Export the matching type-only package with `harnest pack types --output ./types`,
 then install the emitted archive with `npm install --save-dev ./types/harnest-studio-ui-0.1.0.tgz`.
 Commit the archive and npm lockfile. Import `Activate`, `ViewActivate`, `ServiceActivate`,
 or `StudioContext` from `@harnest/studio-ui` with `import type`.
@@ -16,25 +16,25 @@ server responses. See https://usefused.com/docs/harnest/studio/mods for examples
 
 ## Manifest and ownership
 
-Use a regular `harnest.dev/studio-pack/v1` manifest with a `ui` block:
+UI is part of a regular Harnest pack: put a `ui` block under `studio:` in `pack.yaml`:
 
 ```yaml
-apiVersion: harnest.dev/studio-pack/v1
+apiVersion: harnest.dev/pack/v1
 name: team-ui
 version: 1.0.0
 title: Team Studio
-resources: []
-ui:
-  apiVersion: harnest.dev/studio-ui/v1
-  assets: [assets/welcome.html]
-  contributions:
-    - id: welcome
-      title: Team welcome
-      slot: welcome
-      mode: frame
-      entry: assets/welcome.html
-      replaces: fused-studio/welcome
-      permissions: [state.connection]
+studio:
+  ui:
+    apiVersion: harnest.dev/studio-ui/v1
+    assets: [assets/welcome.html]
+    contributions:
+      - id: welcome
+        title: Team welcome
+        slot: welcome
+        mode: frame
+        entry: assets/welcome.html
+        replaces: fused-studio/welcome
+        permissions: [state.connection]
 ```
 
 Runtime text assets live under `assets/` and must be explicitly listed: HTML, JS, CSS, JSON, or TXT. Limits are 128 assets, 1 MiB per file, and 8 MiB total. Links and traversal are rejected. Assets are immutable snapshots; edits require restarting Studio. Build inputs and `node_modules` are not runtime assets.
@@ -101,12 +101,12 @@ Subscriptions and registrations return disposers. The default shell publishes pr
 
 The shell also publishes `jobs` snapshots and provides `studio.editor.isDirty`, `studio.jobs.run(body)`, `studio.notice(message)`, and `studio.proposal.review(projectId, proposal)`. Job submission returns a job, not a deployment result; observe its terminal state. Proposal review presents proposed changes without applying them automatically. These interfaces are for trusted modules, not frame permissions.
 
-To own deployment UI, replace `fused-studio/deployment` in `slot: service` and register `studio.deployment.open`. Create and dispose your own dialog, subscribe to project/jobs, and release the command on cleanup. Default deployment is opt-in via `HARNEST_ENABLE_DEPLOYMENT=true`; custom UI cannot bypass the server gate. Check unsaved changes, review the selected environment, and submit `manifest_revision` from the matching overview for apply. Never deploy on module activation or on opening the modal. The runnable `examples/studio-packs/team-deployment/` has its own options and review/apply buttons. Full contract: https://usefused.com/docs/harnest/studio/deployment-ui
+To own deployment UI, replace `fused-studio/deployment` in `slot: service` and register `studio.deployment.open`. Create and dispose your own dialog, subscribe to project/jobs, and release the command on cleanup. Default deployment is opt-in via `HARNEST_ENABLE_DEPLOYMENT=true`; custom UI cannot bypass the server gate. Check unsaved changes, review the selected environment, and submit `manifest_revision` from the matching overview for apply. Never deploy on module activation or on opening the modal. The runnable `examples/packs/team-deployment/` has its own options and review/apply buttons. Full contract: https://usefused.com/docs/harnest/studio/deployment-ui
 
 ## Validation and recovery
 
 ```sh
-harnest studio pack validate ./team-ui
+harnest pack validate ./team-ui
 harnest studio --workspace ./agents --pack ./team-ui
 ```
 

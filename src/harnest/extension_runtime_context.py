@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, AsyncIterator, Iterator, Literal, Mapping, Sequence, TypeVar, overload
 
 from . import context
+from .frameworks.registry import require_framework
 from .context import ContextResourceError
 from .logging import get_logger
 
@@ -38,8 +39,7 @@ class ExtensionStartContext:
         """Validate public identity and hide the copied storage registry."""
 
         _require_text(self.extension_name, "extension name")
-        if self.framework not in {"adk", "langgraph"}:
-            raise ValueError("extension framework must be adk or langgraph")
+        require_framework(self.framework, "extension framework")
         _require_text(self.root_agent_name, "root agent name")
         if not isinstance(self._custom_stores, Mapping):
             raise TypeError("extension custom storage must be a mapping")

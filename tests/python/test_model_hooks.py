@@ -11,18 +11,22 @@ from harnest.lifecycle import (
     ModelMessage,
     LifecycleContext,
 )
-from harnest.model_hooks import (
+from harnest.frameworks.adk.model_hooks import (
+    _adk_context,
     _apply_adk_request,
     _apply_adk_response,
+)
+from harnest.frameworks.langgraph.model_hooks import (
     _apply_langgraph_request,
     _apply_langgraph_response,
+)
+from harnest.model_hooks import (
     current_model_context,
     model_invocation_scope,
     ModelLifecycleError,
     ModelLifecyclePipeline,
     portable_model_extension,
     bind_model_extension,
-    _adk_context,
 )
 from types import SimpleNamespace
 

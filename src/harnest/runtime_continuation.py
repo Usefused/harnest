@@ -28,7 +28,7 @@ from .runtime_contract import (
     RuntimeEvent,
 )
 from .external_continuation import PendingExternalContinuation
-from .durable import NativeDurableSuspended
+from .durable import FrameworkDurableSuspended
 from .output import (
     _agent_metadata_from_runtime_event,
     _aggregate_token_usage,
@@ -366,7 +366,7 @@ def start_approval_run(
                         if stream
                         else await driver.invoke(request)
                     )
-        except NativeDurableSuspended:
+        except FrameworkDurableSuspended:
             # The framework adapter raises only after its native checkpoint is
             # committed. Arming here closes the callback-before-checkpoint race
             # without retaining the suspended Python coroutine.

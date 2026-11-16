@@ -16,10 +16,10 @@ from harnest.checkpoint import (
 )
 from harnest.continuation import ContinuationConflictError
 from harnest.durable import (
-    NativeDurableSuspended,
-    NativeResumeInput,
+    FrameworkDurableSuspended,
+    FrameworkResumeInput,
     ResumeArtifact,
-    native_durable_call,
+    framework_durable_call,
 )
 from harnest.external_continuation import (
     ExternalContinuationFailed,
@@ -68,7 +68,7 @@ def _artifact(invocation_id: str) -> ResumeArtifact:
 
     return ResumeArtifact(
         framework="adk",
-        native_invocation_id=f"native-{invocation_id}",
+        framework_invocation_id=f"native-{invocation_id}",
         tool_call_id=f"call-{invocation_id}",
         tool_name="external_report",
     )
@@ -155,7 +155,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Register a wait under the durable tool identity used by the framework."""
 
         run = _run(request)
-        with self.runtime.execution(run, request), native_durable_call(
+        with self.runtime.execution(run, request), framework_durable_call(
             _artifact(request.invocation_id)
         ):
             handle = await self.port.suspend(
@@ -164,7 +164,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 schema_id="report/v1",
                 validate=_validate,
             )
-            with self.assertRaises(NativeDurableSuspended):
+            with self.assertRaises(FrameworkDurableSuspended):
                 await handle.result()
         return run
 
@@ -189,7 +189,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claimed.status, "claimed")
         self.assertEqual(len(self.driver.requests), 1)
         resume = self.driver.requests[0].input
-        self.assertIsInstance(resume, NativeResumeInput)
+        self.assertIsInstance(resume, FrameworkResumeInput)
         self.assertEqual(resume.value, {"report": "ready"})
         self.assertEqual((await run.notifications.get())[0], "external_continuation")
         self.assertEqual((await run.notifications.get())[0], "result")
@@ -205,7 +205,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await _begin(self.store, request)
         run = _run(request)
         verified: list[object] = []
-        with self.runtime.execution(run, request), native_durable_call(
+        with self.runtime.execution(run, request), framework_durable_call(
             _artifact(request.invocation_id)
         ):
             handle = await self.port.suspend(
@@ -241,7 +241,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         request = _request("run-live-failure", transport="live")
         await _begin(self.store, request)
         run = _run(request)
-        with self.runtime.execution(run, request), native_durable_call(
+        with self.runtime.execution(run, request), framework_durable_call(
             _artifact(request.invocation_id)
         ):
             handle = await self.port.suspend(
@@ -565,7 +565,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await _begin(self.store, second)
         await self._suspend(first)
 
-        with self.runtime.execution(_run(second), second), native_durable_call(
+        with self.runtime.execution(_run(second), second), framework_durable_call(
             _artifact(second.invocation_id)
         ), self.assertRaisesRegex(
             ExternalContinuationUnavailableError, "capacity is exhausted"
@@ -657,7 +657,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 permissions={"hatchet.run"}
             ),
         )
-        with self.runtime.execution(_run(request), request), native_durable_call(
+        with self.runtime.execution(_run(request), request), framework_durable_call(
             _artifact(request.invocation_id)
         ):
             self.port.preflight()
@@ -671,9 +671,9 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from langgraph.prebuilt import ToolNode
 
         from harnest.application import CompiledApplication
-        from harnest.checkpoint_langgraph import HarnestCheckpointSaver
-        from harnest.durable import langgraph_durable_callable
-        from harnest.runtime_langgraph import LangGraphRuntimeDriver
+        from harnest.frameworks.langgraph.checkpoint import HarnestCheckpointSaver
+        from harnest.frameworks.langgraph.durable import langgraph_durable_callable
+        from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
         from harnest.agent import tool
 
         store = self.store
@@ -762,7 +762,7 @@ class ExternalContinuationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         first_run = _run(request)
         with first_runtime.execution(first_run, request), self.assertRaises(
-            NativeDurableSuspended
+            FrameworkDurableSuspended
         ):
             await first_driver.invoke(request)
         await first_runtime.arm(

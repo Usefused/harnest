@@ -4,10 +4,12 @@ from types import MappingProxyType
 import unittest
 from unittest.mock import patch
 
+from harnest.frameworks.adk.mcp_tools import build_toolset, toolset_type
 from harnest.agent.approval import ApprovalEnforcementError, ApprovalPolicy
 from harnest.context import activate_context, create_agent_context
 from harnest.lifecycle import LifecycleListener
-from harnest.mcp import MCPClient, _adk_mcp_toolset_metadata
+from harnest.frameworks.adk.mcp_tools import toolset_metadata
+from harnest.mcp import MCPClient
 from harnest.mcp_context import (
     MCPClientUnavailableError,
     MCPContextUnavailableError,
@@ -69,13 +71,13 @@ class MCPInvocationContextTests(unittest.IsolatedAsyncioTestCase):
             capability_id="mcp__billing",
         )
         with patch(
-            "harnest.mcp._adk_mcp_classes",
+            "harnest.frameworks.adk.mcp_tools._mcp_classes",
             return_value=(Recording, Recording, Recording, Recording, Recording),
         ):
-            toolset = client.to_adk_toolset()
+            toolset = build_toolset(client)
 
         self.assertEqual(
-            _adk_mcp_toolset_metadata(toolset),
+            toolset_metadata(toolset),
             ("billing", "mcp__billing", False),
         )
 
@@ -90,10 +92,10 @@ class MCPInvocationContextTests(unittest.IsolatedAsyncioTestCase):
             capability_id="plugin__finance__mcp__billing",
             approval=ApprovalPolicy("Approve billing tool"),
         )
-        toolset = client._adk_toolset_type(Toolset)()
+        toolset = toolset_type(client, Toolset)()
 
         self.assertEqual(
-            _adk_mcp_toolset_metadata(toolset),
+            toolset_metadata(toolset),
             ("billing", "plugin__finance__mcp__billing", True),
         )
 

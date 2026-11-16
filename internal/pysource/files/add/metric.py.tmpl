@@ -1,0 +1,7 @@
+from harnest.evaluation import MetricContext, MetricScore, metric
+
+
+@metric
+async def {{.Name}}(context: MetricContext) -> MetricScore:
+    """Score one conversation using your own rules or service."""
+    raise NotImplementedError("Implement this metric before registering it")

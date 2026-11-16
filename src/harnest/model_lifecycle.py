@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeAlias
 
+from .frameworks.base import FrameworkName
+
 LifecycleValue: TypeAlias = Any | Awaitable[Any]
 
 
@@ -17,7 +19,7 @@ class LiteLLMContext:
     """Stable call context provided to every LiteLLM lifecycle hook."""
 
     model: str
-    framework: Literal["adk", "langgraph"]
+    framework: FrameworkName
     transport: Any | None = None
 
 
@@ -165,7 +167,7 @@ class _LifecycleLiteLLMClient:
         lifecycle: LiteLLMLifecycle,
         *,
         model: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
         request_transformers: Sequence[Callable[[dict[str, Any]], Any]] = (),
     ) -> None:
         self._delegate = delegate
@@ -553,61 +555,6 @@ def _attach_lifecycle_resource(value: Any, resource: Any) -> Any:
         # identity deduplication prevents duplicate cleanup responsibilities.
         object.__setattr__(value, "__harnest_litellm_resources__", (*current, resource))
     return value
-
-
-def create_adk_lifecycle_client(
-    client_type: type[Any],
-    lifecycle: LiteLLMLifecycle,
-    *,
-    model: str,
-    request_transformers: Sequence[Callable[[dict[str, Any]], Any]] = (),
-) -> Any:
-    """Create the concrete client type required by ADK's validated adapter."""
-
-    from .model_transport import framework_adk_client
-
-    delegate = framework_adk_client(client_type)
-    controller = _LifecycleLiteLLMClient(
-        delegate,
-        lifecycle,
-        model=model,
-        framework="adk",
-        request_transformers=request_transformers,
-    )
-
-    class ADKLifecycleClient(client_type):
-        async def acompletion(
-            self, model: Any, messages: Any, tools: Any, **kwargs: Any
-        ) -> Any:
-            return await controller.acompletion(
-                model=model, messages=messages, tools=tools, **kwargs
-            )
-
-        def completion(
-            self,
-            model: Any,
-            messages: Any,
-            tools: Any,
-            stream: bool = False,
-            **kwargs: Any,
-        ) -> Any:
-            return controller.completion(
-                model=model,
-                messages=messages,
-                tools=tools,
-                stream=stream,
-                **kwargs,
-            )
-
-        async def aclose(self) -> None:
-            await controller.aclose()
-
-        def close(self) -> None:
-            controller.close()
-
-    client = ADKLifecycleClient()
-    client.__harnest_controller__ = controller
-    return client
 
 
 def propagate_litellm_lifecycles(source: Any, target: Any) -> Any:

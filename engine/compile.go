@@ -1,3 +1,5 @@
+// Runs the Python compiler for a bundle, then loads the compiled artifact and checks its manifest.
+
 package engine
 
 import (
@@ -18,6 +20,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"harnest.dev/harnest/internal/frameworks"
+	"harnest.dev/harnest/schemas"
 )
 
 const (
@@ -271,7 +276,8 @@ func validateCompiledCompatibility(manifest CompiledManifest) error {
 	}
 	// The package identity is retained separately from the framework name so an
 	// engine can diagnose dependency drift without importing the Python runtime.
-	expectedDistribution := map[string]string{"adk": "google-adk", "langgraph": "langgraph"}[manifest.Framework.Name]
+	selected, _ := frameworks.Lookup(manifest.Framework.Name)
+	expectedDistribution := selected.Distribution
 	if manifest.Framework.Distribution != expectedDistribution {
 		return fmt.Errorf("compiled manifest framework distribution %q does not match %q", manifest.Framework.Distribution, expectedDistribution)
 	}
@@ -621,22 +627,10 @@ func strictlySortedExtensionCapabilities(values []string) bool {
 	return true
 }
 
-// compiledExtensionCapabilities mirrors the compiler/schema authority vocabulary so
-// a rewritten manifest cannot invent a capability the source compiler rejects.
-var compiledExtensionCapabilities = map[string]struct{}{
-	"context.assets": {}, "context.credentials": {}, "context.continuations": {}, "context.mcp": {},
-	"context.resources": {}, "context.session": {}, "context.skills": {}, "context.storage": {},
-	"content.mcp": {}, "content.skills": {}, "content.subagents": {}, "content.tools": {},
-	"http.routes": {}, "lifecycle.agent": {}, "lifecycle.http": {}, "lifecycle.session": {}, "lifecycle.mcp": {},
-	"lifecycle.model": {}, "lifecycle.skills": {}, "lifecycle.tool": {}, "native.adk": {}, "native.langgraph": {},
-	"policy.output": {}, "sandbox.provider": {}, "storage.assets": {}, "storage.checkpoints": {},
-	"storage.cron": {}, "storage.custom": {}, "storage.memory": {}, "storage.sessions": {}, "storage.tasks": {}, "telemetry.exporter": {},
-}
-
 // unknownCompiledExtensionCapability returns the first undeclared authority term.
 func unknownCompiledExtensionCapability(values []string) string {
 	for _, value := range values {
-		if _, known := compiledExtensionCapabilities[value]; !known {
+		if !schemas.KnownExtensionCapability(value) {
 			return value
 		}
 	}

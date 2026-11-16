@@ -279,7 +279,7 @@ class RuntimeCaptureTests(unittest.TestCase):
     def test_langgraph_orphan_tool_error_keeps_its_own_identity(self):
         """A native text error with a different ID must not mark a pending call failed."""
         from langchain_core.messages import ToolMessage
-        from harnest.runtime_langgraph import _message_tool_events
+        from harnest.frameworks.langgraph.runtime import _message_tool_events
 
         events = (TOOL_ERROR_EVENTS[0], *_message_tool_events(ToolMessage(
             content="declined", name="lookup", tool_call_id="other", status="error",

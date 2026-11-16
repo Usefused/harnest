@@ -169,7 +169,7 @@ class HarnestExtensionTests(unittest.TestCase):
               "@lifecycle.tool.before\ndef audit(context, call):\n    return call\n")
         backend = SimpleNamespace(lower_managed=lambda value, **kwargs: value,
                                   wrap_managed=lambda *args, **kwargs: None)
-        with patch("harnest.bundle.get_backend", return_value=backend):
+        with patch("harnest.bundle._lowering_adapter", return_value=backend):
             with self.assertRaisesRegex(BundleConventionError, "lifecycle.tool"):
                 compile_application(tmp_path, entrypoint="agent:root_agent")
             package(
@@ -196,7 +196,7 @@ class HarnestExtensionTests(unittest.TestCase):
             lower_managed=lambda value, **kwargs: value,
             wrap_managed=lambda *args, **kwargs: None,
         )
-        with patch("harnest.bundle.get_backend", return_value=backend):
+        with patch("harnest.bundle._lowering_adapter", return_value=backend):
             manifest = compile_artifact(
                 self.root,
                 self.root.parent / "artifact",
@@ -235,7 +235,7 @@ class HarnestExtensionTests(unittest.TestCase):
                     wrap_managed=lambda *args, **kwargs: None,
                 )
                 with (
-                    patch("harnest.bundle.get_backend", return_value=backend),
+                    patch("harnest.bundle._lowering_adapter", return_value=backend),
                     self.assertRaisesRegex(BundleConventionError, "resource"),
                 ):
                     compile_application(root, entrypoint="agent:root_agent")

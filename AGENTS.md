@@ -12,6 +12,23 @@ verification requirements.
   ownership boundaries, ordering, safety, and compatibility behavior. Do not
   narrate syntax or restate what the code already makes clear.
 
+## Codebase guide
+
+- `docs/codebase/` is the guide for changing Harnest itself. Keep its pages
+  accurate when you move responsibilities between files or areas.
+- Every source file needs a module docstring (Python) or a comment above its
+  `package` clause (Go) whose first sentence says what the file owns. Run
+  `python scripts/codebase_map.py` to regenerate `docs/codebase/files.md`;
+  `test_codebase_map` fails while it is stale.
+
+## Framework adapters
+
+- Keep framework-specific behavior inside `src/harnest/frameworks/<name>/`
+  adapters. Shared code calls adapter hooks or checks a declared capability;
+  never compare framework names. Framework names, distributions, and version
+  ranges come only from `frameworks.json` (see
+  [docs/frameworks.md](docs/frameworks.md)).
+
 ## Documentation ownership
 
 - Present Harnest as a product built and maintained by Fused. Keep the GitHub

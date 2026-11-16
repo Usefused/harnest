@@ -6,6 +6,17 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"harnest.dev/harnest/internal/pysource"
+)
+
+// ExampleModel and ExampleBaseURL are the placeholder model settings new agents
+// start with, so they compile offline before a model is configured. The CLI
+// lets a real shell value replace them, and src/harnest/model_transport.py
+// rejects calls to ExampleBaseURL with setup advice (a test keeps them equal).
+const (
+	ExampleModel   = "your-model"
+	ExampleBaseURL = "https://models.example.invalid/v1"
 )
 
 // ManagedFiles returns editable starter sources without touching the destination project.
@@ -20,7 +31,7 @@ __pycache__/
 `,
 		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 6
+projectSchema: 7
 `,
 		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent
@@ -38,11 +49,11 @@ spec:
     dependencyFile: pyproject.toml
   # Set your OpenAI-compatible endpoint and model before making live calls.
   environment:
-    OPENAI_MODEL: your-model
-    OPENAI_BASE_URL: https://models.example.invalid/v1
+    OPENAI_MODEL: %s
+    OPENAI_BASE_URL: %s
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: NO_CONTENT
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false"
-`, name, title, framework),
+`, name, title, framework, ExampleModel, ExampleBaseURL),
 		"agent-card.yaml": fmt.Sprintf(`name: %s
 description: A self-contained Harnest agent.
 version: 0.1.0
@@ -62,16 +73,7 @@ skills:
     description: Responds clearly to user requests.
     tags: [assistant]
 `, title, port),
-		"lifecycle/storage.py": `from harnest import lifecycle
-from harnest.store import MemoryStore
-
-
-@lifecycle.storage.sessions
-@lifecycle.storage.checkpoints
-def state_store():
-    """Share one lifecycle-owned store without placing it in lib."""
-    return MemoryStore()
-`,
+		"lifecycle/storage.py": pysource.File("managed/lifecycle/storage.py"),
 		"instructions.md": fmt.Sprintf(`You are %s.
 
 Answer clearly, acknowledge uncertainty, and use discovered tools when they are relevant.
@@ -118,14 +120,5 @@ package = false
 // ManagedAgentSource keeps model environment policy in the shared
 // connector used by both runtime frameworks and evaluation models.
 func ManagedAgentSource(agentName string) string {
-	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-root_agent = Agent(
-    name=%q,
-    history="session",
-    model=LiteLLMModel.from_openai_environment(),
-)
-`, agentName)
+	return pysource.Render("managed/agent.py.tmpl", map[string]any{"Name": agentName})
 }

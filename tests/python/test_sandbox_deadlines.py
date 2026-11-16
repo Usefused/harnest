@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
+from harnest.frameworks.adk.sandbox import code_executor
 from harnest.context import activate_context, revoke_context
 from harnest.sandbox import Sandbox
 from harnest.sandbox_control import SandboxCancelledError, current_control, execution_control
@@ -158,10 +160,10 @@ class SandboxDeadlineTests(unittest.TestCase):
 
         definition = Sandbox.provider(factory, timeout_seconds=60)
         if framework == "adk":
-            result = definition.to_adk_executor().execute_code(None, CodeExecutionInput(code="pass"))
+            result = code_executor(definition).execute_code(None, CodeExecutionInput(code="pass"))
             self.assertEqual(result.stdout, "outer work completed")
         else:
-            result = definition.to_langchain_tool().invoke({"code": "pass"})
+            result = sandbox_tool(definition).invoke({"code": "pass"})
             self.assertEqual(result["stdout"], "outer work completed")
         self.assertIsNone(current_control())
 
@@ -186,9 +188,9 @@ class SandboxDeadlineTests(unittest.TestCase):
             return SandboxResult(stdout="recreated")
 
         definition = Sandbox.provider(lambda: SimpleNamespace(execute=execute), timeout_seconds=60)
-        adk_result = definition.to_adk_executor().execute_code(None, CodeExecutionInput(code="pass"))
+        adk_result = code_executor(definition).execute_code(None, CodeExecutionInput(code="pass"))
         self.assertEqual(adk_result.stdout, "recreated")
-        self.assertEqual(definition.to_langchain_tool().invoke({"code": "pass"})["stdout"], "recreated")
+        self.assertEqual(sandbox_tool(definition).invoke({"code": "pass"})["stdout"], "recreated")
 
 
 class ConcurrentSandboxDeadlineTests(unittest.IsolatedAsyncioTestCase):

@@ -665,8 +665,9 @@ managed model boundaries. Portable v1 changes visible text or short-circuits;
 the lifecycle context names the managed agent or subagent performing that
 specific model call while retaining the root invocation's authenticated user,
 session, and invocation identity.
-structural message/model control requires zero-argument `@lifecycle.adk_plugin` or
-`@lifecycle.langgraph_middleware` factories for native framework callbacks.
+structural message/model control requires a zero-argument
+`@lifecycle.framework_extension` factory that returns the framework's native
+extension (an ADK `BasePlugin` or a LangChain `AgentMiddleware`).
 Read `docs/extensions.md` for phase and advanced-mode guarantees.
 
 ### Custom HTTP routes
@@ -853,9 +854,11 @@ def checkpointer():
 are imported from `harnest.store`. The compiled environment includes the
 release-bounded `asyncpg` and `redis` drivers. Managed Harnest creates native
 framework adapters. Advanced LangGraph
-compiles with `store.as_langgraph_checkpointer()`, or uses the exact lifecycle-owned
-`LangGraphStore(native_saver)`. Advanced ADK native ownership uses
-one `ADKStore(session_service)` returned from both storage factories. Hidden,
+compiles with `store.framework_checkpointer()`, or uses the exact lifecycle-owned
+`LangGraphStore(saver)` from `harnest.frameworks.langgraph`. Harnest selects
+the checkpointer adapter from the compilation context.
+Advanced ADK native ownership uses one `ADKStore(session_service)` from
+`harnest.frameworks.adk`, returned from both storage factories. Hidden,
 raw, duplicate, or mismatched authorities fail compilation. Read
 `docs/checkpoints.md` for schema and recovery limits.
 

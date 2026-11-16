@@ -1,3 +1,5 @@
+// `harnest runtime`: installs the CLI's Python runtime; parent of `harnest runtime build`.
+
 package main
 
 import (

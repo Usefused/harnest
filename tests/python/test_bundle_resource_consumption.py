@@ -1,14 +1,13 @@
 import json
 import shutil
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from harnest.agent import AgentDefinition
-from harnest.backends import get_backend
+from harnest.frameworks import get_framework
 from harnest.bundle import (
     BundleConventionError,
     BundleExportError,
@@ -30,7 +29,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
     def _backend() -> SimpleNamespace:
         return SimpleNamespace(
             lower_managed=lambda value, **_kwargs: value,
-            wrap_managed=lambda target, native_extensions=(): None,
+            wrap_managed=lambda target, framework_extensions=(): None,
         )
 
     def _write_scoped_graph(self, root: Path, *, sandbox: bool) -> None:
@@ -129,15 +128,20 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 ).replace("model='test/model'", "model=model")
                 path.write_text(source, encoding="utf-8")
 
-        actual = get_backend(framework)
+        actual = get_framework(framework)
         lowered_graphs = []
 
-        def lower_graph(graph, native_extensions, checkpointer):
-            lowered_graphs.append(graph)
-            return actual._lower_graph(graph, native_extensions, checkpointer)
+        class ObservedFramework(type(actual)):
+            """Record the portable graph each real adapter lowers."""
 
-        observed = replace(actual, _lower_graph=lower_graph)
-        with patch("harnest.bundle.get_backend", return_value=observed):
+            def lower_graph(self, graph, *, framework_extensions, checkpointer):
+                lowered_graphs.append(graph)
+                return super().lower_graph(
+                    graph, framework_extensions=framework_extensions, checkpointer=checkpointer
+                )
+
+        observed = ObservedFramework(actual.metadata)
+        with patch("harnest.bundle._lowering_adapter", return_value=observed):
             compiled = compile_application(
                 root, entrypoint="agent:root_agent", framework=framework
             )
@@ -180,7 +184,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 "instruction='Critique the research.')\n",
             )
 
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 compiled = compile_application(
                     root, entrypoint="agent:root_agent", framework="adk"
                 )
@@ -227,7 +231,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             root = Path(temp)
             self._write_scoped_graph(root, sandbox=False)
             with patch(
-                "harnest.bundle.get_backend", return_value=self._backend()
+                "harnest.bundle._lowering_adapter", return_value=self._backend()
             ):
                 compiled = compile_application(
                     root, entrypoint="agent:root_agent", framework="langgraph"
@@ -316,7 +320,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 self._write(root / "skills" / "routing" / "SKILL.md", contents)
                 write_session_store(root)
 
-                with patch("harnest.bundle.get_backend", return_value=self._backend()):
+                with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                     with self.assertRaisesRegex(BundleSkillError, expected):
                         compile_application(
                             root,
@@ -367,7 +371,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 self._write(root / relative, source)
                 write_session_store(root)
                 with patch(
-                    "harnest.bundle.get_backend", return_value=self._backend()
+                    "harnest.bundle._lowering_adapter", return_value=self._backend()
                 ):
                     with self.assertRaisesRegex(BundleConventionError, expected):
                         compile_application(
@@ -425,10 +429,10 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             target = object()
             backend = SimpleNamespace(
                 validate_advanced=lambda value, fallback_name: SimpleNamespace(
-                    name="advanced", target=target, native_app=None
+                    name="advanced", target=target, framework_app=None
                 )
             )
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 result = compile_application(
                     root, entrypoint="agent:root_agent", framework="adk", mode="advanced"
                 )
@@ -450,7 +454,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                 "raise AssertionError('must never import manifestless plugin code')\n",
             )
             write_session_store(root)
-            with patch("harnest.bundle.get_backend", return_value=self._backend()):
+            with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
                 with self.assertRaisesRegex(
                     BundleConventionError,
                     "must contain plugin.json.*no longer loads manifestless plugins",

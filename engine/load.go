@@ -1,3 +1,5 @@
+// Loads and validates an agent bundle's config.yaml and deployment plans.
+
 package engine
 
 import (
@@ -14,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 var (
@@ -282,6 +286,9 @@ func validateAgentConfig(directory string, config AgentConfig) error {
 			return fmt.Errorf("%s/config.yaml: invalid environment variable name %q", directory, name)
 		}
 	}
+	if err := config.Spec.Evaluation.validate(); err != nil {
+		return err
+	}
 	return validateSecrets(directory, config)
 }
 
@@ -319,8 +326,8 @@ func validateDependencyProject(directory string, config AgentConfig) error {
 
 func validateFrameworkRuntime(directory string, config AgentConfig) error {
 	framework := config.Spec.Framework
-	if framework.Name != "adk" && framework.Name != "langgraph" {
-		return fmt.Errorf("%s/config.yaml: spec.framework.name must be adk or langgraph", directory)
+	if !frameworks.Known(framework.Name) {
+		return fmt.Errorf("%s/config.yaml: spec.framework.name must be %s", directory, frameworks.Choices())
 	}
 	if mode := framework.EffectiveMode(); mode != "managed" && mode != "advanced" {
 		return fmt.Errorf("%s/config.yaml: spec.framework.mode must be managed or advanced", directory)

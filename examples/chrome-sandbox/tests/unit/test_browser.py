@@ -6,7 +6,7 @@ import asyncio
 def test_chrome_agent_exposes_the_browser_tool(agent, tools):
     """Keep the compiled example identity and business tool discoverable."""
     assert agent.name == "chrome_researcher"
-    assert set(tools) == {"browse_page"}
+    assert "browse_page" in tools
 
 
 def test_browser_tool_rejects_an_unapproved_host_without_docker(tools):

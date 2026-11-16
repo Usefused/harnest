@@ -115,8 +115,7 @@
           "storage.checkpoints",
           "storage.assets",
           "storage.custom",
-          "native.adk",
-          "native.langgraph",
+          "framework.extension",
           "policy.output",
           "sandbox.provider",
           "telemetry.exporter"

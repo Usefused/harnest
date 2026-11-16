@@ -1,3 +1,5 @@
+// `harnest doctor`: checks Python, the agent's managed environment, and the framework packages it needs.
+
 package main
 
 import (
@@ -10,57 +12,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"harnest.dev/harnest/internal/frameworks"
+	"harnest.dev/harnest/internal/pysource"
 )
 
-const doctorProbe = `import importlib
-import importlib.metadata
-import json
-import platform
-import sys
-
-framework = sys.argv[1]
-dependencies = [
-    ("harnest", "harnest"),
-    ("litellm", "litellm"),
-    ("opentelemetry.sdk", "opentelemetry-sdk"),
-    ("opentelemetry.exporter.otlp.proto.http.trace_exporter", "opentelemetry-exporter-otlp-proto-http"),
-    ("opentelemetry.instrumentation.fastapi", "opentelemetry-instrumentation-fastapi"),
-    ("opentelemetry.instrumentation.logging", "opentelemetry-instrumentation-logging"),
-]
-if framework == "adk":
-    dependencies.append(("google.adk", "google-adk"))
-elif framework == "langgraph":
-    dependencies.extend((
-        ("langgraph", "langgraph"),
-        ("langchain", "langchain"),
-        ("langchain_litellm", "langchain-litellm"),
-    ))
-
-checks = []
-for module, distribution in dependencies:
-    try:
-        importlib.import_module(module)
-        checks.append({
-            "name": distribution,
-            "ok": True,
-            "version": importlib.metadata.version(distribution),
-            "error": "",
-        })
-    except Exception as exc:
-        checks.append({
-            "name": distribution,
-            "ok": False,
-            "version": "",
-            "error": f"{type(exc).__name__}: {exc}",
-        })
-
-print(json.dumps({
-    "executable": sys.executable,
-    "python": platform.python_version(),
-    "supported": sys.version_info >= (3, 11),
-    "packages": checks,
-}, separators=(",", ":")))
-`
+// doctorProbe reports interpreter details and which runtime packages import.
+var doctorProbe = pysource.File("probes/doctor.py")
 
 type doctorResult struct {
 	Executable string          `json:"executable"`
@@ -87,14 +45,14 @@ func (a *application) newDoctorCommand() *cobra.Command {
 			return a.runDoctor(command, arguments, framework)
 		},
 	}
-	command.Flags().StringVar(&framework, "framework", "", "framework dependencies: adk or langgraph (default: agent framework, otherwise core only)")
+	command.Flags().StringVar(&framework, "framework", "", "framework dependencies: "+frameworks.Choices()+" (default: agent framework, otherwise core only)")
 	return command
 }
 
 // runDoctor reports the selected environment without installing dependencies.
 func (a *application) runDoctor(command *cobra.Command, arguments []string, framework string) error {
-	if framework != "" && framework != "adk" && framework != "langgraph" {
-		return fmt.Errorf("--framework must be adk or langgraph")
+	if framework != "" && !frameworks.Known(framework) {
+		return fmt.Errorf("--framework must be %s", frameworks.Choices())
 	}
 	writer := command.OutOrStdout()
 	fmt.Fprintf(writer, "[ok] Go CLI: harnest %s\n", a.version)
@@ -187,7 +145,7 @@ func publishedDoctorEnvironment(paths environmentPaths) (pythonSelection, bool) 
 
 // probePython imports packages in the interpreter selected for this diagnostic.
 func (a *application) probePython(command *cobra.Command, python pythonSelection, framework string) (doctorResult, error) {
-	probe := a.system.commandContext(command.Context(), python.Executable, "-c", doctorProbe, framework)
+	probe := a.system.commandContext(command.Context(), python.Executable, "-c", doctorProbe, doctorModulesArgument(framework))
 	var stdout, stderr bytes.Buffer
 	probe.Stdout, probe.Stderr = &stdout, &stderr
 	if err := probe.Run(); err != nil {
@@ -225,4 +183,19 @@ func writeDoctorResult(writer io.Writer, python pythonSelection, result doctorRe
 		}
 	}
 	return problems
+}
+
+// doctorModulesArgument passes the selected framework's importable modules to
+// the probe as JSON; an empty framework checks only core dependencies.
+func doctorModulesArgument(framework string) string {
+	selected, _ := frameworks.Lookup(framework)
+	modules := selected.DoctorModules
+	if modules == nil {
+		modules = []frameworks.DoctorModule{}
+	}
+	encoded, err := json.Marshal(modules)
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
 }

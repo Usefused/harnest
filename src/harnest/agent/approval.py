@@ -586,10 +586,10 @@ def wrap_approved_tool(function: F) -> F:
             if inspect.isawaitable(result):
                 result = await result
         except BaseException:
-            from ..durable import is_native_suspension
+            from ..durable import is_framework_suspension
 
             error = __import__("sys").exception()
-            if error is None or not is_native_suspension(error):
+            if error is None or not is_framework_suspension(error):
                 record_approved_failure(grant)
             raise
         _record_executed(grant)
@@ -674,20 +674,13 @@ def _bound_arguments(values: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _is_injected_framework_context(value: Any) -> bool:
-    module = type(value).__module__
-    if module.startswith("google.adk."):
-        try:
-            from google.adk.tools.tool_context import ToolContext
-        except ImportError:  # pragma: no cover - optional backend
-            return False
-        return isinstance(value, ToolContext)
-    if module.startswith("langgraph."):
-        try:
-            from langgraph.prebuilt.tool_node import ToolRuntime
-        except ImportError:  # pragma: no cover - optional backend
-            return False
-        return isinstance(value, ToolRuntime)
-    return False
+    """Report whether a framework injected this argument as its tool context."""
+
+    from ..frameworks.registry import framework_names, get_framework
+
+    return any(
+        get_framework(name).is_injected_tool_context(value) for name in framework_names()
+    )
 
 
 def _canonical(value: Any) -> Any:

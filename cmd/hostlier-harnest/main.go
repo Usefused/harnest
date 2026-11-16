@@ -1,3 +1,4 @@
+// Dispatches Hostlier package discovery, initialization, and build hooks.
 package main
 
 import (

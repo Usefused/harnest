@@ -13,11 +13,11 @@ from harnest.agent import Agent, AgentDefinition
 from harnest.agent.approval import ApprovalPolicy
 from harnest.application import CompiledApplication
 from harnest.assets import AssetMediaMetadata, AssetScope, MemoryAssetStore
-from harnest.backends.langgraph import ManagedAgentPlan, ManagedGraphPlan
+from harnest.frameworks.langgraph.lowering import ManagedAgentPlan, ManagedGraphPlan
 from harnest.content import ContentPart, Image, Text
 from harnest import context
-from harnest.checkpoint_langgraph import _decode_thread_id
-from harnest.durable import NativeDurableSuspended
+from harnest.frameworks.langgraph.checkpoint import _decode_thread_id
+from harnest.durable import FrameworkDurableSuspended
 from harnest.graph import START, Edge, Graph
 from harnest.lifecycle import LifecycleListener
 from harnest.mcp_context import MCPContextUnavailableError
@@ -30,7 +30,7 @@ from harnest.mcp_lifecycle import (
 from harnest.neutral_runtime import InvocationRequest, SessionConflictError
 from harnest.output import AgentMetadataMode, OutputPolicy
 from harnest.runtime_continuation import completed_payload
-from harnest.runtime_langgraph import (
+from harnest.frameworks.langgraph.runtime import (
     LangGraphRuntimeDriver,
     _MODEL_ASSET_SCOPE,
     _SESSION_STATE_KEY,
@@ -989,17 +989,21 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 self.inputs.append(graph_input)
                 assert stream_mode == ["messages", "tasks", "values"]
                 state = dict(graph_input[_SESSION_STATE_KEY])
+                yield "values", graph_input
                 state["count"] = state.get("count", 0) + 1
-                yield "values", {
+                state["flag"] = True
+                updated = {
                     **graph_input,
                     _SESSION_STATE_KEY: state,
                     "value": f"count:{state['count']}",
                 }
+                yield "values", updated
+                yield "values", updated
 
         target = GraphStateStreamTarget()
         driver = LangGraphRuntimeDriver(_application(target, kind="graph"))
         await driver.create_session(
-            session_id="graph-session", user_id="user-1", state={"tenant": "one"}
+            session_id="graph-session", user_id="user-1", state={"tenant": "one", "count": 0}
         )
 
         events = [
@@ -1011,7 +1015,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         # "tenant" key from the pre-turn snapshot must not be re-sent.
         self.assertEqual(
             [event for event in events if event["type"] == "state_delta"],
-            [{"type": "state_delta", "delta": {"count": 1}}],
+            [{"type": "state_delta", "delta": {"count": 1, "flag": True}}],
         )
 
     async def test_content_input_stays_reference_only_in_graph_and_history(self):
@@ -1109,7 +1113,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with patch(
-                "harnest.runtime_langgraph.current_transient_media",
+                "harnest.frameworks.langgraph.runtime.current_transient_media",
                 return_value=access,
             ):
                 await driver.invoke(request)
@@ -1251,7 +1255,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
         ):
             middleware = _langgraph_asset_middleware(None)
             with patch(
-                "harnest.runtime_langgraph.current_transient_media",
+                "harnest.frameworks.langgraph.runtime.current_transient_media",
                 return_value=access,
             ):
                 with self.assertRaisesRegex(RuntimeError, "provider failed"):
@@ -1374,7 +1378,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 event
                 async for event in reconciled.stream(_request("reconciled"))
             ]
-            with self.assertRaises(NativeDurableSuspended):
+            with self.assertRaises(FrameworkDurableSuspended):
                 async for event in interrupted.stream(_request("interrupted")):
                     interrupted_events.append(event)
         finally:
@@ -1681,7 +1685,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 "langchain_mcp_adapters.client": client_module,
             },
         ), patch(
-            "harnest.backends.langgraph.materialize_agent",
+            "harnest.frameworks.langgraph.lowering.materialize_agent",
             return_value=target,
         ) as materialize:
             first = await driver.invoke(_request())
@@ -1782,7 +1786,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "langchain_mcp_adapters.client": client_module,
                 },
             ), patch(
-                "harnest.backends.langgraph.materialize_agent",
+                "harnest.frameworks.langgraph.lowering.materialize_agent",
                 side_effect=materialize,
             ), self.assertLogs(
                 "harnest.agent.mcp.audit", level="INFO"
@@ -1867,7 +1871,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "langchain_mcp_adapters.client": client_module,
                 },
             ), patch(
-                "harnest.backends.langgraph.materialize_agent",
+                "harnest.frameworks.langgraph.lowering.materialize_agent",
                 side_effect=materialize,
             ), self.assertLogs(
                 "harnest.agent.mcp.audit", level="INFO"
@@ -1963,7 +1967,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                     "langchain_mcp_adapters.client": client_module,
                 },
             ), patch(
-                "harnest.backends.langgraph.materialize_agent",
+                "harnest.frameworks.langgraph.lowering.materialize_agent",
                 side_effect=materialize,
             ):
                 result = await driver.invoke(_request())
@@ -2049,7 +2053,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 "langchain_mcp_adapters.client": client_module,
             },
         ), patch(
-            "harnest.backends.langgraph.materialize_agent",
+            "harnest.frameworks.langgraph.lowering.materialize_agent",
             return_value=_Target(),
         ), patch(
             "harnest.mcp_http_tools.modern_tools", return_value=None,
@@ -2105,7 +2109,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
                 "langchain_mcp_adapters.client": client_module,
             },
         ), patch(
-            "harnest.backends.langgraph.materialize_graph",
+            "harnest.frameworks.langgraph.lowering.materialize_graph",
             return_value=target,
         ) as materialize:
             result = await driver.invoke(_request())
@@ -2156,7 +2160,7 @@ class LangGraphRuntimeDriverTests(unittest.IsolatedAsyncioTestCase):
 class LangGraphContentTests(unittest.TestCase):
     def test_model_and_mapping_preserve_nested_content_order_and_plain_fields(self):
         """Both structured input forms share projection without losing text or ordering."""
-        from harnest.runtime_langgraph_content import portable_input_content
+        from harnest.frameworks.langgraph.runtime_content import portable_input_content
 
         class Request(BaseModel):
             prompt: str
@@ -2177,24 +2181,6 @@ class LangGraphContentTests(unittest.TestCase):
 
 class LangGraphStateDeltaTests(unittest.TestCase):
     """Unit-test the shallow-diff helper independent of a real graph run."""
-
-    def test_only_new_or_changed_keys_are_reported(self):
-        state = _StreamState(state_snapshot={"tenant": "one", "count": 1})
-        event = _langgraph_state_delta(
-            {_SESSION_STATE_KEY: {"tenant": "one", "count": 2, "flag": True}},
-            state,
-        )
-        self.assertEqual(
-            event, {"type": "state_delta", "delta": {"count": 2, "flag": True}}
-        )
-        self.assertEqual(
-            state.state_snapshot, {"tenant": "one", "count": 2, "flag": True}
-        )
-
-    def test_an_unchanged_snapshot_reports_no_delta(self):
-        state = _StreamState(state_snapshot={"tenant": "one"})
-        event = _langgraph_state_delta({_SESSION_STATE_KEY: {"tenant": "one"}}, state)
-        self.assertIsNone(event)
 
     def test_a_non_mapping_values_item_is_ignored(self):
         state = _StreamState(state_snapshot={"tenant": "one"})

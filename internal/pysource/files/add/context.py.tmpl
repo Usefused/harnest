@@ -1,0 +1,7 @@
+from harnest import context
+
+
+@context.provider({{quote .Name}})
+def {{.Name}}():
+    """Create one invocation-scoped {{words .Name}} value."""
+    return {}

@@ -79,12 +79,12 @@ class ToolLifecyclePipeline:
             result = finished.result if finished is not None else await handler(current)
             return await self._after(context, result)
         except BaseException as error:
-            from .durable import is_native_suspension
+            from .durable import is_framework_suspension
 
             # LangGraph interrupts are successful control flow whose checkpoint
             # must propagate untouched; reporting them as tool failures would
             # corrupt lifecycle audit semantics.
-            if is_native_suspension(error):
+            if is_framework_suspension(error):
                 raise
             await self._notify(context, error)
             raise

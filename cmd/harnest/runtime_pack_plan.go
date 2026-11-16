@@ -1,3 +1,5 @@
+// Merges several agents' requirements into one shared runtime pack plan.
+
 package main
 
 import (

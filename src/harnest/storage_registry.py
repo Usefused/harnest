@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .assets import AssetStore
-from .checkpoint import ADKStore, CheckpointAuthority
+from .checkpoint import CheckpointAuthority, FrameworkStorage, is_session_authority
 from .session import SessionStore
 from ._task_storage import TaskStore
 from ._cron_storage import CronStore
@@ -33,7 +33,7 @@ class CustomStorage(Protocol):
 class StorageRegistry:
     """One normalized storage boundary consumed by compiler and runtime adapters."""
 
-    sessions: SessionStore | ADKStore | None = None
+    sessions: SessionStore | FrameworkStorage | None = None
     checkpoints: CheckpointAuthority | None = None
     assets: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
     custom: Mapping[str, CustomStorage] = field(default_factory=dict, repr=False)
@@ -44,7 +44,8 @@ class StorageRegistry:
     def __post_init__(self) -> None:
         """Validate contracts and prevent mutation after compilation."""
 
-        _validate_optional(self.sessions, (SessionStore, ADKStore), "sessions")
+        if self.sessions is not None and not is_session_authority(self.sessions):
+            raise TypeError("sessions must implement SessionStore or own native sessions")
         _validate_optional(self.checkpoints, CheckpointAuthority, "checkpoints")
         _validate_optional(self.tasks, TaskStore, "tasks")
         _validate_optional(self.cron, CronStore, "cron")

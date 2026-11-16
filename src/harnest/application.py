@@ -7,9 +7,10 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from .frameworks.registry import framework_names
 from .agent import _AdvancedAgentDefinition
 from .assets import AssetStore
-from .checkpoint import ADKStore, CheckpointAuthority
+from .checkpoint import CheckpointAuthority, FrameworkStorage, is_session_authority
 from .context import ContextValue
 from .context_sandboxes import SandboxRegistry
 from .credentials import CredentialProvider
@@ -33,7 +34,7 @@ _ASSET_STORE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._~-]{0,63}$")
 class RuntimeCapabilities:
     """Validated application-owned resources consumed by every runtime."""
 
-    session_store: SessionStore | ADKStore | None = None
+    session_store: SessionStore | FrameworkStorage | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
     asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
@@ -103,14 +104,14 @@ class CompiledApplication:
     framework: str
     mode: str
     target: Any
-    native_app: Any | None = None
+    framework_app: Any | None = None
     managed_definition: Any | None = field(default=None, repr=False)
-    native_extensions: Sequence[Any] = field(default=(), repr=False)
-    native_checkpointer: Any | None = field(default=None, repr=False)
+    framework_extensions: Sequence[Any] = field(default=(), repr=False)
+    framework_checkpointer: Any | None = field(default=None, repr=False)
     kind: str = "agent"
     bridge: _AdvancedAgentDefinition | None = None
     lifecycle_extensions: Sequence[Any] = ()
-    session_store: SessionStore | ADKStore | None = None
+    session_store: SessionStore | FrameworkStorage | None = None
     checkpointer: CheckpointAuthority | None = None
     asset_store: AssetStore | None = field(default=None, repr=False)
     asset_stores: Mapping[str, AssetStore] = field(default_factory=dict, repr=False)
@@ -145,7 +146,7 @@ class CompiledApplication:
     def __post_init__(self) -> None:
         """Freeze normalized metadata at the compiled framework boundary."""
 
-        if self.framework not in {"adk", "langgraph"}:
+        if self.framework not in framework_names():
             raise ValueError(f"unsupported compiled framework: {self.framework}")
         if self.mode not in {"managed", "advanced"}:
             raise ValueError(f"unsupported compiled mode: {self.mode}")
@@ -178,7 +179,7 @@ class CompiledApplication:
         object.__setattr__(
             self, "lifecycle_extensions", tuple(self.lifecycle_extensions)
         )
-        object.__setattr__(self, "native_extensions", tuple(self.native_extensions))
+        object.__setattr__(self, "framework_extensions", tuple(self.framework_extensions))
         object.__setattr__(self, "tasks", _compiled_tasks(self.tasks))
         object.__setattr__(self, "crons", _compiled_crons(self.crons, self.tasks))
         object.__setattr__(
@@ -226,10 +227,12 @@ def _publish_compatibility_attributes(
 
 
 def _validate_session_store(value: Any) -> None:
-    """Accept the portable protocol and ADK's explicit native wrapper."""
+    """Accept the portable protocol or framework-specific storage that owns sessions."""
 
-    if value is not None and not isinstance(value, (SessionStore, ADKStore)):
-        raise TypeError("session_store must implement SessionStore or be ADKStore")
+    if value is not None and not is_session_authority(value):
+        raise TypeError(
+            "session_store must implement SessionStore or be native storage that owns sessions"
+        )
 
 
 def _validate_optional_type(value: Any, expected: type[Any], *, field_name: str) -> None:

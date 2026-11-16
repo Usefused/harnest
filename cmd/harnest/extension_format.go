@@ -1,3 +1,5 @@
+// Naming rules for Harnest Extension distributions: the canonical package prefix and wheel format.
+
 package main
 
 import "strings"

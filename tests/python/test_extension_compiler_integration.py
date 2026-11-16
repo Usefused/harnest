@@ -63,7 +63,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
 
         return SimpleNamespace(
             lower_managed=lambda value, **_kwargs: value,
-            wrap_managed=lambda target, native_extensions=(): None,
+            wrap_managed=lambda target, framework_extensions=(): None,
         )
 
     @staticmethod
@@ -74,7 +74,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             return SimpleNamespace(
                 name=value.name or fallback_name,
                 target=value.target,
-                native_app=None,
+                framework_app=None,
             )
 
         return SimpleNamespace(validate_advanced=validate)
@@ -201,7 +201,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
                 compiled = None
                 try:
                     with patch(
-                        "harnest.bundle.get_backend",
+                        "harnest.bundle._lowering_adapter",
                         return_value=self._managed_backend(),
                     ):
                         compiled = compile_application(
@@ -297,7 +297,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
                     )
 
                 with patch(
-                    "harnest.bundle.get_backend",
+                    "harnest.bundle._lowering_adapter",
                     return_value=self._managed_backend(),
                 ):
                     with self.assertRaisesRegex(
@@ -333,7 +333,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             self._write(extension / "tools" / "normalize.py", source)
 
             with patch(
-                "harnest.bundle.get_backend", return_value=self._managed_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
             ):
                 with self.assertRaisesRegex(
                     BundleDuplicateError, "duplicate tool 'normalize'"
@@ -376,7 +376,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             compiled = None
             try:
                 with patch(
-                    "harnest.bundle.get_backend", return_value=self._managed_backend()
+                    "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
                 ):
                     compiled = compile_application(
                         root,
@@ -408,7 +408,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "harnest.bundle.get_backend", return_value=self._managed_backend()
+                    "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
                 ),
                 self.assertRaisesRegex(
                     BundleConventionError, "must declare 'tools' under contributes.tools"
@@ -433,7 +433,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             )
 
             with patch(
-                "harnest.bundle.get_backend", return_value=self._managed_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
             ):
                 with self.assertRaisesRegex(
                     BundleConventionError,
@@ -463,7 +463,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             compiled = None
             try:
                 with patch(
-                    "harnest.bundle.get_backend", return_value=self._managed_backend()
+                    "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
                 ):
                     compiled = compile_application(
                         root,
@@ -497,7 +497,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             compiled = None
             try:
                 with patch(
-                    "harnest.bundle.get_backend",
+                    "harnest.bundle._lowering_adapter",
                     return_value=self._managed_backend(),
                 ):
                     compiled = compile_application(
@@ -531,7 +531,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
                 "    return value\n",
             )
             with patch(
-                "harnest.bundle.get_backend", return_value=self._advanced_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._advanced_backend()
             ):
                 with self.assertRaisesRegex(
                     BundleConventionError,
@@ -566,7 +566,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             compiled = None
             try:
                 with patch(
-                    "harnest.bundle.get_backend",
+                    "harnest.bundle._lowering_adapter",
                     return_value=self._advanced_backend(),
                 ):
                     compiled = compile_application(
@@ -599,7 +599,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             self._runtime_extension(root, "zeta", requires=("core",))
 
             with patch(
-                "harnest.bundle.get_backend", return_value=self._managed_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
             ):
                 first = compile_artifact(root, output, framework="langgraph")
 
@@ -626,7 +626,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
 
             self._write(core / "lib" / "client.py", "API_LEVEL = 2\n")
             with patch(
-                "harnest.bundle.get_backend", return_value=self._managed_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
             ):
                 second = compile_artifact(root, output, framework="langgraph")
 
@@ -684,7 +684,7 @@ class HarnestExtensionCompilerIntegrationTests(unittest.TestCase):
             )
 
             with patch(
-                "harnest.bundle.get_backend", return_value=self._managed_backend()
+                "harnest.bundle._lowering_adapter", return_value=self._managed_backend()
             ):
                 manifest = compile_artifact(root, output, framework="langgraph")
 

@@ -1,21 +1,25 @@
+// Example files `harnest init` writes into a managed agent's optional folders.
+
 package main
+
+import "harnest.dev/harnest/internal/pysource"
 
 // managedExampleScaffoldFiles adds inert samples only where the default profile
 // has no code, preserving its root agent and required storage implementation.
-func managedExampleScaffoldFiles(files map[string]string, agentName, framework string) map[string]string {
+func managedExampleScaffoldFiles(files map[string]string, agentName string) map[string]string {
 	samples := map[string]string{
-		"tools/_example.py":                                       "\"\"\"Copy to echo.py to expose the echo tool.\"\"\"\n\n" + files["tools/echo.py"],
+		"tools/_example.py":                                       pysource.Render("init/examples/tools/_example.py.tmpl", map[string]any{"Source": files["tools/echo.py"]}),
 		"sandbox/_example.py":                                     files["sandbox/_example.py"],
 		"skills/_example/SKILL.md":                                files["skills/getting-started/SKILL.md"],
 		"plugins/_example_agent/plugin.json":                      files["plugins/starter/plugin.json"],
 		"plugins/_example_agent/skills/starter-guidance/SKILL.md": files["plugins/starter/skills/starter-guidance/SKILL.md"],
 		"evals/_example.evalset.json":                             files["evals/starter.evalset.json"],
-		"tests/unit/_example.py":                                  "\"\"\"Copy to test_agent.py after activating tools/_example.py as echo.py.\"\"\"\n\n" + files["tests/unit/test_agent.py"],
-		"tests/smoke/_example.py":                                 "\"\"\"Copy to test_health.py; run explicitly with harnest test --smoke.\"\"\"\n\n" + files["tests/smoke/test_health.py"],
+		"tests/unit/_example.py":                                  pysource.Render("init/examples/tests/unit/_example.py.tmpl", map[string]any{"Source": files["tests/unit/test_agent.py"]}),
+		"tests/smoke/_example.py":                                 pysource.Render("init/examples/tests/smoke/_example.py.tmpl", map[string]any{"Source": files["tests/smoke/test_health.py"]}),
 	}
 	// Reuse the default profile unchanged: resources with existing code need no
 	// second example, and placeholders must not activate capabilities implicitly.
-	files = guidedScaffoldFiles(files, agentName, framework, "managed")
+	files = guidedScaffoldFiles(files, agentName, "managed")
 	for path, source := range samples {
 		files[path] = source
 	}
@@ -29,75 +33,12 @@ func managedExampleScaffoldFiles(files map[string]string, agentName, framework s
 // folder contracts, keeping Harnest Extensions separate from Agent Plugins.
 func managedFolderCodeSamples() map[string]string {
 	return map[string]string{
-		"lib/_example.py": `"""Copy to messages.py; import with from harnest.lib.messages import normalize."""
-
-
-def normalize(message: str) -> str:
-    """Collapse whitespace without retaining request data."""
-    return " ".join(message.split())
-`,
-		"models/_example.py": `"""Copy to messages.py; import with from harnest.models.messages import Message."""
-
-from pydantic import BaseModel, Field
-
-
-class Message(BaseModel):
-    """Validate a non-empty message at an authored boundary."""
-
-    text: str = Field(min_length=1)
-`,
-		"tasks/_example.py": `"""Copy to prepare_report.py to register application-owned queue work.
-
-Direct calls run inline. Await prepare_report.defer(subject="daily") only from
-an active Harnest runtime with the required task-storage configuration.
-Tasks are not automatically exposed as model tools.
-"""
-
-from harnest.task import task
-
-
-@task(queue="reports", max_retries=3)
-async def prepare_report(subject: str) -> dict[str, str]:
-    """Prepare a deterministic result without external side effects."""
-    return {"subject": subject, "status": "ready"}
-`,
-		"cron/_example.py": `"""Copy to daily_report.py to register this scheduled function.
-
-Harnest creates its queued task automatically; no separate tasks/ file is needed.
-Serving requires task and cron storage backed by the same provider instance.
-"""
-
-` + scaffoldCronExample(),
-		"subagents/_example.py": `"""Copy to helper.py and reference helper explicitly in the root Graph.
-
-Import with from subagents.helper import helper, then add it to Graph.nodes
-and connect it with an Edge. A flat subagent has no private resource folders.
-"""
-
-from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-helper = Agent(
-    name="helper",
-    model=LiteLLMModel.from_openai_environment(),
-    instruction="Summarize the request clearly; acknowledge missing information.",
-)
-`,
-		"mcp/_example.py": `"""Copy to knowledge.py and configure HARNEST_MCP_URL to enable this client.
-
-Keep credentials in the runtime environment, never in this source file.
-"""
-
-import os
-
-from harnest.mcp import MCPClient
-
-
-def client():
-    """Resolve the authored endpoint when Harnest discovers this client."""
-    return MCPClient.streamable_http(os.environ["HARNEST_MCP_URL"], prefix="knowledge")
-`,
+		"lib/_example.py":       pysource.File("init/examples/lib/_example.py"),
+		"models/_example.py":    pysource.File("init/examples/models/_example.py"),
+		"tasks/_example.py":     pysource.File("init/examples/tasks/_example.py"),
+		"cron/_example.py":      pysource.Render("init/examples/cron/_example.py.tmpl", nil),
+		"subagents/_example.py": pysource.File("init/examples/subagents/_example.py"),
+		"mcp/_example.py":       pysource.File("init/examples/mcp/_example.py"),
 		"extensions/_example/extension.yaml": `apiVersion: harnest.dev/v1alpha1
 kind: Extension
 metadata:
@@ -107,27 +48,7 @@ runtime:
   entrypoint: extension:extension
 capabilities: []
 `,
-		"extensions/_example/extension.py": `"""Copy the containing folder to extensions/starter_runtime to enable this extension.
-
-List contributed directories under extension.yaml contributes and declare their
-matching lifecycle, context, or content capabilities before use.
-"""
-
-from harnest.extensions import Extension
-
-
-class StarterExtension(Extension):
-    """Own application-lifetime resources without importing a framework."""
-
-    async def start(self, start_context):
-        """Acquire extension-owned clients here, never during module import."""
-
-    async def stop(self):
-        """Close only resources this extension acquired during startup."""
-
-
-extension = StarterExtension()
-`,
+		"extensions/_example/extension.py": pysource.File("init/examples/extensions/_example/extension.py"),
 		"plugins/_README.md": `# Plugin samples
 
 Optional: Yes. Delete this folder if the agent uses no portable plugins.
@@ -218,13 +139,5 @@ inline shape; the generated _example file already uses the scaffolded name.
 // scaffoldCronExample keeps the folder guide and opt-in sample on the same
 // single-function contract, including the queued task's explicit policy.
 func scaffoldCronExample() string {
-	return `from harnest.cron import cron
-
-
-# Schedules use UTC, independent of the host machine's local timezone.
-@cron("0 9 * * 1-5", arguments={"subject": "daily"}, queue="reports", max_retries=3)
-async def daily_report(subject: str) -> dict[str, str]:
-    """Prepare a deterministic report without external side effects."""
-    return {"subject": subject, "status": "ready"}
-`
+	return pysource.File("init/shared/cron_daily_report.py")
 }

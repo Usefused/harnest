@@ -29,9 +29,8 @@ from .sandbox_types import (
 class Sandbox:
     """Declare one lazy sandbox usable by managed ADK and LangGraph agents.
 
-    A sandbox is a code-execution boundary, not a policy label. The backend
-    returned by ``factory`` implements ``SandboxBackend.execute`` and owns the
-    actual isolation guarantees. Legacy ADK executors remain ADK-only providers.
+    The backend returned by ``factory`` implements ``SandboxBackend.execute``
+    and enforces isolation. ADK executor providers require the ADK framework.
     Compilation never connects to provider infrastructure.
     """
 
@@ -86,18 +85,6 @@ class Sandbox:
             network_policy=network_policy,
             _executor_options={} if adapter_options is None else adapter_options,
         )
-
-    def to_adk_executor(self) -> Any:
-        """Use ADK's code_executor interface and native code/result event loop."""
-        from .sandbox_adapters import adk_executor
-
-        return adk_executor(self)
-
-    def to_langchain_tool(self) -> Any:
-        """Use LangGraph's native tool loop with a lazy, typed execution tool."""
-        from .sandbox_adapters import langchain_tool
-
-        return langchain_tool(self)
 
     def build(self) -> Any:
         """Construct and validate a provider only when explicitly requested."""

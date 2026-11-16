@@ -1,5 +1,7 @@
 //go:build harnest_release
 
+// Returns the prebuilt, embedded launcher in release builds.
+
 package agentlauncher
 
 import "context"

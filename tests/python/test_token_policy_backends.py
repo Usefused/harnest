@@ -1,6 +1,7 @@
 """Exercise real ADK/LangChain boundaries using deterministic local models."""
 
 from typing import Any
+from harnest.frameworks.adk.lowering import build_agent
 import unittest
 
 from google.adk.apps import App
@@ -16,13 +17,13 @@ from pydantic import Field
 
 from harnest.agent import Agent
 from harnest.application import CompiledApplication
-from harnest.backends.langgraph import lower_agent
-from harnest.runtime_adk import ADKRuntimeDriver
+from harnest.frameworks.langgraph.lowering import lower_agent
+from harnest.frameworks.adk.runtime import ADKRuntimeDriver
 from harnest.lifecycle_runtime import LifecycleRuntimeDriver
-from harnest.runtime_langgraph import LangGraphRuntimeDriver
+from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 from harnest.runtime_contract import InvocationRequest
-from harnest.token_adk import wrap_adk_model
-from harnest.token_langgraph import token_middleware
+from harnest.frameworks.adk.tokens import wrap_adk_model
+from harnest.frameworks.langgraph.tokens import token_middleware
 from harnest.tokens import TokenBudgetExceeded, TokenCount, TokenPolicy, token_policy_scope
 
 
@@ -225,8 +226,8 @@ def _driver(framework, policy, *, loop=False):
     """Build the actual compiled-application/runtime boundary for each backend."""
     if framework == "adk":
         model = LoopADK(model="test") if loop else RecordingADK(model="test")
-        target = Agent(name="root", model=model, instruction="answer", token_policy=policy, tools=[lookup] if loop else []).build()
-        app = CompiledApplication(name="root", framework="adk", mode="managed", target=target, native_app=App(name="root", root_agent=target))
+        target = build_agent(Agent(name="root", model=model, instruction="answer", token_policy=policy, tools=[lookup] if loop else []))
+        app = CompiledApplication(name="root", framework="adk", mode="managed", target=target, framework_app=App(name="root", root_agent=target))
         native = ADKRuntimeDriver(app)
     else:
         reply = AIMessage(content="", tool_calls=[{"name": "lookup", "args": {}, "id": "a"}]) if loop else AIMessage(content="ok")

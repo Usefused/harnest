@@ -2,23 +2,23 @@ import importlib.util
 import unittest
 
 from harnest.agent import Agent
-from harnest.backends import (
-    AdvancedBackendValidationError,
-    UnknownBackendError,
-    backend_names,
-    get_backend,
+from harnest.frameworks import (
+    AdvancedTargetError,
+    UnknownFrameworkError,
+    framework_names,
+    get_framework,
 )
 
 
-class BackendRegistryTests(unittest.TestCase):
-    def test_registry_has_only_the_two_supported_backends(self):
-        self.assertEqual(backend_names(), ("adk", "langgraph"))
-        self.assertEqual(get_backend("adk").name, "adk")
-        self.assertEqual(get_backend("langgraph").name, "langgraph")
+class FrameworkRegistryTests(unittest.TestCase):
+    def test_registry_has_only_the_two_supported_frameworks(self):
+        self.assertEqual(framework_names(), ("adk", "langgraph"))
+        self.assertEqual(get_framework("adk").name, "adk")
+        self.assertEqual(get_framework("langgraph").name, "langgraph")
         with self.assertRaisesRegex(
-            UnknownBackendError, "framework must be adk or langgraph"
+            UnknownFrameworkError, "framework must be adk or langgraph"
         ):
-            get_backend("unknown")
+            get_framework("unknown")
 
     def test_advanced_validation_rejects_objects_from_neither_framework(self):
         cases = (
@@ -39,8 +39,8 @@ class BackendRegistryTests(unittest.TestCase):
             with self.subTest(framework=framework):
                 if not available:
                     self.skipTest(reason)
-                with self.assertRaisesRegex(AdvancedBackendValidationError, message):
-                    get_backend(framework).validate_advanced(
+                with self.assertRaisesRegex(AdvancedTargetError, message):
+                    get_framework(framework).validate_advanced(
                         Agent.advanced(object()), fallback_name="fallback"
                     )
 

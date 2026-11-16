@@ -1,3 +1,5 @@
+// Works out the runtime packages an agent needs from its agents, MCP clients, extensions, and packages.
+
 package main
 
 import (
@@ -22,14 +24,21 @@ type runtimeDependencyPlan struct {
 	ProjectFiles        []string
 	CompileRequirements []string
 	HasMCP              bool
+	CustomEvalOnly      bool
+	EvalGroup           bool
+	// rootDocument is the agent's decoded pyproject.toml, read once per plan.
+	rootDocument map[string]any
 }
 
 // inspectRuntimeDependencyPlan joins declared dependencies without guessing a
 // queue backend before Python storage factories are loaded.
 func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, error) {
 	rootProject := filepath.Join(bundle.Directory, bundle.Config.Spec.Runtime.DependencyFile)
-	_, err := projectRuntimeRequirements(rootProject, "agent")
+	document, err := readProjectDocument(rootProject, "agent")
 	if err != nil {
+		return runtimeDependencyPlan{}, err
+	}
+	if _, err := projectDocumentRequirements(document, "agent"); err != nil {
 		return runtimeDependencyPlan{}, err
 	}
 	_, projectFiles, err := extensionRuntimeRequirements(bundle.Directory)
@@ -47,6 +56,7 @@ func inspectRuntimeDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, 
 	return runtimeDependencyPlan{
 		ProjectFiles: append([]string{rootProject}, projectFiles...),
 		HasMCP:       hasMCP,
+		rootDocument: document,
 	}, nil
 }
 
@@ -65,8 +75,8 @@ func hasProjectMCP(root string) (bool, error) {
 	return false, nil
 }
 
-// projectRuntimeRequirements reads only static PEP 621 runtime dependencies.
-func projectRuntimeRequirements(path, owner string) ([]string, error) {
+// readProjectDocument reads and decodes one pyproject.toml, naming its owner in errors.
+func readProjectDocument(path, owner string) (map[string]any, error) {
 	contents, err := readRegularDependencyFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s pyproject.toml: %w", owner, err)
@@ -75,6 +85,20 @@ func projectRuntimeRequirements(path, owner string) ([]string, error) {
 	if err := toml.Unmarshal(contents, &document); err != nil {
 		return nil, fmt.Errorf("parse %s pyproject.toml: %w", owner, err)
 	}
+	return document, nil
+}
+
+// projectRuntimeRequirements reads only static PEP 621 runtime dependencies.
+func projectRuntimeRequirements(path, owner string) ([]string, error) {
+	document, err := readProjectDocument(path, owner)
+	if err != nil {
+		return nil, err
+	}
+	return projectDocumentRequirements(document, owner)
+}
+
+// projectDocumentRequirements validates the static dependency list of a decoded project.
+func projectDocumentRequirements(document map[string]any, owner string) ([]string, error) {
 	project := tomlTable(document["project"])
 	if len(project) == 0 {
 		return nil, fmt.Errorf("%s pyproject.toml must define a PEP 621 [project] table", owner)
@@ -379,4 +403,10 @@ func replaceRegularFileMode(path string, contents []byte, mode os.FileMode) erro
 	}
 	removeTemporary = false
 	return nil
+}
+
+// hasEvalDependencyGroup leaves package metadata and nested group expansion to uv.
+func hasEvalDependencyGroup(document map[string]any) bool {
+	_, present := tomlTable(document["dependency-groups"])["eval"]
+	return present
 }

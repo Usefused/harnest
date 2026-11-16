@@ -1,3 +1,5 @@
+// Hot reload for `harnest serve`: rebuilds an artifact generation when files change and swaps the server.
+
 package main
 
 import (

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from harnest.frameworks.adk.sandbox import code_executor
 from harnest.sandbox import (
     SandboxNetworkPolicy,
     SandboxPolicyUnsupportedError,
@@ -30,7 +31,7 @@ def test_definition_is_lazy_and_preserves_adapter_options() -> None:
     assert definition.backend == "docker"
     assert definition.timeout_seconds == 300
     assert definition.network_policy == SandboxNetworkPolicy.none()
-    assert definition.to_adk_executor().error_retry_attempts == 2
+    assert code_executor(definition).error_retry_attempts == 2
     provider = definition.build()
     assert isinstance(provider, DockerSandboxProvider)
     assert provider._backend._scope is DockerScope.SESSION

@@ -24,6 +24,8 @@ import docker
 from docker.models.containers import ContainerCollection
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 
+from harnest.frameworks.adk.sandbox import code_executor
+from harnest.frameworks.langgraph.sandbox import sandbox_tool
 from harnest.context import activate_context, create_agent_context
 from harnest.sandbox import (
     Sandbox,
@@ -111,7 +113,7 @@ class RecordingProvider:
 
 def _adk_probe(definition: Sandbox) -> dict[str, Any]:
     """Execute real Python via ADK and confirm every native option was preserved."""
-    executor = definition.to_adk_executor()
+    executor = code_executor(definition)
     assert executor.error_retry_attempts == 4
     assert executor.code_block_delimiters == OPTIONS["code_block_delimiters"]
     assert executor.execution_result_delimiters == OPTIONS["execution_result_delimiters"]
@@ -127,7 +129,7 @@ def _adk_probe(definition: Sandbox) -> dict[str, Any]:
 
 def _langgraph_probe(definition: Sandbox) -> None:
     """Exercise real sync and async LangChain tool entrypoints with both output streams."""
-    tool = definition.to_langchain_tool()
+    tool = sandbox_tool(definition)
     with activate_context(_context("langgraph")):
         sync = tool.invoke({"code": "print('LG café ✓')"})
         async_result = asyncio.run(tool.ainvoke({"code": "print('async λ')"}))
@@ -143,7 +145,7 @@ def _metadata_probe(definition: Sandbox) -> RecordingProvider:
     portable = Sandbox.provider(
         lambda: provider, name="docker-live-details", timeout_seconds=TIMEOUT_SECONDS, metadata=METADATA,
     )
-    adk = portable.to_adk_executor()
+    adk = code_executor(portable)
     with activate_context(_context("adk")):
         result = adk.execute_code(None, CodeExecutionInput(
             code="print(6 * 7)", execution_id="metadata-execution",

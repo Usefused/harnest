@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from harnest.agent.approval import ApprovalRun
 from harnest.checkpoint import MemoryStore, RunScope
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.durable import NativeDurableSuspended, ResumeArtifact, native_durable_call
+from harnest.durable import FrameworkDurableSuspended, ResumeArtifact, framework_durable_call
 from harnest.external_continuation import ExternalContinuationRuntime
 from harnest.runtime_contract import InvocationRequest
 from harnest.runtime_task_store import ProviderTaskRuntimeManager
@@ -68,7 +68,7 @@ class ProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with activate_context(self.active):
             handle = await self.authored.defer("private", idempotency_key="report-once")
             with (self.continuations.execution(self.run, self.request),
-                  native_durable_call(self.artifact), self.assertRaises(NativeDurableSuspended)):
+                  framework_durable_call(self.artifact), self.assertRaises(FrameworkDurableSuspended)):
                 await handle.result()
         return handle
 
@@ -140,7 +140,7 @@ class ProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
         from types import SimpleNamespace
         self.manager._invocation_continuations = SimpleNamespace(suspend=finish_during_registration)
         with (activate_context(self.active), self.continuations.execution(self.run, self.request),
-              native_durable_call(self.artifact), self.assertRaises(NativeDurableSuspended)):
+              framework_durable_call(self.artifact), self.assertRaises(FrameworkDurableSuspended)):
             await handle.result()
         finished = await self.continuations.provider("harnest.task").lookup(handle.id)
         self.assertEqual(finished.record.status, "completed")

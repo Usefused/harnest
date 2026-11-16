@@ -3,13 +3,13 @@ import unittest
 from types import SimpleNamespace
 
 from harnest.durable import (
-    NativeDurableSuspended,
-    NativeResumeInput,
+    FrameworkDurableSuspended,
+    FrameworkResumeInput,
     ResumeArtifact,
-    adk_durable_tool,
-    current_native_durable_call,
-    langgraph_durable_callable,
+    current_framework_durable_call,
 )
+from harnest.frameworks.adk.durable import adk_durable_tool
+from harnest.frameworks.langgraph.durable import langgraph_durable_callable
 from harnest.agent import tool
 
 
@@ -28,12 +28,12 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
         async def inspect_call(value: str) -> dict[str, str]:
             """Return the native identity visible inside a durable call."""
 
-            active = current_native_durable_call()
+            active = current_framework_durable_call()
             self.assertIsNotNone(active)
             assert active is not None
             return {
                 "value": value,
-                "invocation": active.artifact.native_invocation_id,
+                "invocation": active.artifact.framework_invocation_id,
                 "call": active.artifact.tool_call_id,
             }
 
@@ -54,7 +54,7 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
                 "call": "function-call",
             },
         )
-        self.assertIsNone(current_native_durable_call())
+        self.assertIsNone(current_framework_durable_call())
 
     async def test_langgraph_injected_fields_are_hidden_from_model_schema(self):
         from langchain_core.tools import tool as langchain_tool
@@ -65,13 +65,13 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
         async def inspect_call(value: str) -> dict[str, str]:
             """Return the native identity visible inside a durable call."""
 
-            active = current_native_durable_call()
+            active = current_framework_durable_call()
             self.assertIsNotNone(active)
             assert active is not None
             observed.append(active.artifact)
             return {
                 "value": value,
-                "thread": active.artifact.native_invocation_id,
+                "thread": active.artifact.framework_invocation_id,
                 "call": active.artifact.tool_call_id,
             }
 
@@ -90,9 +90,9 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.tool_call_id, "tool-call")
-        self.assertEqual(observed[0].native_invocation_id, "tenant/session/thread")
+        self.assertEqual(observed[0].framework_invocation_id, "tenant/session/thread")
         self.assertEqual(observed[0].tool_call_id, "tool-call")
-        self.assertIsNone(current_native_durable_call())
+        self.assertIsNone(current_framework_durable_call())
 
     async def test_langgraph_checkpoint_reconstructs_native_interrupt(self):
         """Prove durable tools pause and resume through a real persisted graph."""
@@ -111,7 +111,7 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
             """Pause at a framework-owned continuation boundary."""
 
             del value
-            active = current_native_durable_call()
+            active = current_framework_durable_call()
             assert active is not None
             observed.append(active.artifact)
             from harnest.external_continuation import PendingExternalContinuation
@@ -163,10 +163,10 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
 
         from harnest.application import CompiledApplication
         from harnest.checkpoint import MemoryStore
-        from harnest.checkpoint_langgraph import HarnestCheckpointSaver
+        from harnest.frameworks.langgraph.checkpoint import HarnestCheckpointSaver
         from harnest.external_continuation import PendingExternalContinuation
         from harnest.runtime_contract import InvocationRequest
-        from harnest.runtime_langgraph import LangGraphRuntimeDriver
+        from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 
         observed = []
 
@@ -175,7 +175,7 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
             """Suspend once and return the value supplied by native replay."""
 
             del value
-            active = current_native_durable_call()
+            active = current_framework_durable_call()
             assert active is not None
             observed.append(active.artifact)
             return active.suspend(
@@ -250,13 +250,13 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
             await first.create_session(
                 session_id="session-1", user_id="user-1", state={}
             )
-            with self.assertRaises(NativeDurableSuspended):
+            with self.assertRaises(FrameworkDurableSuspended):
                 await first.invoke(request("start"))
 
             artifact = observed[0]
             resumed = await second.invoke(
                 request(
-                    NativeResumeInput(artifact, {"done": True}),
+                    FrameworkResumeInput(artifact, {"done": True}),
                     state_delta={"must_not_apply": True},
                 )
             )
@@ -278,7 +278,7 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
 
         from harnest.application import CompiledApplication
         from harnest.runtime_contract import InvocationRequest
-        from harnest.runtime_langgraph import LangGraphRuntimeDriver
+        from harnest.frameworks.langgraph.runtime import LangGraphRuntimeDriver
 
         class Target:
             def __init__(self) -> None:
@@ -305,7 +305,7 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
             "langgraph", "another-thread", "call-1", "pause"
         )
         request = InvocationRequest(
-            input=NativeResumeInput(artifact, {"done": True}),
+            input=FrameworkResumeInput(artifact, {"done": True}),
             user_id="user-1",
             session_id="session-1",
             invocation_id="run-1",
@@ -322,6 +322,18 @@ class DurableToolTests(unittest.IsolatedAsyncioTestCase):
     def test_resume_artifact_rejects_unbounded_identity(self):
         with self.assertRaisesRegex(ValueError, "tool_call_id"):
             ResumeArtifact("adk", "invocation", "contains spaces", "tool")
+
+    def test_framework_identity_preserves_persisted_v1_resume_records(self):
+        """Renaming Python contracts must not strand already suspended calls."""
+
+        persisted = {
+            "framework": "adk", "native_invocation_id": "invocation",
+            "tool_call_id": "call", "tool_name": "lookup",
+            "version": "harnest-continuation/v1",
+        }
+        artifact = ResumeArtifact.from_mapping(persisted)
+        self.assertEqual(artifact.framework_invocation_id, "invocation")
+        self.assertEqual(artifact.public_dict(), persisted)
 
     def test_langgraph_wrapper_retains_authored_signature_fields(self):
         @tool(durable=True)

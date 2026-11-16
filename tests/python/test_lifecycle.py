@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from harnest.bundle import (
     BundleConventionError,
-    _attach_advanced_native_extensions,
+    _attach_advanced_framework_extensions,
     compile_application,
 )
 from harnest.lifecycle_coverage import (
@@ -75,7 +75,7 @@ class ExtensionCompilerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             backend = self._backend()
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 application = compile_application(
                     root, entrypoint="agent:root_agent", framework="adk"
                 )
@@ -86,7 +86,7 @@ class ExtensionCompilerTests(unittest.TestCase):
         )
         self.assertIsInstance(application.session_store, InMemorySessionStore)
         backend.wrap_managed.assert_called_once_with(
-            application.target, native_extensions=()
+            application.target, framework_extensions=()
         )
 
     def test_compiler_forwards_selected_langgraph_middleware(self):
@@ -102,19 +102,19 @@ class ExtensionCompilerTests(unittest.TestCase):
             self._session_store(path)
             (path / "guardrail.py").write_text(
                 "from harnest import lifecycle\n"
-                "@lifecycle.langgraph_middleware\n"
+                "@lifecycle.framework_extension\n"
                 "def middleware():\n"
                 "  from langchain.agents.middleware import AgentMiddleware\n"
                 "  return AgentMiddleware()\n",
                 encoding="utf-8",
             )
             backend = self._backend()
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 compile_application(
                     root, entrypoint="agent:root_agent", framework="langgraph"
                 )
 
-        middleware = backend.lower_managed.call_args.kwargs["native_extensions"]
+        middleware = backend.lower_managed.call_args.kwargs["framework_extensions"]
         self.assertEqual(len(middleware), 1)
         self.assertIsInstance(middleware[0], AgentMiddleware)
 
@@ -137,7 +137,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             self._session_store(path)
             (path / "audit.py").write_text(
                 "from harnest import lifecycle\n"
-                "@lifecycle.adk_plugin\n"
+                "@lifecycle.framework_extension\n"
                 "def plugin():\n"
                 "  from google.adk.plugins.base_plugin import BasePlugin\n"
                 "  return BasePlugin(name='audit')\n",
@@ -146,7 +146,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             application = compile_application(
                 root, entrypoint="agent:root_agent", framework="adk"
             )
-        self.assertEqual([plugin.name for plugin in application.native_app.plugins], ["audit"])
+        self.assertEqual([plugin.name for plugin in application.framework_app.plugins], ["audit"])
 
     def test_advanced_adk_app_keeps_existing_and_discovered_plugins(self):
         from google.adk.agents import BaseAgent
@@ -159,23 +159,23 @@ class ExtensionCompilerTests(unittest.TestCase):
         advanced = SimpleNamespace(
             name="root",
             target=target,
-            native_app=App(name="root", root_agent=target, plugins=[existing]),
+            framework_app=App(name="root", root_agent=target, plugins=[existing]),
         )
         # The production value is a dataclass; use it here to exercise model-copy
         # preservation without compiling an unrelated advanced entrypoint.
-        from harnest.backends import AdvancedBackendResult
+        from harnest.frameworks import AdvancedTarget as AdvancedBackendResult
 
-        result = _attach_advanced_native_extensions(
+        result = _attach_advanced_framework_extensions(
             AdvancedBackendResult(
                 name=advanced.name,
                 target=advanced.target,
-                native_app=advanced.native_app,
+                framework_app=advanced.framework_app,
             ),
             (discovered,),
             framework="adk",
         )
         self.assertEqual(
-            [plugin.name for plugin in result.native_app.plugins],
+            [plugin.name for plugin in result.framework_app.plugins],
             ["existing", "discovered"],
         )
 
@@ -200,14 +200,14 @@ class ExtensionCompilerTests(unittest.TestCase):
                 from harnest.lib.checkpoints import checkpoints
 
                 target = SimpleNamespace(
-                    checkpointer=checkpoints.as_langgraph_checkpointer()
+                    checkpointer=checkpoints.framework_checkpointer()
                 )
-                return SimpleNamespace(name="root", target=target, native_app=None)
+                return SimpleNamespace(name="root", target=target, framework_app=None)
 
             backend = SimpleNamespace(
                 validate_advanced=Mock(side_effect=advanced_result)
             )
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 application = compile_application(
                     root,
                     entrypoint="agent:root_agent",
@@ -227,7 +227,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             self._session_store(path)
             (path / "native.py").write_text(
                 "from harnest import lifecycle\n"
-                "@lifecycle.langgraph_middleware\n"
+                "@lifecycle.framework_extension\n"
                 "def native():\n"
                 "  from langchain.agents.middleware import AgentMiddleware\n"
                 "  return AgentMiddleware()\n"
@@ -235,11 +235,11 @@ class ExtensionCompilerTests(unittest.TestCase):
             backend = SimpleNamespace(
                 validate_advanced=Mock(
                     return_value=SimpleNamespace(
-                        name="root", target=object(), native_app=None
+                        name="root", target=object(), framework_app=None
                     )
                 )
             )
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 with self.assertRaisesRegex(BundleConventionError, "cannot attach"):
                     compile_application(
                         root,
@@ -253,7 +253,7 @@ class ExtensionCompilerTests(unittest.TestCase):
             root = Path(directory)
             self._agent(root)
             backend = self._backend()
-            with patch("harnest.bundle.get_backend", return_value=backend):
+            with patch("harnest.bundle._lowering_adapter", return_value=backend):
                 with self.assertRaisesRegex(
                     BundleConventionError, "exactly one.*found 0"
                 ):

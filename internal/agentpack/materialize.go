@@ -1,3 +1,5 @@
+// Unpacks an executable's runtime and agent into the content-addressed cache and verifies them.
+
 package agentpack
 
 import (

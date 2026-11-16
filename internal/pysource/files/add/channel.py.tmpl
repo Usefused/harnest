@@ -1,0 +1,12 @@
+"""Bind the {{words .Name}} channel to this agent."""
+
+from harnest.channels import ChannelBinding
+
+
+def binding() -> ChannelBinding:
+    """Declare the {{words .Name}} channel binding for the {{.Via}} extension."""
+
+    return ChannelBinding(
+        platform={{quote .Name}},
+        extension={{quote .Via}},
+    )

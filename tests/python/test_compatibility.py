@@ -123,7 +123,7 @@ class FrameworkCompatibilityTests(unittest.TestCase):
             with patch(
                 "harnest.bundle.validate_framework_compatibility",
                 return_value=resolved,
-            ), patch("harnest.bundle.get_backend", return_value=backend):
+            ), patch("harnest.bundle._lowering_adapter", return_value=backend):
                 manifest = compile_artifact(root, output, framework="langgraph")
 
         self.assertEqual(manifest["harnestVersion"], "0.1.0")

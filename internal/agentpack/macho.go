@@ -1,3 +1,5 @@
+// Keeps macOS (Mach-O) executables valid after the payload is appended.
+
 package agentpack
 
 import (

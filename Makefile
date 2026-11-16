@@ -6,7 +6,7 @@ COMPILED_HELPDESK ?= $(CURDIR)/.harnest/helpdesk
 AGENT_URL ?= http://127.0.0.1:1907
 DEMO_SESSION_ID ?= demo-session
 
-.PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity lint typing-quality skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
+.PHONY: test test-python test-unit test-integration test-e2e test-live quality complexity lint codebase-map typing-quality skill-quality format-check vet schemas plan dry-run validate-examples example-install compile-example serve-example demo-agent demo-session demo-response demo-stream example-test example-smoke example-eval example-all live-run live-test
 
 test: schemas test-python
 	GOCACHE=$(GOCACHE) go test ./...
@@ -30,10 +30,13 @@ quality: test complexity lint typing-quality studio-types skill-quality format-c
 
 complexity:
 	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage examples/desktop-mcp-agent studio/src
-	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal
+	GOCACHE=$(GOCACHE) go tool gocyclo -over 10 cmd engine internal schemas
 
 lint:
 	$(PYTHON) -m ruff check src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage examples/desktop-mcp-agent official-extensions studio/src
+
+codebase-map:
+	$(PYTHON) scripts/codebase_map.py
 
 typing-quality:
 	$(PYTHON) scripts/check_python_typing.py
@@ -47,7 +50,7 @@ skill-quality:
 	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .
 
 format-check:
-	@test -z "$$(gofmt -l cmd engine internal)" || (gofmt -l cmd engine internal; exit 1)
+	@test -z "$$(gofmt -l cmd engine internal schemas)" || (gofmt -l cmd engine internal schemas; exit 1)
 
 vet:
 	GOCACHE=$(GOCACHE) go vet ./...
@@ -62,6 +65,7 @@ schemas:
 	$(PYTHON) -m json.tool schemas/server.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/extension.schema.json >/dev/null
 	$(PYTHON) -m json.tool schemas/eval-run-result.schema.json >/dev/null
+	$(PYTHON) -m json.tool schemas/eval-runner-summary.schema.json >/dev/null
 
 plan:
 	PYTHONPATH=src $(PYTHON) -m harnest.cli plan examples/self-serve/orchestrator.py

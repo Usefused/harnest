@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from harnest.frameworks.adk.mcp_tools import toolset_type
 from harnest.agent.approval import (
     ApprovalChallenge,
     ApprovalEnforcementError,
@@ -471,7 +472,7 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
                     SimpleNamespace(name="read", run_async=run_async),
                 ])
 
-        guarded_type = client._adk_toolset_type(Toolset)
+        guarded_type = toolset_type(client, Toolset)
         tools = await guarded_type().get_tools()
         self.assertNotEqual(tools[0].run_async, tools[1].run_async)
         with approval_execution(ApprovalExecution("u", "s", "c")), self.assertRaises(
@@ -486,7 +487,7 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
         from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 
         policy = ApprovalPolicy(message="Approve merge?", tools=("merge",))
-        from harnest.runtime_langgraph import mcp_approval_interceptor
+        from harnest.frameworks.langgraph.runtime import mcp_approval_interceptor
 
         interceptor = mcp_approval_interceptor({"github": ("github", policy)})
         request = MCPToolCallRequest(
@@ -517,7 +518,7 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending.status, "executed")
 
     async def test_langgraph_mcp_interceptor_routes_each_server_policy(self):
-        from harnest.runtime_langgraph import mcp_approval_interceptor
+        from harnest.frameworks.langgraph.runtime import mcp_approval_interceptor
 
         interceptor = mcp_approval_interceptor(
             {
@@ -557,7 +558,7 @@ class AsyncApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [("catalog", "read"), ("other", "write")])
 
     async def test_langgraph_mcp_interceptor_audits_error_results_and_exceptions(self):
-        from harnest.runtime_langgraph import mcp_approval_interceptor
+        from harnest.frameworks.langgraph.runtime import mcp_approval_interceptor
 
         interceptor = mcp_approval_interceptor(
             {"github": ("github", ApprovalPolicy(message="Approve?"))}

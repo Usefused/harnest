@@ -1,3 +1,5 @@
+// Leases that keep a managed environment alive while a command uses it, and pruning of stale environments.
+
 package main
 
 import (

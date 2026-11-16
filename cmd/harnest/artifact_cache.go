@@ -1,3 +1,5 @@
+// Compiled-artifact cache for `harnest serve`; a cached generation is reused only when complete and validated.
+
 package main
 
 import (

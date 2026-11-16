@@ -1,7 +1,7 @@
 # Framework and mode decisions
 
 Read this reference when changing framework, graph topology, subagents, model
-integration, sandboxing, or advanced framework-native behavior.
+integration, sandboxing, or advanced framework-specific behavior.
 
 ## Managed mode
 
@@ -76,8 +76,8 @@ author wires the corresponding framework integration.
 
 The same rule applies to Harnest Extensions in advanced mode. A plugin can use
 neutral startup/shutdown, HTTP, context, storage, credentials, session, assets,
-and portable invocation boundaries Harnest still owns. Listing `native.adk`,
-`native.langgraph`, or another capability records intent; it cannot make opaque
+and portable invocation boundaries Harnest still owns. Listing
+`framework.extension` or another capability records intent; it cannot make opaque
 native execution participate in Harnest lifecycle automatically.
 
 ## Framework changes
@@ -102,7 +102,7 @@ ADK and LangGraph compatibility is release-bound. Each installed Harnest
 release declares bounded supported ranges for both frameworks and the compiler
 checks the selected installed distribution before loading agent code. The same
 check applies to managed and advanced mode. Direct imports in
-`Agent.advanced(...)` provide framework-native authoring control; they do not
+`Agent.advanced(...)` provide framework-specific authoring control; they do not
 bypass Harnest's tested runtime boundary.
 
 Never declare Harnest, ADK, LangGraph, or Harnest-owned framework adapters in

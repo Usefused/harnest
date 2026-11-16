@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import unittest
@@ -24,6 +25,7 @@ from harnest.continuation import (
     ContinuationStore,
     PrincipalGrantSnapshot,
 )
+from harnest.durable import ResumeArtifact
 from harnest.session import SessionStore
 from harnest.store import PostgresStore, RedisStore
 from harnest.store_redis import _continuation_dump, _run_dump
@@ -958,9 +960,15 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options, {"start": 0, "num": 1})
 
     async def test_continuation_reconciliation_uses_one_batched_read(self):
+        """Round-trip durable identity and grants through one indexed read."""
+
         client = _RedisClient()
         client.session_ids = [b"continuation-1"]
-        encoded = _continuation_dump(_continuation(), "job-1")
+        record = replace(
+            _continuation(),
+            resume=ResumeArtifact("langgraph", "invocation-1", "call-1", "workflow"),
+        )
+        encoded = _continuation_dump(record, "job-1")
         client.multi_values = [encoded]
         store = RedisStore("redis://example", _client=client)
 
@@ -969,6 +977,17 @@ class RedisStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(values[0].external_id, "job-1")
+        self.assertEqual(values[0].record, record)
+        self.assertEqual(
+            json.loads(encoded)["record"]["resume"],
+            {
+                "framework": "langgraph",
+                "native_invocation_id": "invocation-1",
+                "tool_call_id": "call-1",
+                "tool_name": "workflow",
+                "version": "harnest-continuation/v1",
+            },
+        )
         self.assertEqual(
             values[0].record.principal_grants.permissions,
             ("reports.read",),

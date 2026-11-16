@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .frameworks.registry import DEFAULT_FRAMEWORK
 from .sandbox import Sandbox
 from .sandbox_assignments import assigned_sandboxes
 from .sandbox_control import execution_control
@@ -33,7 +34,7 @@ def deny_sandbox_authority() -> Iterator[None]:
 class SandboxRegistry:
     """Retain one lazy provider per compiled agent grant, without model tools."""
 
-    def __init__(self, grants: Mapping[str, Mapping[str, Sandbox]] | None = None, *, framework: str = "adk") -> None:
+    def __init__(self, grants: Mapping[str, Mapping[str, Sandbox]] | None = None, *, framework: str = DEFAULT_FRAMEWORK) -> None:
         """Snapshot definitions and allocate runtimes without invoking factories."""
         self._agents = MappingProxyType({
             agent: MappingProxyType({name: SandboxRuntime(value, framework) for name, value in bindings.items()})
@@ -43,27 +44,15 @@ class SandboxRegistry:
     @classmethod
     def from_definition(cls, root: Any, framework: str) -> "SandboxRegistry":
         """Collect resolved grants across graphs and children, rejecting ambiguity."""
-        from .agent import AgentDefinition, _AdvancedAgentDefinition
-        from .graph import Graph
+        from .agent import AgentDefinition
+        from .agent_tree import walk_agent_tree
 
         grants = {}
-        seen = set()
-        pending = [root]
-        while pending:
-            value = pending.pop()
-            if id(value) in seen:
-                continue
-            seen.add(id(value))
-            if isinstance(value, _AdvancedAgentDefinition):
-                value = value.target
+        for value in walk_agent_tree(root):
             if isinstance(value, AgentDefinition):
                 _record_grants(grants, value.name, dict(assigned_sandboxes(value)))
-                pending.extend(value.subagents)
-            elif isinstance(value, Graph):
-                pending.extend(value.nodes.values())
             elif callable(getattr(value, "run_async", None)):
                 _record_grants(grants, value.name, {})
-                pending.extend(getattr(value, "sub_agents", ()))
         return cls(grants, framework=framework)
 
     async def aclose(self) -> None:

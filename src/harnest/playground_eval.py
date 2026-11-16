@@ -3,42 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import csv
-from dataclasses import dataclass
 import json
 from pathlib import Path
-import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any
 
 from .bundle import EvalSuite, discover_evals
-from .evaluation import (
-    EvaluationError,
-    adk_eval_agent_module,
-    eval_config,
-    eval_dependencies,
-    require_eval_trajectory,
-    supported_metric_names,
-)
+from .evaluation import require_eval_trajectory
+from .evaluators import EvalResultRow
 from .logging import get_logger
-from .eval_model_transport import eval_model_transports
 
 
 _EVAL_AUDIT = get_logger("eval.audit")
-
-
-@dataclass(frozen=True, slots=True)
-class _EvalRow:
-    eval_id: str
-    metric: str
-    threshold: float | None
-    score: float | None
-    status: str
-    prompt: str
-    expected_response: str
-    actual_response: str
-    expected_tool_calls: str
-    actual_tool_calls: str
 
 
 class PlaygroundEvalService:
@@ -53,7 +29,9 @@ class PlaygroundEvalService:
         self._artifact = Path(artifact).resolve()
         self._application = application
         self._driver = driver
-        self._suite = discover_evals(self._artifact / "source" / "agent.py")
+        self._suite = discover_evals(
+            self._artifact / "source" / "agent.py", framework=application.framework
+        )
         self._paths = {
             path.name[: -len(".evalset.json")]: path
             for path in self._suite.eval_sets
@@ -69,8 +47,8 @@ class PlaygroundEvalService:
             "framework": self._application.framework,
             "trajectories": ["business", "strict"],
             "suites": [_suite_summary(path) for path in self._suite.eval_sets],
-            "metrics": _catalog_metrics(self._suite),
-            "supportedMetrics": list(supported_metric_names()),
+            "metrics": _catalog_metrics(self._evaluator(), self._suite),
+            "supportedMetrics": list(self._evaluator().supported_metric_names()),
         }
 
     async def run(self, suite_id: str, trajectory: str) -> dict[str, Any]:
@@ -81,43 +59,25 @@ class PlaygroundEvalService:
         if path is None:
             raise KeyError(suite_id)
         async with self._run_lock:
-            from .eval_adk import adk_evaluation_runtime
+            from .frameworks.registry import get_framework
 
-            async with adk_evaluation_runtime(self._application, self._driver):
+            adapter = get_framework(self._application.framework)
+            async with adapter.evaluation_runtime(self._application, self._driver):
                 return await self._run_locked(path, trajectory)
 
     async def _run_locked(self, path: Path, trajectory: str) -> dict[str, Any]:
         """Own evaluator registration and temporary output for one complete run."""
 
-        evaluator, eval_set_class = eval_dependencies()
-        eval_set = eval_set_class.model_validate_json(path.read_text(encoding="utf-8"))
-        selected_suite = self._suite.for_set(path)
-        config = eval_config(selected_suite, trajectory)
+        evaluator = self._evaluator()
+        prepared = evaluator.prepare_playground_set(path, self._suite.for_set(path), trajectory)
         started = time.monotonic()
         _EVAL_AUDIT.info(
             "eval.started", trigger="user", outcome="started", suite=path.name
         )
-        failure = None
         try:
-            with tempfile.TemporaryDirectory(prefix="harnest-playground-eval-") as tmp:
-                output = Path(tmp) / "results.csv"
-                try:
-                    with self._agent_module() as module_name, eval_model_transports(
-                        self._application.target, config
-                    ) as prepared:
-                        await evaluator.evaluate_eval_set(
-                            agent_module=module_name,
-                            eval_set=eval_set,
-                            eval_config=prepared,
-                            num_runs=1,
-                            print_detailed_results=False,
-                            output_file=str(output),
-                        )
-                except AssertionError as exc:
-                    # Metric failures are a successful evaluation run with a
-                    # failed outcome, not an HTTP infrastructure failure.
-                    failure = str(exc)
-                rows = _read_rows(output)
+            rows, failure = await evaluator.run_playground_set(
+                prepared, agent_module=self._agent_module, target=self._application.target,
+            )
         except BaseException:
             _EVAL_AUDIT.info(
                 "eval.finished", trigger="user", outcome="failed", suite=path.name
@@ -128,7 +88,7 @@ class PlaygroundEvalService:
             "eval.finished", trigger="user", outcome=status, suite=path.name
         )
         return _run_result(
-            eval_set,
+            prepared.case_ids,
             rows,
             suite_id=path.name[: -len(".evalset.json")],
             trajectory=trajectory,
@@ -136,16 +96,20 @@ class PlaygroundEvalService:
             failure=failure,
         )
 
+    def _evaluator(self) -> Any:
+        """Use the evaluation engine the application's framework adapter names."""
+
+        from .frameworks.registry import get_framework
+
+        return get_framework(self._application.framework).evaluator()
+
     def _agent_module(self) -> Any:
         """Select native ADK fidelity or the active neutral LangGraph driver."""
 
-        if self._application.framework == "adk":
-            return adk_eval_agent_module(self._application)
-        from .eval_langgraph import runtime_eval_agent_module
+        from .frameworks.registry import get_framework
 
-        if self._driver is None:
-            raise EvaluationError("LangGraph playground evals require a runtime driver")
-        return runtime_eval_agent_module(self._driver)
+        adapter = get_framework(self._application.framework)
+        return adapter.playground_eval_agent_module(self._application, self._driver)
 
 
 def _suite_summary(path: Path) -> dict[str, Any]:
@@ -168,11 +132,11 @@ def _suite_summary(path: Path) -> dict[str, Any]:
     }
 
 
-def _catalog_metrics(suite: EvalSuite) -> list[dict[str, Any]]:
+def _catalog_metrics(evaluator: Any, suite: EvalSuite) -> list[dict[str, Any]]:
     """Summarize distinct metrics without reporting a set-specific threshold as global."""
     metrics: dict[str, dict[str, Any]] = {}
     for group in suite.scoring_groups():
-        for row in _configured_metrics(group):
+        for row in evaluator.configured_metrics(group):
             summary = metrics.setdefault(row["name"], row.copy())
             if summary["threshold"] != row["threshold"]:
                 summary["threshold"] = None
@@ -180,73 +144,14 @@ def _catalog_metrics(suite: EvalSuite) -> list[dict[str, Any]]:
     return [metrics[name] for name in sorted(metrics)]
 
 
-def _configured_metrics(suite: EvalSuite) -> list[dict[str, Any]]:
-    """Describe effective authored/default criteria and custom registrations."""
-
-    if not suite.eval_sets:
-        return []
-    config = eval_config(suite, "business")
-    custom = set((getattr(config, "custom_metrics", None) or {}).keys())
-    return [
-        {
-            "name": name,
-            "threshold": _criterion_threshold(criterion),
-            "custom": name in custom,
-        }
-        for name, criterion in sorted(config.criteria.items())
-    ]
-
-
-def _criterion_threshold(criterion: Any) -> float | None:
-    """Normalize both legacy float criteria and typed ADK criterion objects."""
-
-    value = criterion if isinstance(criterion, (int, float)) else criterion.threshold
-    return float(value) if value is not None else None
-
-
-def _read_rows(path: Path) -> tuple[_EvalRow, ...]:
-    """Decode the evaluator's public CSV export into stable playground fields."""
-
-    if not path.is_file() or path.stat().st_size == 0:
-        return ()
-    with path.open(encoding="utf-8", newline="") as stream:
-        return tuple(_eval_row(row) for row in csv.DictReader(stream))
-
-
-def _eval_row(row: Mapping[str, str]) -> _EvalRow:
-    """Normalize one public ADK evaluator row without retaining CSV quirks."""
-
-    return _EvalRow(
-        eval_id=row.get("eval_id", ""),
-        metric=row.get("metric_name", ""),
-        threshold=_optional_float(row.get("threshold")),
-        score=_optional_float(row.get("score")),
-        status=row.get("eval_status", "UNKNOWN").lower(),
-        prompt=row.get("prompt", ""),
-        expected_response=row.get("expected_response", ""),
-        actual_response=row.get("actual_response", ""),
-        expected_tool_calls=row.get("expected_tool_calls", ""),
-        actual_tool_calls=row.get("actual_tool_calls", ""),
-    )
-
-
-def _optional_float(value: str | None) -> float | None:
-    """Treat empty or non-numeric evaluator cells as unavailable scores."""
-
-    try:
-        return float(value) if value not in {None, ""} else None
-    except ValueError:
-        return None
-
-
-def _has_failed_rows(rows: tuple[_EvalRow, ...]) -> bool:
+def _has_failed_rows(rows: tuple[EvalResultRow, ...]) -> bool:
     """ADK efficiency observations do not decide whether a scored criterion passed."""
     return any(row.status not in {"passed", "informational"} for row in rows)
 
 
 def _run_result(
-    eval_set: Any,
-    rows: tuple[_EvalRow, ...],
+    case_ids: tuple[str, ...],
+    rows: tuple[EvalResultRow, ...],
     *,
     suite_id: str,
     trajectory: str,
@@ -255,7 +160,6 @@ def _run_result(
 ) -> dict[str, Any]:
     """Aggregate invocation rows while retaining drill-down response evidence."""
 
-    case_ids = [case.eval_id for case in eval_set.eval_cases]
     cases = [_case_result(case_id, rows) for case_id in case_ids]
     metrics = [_metric_result(name, rows) for name in sorted({row.metric for row in rows})]
     passed_cases = sum(case["status"] == "passed" for case in cases)
@@ -277,7 +181,7 @@ def _run_result(
     }
 
 
-def _case_result(case_id: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
+def _case_result(case_id: str, rows: tuple[EvalResultRow, ...]) -> dict[str, Any]:
     """Group all invocation evidence for one authored evaluation case."""
 
     selected = [row for row in rows if row.eval_id == case_id]
@@ -289,7 +193,7 @@ def _case_result(case_id: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
     }
 
 
-def _metric_result(name: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
+def _metric_result(name: str, rows: tuple[EvalResultRow, ...]) -> dict[str, Any]:
     """Summarize one metric across cases without hiding invocation-level rows."""
 
     selected = [row for row in rows if row.metric == name]
@@ -306,7 +210,7 @@ def _metric_result(name: str, rows: tuple[_EvalRow, ...]) -> dict[str, Any]:
     }
 
 
-def _row_payload(row: _EvalRow) -> dict[str, Any]:
+def _row_payload(row: EvalResultRow) -> dict[str, Any]:
     """Return one JSON-safe invocation result for the browser drill-down."""
 
     return {

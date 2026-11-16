@@ -18,7 +18,7 @@ from google.adk.models.registry import LLMRegistry
 from google.genai import types
 from pydantic import PrivateAttr
 
-from harnest.eval_model_transport import (
+from harnest.evaluators.adk.model_transport import (
     close_owned_eval_model_transports,
     eval_model_transports,
     restore_eval_model_names,
@@ -113,7 +113,7 @@ def _recording_transports(*targets):
         recorder.models.append(model_name)
         return _RecordingModel(model=model_name, recorder=recorder)
 
-    with patch.object(ModelTransportBinding, "build_eval_model", new=build):
+    with patch("harnest.evaluators.adk.model_transport.build_binding_judge", new=build):
         yield list(records.values())
 
 
@@ -402,8 +402,8 @@ class EvalModelTransportTests(unittest.IsolatedAsyncioTestCase):
                     directory, SimpleNamespace(target=target, framework="adk"), None
                 )
             with (
-                patch("harnest.playground_eval.eval_config", return_value=_config()),
-                patch("harnest.playground_eval.eval_dependencies", return_value=(evaluator, EvalSet)),
+                patch("harnest.evaluators.adk.playground.eval_config", return_value=_config()),
+                patch("harnest.evaluators.adk.playground.eval_dependencies", return_value=(evaluator, EvalSet)),
                 patch.object(service, "_agent_module", return_value=nullcontext("test_agent")),
                 _recording_transports(target) as records,
             ):

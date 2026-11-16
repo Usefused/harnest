@@ -13,9 +13,10 @@ import importlib
 import json
 import secrets
 import time
-from typing import Any, Literal
+from typing import Any
 
 from . import store_redis_scripts as scripts
+from .frameworks.base import FrameworkName
 from ._json import json_value
 from .checkpoint import (
     A2ATaskConflictError,
@@ -423,7 +424,7 @@ class RedisStore(HarnestStore):
         user_id: str,
         session_id: str,
         run_id: str,
-        framework: Literal["adk", "langgraph"],
+        framework: FrameworkName,
     ) -> RunRecord:
         """Create an idempotent run while allowing one active run per session."""
 
@@ -1376,9 +1377,12 @@ def _run_load(value: Any) -> RunRecord:
 def _continuation_dump(
     value: ContinuationRecord, external_id: str
 ) -> str:
-    """Store provider-only reconciliation data outside the portable action."""
+    """Encode the private envelope with stable durable resume field names."""
 
-    return _json_dump({"record": asdict(value), "external_id": external_id})
+    data = asdict(value)
+    # Dataclass field names can change independently of the v1 storage format.
+    data["resume"] = None if value.resume is None else value.resume.public_dict()
+    return _json_dump({"record": data, "external_id": external_id})
 
 
 def _continuation_load(value: Any) -> ProviderPendingContinuation:

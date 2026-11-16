@@ -93,10 +93,10 @@ def client_input(
             """Keep raw delivery inside the application-only consumer boundary."""
 
             from .agent_principal import require_capability
-            from .durable import current_native_durable_call
+            from .durable import current_framework_durable_call
 
             require_capability(invoke, name=handler.__name__)
-            if current_native_durable_call() is not None:
+            if current_framework_durable_call() is not None:
                 raise ClientToolError("private client input cannot run inside a durable tool")
             execution = _CURRENT.get()
             if execution is None:

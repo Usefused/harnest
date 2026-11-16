@@ -1,5 +1,7 @@
 """Unassigned graph nodes cannot borrow a same-named managed agent's grants."""
 
+from _framework_testing import build_for_framework
+
 import asyncio
 from types import SimpleNamespace
 import unittest
@@ -56,7 +58,7 @@ class SandboxGraphScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def _consume_adk(self, node, *, close_early=False):
         """Execute the actual node produced by the ADK graph backend hook."""
-        workflow = self._graph(node).build("adk")
+        workflow = build_for_framework(self._graph(node), "adk")
         native = next(value for value in workflow.graph.nodes if value.name == "raw")
         active = self._scope("adk")
         native_context = SimpleNamespace(
@@ -127,7 +129,7 @@ class SandboxGraphScopeTests(unittest.IsolatedAsyncioTestCase):
             self._denied("sync")
             return Event(output=value)
 
-        compiled = self._graph(raw).build("langgraph")
+        compiled = build_for_framework(self._graph(raw), "langgraph")
         active = self._scope("langgraph")
         with activate_context(active):
             self.retained = context.sandboxes["calculations"]
@@ -144,7 +146,7 @@ class SandboxGraphScopeTests(unittest.IsolatedAsyncioTestCase):
             self._denied("async")
             return Event(output=value)
 
-        compiled = self._graph(raw).build("langgraph")
+        compiled = build_for_framework(self._graph(raw), "langgraph")
         active = self._scope("langgraph")
         with activate_context(active):
             self.retained = context.sandboxes["calculations"]
@@ -168,7 +170,7 @@ class SandboxGraphScopeTests(unittest.IsolatedAsyncioTestCase):
         if trace_streams:
             self._observe_stream_boundaries(native)
         embedded = Agent.advanced(native) if advanced else native
-        outer = self._graph(embedded).build("langgraph")
+        outer = build_for_framework(self._graph(embedded), "langgraph")
         self.assertTrue(native._harnest_sandbox_graph_scoped)
         return native, outer
 

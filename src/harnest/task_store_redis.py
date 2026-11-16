@@ -47,7 +47,7 @@ class RedisTaskStore(RedisStore, TaskStore, CronStore):
         return _task_load(raw) if raw else None
 
     async def list_task_metadata(self, *, application_id: str, user_id: str, after: str | None = None, limit: int = 100) -> dict[str, Any]:
-        """Index legacy jobs incrementally and project one owner page inside Redis."""
+        """Return a page of the owner's task metadata, indexing jobs incrementally."""
         from .task_inspection import TASK_FIELDS, task_page, validate_page
 
         validate_page(limit)

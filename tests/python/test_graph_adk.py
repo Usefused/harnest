@@ -1,3 +1,5 @@
+
+from _framework_testing import build_for_framework
 import asyncio
 import unittest
 from typing import Any
@@ -15,7 +17,7 @@ from harnest.graph import START, Edge, Event, Graph, GraphContext, Join
 
 
 async def _run(graph: Graph, message: str = "start"):
-    workflow = graph.build()
+    workflow = build_for_framework(graph, "adk")
     runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
     await runner.session_service.create_session(
         app_name=graph.name, user_id="test-user", session_id="test-session"
@@ -70,7 +72,7 @@ async def _run_conversation(history: str) -> tuple[str, list[list[str]]]:
         },
         edges=[Edge(START, "assistant")],
     )
-    workflow = graph.build()
+    workflow = build_for_framework(graph, "adk")
     native = next(node for node in workflow.graph.nodes if node.name == "assistant")
     runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
     await runner.session_service.create_session(
@@ -110,7 +112,7 @@ async def _run_routed_conversation(history: str) -> tuple[str, list[list[str]]]:
         },
         edges=[Edge(START, "route"), Edge("route", "assistant")],
     )
-    workflow = graph.build()
+    workflow = build_for_framework(graph, "adk")
     native = next(node for node in workflow.graph.nodes if node.name == "assistant")
     runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
     await runner.session_service.create_session(
@@ -218,7 +220,7 @@ class GraphAdkTests(unittest.TestCase):
             max_concurrency=2,
         )
 
-        workflow = graph.build()
+        workflow = build_for_framework(graph, "adk")
 
         self.assertIsInstance(workflow, Workflow)
         self.assertEqual(workflow.max_concurrency, 2)
@@ -241,14 +243,14 @@ class GraphAdkTests(unittest.TestCase):
             edges=[Edge(START, "native")],
         )
 
-        workflow = graph.build()
+        workflow = build_for_framework(graph, "adk")
 
         self.assertEqual(
             [node.name for node in workflow.graph.nodes if node.name != "__START__"],
             ["native"],
         )
         with self.assertRaisesRegex(ValueError, "root input/output adapters"):
-            Graph(
+            build_for_framework(Graph(
                 name="adapted",
                 nodes={
                     "native": Agent.advanced(
@@ -257,14 +259,14 @@ class GraphAdkTests(unittest.TestCase):
                     )
                 },
                 edges=[Edge(START, "native")],
-            ).build()
+            ), "adk")
         with self.assertRaisesRegex(TypeError, "ADK App targets are root-only"):
-            Graph(
+            build_for_framework(Graph(
                 name="application_node",
                 nodes={
                     "native": Agent.advanced(
                         App(
-                            name="native_app",
+                            name="framework_app",
                             root_agent=LlmAgent(
                                 name="app_agent", model="gemini-test"
                             ),
@@ -272,7 +274,7 @@ class GraphAdkTests(unittest.TestCase):
                     )
                 },
                 edges=[Edge(START, "native")],
-            ).build()
+            ), "adk")
 
     def test_executes_deterministic_function_sequence(self):
         def first(node_input):
@@ -309,7 +311,7 @@ class GraphAdkTests(unittest.TestCase):
         )
 
         async def exercise() -> tuple[list[Any], dict[str, Any]]:
-            workflow = graph.build()
+            workflow = build_for_framework(graph, "adk")
             runner = InMemoryRunner(app=App(name=graph.name, root_agent=workflow))
             await runner.session_service.create_session(
                 app_name=graph.name,

@@ -1,45 +1,33 @@
+// Framework package requirements, derived from the shared metadata in internal/frameworks.
+
 package main
 
 import (
 	"fmt"
 	"strings"
+
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 // frameworkCompatibility is the compiled runtime dependency contract owned by
 // this release. It includes the selected framework and built-in store drivers,
 // while agent-selected model/provider packages remain project dependencies.
+// Values come from the shared frameworks.json metadata.
 type frameworkCompatibility struct {
 	RuntimeRequirements []string
 	MCPRequirements     []string
 }
 
-var frameworkCompatibilityByName = map[string]frameworkCompatibility{
-	"adk": {
-		RuntimeRequirements: []string{
-			"google-adk>=2.8,<3",
-			"asyncpg>=0.30,<1",
-			"redis>=6,<8",
-		},
-		MCPRequirements: []string{"google-adk[mcp]>=2.8,<3"},
-	},
-	"langgraph": {
-		RuntimeRequirements: []string{
-			"langgraph>=1.2,<2",
-			"langchain>=1.3,<2",
-			"langchain-litellm>=0.7,<1",
-			"asyncpg>=0.30,<1",
-			"redis>=6,<8",
-		},
-		MCPRequirements: []string{"langchain-mcp-adapters>=0.3,<1"},
-	},
-}
-
+// compatibilityForFramework returns the release-owned requirements for one framework.
 func compatibilityForFramework(framework string) (frameworkCompatibility, error) {
-	compatibility, ok := frameworkCompatibilityByName[framework]
+	selected, ok := frameworks.Lookup(framework)
 	if !ok {
 		return frameworkCompatibility{}, fmt.Errorf("unsupported framework %q", framework)
 	}
-	return compatibility, nil
+	return frameworkCompatibility{
+		RuntimeRequirements: selected.RuntimeRequirements(),
+		MCPRequirements:     append([]string{}, selected.MCPRequirements...),
+	}, nil
 }
 
 func frameworkRequirements(framework string) (string, error) {

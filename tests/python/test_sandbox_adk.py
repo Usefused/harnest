@@ -9,7 +9,7 @@ from google.adk.flows.llm_flows import _code_execution
 from google.adk.models import LlmResponse
 from google.genai import types
 
-from harnest.sandbox_adk import _CodeContinuationProcessor, sandbox_agent_type
+from harnest.frameworks.adk.sandbox import _CodeContinuationProcessor, sandbox_agent_type
 
 
 def _result_event():

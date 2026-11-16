@@ -1,3 +1,5 @@
+// `harnest add`: the parent command, `add mcp`, and the shared scaffolds behind each `harnest add <kind> NAME`.
+
 package main
 
 import (
@@ -6,12 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/frameworks"
+	"harnest.dev/harnest/internal/pysource"
 )
 
 var agentResourceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -33,9 +36,10 @@ type agentResourceScaffold struct {
 	Directory   string
 	Description string
 	ManagedOnly bool
-	ADKOnly     bool
-	Source      func(string) string
-	Next        func(string) string
+	// RequiresCapability names a framework capability the scaffold needs.
+	RequiresCapability frameworks.Capability
+	Source             func(string) string
+	Next               func(string) string
 }
 
 type addMCPOptions struct {
@@ -265,7 +269,7 @@ func validateAgentResourceCompatibility(
 			scaffold.Kind,
 		)
 	}
-	if scaffold.ADKOnly && framework != "adk" {
+	if !scaffoldSupportedBy(scaffold, framework) {
 		return fmt.Errorf(
 			"harnest add %s currently requires the adk framework; LangGraph subagents must be explicit Graph nodes in agent.py",
 			scaffold.Kind,
@@ -330,7 +334,7 @@ func agentResourceScaffolds() []agentResourceScaffold {
 			},
 		},
 		{
-			Kind: "subagent", Directory: "subagents", ManagedOnly: true, ADKOnly: true,
+			Kind: "subagent", Directory: "subagents", ManagedOnly: true, RequiresCapability: frameworks.RootAgentSubagents,
 			Description: "Add a managed ADK subagent",
 			Source:      subagentResourceSource,
 			Next: func(string) string {
@@ -366,92 +370,47 @@ func agentResourceScaffolds() []agentResourceScaffold {
 
 // toolResourceSource returns a safe managed tool that authors can refine.
 func toolResourceSource(name string) string {
-	return fmt.Sprintf(`from harnest.agent import tool
-
-
-@tool
-def %s(request: str) -> str:
-    """Handle one %s request."""
-    return request
-`, name, strings.ReplaceAll(name, "_", " "))
+	return pysource.Render("add/tool.py.tmpl", map[string]any{"Name": name})
 }
 
 // subagentResourceSource keeps delegated agents on the shared model configuration as their root.
 func subagentResourceSource(name string) string {
-	return fmt.Sprintf(`from harnest.agent import Agent
-from harnest.model import LiteLLMModel
-
-
-%s = Agent(
-    name=%q,
-    model=LiteLLMModel.from_openai_environment(),
-    description=%q,
-    instruction=%q,
-    history="session",
-)
-`, name, name, "Handles delegated "+strings.ReplaceAll(name, "_", " ")+" work.",
-		"Complete the delegated task clearly and return the result to the parent agent.")
+	return pysource.Render("add/subagent.py.tmpl", map[string]any{"Name": name})
 }
 
 // taskResourceSource returns a durable task with a serializable result.
 func taskResourceSource(name string) string {
-	return fmt.Sprintf(`from harnest.task import task
-
-
-@task(queue="default", max_retries=3)
-async def %s(payload: str) -> dict[str, str]:
-    """Perform one durable %s operation."""
-    return {"payload": payload, "status": "completed"}
-`, name, strings.ReplaceAll(name, "_", " "))
+	return pysource.Render("add/task.py.tmpl", map[string]any{"Name": name})
 }
 
 // lifecycleResourceSource returns an observational agent completion hook.
 func lifecycleResourceSource(name string) string {
-	return fmt.Sprintf(`from harnest import lifecycle
-
-
-@lifecycle.agent.after
-def %s(_context, result):
-    """Observe a completed invocation without changing its result."""
-    return result
-`, name)
+	return pysource.Render("add/lifecycle.py.tmpl", map[string]any{"Name": name})
 }
 
 // contextResourceSource returns an explicit invocation-scoped provider.
 func contextResourceSource(name string) string {
-	return fmt.Sprintf(`from harnest import context
-
-
-@context.provider(%q)
-def %s():
-    """Create one invocation-scoped %s value."""
-    return {}
-`, name, name, strings.ReplaceAll(name, "_", " "))
+	return pysource.Render("add/context.py.tmpl", map[string]any{"Name": name})
 }
 
 // mcpResourceSource emits only configuration and an environment placeholder.
 func mcpResourceSource(name string, options addMCPOptions) string {
-	constructor := strings.ReplaceAll(options.Transport, "-", "_")
-	headers := ""
-	if options.TokenEnv != "" {
-		value := options.TokenPrefix + "${" + options.TokenEnv + "}"
-		headers = fmt.Sprintf(
-			"\n        headers={%s: %s},",
-			strconv.Quote(options.TokenHeader),
-			strconv.Quote(value),
-		)
+	return pysource.Render("add/mcp.py.tmpl", map[string]any{
+		"Name":        name,
+		"Constructor": strings.ReplaceAll(options.Transport, "-", "_"),
+		"URL":         options.URL,
+		"TokenEnv":    options.TokenEnv,
+		"TokenHeader": options.TokenHeader,
+		"TokenValue":  options.TokenPrefix + "${" + options.TokenEnv + "}",
+	})
+}
+
+// scaffoldSupportedBy reports whether the selected framework declares the
+// capability a scaffold needs; scaffolds without a requirement fit every framework.
+func scaffoldSupportedBy(scaffold agentResourceScaffold, framework string) bool {
+	if scaffold.RequiresCapability == "" {
+		return true
 	}
-	return fmt.Sprintf(`"""Connect to the %s MCP server."""
-
-from harnest.mcp import MCPClient
-
-
-def client() -> MCPClient:
-    """Create the remote MCP client from non-secret authored configuration."""
-
-    return MCPClient.%s(
-        %s,%s
-        prefix=%s,
-    )
-`, strings.ReplaceAll(name, "_", " "), constructor, strconv.Quote(options.URL), headers, strconv.Quote(name))
+	selected, ok := frameworks.Lookup(framework)
+	return ok && selected.Supports(scaffold.RequiresCapability)
 }

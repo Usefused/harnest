@@ -1,3 +1,4 @@
+// Proposes starter agent files and their Hostlier workload settings.
 package main
 
 import (
@@ -9,6 +10,7 @@ import (
 	"os"
 
 	"harnest.dev/harnest/internal/agentscaffold"
+	"harnest.dev/harnest/internal/frameworks"
 )
 
 // initRequest carries Hostlier’s public starter settings. Package-specific inputs arrive under config.
@@ -102,7 +104,7 @@ func proposeInit(req initRequest) (initResponse, error) {
 		"endpoint": map[string]any{"exposure": "public", "port": port, "route": req.Route},
 		"health":   map[string]any{"path": "/healthz"},
 	}
-	response.Files = agentscaffold.ManagedFiles(name, "adk", port)
+	response.Files = agentscaffold.ManagedFiles(name, frameworks.Default(), port)
 	// An existing ignore policy belongs to the project, even when it is a symlink.
 	if _, err := os.Lstat(".gitignore"); err == nil {
 		delete(response.Files, ".gitignore")

@@ -1,3 +1,5 @@
+// Reads an agent's compile selection (extras and requirements to bundle) without running pack code.
+
 package main
 
 import (
@@ -9,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 	"harnest.dev/harnest/engine"
 )
@@ -79,17 +80,9 @@ func validateCompileSelection(value compileSelection) error {
 }
 
 // compileExtraRequirements selects only named root-project extras; base and extension requirements remain mandatory.
-func compileExtraRequirements(project string, extras []string) ([]string, error) {
+func compileExtraRequirements(document map[string]any, extras []string) ([]string, error) {
 	if len(extras) == 0 {
 		return nil, nil
-	}
-	data, err := readRegularDependencyFile(project)
-	if err != nil {
-		return nil, err
-	}
-	var document map[string]any
-	if err = toml.Unmarshal(data, &document); err != nil {
-		return nil, err
 	}
 	groups := tomlTable(tomlTable(document["project"])["optional-dependencies"])
 	var requirements []string
@@ -116,7 +109,7 @@ func inspectCompileDependencyPlan(bundle engine.Bundle) (runtimeDependencyPlan, 
 	if err != nil {
 		return plan, err
 	}
-	plan.CompileRequirements, err = compileExtraRequirements(plan.ProjectFiles[0], selection.Extras)
+	plan.CompileRequirements, err = compileExtraRequirements(plan.rootDocument, selection.Extras)
 	return plan, err
 }
 
@@ -125,7 +118,13 @@ func inspectProfileDependencyPlan(bundle engine.Bundle, profile environmentProfi
 	if profile == compileEnvironmentProfile {
 		return inspectCompileDependencyPlan(bundle)
 	}
-	return inspectRuntimeDependencyPlan(bundle)
+	plan, err := inspectRuntimeDependencyPlan(bundle)
+	if err != nil || profile != evalEnvironmentProfile {
+		return plan, err
+	}
+	plan.CustomEvalOnly = !bundle.Config.Spec.Evaluation.UsesBuiltinRunner()
+	plan.EvalGroup = hasEvalDependencyGroup(plan.rootDocument)
+	return plan, nil
 }
 
 // compileProfile avoids resynchronizing the agent slot when no compile extras are requested.

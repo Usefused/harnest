@@ -29,7 +29,7 @@ from harnest.assets import (
 from harnest.content import Image, ImageConstraints
 from harnest import context
 from harnest.context import activate_context, create_agent_context
-from harnest.runtime_langgraph import _materialize_model_message
+from harnest.frameworks.langgraph.runtime import _materialize_model_message
 from harnest.stored_media import stage_stored_media, stored_reference_value
 
 try:

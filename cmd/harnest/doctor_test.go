@@ -82,17 +82,35 @@ func TestDoctorMissingAgentEnvironmentSuggestsSync(t *testing.T) {
 }
 
 func TestDoctorProbeOnlySelectsExplicitFramework(t *testing.T) {
+	// The fake interpreter records the module list Go passes to the probe, so
+	// the test observes exactly which framework dependencies doctor checks.
+	recorded := filepath.Join(t.TempDir(), "modules.json")
 	python := writeExecutable(t, `#!/bin/sh
-printf '%s\n' "{\"executable\":\"/runtime/python\",\"python\":\"3.12.8\",\"supported\":true,\"packages\":[{\"name\":\"selected-framework:$3\",\"ok\":true,\"version\":\"test\",\"error\":\"\"}]}"
+printf '%s' "$3" > "`+recorded+`"
+printf '%s\n' "{\"executable\":\"/runtime/python\",\"python\":\"3.12.8\",\"supported\":true,\"packages\":[{\"name\":\"probe\",\"ok\":true,\"version\":\"test\",\"error\":\"\"}]}"
 `)
-	for _, framework := range []string{"", "adk", "langgraph"} {
+	cases := map[string][]string{
+		"":          {"[]"},
+		"adk":       {`"module":"google.adk"`, `"distribution":"google-adk"`},
+		"langgraph": {`"module":"langgraph"`, `"distribution":"langchain-litellm"`},
+	}
+	for framework, expected := range cases {
 		args := []string{"--python", python, "doctor"}
 		if framework != "" {
 			args = append(args, "--framework", framework)
 		}
 		stdout, _, err := executeForTest(t, defaultSystem(), args...)
-		if err != nil || !strings.Contains(stdout, "selected-framework:"+framework+" test") {
-			t.Fatalf("framework=%s error=%v output=%s", framework, err, stdout)
+		modules, readErr := os.ReadFile(recorded)
+		if err != nil || readErr != nil {
+			t.Fatalf("framework=%s error=%v read=%v output=%s", framework, err, readErr, stdout)
+		}
+		for _, fragment := range expected {
+			if !strings.Contains(string(modules), fragment) {
+				t.Fatalf("framework=%s probe modules=%s, want %s", framework, modules, fragment)
+			}
+		}
+		if framework != "adk" && strings.Contains(string(modules), "google-adk") {
+			t.Fatalf("framework=%s must not check ADK: %s", framework, modules)
 		}
 	}
 }

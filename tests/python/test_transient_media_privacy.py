@@ -20,7 +20,7 @@ from harnest.client_tool import (
     current_transient_media,
 )
 from harnest.content import Image, ImageConstraints
-from harnest.runtime_adk import (
+from harnest.frameworks.adk.runtime import (
     _ADKEventNormalizer,
     _adk_session_messages,
     _asset_content_plugin,
@@ -166,7 +166,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
         first = python_types.SimpleNamespace(contents=[original])
 
         with patch(
-            "harnest.runtime_adk.current_transient_media", return_value=self.access
+            "harnest.frameworks.adk.runtime.current_transient_media", return_value=self.access
         ):
             await plugin.before_model_callback(
                 callback_context=callback, llm_request=first
@@ -214,7 +214,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
         )
         plugin = _asset_content_plugin(None)
         with patch(
-            "harnest.runtime_adk.current_transient_media", return_value=self.access
+            "harnest.frameworks.adk.runtime.current_transient_media", return_value=self.access
         ):
             await plugin.after_tool_callback(
                 tool=python_types.SimpleNamespace(name="capture"),
@@ -224,7 +224,7 @@ class TransientMediaPrivacyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         request = python_types.SimpleNamespace(contents=[original])
-        with patch("harnest.runtime_adk.current_transient_media", return_value=None):
+        with patch("harnest.frameworks.adk.runtime.current_transient_media", return_value=None):
             await plugin.before_model_callback(
                 callback_context=callback, llm_request=request
             )
