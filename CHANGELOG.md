@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
 - Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.
 
@@ -27,6 +27,32 @@
 - Respect the device execution policy in documented Windows installer commands. Document checksum-verified ZIP installation for devices that block PowerShell scripts.
 
 - Hostlier planning now verifies the Harnest base image against the target Linux architecture. A single `baseImage` pin can identify a multi-platform index. Packaging uses the exact manifest selected by the plan.
+
+### ⚠ BREAKING CHANGES
+
+* authoring APIs infer the selected framework, framework extensions use one decorator and capability, and packs use pack.yaml with the unified ProjectPack authoring contract.
+
+### Features
+
+* add native Windows MSI installation ([c670e97](https://github.com/Usefused/harnest/commit/c670e973f96a226febae0192ed60771665d0fe6d))
+* unify framework adapters and project packs ([a686c0f](https://github.com/Usefused/harnest/commit/a686c0f819cecfb3d8f38826897314af907662e8))
+
+
+### Fixes
+
+* address PR [#55](https://github.com/Usefused/harnest/issues/55) review findings ([743022b](https://github.com/Usefused/harnest/commit/743022b7adead507e873d051c041f1d05c754111))
+* include redistribution license notices in Windows MSI ([d14248f](https://github.com/Usefused/harnest/commit/d14248f3d4906f208bce00777fbd6f90b80a7885))
+* preserve install locations and replace rebuilt MSI packages ([875b232](https://github.com/Usefused/harnest/commit/875b23214cec2e3223fd960d90577405921bac7f))
+* preserve the v1 resume format in Redis continuation records ([0e87ad8](https://github.com/Usefused/harnest/commit/0e87ad8b296582ff9dfe595e113dd9da192d932a))
+* provide stable MSI component identity and install progress text ([c19a9cd](https://github.com/Usefused/harnest/commit/c19a9cdf728b52771b72f08ee943b57fad007bc1))
+* support Harnest 2.x in Studio packs ([82242e2](https://github.com/Usefused/harnest/commit/82242e25b57a42fa1e649f0c9168ba8871cfca5c))
+
+
+### Refactoring
+
+* keep framework-specific code in adapters and framework scaffold folders ([3ec8723](https://github.com/Usefused/harnest/commit/3ec872350fb475b57c7237e1b06fc135c92d1580))
+* move generated Python out of Go strings into internal/pysource ([a18c131](https://github.com/Usefused/harnest/commit/a18c1310d33149dde017e414b31c2e1063d37ffc))
+* run evaluations through engines chosen by each framework adapter ([63d4e13](https://github.com/Usefused/harnest/commit/63d4e1316a72f55e227d4c46bd0e82de1d1913a2))
 
 ## [1.8.1](https://github.com/Usefused/harnest/compare/v1.8.0...v1.8.1) (2026-11-03)
 
