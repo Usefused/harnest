@@ -9,6 +9,9 @@ from typing_extensions import Self
 
 from .server_config import _mapping, _read_yaml
 
+BUILTIN_RUNNER = "adk"
+"""The ``spec.evaluation.runners`` name of the framework's built-in evaluation engine."""
+
 
 class RunnerSpec(BaseModel):
     """Validated registration for one installed callable or the built-in evaluator."""
@@ -21,7 +24,7 @@ class RunnerSpec(BaseModel):
     @model_validator(mode="after")
     def validate_registration(self) -> Self:
         """Reserve ADK's existing configuration surface and require custom callables."""
-        if self.name == "adk":
+        if self.name == BUILTIN_RUNNER:
             if self.model_fields_set != {"name"}:
                 raise ValueError("the adk evaluation runner accepts only name")
         elif not self.entrypoint:
@@ -42,7 +45,7 @@ def read_runners(project: Path) -> list[RunnerSpec]:
     doc = _read_yaml(config, max_bytes=None) if config.exists() or config.is_symlink() else {}
     spec = _mapping(_mapping(doc, str(config)).get("spec", {}), "spec")
     if "evaluation" not in spec:
-        return [RunnerSpec(name="adk")]
+        return [RunnerSpec(name=BUILTIN_RUNNER)]
     runners = _EvaluationSpec.model_validate(spec["evaluation"]).runners
     if len({runner.name for runner in runners}) != len(runners):
         raise ValueError("spec.evaluation.runners requires unique names")

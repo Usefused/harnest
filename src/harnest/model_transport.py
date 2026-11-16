@@ -122,16 +122,17 @@ class ModelTransportBinding:
             if key in _TRANSPORT_ARGUMENTS
         }
 
-    def build_eval_model(self, model_name: str) -> Any:
-        """Build an evaluator judge model sharing transport but never cleanup ownership."""
+    @property
+    def transport_options(self) -> dict[str, Any]:
+        """Transport and auth settings an evaluator judge may share with this model."""
 
-        from .eval_model_transport import build_judge_model
+        return self._transport_options()
 
-        return build_judge_model(
-            model_name,
-            transport_options=self._transport_options(),
-            borrowed_client=self._borrowed_client,
-        )
+    @property
+    def borrowed_client(self) -> Any:
+        """The model's client, which a judge may use but never closes."""
+
+        return self._borrowed_client
 
 
 def _same_transport_value(left: Any, right: Any) -> bool:

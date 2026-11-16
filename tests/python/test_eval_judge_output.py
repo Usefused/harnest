@@ -13,8 +13,7 @@ from google.adk.models.registry import LLMRegistry
 from google.genai import types
 from pydantic import PrivateAttr
 
-from harnest.eval_model_transport import _judge_final_response, eval_model_transports
-from harnest.model_transport import ModelTransportBinding
+from harnest.evaluators.adk.model_transport import _judge_final_response, eval_model_transports
 from test_eval_model_transport import _config, _judge, _responses, _target
 
 
@@ -68,7 +67,7 @@ class JudgeOutputTests(unittest.IsolatedAsyncioTestCase):
 
         response = _response(types.Part(text="private", thought=True), types.Part(text="final"))
         delegate = _SequenceModel("openai/shared", [response])
-        with patch.object(ModelTransportBinding, "build_eval_model", return_value=delegate):
+        with patch("harnest.evaluators.adk.model_transport.build_binding_judge", return_value=delegate):
             with eval_model_transports(_target(), _config("openai/shared", "openai/shared")) as prepared:
                 self.assertNotEqual(_judge(prepared), prepared.user_simulator_config.model)
                 judged = await _responses(LLMRegistry.new_llm(_judge(prepared)))
@@ -116,7 +115,7 @@ class JudgeOutputTests(unittest.IsolatedAsyncioTestCase):
         invocation = Invocation(user_content=types.Content(parts=[types.Part(text="What is 2+2?")]),
                                 final_response=types.Content(parts=[types.Part(text="4")]))
         delegate = _SequenceModel("openai/judge", responses)
-        with patch.object(ModelTransportBinding, "build_eval_model", return_value=delegate):
+        with patch("harnest.evaluators.adk.model_transport.build_binding_judge", return_value=delegate):
             with eval_model_transports(_target(), config) as prepared:
                 evaluator = RubricBasedFinalResponseQualityV1Evaluator(get_eval_metrics_from_config(prepared)[0])
                 result = await evaluator.evaluate_invocations([invocation])

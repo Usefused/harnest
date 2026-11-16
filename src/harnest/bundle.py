@@ -1154,10 +1154,13 @@ def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
         )
 
 
-def discover_evals(anchor: str | Path) -> EvalSuite:
-    """Return validated, sorted ADK eval paths without building the agent."""
+def discover_evals(anchor: str | Path, *, framework: str = DEFAULT_FRAMEWORK) -> EvalSuite:
+    """Return validated, sorted eval paths without building the agent.
 
-    return _discover_evals(_validate_anchor(anchor).parent / "evals")
+    ``framework`` selects the evaluation engine whose schemas validate the files.
+    """
+
+    return _discover_evals(_validate_anchor(anchor).parent / "evals", framework)
 
 
 def _resolve_compile_anchor(source: str | Path, entrypoint: str) -> Path:
@@ -1721,7 +1724,7 @@ def _validate_framework_evals(directory: Path, framework: str) -> None:
     """Validate the shared eval-set contract before either backend is lowered."""
 
     if _supports(framework, Capability.EVALS):
-        _discover_evals(directory)
+        _discover_evals(directory, framework)
 
 
 def _agent_subagents_for_framework(
@@ -2589,19 +2592,19 @@ def _skill_directories(directory: Path) -> tuple[Path, ...]:
     return tuple(skill_directories)
 
 
-def _discover_evals(directory: Path) -> EvalSuite:
+def _discover_evals(directory: Path, framework: str) -> EvalSuite:
     """Load evaluation files with actionable guidance for incomplete suites."""
-    from ._eval_runner_config import read_runners
+    from ._eval_runner_config import BUILTIN_RUNNER, read_runners
 
     if directory.is_symlink():
         raise BundleConventionError(f"evals directory cannot be a symlink: {directory}")
-    if any(runner.name == "adk" for runner in read_runners(directory.parent)):
-        return _discover_adk_eval_files(directory)
-    # A custom-only runner owns its dataset format and need not install ADK.
+    if any(runner.name == BUILTIN_RUNNER for runner in read_runners(directory.parent)):
+        return _discover_eval_files(directory, framework)
+    # A custom-only runner owns its dataset format and needs no evaluation engine.
     return EvalSuite(())
 
 
-def _discover_adk_eval_files(directory: Path) -> EvalSuite:
+def _discover_eval_files(directory: Path, framework: str) -> EvalSuite:
     """Validate only the built-in runner’s flat EvalSet and criteria files."""
     if not directory.exists():
         return EvalSuite(())
@@ -2622,7 +2625,7 @@ def _discover_adk_eval_files(directory: Path) -> EvalSuite:
                 )
             )
         return EvalSuite(())
-    _validate_eval_files(eval_paths, tuple(configs.values()))
+    _validate_eval_files(eval_paths, tuple(configs.values()), framework)
     return EvalSuite(tuple(eval_paths), config_path, scoped)
 
 
@@ -2661,12 +2664,16 @@ def _eval_file_kind(path: Path) -> str:
     )
 
 
-def _validate_eval_files(eval_paths: Sequence[Path], configs: Sequence[Path]) -> None:
-    """Validate all shared and set-specific configurations during discovery."""
-    from .evaluation import _eval_file_schemas
+def _eval_file_schemas(framework: str) -> tuple[type[Any], type[Any]]:
+    """Return the eval-set and test-config models of the framework's evaluation engine."""
 
+    return get_framework(framework).evaluator().file_schemas()
+
+
+def _validate_eval_files(eval_paths: Sequence[Path], configs: Sequence[Path], framework: str) -> None:
+    """Validate all shared and set-specific configurations during discovery."""
     try:
-        EvalSet, EvalConfig = _eval_file_schemas()
+        EvalSet, EvalConfig = _eval_file_schemas(framework)
     except ImportError as exc:  # pragma: no cover - runtime dependency
         raise BundleImportError(
             "discovered evals require Google ADK 2.x evaluation support"

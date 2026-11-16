@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import httpx
 
-from harnest.eval_model_transport import eval_model_transports
+from harnest.evaluators.adk.model_transport import eval_model_transports
 from harnest.model import LiteLLMModel
 from harnest.model_lifecycle import LiteLLMLifecycle, close_litellm_lifecycles
 
@@ -249,7 +249,8 @@ class HostedVertexTests(unittest.TestCase):
         from google.genai.types import Content, Part
         from google.oauth2.credentials import Credentials
         from packaging.version import Version
-        from harnest.evaluation import _check_vertex_metrics, EvaluationError
+        from harnest.evaluation import EvaluationError
+        from harnest.evaluators.adk.config import _check_vertex_metrics
 
         if Version(version("google-adk")) < Version("2.13"):
             with self.assertRaisesRegex(EvaluationError, "google-adk>=2.13"):

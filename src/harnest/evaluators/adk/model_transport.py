@@ -1,4 +1,4 @@
-"""Run-scoped ADK model adapters that borrow an agent's custom transport."""
+"""ADK evaluation engine: run-scoped judge and simulator models that borrow an agent's transport."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from functools import lru_cache
 from typing import Any, Iterator
 import uuid
 
-from .evaluation import EvaluationError
-from .model_transport import model_transport_bindings
+from ...evaluation import EvaluationError
+from ...model_transport import model_transport_bindings
 
 
 _ACTIVE_SCOPE: ContextVar[Any] = ContextVar("harnest_eval_model_transports", default=None)
@@ -129,7 +129,7 @@ class _EvalTransportScope:
 def _judge_final_response(response: Any) -> Any | None:
     """Exclude provider thoughts and intermediate chunks without editing final prose."""
 
-    from .runtime_contract import _customer_facing_parts
+    from ...runtime_contract import _customer_facing_parts
 
     # ADK's non-streaming judge loop parses its first yielded response. A
     # provider can still emit an initial thought-only or partial event.
@@ -175,7 +175,7 @@ def _register_proxy_model() -> type[Any]:
             # Unbound native judges keep exactly ADK's original model factory
             # and credential path; only their output boundary is wrapped.
             self._delegate = (
-                binding.build_eval_model(original) if binding is not None
+                build_binding_judge(binding, original) if binding is not None
                 else LLMRegistry.resolve(original)(model=original)
             )
 
@@ -267,7 +267,7 @@ async def close_owned_eval_model_transports(
 ) -> None:
     """Close CLI-owned model resources once after all borrowing eval calls finish."""
 
-    from .model_lifecycle import _lifecycle_resources, _raise_cleanup_failures
+    from ...model_lifecycle import _lifecycle_resources, _raise_cleanup_failures
 
     resources = {
         id(resource): resource
@@ -302,7 +302,7 @@ def build_judge_model(
 
     from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
 
-    from .model_transport import _borrow_adk_client, framework_adk_client
+    from ...model_transport import _borrow_adk_client, framework_adk_client
 
     arguments = dict(transport_options)
     if borrowed_client is not None:
@@ -312,3 +312,13 @@ def build_judge_model(
     else:
         arguments["llm_client"] = framework_adk_client(LiteLLMClient)
     return LiteLlm(model=model_name, **arguments)
+
+
+def build_binding_judge(binding: Any, model_name: str) -> Any:
+    """Build an evaluator judge sharing one agent model's transport, never its cleanup."""
+
+    return build_judge_model(
+        model_name,
+        transport_options=binding.transport_options,
+        borrowed_client=binding.borrowed_client,
+    )

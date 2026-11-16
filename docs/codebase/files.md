@@ -308,7 +308,7 @@ Chat-platform channels and their storage.
 
 ### Testing and evaluation
 
-harnest test, the built-in evaluator, eval capture, and provider conformance suites.
+harnest test, the unified evaluation API and its engines (evaluators/), eval capture, and provider conformance suites.
 
 - [`_eval_capture_runtime.py`](../../src/harnest/_eval_capture_runtime.py): Run the authored eval capture rule after invocations, off the response path.
 - [`_eval_runner.py`](../../src/harnest/_eval_runner.py): Execute a team's evaluation packages and retain their independent reports.
@@ -316,9 +316,15 @@ harnest test, the built-in evaluator, eval capture, and provider conformance sui
 - [`_eval_runner_config.py`](../../src/harnest/_eval_runner_config.py): Read evaluation runner declarations without importing user code.
 - [`eval_capture.py`](../../src/harnest/eval_capture.py): Production eval capture contracts: what a capture rule sees and what a store keeps.
 - [`eval_errors.py`](../../src/harnest/eval_errors.py): Privacy-safe distinction between native execution errors and scored failures.
-- [`eval_metrics.py`](../../src/harnest/eval_metrics.py): Small authored metric contracts adapted to the existing ADK evaluator.
-- [`eval_model_transport.py`](../../src/harnest/eval_model_transport.py): Run-scoped ADK model adapters that borrow an agent's custom transport.
-- [`evaluation.py`](../../src/harnest/evaluation.py): Shared evaluation policy for CLI and playground execution.
+- [`eval_metrics.py`](../../src/harnest/eval_metrics.py): Small authored metric contracts adapted to the ADK evaluation engine's custom-metric hook.
+- [`evaluation.py`](../../src/harnest/evaluation.py): Harnest's unified evaluation API: trajectories, errors, metrics, and runner contracts.
+- [`evaluators/__init__.py`](../../src/harnest/evaluators/__init__.py): Evaluation engines behind Harnest's unified evaluation API.
+- [`evaluators/adk/__init__.py`](../../src/harnest/evaluators/adk/__init__.py): The ADK evaluation engine: Harnest's eval files scored by Google ADK's evaluation library.
+- [`evaluators/adk/config.py`](../../src/harnest/evaluators/adk/config.py): ADK evaluation engine: criteria, judge and simulator model defaults, and eval file schemas.
+- [`evaluators/adk/errors.py`](../../src/harnest/evaluators/adk/errors.py): ADK evaluation engine: tell native execution failures apart from scored failures.
+- [`evaluators/adk/model_transport.py`](../../src/harnest/evaluators/adk/model_transport.py): ADK evaluation engine: run-scoped judge and simulator models that borrow an agent's transport.
+- [`evaluators/adk/playground.py`](../../src/harnest/evaluators/adk/playground.py): ADK evaluation engine: run one eval set for the Playground and read its result rows.
+- [`evaluators/adk/suite.py`](../../src/harnest/evaluators/adk/suite.py): ADK evaluation engine: run `harnest test --evals` and publish Harnest's result file.
 - [`testing.py`](../../src/harnest/testing.py): Pytest integration for import-free authored agent tests.
 - [`testing_channels.py`](../../src/harnest/testing_channels.py): Reusable conformance checks shipped for custom durable channel storage providers.
 - [`testing_memory.py`](../../src/harnest/testing_memory.py): Reusable database conformance tests for custom explicit-memory providers.

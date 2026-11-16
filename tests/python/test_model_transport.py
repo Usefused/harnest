@@ -17,6 +17,7 @@ from harnest.model_lifecycle import (
     close_litellm_lifecycles,
     propagate_litellm_lifecycles,
 )
+from harnest.evaluators.adk.model_transport import build_binding_judge
 from harnest.model_transport import (
     ModelTransportBinding,
     model_transport_bindings,
@@ -127,7 +128,7 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
             temperature=0,
         ), "adk")
         binding = model_transport_bindings(owner)[0]
-        borrowed = binding.build_eval_model("openai/judge-model")
+        borrowed = build_binding_judge(binding, "openai/judge-model")
 
         self.assertEqual(binding.model, "openai/agent-model")
         self.assertNotIn("synthetic-private-key", repr(binding))
@@ -158,7 +159,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
             owner = build_for_framework(LiteLLMModel(
                 "openai/agent-model", lifecycle=lifecycle
             ), "adk")
-            borrowed = model_transport_bindings(owner)[0].build_eval_model(
+            borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
                 "openai/judge-model"
             )
             self.assertIs(borrowed.llm_client, owner.llm_client)
@@ -205,7 +207,7 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         arguments = {"client": native_client, "api_base": "https://original.invalid"}
         binding = ModelTransportBinding("openai/agent-model", arguments)
         arguments["api_base"] = "https://changed.invalid"
-        borrowed = binding.build_eval_model("openai/judge-model")
+        borrowed = build_binding_judge(binding, "openai/judge-model")
 
         self.assertEqual(borrowed._additional_args["api_base"], "https://original.invalid")
         self.assertIs(borrowed._additional_args["client"], native_client)
@@ -218,7 +220,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         owner = build_for_framework(LiteLLMModel(
             "openai/agent-model", client=native_client
         ), "langgraph")
-        borrowed = model_transport_bindings(owner)[0].build_eval_model(
+        borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
             "openai/judge-model"
         )
 
@@ -264,7 +267,7 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(option=key):
                 owner = build_for_framework(LiteLLMModel("openai/agent-model", **{key: value}), "adk")
                 binding, = model_transport_bindings(owner)
-                borrowed = binding.build_eval_model("openai/judge-model")
+                borrowed = build_binding_judge(binding, "openai/judge-model")
                 self.assertIs(borrowed._additional_args[key], value)
                 self.assertNotIn("synthetic", repr(binding))
 
@@ -275,7 +278,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
 
         client = LiteLLMClient()
         owner = build_for_framework(LiteLLMModel("openai/agent-model", llm_client=client), "adk")
-        borrowed = model_transport_bindings(owner)[0].build_eval_model(
+        borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
             "openai/judge-model"
         )
         self.assertIs(owner.llm_client, client)
@@ -295,7 +299,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
                 "extra_headers": headers, "temperature": 0.2,
             },
         ), "langgraph")
-        borrowed = model_transport_bindings(owner)[0].build_eval_model(
+        borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
             "openai/judge-model"
         )
         for key in ("api_base", "api_key", "organization", "extra_headers"):
@@ -323,7 +328,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
                 "api_base": "https://nested.invalid/v1", "api_key": "synthetic-key"
             },
         ), "langgraph")
-        borrowed = model_transport_bindings(owner)[0].build_eval_model(
+        borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
             "openai/judge-model"
         )
         with patch("litellm.acompletion", new=complete):
@@ -347,7 +353,8 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
             "openai/agent-model", api_base="https://top.invalid/v1",
             model_kwargs={"api_base": "https://nested.invalid/v1"},
         ), "langgraph")
-        borrowed = model_transport_bindings(owner)[0].build_eval_model(
+        borrowed = build_binding_judge(
+                model_transport_bindings(owner)[0],
             "openai/judge-model"
         )
         self.assertEqual(owner._client_params["api_base"], "https://top.invalid/v1")

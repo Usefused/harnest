@@ -125,7 +125,7 @@ class AuthoringErrorTests(unittest.TestCase):
 
     def test_eval_config_without_cases_explains_next_step(self):
         path = self.write("evals/test_config.json", "{}")
-        message = self.diagnostic(_discover_evals, path.parent)
+        message = self.diagnostic(_discover_evals, path.parent, "adk")
         self.assertIn("not a set of test cases", message)
         self.assertIn("quality.evalset.json", message)
         self.assertIn("_test_config.json", message)

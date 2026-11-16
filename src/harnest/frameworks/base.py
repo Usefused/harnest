@@ -678,8 +678,19 @@ class FrameworkAdapter(ABC):
         raise self._unsupported("durable tool suspension")
 
     # -- Evaluations -------------------------------------------------------
-    # Harnest's built-in evaluator is ADK's evaluation library and drives any
-    # framework through an importable agent module.
+    # Authors use one evaluation API (evals/ files, harnest test --evals,
+    # Playground evals, @metric). The engine in harnest.evaluators that runs it
+    # is the adapter's choice; ADK and LangGraph both use the ADK engine today.
+
+    def evaluator(self) -> Any:
+        """Return the engine that runs this framework's built-in evaluations.
+
+        Return an :class:`harnest.evaluators.Evaluator`, for example
+        ``harnest.evaluators.adk.evaluator``. Requires :attr:`Capability.EVALS`;
+        the default raises ``UnsupportedFrameworkFeature``.
+        """
+
+        raise self._unsupported("built-in evaluations")
 
     def run_builtin_evals(
         self,
@@ -693,9 +704,9 @@ class FrameworkAdapter(ABC):
     ) -> int:
         """Run ``harnest test --evals``; requires :attr:`Capability.EVALS`.
 
-        Implement it by calling ``harnest.testing._run_eval_suite`` with an
-        async context that yields the evaluator's module name and the target
-        whose models it borrows; that function prints and publishes results
+        Implement it by calling ``self.evaluator().run_suite(...)`` with an
+        async context that yields the module name the engine imports and the
+        target whose models it borrows; the engine prints and publishes results
         and returns the exit code. The default raises
         ``UnsupportedFrameworkFeature``.
         """

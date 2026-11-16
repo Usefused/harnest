@@ -122,7 +122,7 @@ func inspectProfileDependencyPlan(bundle engine.Bundle, profile environmentProfi
 	if err != nil || profile != evalEnvironmentProfile {
 		return plan, err
 	}
-	plan.CustomEvalOnly = !bundle.Config.Spec.Evaluation.UsesADK()
+	plan.CustomEvalOnly = !bundle.Config.Spec.Evaluation.UsesBuiltinRunner()
 	plan.EvalGroup = hasEvalDependencyGroup(plan.rootDocument)
 	return plan, nil
 }

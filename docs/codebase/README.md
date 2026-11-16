@@ -119,7 +119,7 @@ worth reading first.
 | Runtime | `runtime.py`, `runtime_contract.py`, `runtime_pipeline.py` | Driver wrappers, invocation flow, sessions, transports |
 | Lifecycle and extensions | `lifecycle.py`, `extension_loader.py` | Decorator hooks and Harnest Extensions, discovered at compile time |
 | Storage | `checkpoint.py`, `session.py`, `store.py` | Portable storage contracts and the built-in Postgres and Redis backends |
-| Testing and evals | `testing.py`, `evaluation.py` | `harnest test`, the built-in evaluator, eval capture |
+| Testing and evals | `testing.py`, `evaluation.py`, `evaluators/` | `harnest test`, the unified evaluation API, evaluation engines (`evaluators/adk/`), eval capture |
 | Packs | `authoring/packs.py` | Harnest packs and branded CLIs; see [packs.md](packs.md) |
 
 Two rules hold everywhere. Modules whose names start with `_` are private.

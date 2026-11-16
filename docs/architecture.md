@@ -463,7 +463,9 @@ sorted and validated during compilation, including unique case IDs, but remain
 test-only and never become instructions or runtime tools. `discover_evals()`
 also exposes the validated paths for tooling. `harnest test <agent-folder>
 --evals` runs the unit suite first, then evaluates every validated eval set in
-deterministic filename order through ADK's official evaluator, automatically
+deterministic filename order through the framework adapter's evaluation engine
+(today ADK's official evaluator for both frameworks; see
+[frameworks.md](frameworks.md#evaluation-engines)), automatically
 applying the optional config. The evaluator's complete built-in metric registry,
 user-simulator configuration, judge-backed criteria, and `customMetrics` code
 references remain available without a Harnest metric allowlist. Authors never

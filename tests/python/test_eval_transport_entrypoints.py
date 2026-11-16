@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.models import BaseLlm
@@ -18,20 +18,19 @@ from google.genai import types
 
 from harnest.bundle import EvalSuite
 from harnest.frameworks.langgraph.evaluation import _adk_events
-from harnest.eval_model_transport import (
+from harnest.evaluators.adk.model_transport import (
     close_owned_eval_model_transports,
     restore_eval_model_names,
 )
 from harnest.model_lifecycle import _attach_lifecycle_resource
 from harnest.model_transport import (
-    ModelTransportBinding,
     attach_model_transport_binding,
     propagate_model_transport_bindings,
 )
 from harnest.runtime_contract import InvocationResult
 from harnest.frameworks.adk.evaluation import run_builtin_evals as _run_adk_evals
 from harnest.frameworks.langgraph.evaluation import run_builtin_evals as _run_langgraph_evals
-from harnest.testing import _model_json
+from harnest.evaluators.adk.suite import _model_json
 
 
 def _target():
@@ -93,10 +92,10 @@ class EvalTransportEntrypointTests(unittest.TestCase):
             }), encoding="utf-8")
             output = artifact / "result.json"
             with patch.dict(sys.modules, {module_name: module}), patch(
-                "harnest.testing._eval_config", side_effect=lambda *_: _config()
-            ), patch.object(
-                ModelTransportBinding, "build_eval_model",
-                side_effect=lambda model: _OfflineModel(model=model),
+                "harnest.evaluators.adk.suite._eval_config", side_effect=lambda *_: _config()
+            ), patch(
+                "harnest.evaluators.adk.model_transport.build_binding_judge",
+                side_effect=lambda _binding, model: _OfflineModel(model=model),
             ) as build, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 status = _run_adk_evals(
                     artifact, EvalSuite((path,), None),
@@ -104,7 +103,7 @@ class EvalTransportEntrypointTests(unittest.TestCase):
                 )
             payload = output.read_text(encoding="utf-8")
         self.assertEqual(status, 0)
-        build.assert_called_with("openai/judge")
+        build.assert_called_with(ANY, "openai/judge")
         self.assertEqual(json.loads(payload)["summary"]["passedCases"], 1)
         self.assertIn("openai/judge", payload)
         self.assertNotIn("harnest_eval/", payload)
@@ -171,11 +170,11 @@ class EvalTransportEntrypointTests(unittest.TestCase):
                 yield
 
         with tempfile.TemporaryDirectory() as directory, patch(
-            "harnest.testing._eval_dependencies", return_value=(object(), object())
-        ), patch("harnest.testing._eval_config", side_effect=lambda *_: _config()), patch(
+            "harnest.evaluators.adk.suite._eval_dependencies", return_value=(object(), object())
+        ), patch("harnest.evaluators.adk.suite._eval_config", side_effect=lambda *_: _config()), patch(
             "harnest.frameworks.adk.evaluation._adk_eval_output_filter", imported
-        ), patch("harnest.testing._evaluate_eval_sets", evaluate), patch(
-            "harnest.eval_model_transport.close_owned_eval_model_transports", close
+        ), patch("harnest.evaluators.adk.suite._evaluate_eval_sets", evaluate), patch(
+            "harnest.evaluators.adk.model_transport.close_owned_eval_model_transports", close
         ), redirect_stderr(StringIO()):
             if failure is None:
                 self.assertEqual(_run_adk_evals(
@@ -211,11 +210,11 @@ class EvalTransportEntrypointTests(unittest.TestCase):
             events.append("evaluate")
 
         with patch(
-            "harnest.testing._eval_dependencies", return_value=(object(), object())
-        ), patch("harnest.testing._eval_config", side_effect=lambda *_: _config()), patch(
+            "harnest.evaluators.adk.suite._eval_dependencies", return_value=(object(), object())
+        ), patch("harnest.evaluators.adk.suite._eval_config", side_effect=lambda *_: _config()), patch(
             "harnest.frameworks.langgraph.evaluation.langgraph_eval_agent_module", driver
-        ), patch("harnest.testing._evaluate_eval_sets", evaluate), patch(
-            "harnest.eval_model_transport.close_owned_eval_model_transports", new_callable=AsyncMock
+        ), patch("harnest.evaluators.adk.suite._evaluate_eval_sets", evaluate), patch(
+            "harnest.evaluators.adk.model_transport.close_owned_eval_model_transports", new_callable=AsyncMock
         ) as cli_close:
             self.assertEqual(_run_langgraph_evals(
                 application, EvalSuite((), None), print_results=False

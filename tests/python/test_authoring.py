@@ -30,14 +30,14 @@ from harnest.server_config import DEFAULT_SERVER_YAML
 from harnest.frameworks.adk.evaluation import run_builtin_evals as _run_adk_evals
 from harnest.frameworks.langgraph.evaluation import run_builtin_evals as _run_langgraph_evals
 from harnest.frameworks.adk.evaluation import _adk_eval_output_filter
-from harnest.testing import (
-    AgentTestError,
+from harnest.testing import AgentTestError, run_agent_tests
+from harnest.evaluators.adk import evaluator as adk_evaluation_engine
+from harnest.evaluators.adk.suite import (
     _EvalResultCollector,
     _eval_case_result_payload,
     _eval_config,
     _evaluate_eval_sets,
     _isolated_eval_logging,
-    run_agent_tests,
 )
 from _session_store_fixture import write_session_store
 
@@ -1535,6 +1535,8 @@ raise SystemExit(main(sys.argv[1:]))
                 "trajectory": "business",
                 "print_results": True,
                 "result_output": None,
+                # The adapter passes the evaluation engine it chose.
+                "engine": adk_evaluation_engine,
             },
         )
 
@@ -1578,6 +1580,8 @@ raise SystemExit(main(sys.argv[1:]))
                 "trajectory": "business",
                 "print_results": True,
                 "result_output": None,
+                # The adapter passes the evaluation engine it chose.
+                "engine": adk_evaluation_engine,
             },
         )
 
@@ -1950,7 +1954,7 @@ raise SystemExit(main(sys.argv[1:]))
                 self._write(root / "evals" / file, json.dumps({"criteria": {metric: 1.0}}))
             suite = discover_evals(root / "agent.py")
             from google.adk.evaluation.eval_set import EvalSet
-            with patch("harnest.testing._eval_dependencies", return_value=(
+            with patch("harnest.evaluators.adk.suite._eval_dependencies", return_value=(
                 types.SimpleNamespace(evaluate_eval_set=evaluate), EvalSet,
             )), patch("harnest.frameworks.adk.evaluation._adk_eval_output_filter"):
                 self.assertEqual(_run_adk_evals(root, suite, print_results=False), 0)
@@ -2021,14 +2025,14 @@ raise SystemExit(main(sys.argv[1:]))
             output = root / "eval-result.json"
             suite = EvalSuite((), root / "test_config.json")
             with patch(
-                "harnest.testing._eval_dependencies",
+                "harnest.evaluators.adk.suite._eval_dependencies",
                 return_value=(object(), object()),
             ), patch(
-                "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
+                "harnest.evaluators.adk.suite._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
                 "harnest.frameworks.adk.evaluation._adk_eval_output_filter"
             ), patch(
-                "harnest.testing._evaluate_eval_sets",
+                "harnest.evaluators.adk.suite._evaluate_eval_sets",
                 side_effect=RuntimeError(
                     "provider unavailable with synthetic-api-key"
                 ),
@@ -2098,17 +2102,17 @@ raise SystemExit(main(sys.argv[1:]))
             output = root / "eval-result.json"
             suite = EvalSuite((), root / "test_config.json")
             with patch(
-                "harnest.testing._eval_dependencies",
+                "harnest.evaluators.adk.suite._eval_dependencies",
                 return_value=(object(), object()),
             ), patch(
-                "harnest.testing._eval_config", return_value=EvalConfig(criteria={})
+                "harnest.evaluators.adk.suite._eval_config", return_value=EvalConfig(criteria={})
             ), patch(
                 "harnest.frameworks.adk.evaluation._adk_eval_output_filter"
             ), patch(
-                "harnest.testing._eval_case_result_payload",
+                "harnest.evaluators.adk.suite._eval_case_result_payload",
                 return_value=case_payload,
             ), patch(
-                "harnest.testing._evaluate_eval_sets",
+                "harnest.evaluators.adk.suite._evaluate_eval_sets",
                 side_effect=evaluate_with_scored_failure,
             ):
                 with redirect_stderr(StringIO()):
@@ -2151,13 +2155,13 @@ raise SystemExit(main(sys.argv[1:]))
             suite = EvalSuite((), root / "test_config.json")
             config = EvalConfig(criteria={})
             with patch(
-                "harnest.testing._eval_dependencies",
+                "harnest.evaluators.adk.suite._eval_dependencies",
                 return_value=(object(), object()),
             ), patch(
-                "harnest.testing._eval_config", return_value=config
+                "harnest.evaluators.adk.suite._eval_config", return_value=config
             ), patch(
                 "harnest.frameworks.langgraph.evaluation.langgraph_eval_agent_module", eval_module
-            ), patch("harnest.testing._evaluate_eval_sets"):
+            ), patch("harnest.evaluators.adk.suite._evaluate_eval_sets"):
                 stdout = StringIO()
                 with redirect_stdout(stdout):
                     status = _run_langgraph_evals(

@@ -26,7 +26,8 @@ from harnest.application import CompiledApplication
 from harnest.bundle import EvalSuite
 from harnest.context import ContextUnavailableError, ContextValue, optional_active_context
 from harnest.frameworks.adk.evaluation import adk_evaluation_runtime
-from harnest.eval_errors import EvaluationExecutionError, evaluation_error_boundary
+from harnest.eval_errors import EvaluationExecutionError
+from harnest.evaluators.adk.errors import evaluation_error_boundary
 from harnest.frameworks.adk.evaluation import adk_eval_agent_module
 from harnest.lifecycle import LifecycleListener
 from harnest.runtime import _runtime_driver

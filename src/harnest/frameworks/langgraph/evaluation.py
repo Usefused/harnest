@@ -260,12 +260,16 @@ def run_builtin_evals(
     trajectory: str = "business",
     print_results: bool = True,
     result_output: Path | None = None,
+    engine: Any = None,
 ) -> int:
-    """Run LangGraph through the shared evaluator with visible setup milestones."""
+    """Run LangGraph through its adapter's evaluation engine with visible milestones."""
 
-    from ...testing import _run_eval_suite
+    if engine is None:
+        from ..registry import get_framework
 
-    return _run_eval_suite(
+        engine = get_framework("langgraph").evaluator()
+
+    return engine.run_suite(
         "langgraph",
         suite,
         lambda: _langgraph_eval_target(application),

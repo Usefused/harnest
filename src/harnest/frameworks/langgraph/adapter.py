@@ -20,8 +20,9 @@ How LangGraph differs from the default contract, and why:
   (``checkpoint.py``) backed by the lifecycle's Harnest store.
 - Durable tools pause with LangGraph's ``interrupt``, and the resulting
   ``GraphInterrupt`` is reported by ``is_suspension`` so hooks let it pass.
-- Harnest's built-in evaluator is ADK's library, so ``evaluation.py`` presents
-  the LangGraph runtime to it as an importable agent module.
+- LangGraph uses the ADK evaluation engine until it has its own, so
+  ``evaluation.py`` presents the LangGraph runtime to that engine as an
+  importable agent module.
 
 Every hook imports LangGraph and LangChain lazily so selecting another framework
 never requires them to be installed.
@@ -291,7 +292,7 @@ class LangGraphFramework(FrameworkAdapter):
         print_results: bool,
         result_output: Any,
     ) -> int:
-        """Evaluate the compiled LangGraph application through ADK's evaluator."""
+        """Evaluate the compiled LangGraph application with this adapter's engine."""
 
         from .evaluation import run_builtin_evals
 
@@ -301,7 +302,15 @@ class LangGraphFramework(FrameworkAdapter):
             trajectory=trajectory,
             print_results=print_results,
             result_output=result_output,
+            engine=self.evaluator(),
         )
+
+    def evaluator(self) -> Any:
+        """Score LangGraph agents with the ADK evaluation engine until a native one exists."""
+
+        from ...evaluators.adk import evaluator
+
+        return evaluator
 
     def playground_eval_agent_module(self, application: Any, driver: Any) -> Any:
         """Evaluate the active neutral LangGraph driver."""

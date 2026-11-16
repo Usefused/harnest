@@ -80,7 +80,7 @@ AREAS: tuple[tuple[str, str, str], ...] = (
     ("Decisions", "Typed, bounded judgments and their providers.", r"decision.*"),
     ("Channels", "Chat-platform channels and their storage.", r"channel.*"),
     ("Testing and evaluation",
-     "harnest test, the built-in evaluator, eval capture, and provider conformance suites.",
+     "harnest test, the unified evaluation API and its engines (evaluators/), eval capture, and provider conformance suites.",
      r"testing.*|eval.*|_eval.*|evaluation"),
     ("Playground and Studio backend",
      "Development routes behind `harnest serve` and Studio.",

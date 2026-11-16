@@ -23,7 +23,7 @@ if it needs the framework's own types, the adapter owns it.
 | Tasks, cron, durable tools, continuations | The native suspend primitive (`suspend_durable`) |
 | Token policy, MCP governance, output policy, telemetry, audit | Message shapes for token policy; MCP tool objects |
 | Compile, bundle, manifest, lock, env sync, CLI, packaging | Model objects for `LiteLLMModel` (`build_litellm_model`) |
-| Eval runners and reporting (the ADK evaluator is one runner) | Exposing an agent to the evaluator (`run_builtin_evals`, `evaluation_runtime`) |
+| The unified evaluation API: `evals/` files, `harnest test --evals`, Playground evals, `@metric`, custom runners, result files | Choosing the evaluation engine (`evaluator`) and exposing the agent to it (`run_builtin_evals`, `evaluation_runtime`) |
 
 Managed mode keeps Harnest's ownership `FULL` almost everywhere. Advanced mode
 hands model, tool, and MCP calls inside the user's native code to the
@@ -41,6 +41,7 @@ framework (`WRAPPED_ONLY`) and checkpoints to native storage
 | LangGraph adapter, implementation, and public native types | `src/harnest/frameworks/langgraph/` |
 | Go metadata access | `internal/frameworks` (`Lookup`, `Known`, `Choices`, `Default`, `Supports`) |
 | Per-framework `harnest init` starter files | `internal/pysource/files/init/frameworks/<name>/`, read by `cmd/harnest/framework_scaffolds.go` |
+| Evaluation engines (an adapter picks one with `evaluator()`) | `src/harnest/evaluators/` (`Evaluator` interface) and `src/harnest/evaluators/adk/` |
 
 Inside each framework package, `adapter.py` is the entry point and the other
 modules are that framework's implementation, reached with lazy imports. The
@@ -94,7 +95,7 @@ Optional hooks either default to a neutral no-op (`wrap_managed`,
 `accepts_framework_session_store`, `host_sessions`, `evaluation_runtime`,
 `is_injected_tool_context`, `is_framework_code_executor`) or raise
 `UnsupportedFrameworkFeature` naming the missing feature (`lower_graph`,
-`build_framework_server`, `suspend_durable`, `run_builtin_evals`,
+`build_framework_server`, `suspend_durable`, `evaluator`, `run_builtin_evals`,
 `playground_eval_agent_module`, and `attach_advanced_extensions` when
 extensions exist).
 
@@ -114,7 +115,7 @@ capability without overriding its hooks:
 | `framework-api-server` | Advanced apps are served by the framework's own HTTP API | `exposes_framework_server`, `build_framework_server` |
 | `framework-session-service` | Hosts may inject framework-specific session storage | `host_sessions`, `accepts_framework_session_store` |
 | `root-agent-subagents` | A managed root agent consumes `subagents/` directly; also enables `harnest add subagent` | (compiler and CLI only) |
-| `evals` | `harnest test --evals` and playground evals work | `run_builtin_evals`, `playground_eval_agent_module` |
+| `evals` | `harnest test --evals` and playground evals work | `evaluator`, `run_builtin_evals`, `playground_eval_agent_module` |
 | `generate-content-config` | `Agent(generate_content_config=...)` reaches the framework's model; without it the compiler warns and the field is ignored | (compiler only; `lower_agent` passes the field to the model) |
 
 ## Adding a framework
@@ -131,7 +132,7 @@ capability without overriding its hooks:
    `sdk_isinstance` for "is this an SDK object" checks that must not require
    the SDK, `AdvancedTarget.named` for advanced target names,
    `require_framework` for framework-name validation, and
-   `harnest.testing._run_eval_suite` for `run_builtin_evals`.
+   `self.evaluator().run_suite(...)` for `run_builtin_evals`.
 3. Register the adapter class in `_ADAPTERS` in `registry.py`.
 4. Add the framework's `harnest init` files under
    `internal/pysource/files/init/frameworks/<name>/`: `advanced/agent.py` (or
@@ -161,17 +162,20 @@ code.
 
 ## Enforced boundaries
 
-`test_framework_adapters.py` enforces two rules:
+`test_framework_adapters.py` enforces these rules:
 
 - No module outside `harnest/frameworks/` imports a framework package
   (`harnest.frameworks.adk`, `harnest.frameworks.langgraph`, ...). Shared code
   goes through `get_framework(...)`.
-- No module outside `harnest/frameworks/` imports a framework SDK, except
-  Harnest's built-in eval engine (`evaluation.py`, `eval_metrics.py`,
-  `eval_model_transport.py`, `eval_errors.py`). That engine is ADK's
-  evaluation library; it evaluates agents from every framework and is not the
-  ADK framework adapter. Eval files (`*.evalset.json`, `test_config.json`)
-  follow its schemas.
+- No shared module imports an evaluation engine (`harnest.evaluators.adk`, ...);
+  shared code goes through `get_framework(...).evaluator()`. The one exception
+  is `evaluation.py`, which keeps its public `eval_config`, `eval_dependencies`
+  and `supported_metric_names` helpers.
+- Only framework adapters and evaluation engines import framework SDKs. The one
+  remaining exception is `eval_metrics.py`: `@metric` adapts scorers to the ADK
+  engine's custom-metric contract.
+- Shared code names a framework only in a short, reviewed list of places (the
+  built-in runner's `config.yaml` name and the `harnest upgrade` migrator).
 
 Shared code that needs to recognize a framework's native objects asks every
 registered adapter: `is_injected_tool_context` (approval arguments) and
@@ -182,3 +186,16 @@ passes Google GenAI generation settings. Only frameworks that declare
 `generate-content-config` (today, ADK) use it. For any other framework,
 the compiler warns which agents set it and lowers them without it;
 compilation still succeeds.
+
+## Evaluation engines
+
+Authors use one evaluation API whatever their framework: `evals/*.evalset.json`
+and `test_config.json` files, `harnest test --evals`, Playground evals,
+`@metric` scorers, custom runners in `spec.evaluation.runners`, and the result
+file. An evaluation engine in `src/harnest/evaluators/` runs it, behind the
+`Evaluator` interface in `evaluators/__init__.py`. Each adapter names its
+engine with `evaluator()`. ADK and LangGraph both use the ADK engine
+(`evaluators/adk/`, Google ADK's evaluation library) today; the eval file
+format follows its schemas. A framework with its own evaluation tooling, such
+as LangSmith for LangGraph, adds an engine that reads the same files and
+returns the same results, then points its adapter at it.

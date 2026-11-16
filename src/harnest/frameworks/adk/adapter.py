@@ -432,7 +432,7 @@ class ADKFramework(FrameworkAdapter):
         print_results: bool,
         result_output: Any,
     ) -> int:
-        """Evaluate the native ADK App with ADK's evaluator."""
+        """Evaluate the native ADK App with this adapter's evaluation engine."""
 
         from .evaluation import run_builtin_evals
 
@@ -442,7 +442,15 @@ class ADKFramework(FrameworkAdapter):
             trajectory=trajectory,
             print_results=print_results,
             result_output=result_output,
+            engine=self.evaluator(),
         )
+
+    def evaluator(self) -> Any:
+        """Score ADK agents with the ADK evaluation engine."""
+
+        from ...evaluators.adk import evaluator
+
+        return evaluator
 
     def evaluation_runtime(self, application: Any, driver: Any = None) -> Any:
         """Own or borrow ADK runtime capabilities for one evaluation run."""

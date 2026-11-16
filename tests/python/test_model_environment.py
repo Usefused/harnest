@@ -14,7 +14,7 @@ import httpx
 
 from harnest.bundle import EvalSuite
 from harnest.evaluation import eval_config
-from harnest.eval_model_transport import eval_model_transports
+from harnest.evaluators.adk.model_transport import eval_model_transports
 from harnest.model import LiteLLMModel
 from test_eval_transport_http import _exercise_models
 

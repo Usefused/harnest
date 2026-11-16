@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from harnest.bundle import EvalSuite
-from harnest.testing import _eval_progress, _eval_suite_progress, _evaluate_eval_sets
+from harnest.testing import _eval_progress
+from harnest.evaluators.adk.suite import _eval_suite_progress, _evaluate_eval_sets
 
 
 class EvalProgressTests(unittest.TestCase):
@@ -28,7 +29,7 @@ class EvalProgressTests(unittest.TestCase):
                                  (asyncio.CancelledError(), "stopped")):
             with self.subTest(outcome=outcome):
                 output = StringIO()
-                with redirect_stderr(output), patch("harnest.testing.time.monotonic", side_effect=(10, 12.5)):
+                with redirect_stderr(output), patch("harnest.evaluators.adk.suite.time.monotonic", side_effect=(10, 12.5)):
                     try:
                         with _eval_suite_progress(1, 2, enabled=True):
                             self.assertIn("running agent and scoring", output.getvalue())

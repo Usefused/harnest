@@ -1,32 +1,21 @@
-"""Shared evaluation policy for CLI and playground execution."""
+"""Harnest's unified evaluation API: trajectories, errors, metrics, and runner contracts.
+
+An evaluation engine in ``harnest.evaluators`` runs it; each framework adapter
+names its engine with ``FrameworkAdapter.evaluator()``.
+"""
 
 from __future__ import annotations
 
-from functools import lru_cache
-from importlib.metadata import version
-import json
-from typing import Any, Callable, Mapping
-
-from packaging.version import Version
+from typing import TYPE_CHECKING, Any
 
 from ._eval_runner_api import EvalRunnerContext, EvalRunnerResult
 from .eval_metrics import MetricContext, MetricScore, metric
-from .bundle import EvalSuite
-from .model import LiteLLMModel
-from .model_transport import attach_model_transport_binding
+
+if TYPE_CHECKING:
+    from .bundle import EvalSuite
 
 
 EVAL_TRAJECTORIES = frozenset({"business", "strict"})
-_LLM_JUDGE_METRICS = frozenset(
-    {
-        "final_response_match_v2",
-        "rubric_based_final_response_quality_v1",
-        "hallucinations_v1",
-        "rubric_based_tool_use_quality_v1",
-        "per_turn_user_simulator_quality_v1",
-        "rubric_based_multi_turn_trajectory_quality_v1",
-    }
-)
 
 
 class EvaluationError(RuntimeError):
@@ -40,198 +29,32 @@ def require_eval_trajectory(trajectory: str) -> None:
         raise EvaluationError("eval trajectory must be business or strict")
 
 
-def _eval_config_payload(suite: EvalSuite) -> dict[str, Any] | None:
-    """Read the authored eval configuration before ADK applies model defaults."""
-
-    if suite.config is None:
-        return None
-    return json.loads(suite.config.read_text(encoding="utf-8"))
-
-
-def _set_default_judge_model(criterion: Any, default_model: Callable[[], str]) -> Any:
-    """Add the canonical judge model while preserving an authored override."""
-
-    if isinstance(criterion, (int, float)):
-        return {
-            "threshold": float(criterion),
-            "judgeModelOptions": {
-                "judgeModel": default_model()
-            },
-        }
-    if not isinstance(criterion, dict):
-        return criterion
-    options_key = (
-        "judgeModelOptions"
-        if "judge_model_options" not in criterion
-        else "judge_model_options"
-    )
-    options = criterion.setdefault(options_key, {})
-    if isinstance(options, dict):
-        model_key = "judgeModel" if "judge_model" not in options else "judge_model"
-        # Resolve lazily so explicit custom models do not depend on an unused
-        # OPENAI_MODEL value in the process environment.
-        if model_key not in options:
-            options[model_key] = default_model()
-    return criterion
-
-
-def _apply_eval_model_defaults(
-    payload: dict[str, Any], suite: EvalSuite, default_model: Callable[[], str]
-) -> dict[str, Any]:
-    """Route implicit judge and simulator models through the agent model contract."""
-
-    criteria = payload.get("criteria")
-    if isinstance(criteria, dict):
-        for name, criterion in criteria.items():
-            # This is a defaults policy, not a supported-metric allowlist.
-            # Future/custom criteria with judge options receive the same
-            # default without changing unrelated static or service metrics.
-            if _uses_judge_model(name, criterion):
-                criteria[name] = _set_default_judge_model(criterion, default_model)
-    simulator_key = (
-        "userSimulatorConfig"
-        if "user_simulator_config" not in payload
-        else "user_simulator_config"
-    )
-    simulator = payload.get(simulator_key)
-    if simulator is None and _suite_uses_user_simulator(suite):
-        # ADK creates a default simulator outside EvalConfig when a scenario
-        # omits this block, so make that implicit model choice explicit here.
-        simulator = {"type": "llm_backed"}
-        payload[simulator_key] = simulator
-    if isinstance(simulator, dict):
-        if "model" not in simulator:
-            simulator["model"] = default_model()
-    return payload
-
-
-def _suite_uses_user_simulator(suite: EvalSuite) -> bool:
-    """Detect scenario suites whose omitted simulator would otherwise use ADK defaults."""
-
-    for path in suite.eval_sets:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        cases = payload.get("evalCases", payload.get("eval_cases", []))
-        for case in cases:
-            if any(
-                case.get(key) is not None
-                for key in ("conversationScenario", "conversation_scenario")
-            ):
-                return True
-    return False
-
-
-def _uses_judge_model(name: str, criterion: Any) -> bool:
-    """Identify judge criteria without restricting ADK's metric registry."""
-
-    return name in _LLM_JUDGE_METRICS or (
-        isinstance(criterion, dict)
-        and any(
-            key in criterion for key in ("judgeModelOptions", "judge_model_options")
-        )
-    )
-
-
-def _check_vertex_metrics(criteria: Mapping[str, Any]) -> None:
-    """Reject the legacy ADK dataset adapter only for hosted Vertex scoring."""
-    hosted = {"response_evaluation_score", "safety_v1", "multi_turn_task_success_v1",
-              "multi_turn_trajectory_quality_v1", "multi_turn_tool_use_quality_v1"}
-    if hosted.intersection(criteria) and Version(version("google-adk")) < Version("2.13"):
-        raise EvaluationError("Hosted Vertex metrics require google-adk>=2.13 with Vertex SDK 2.7. "
-                              "Update the project's ADK framework lock before running this evaluation.")
+# The helpers below belong to the ADK evaluation engine, which runs Harnest's
+# eval files today; they stay here because this module has always exported them.
 
 
 def eval_config(suite: EvalSuite, trajectory: str) -> Any:
     """Load criteria with shared model defaults and the selected trajectory."""
 
-    require_eval_trajectory(trajectory)
-    from google.adk.evaluation.eval_config import EvalConfig
-    from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
+    from .evaluators.adk.config import eval_config as adk_eval_config
 
-    payload = _eval_config_payload(suite)
-    if payload is None:
-        # ADK returns a shared default object; normalize a fresh payload so one
-        # request's trajectory or model settings cannot leak into another.
-        payload = get_evaluation_criteria_or_default(None).model_dump(
-            by_alias=True, exclude_none=True
-        )
-    config = _configured_eval_models(payload, suite, EvalConfig)
-    _check_vertex_metrics(config.criteria)
-    criterion = config.criteria.get("tool_trajectory_avg_score")
-    if criterion is None:
-        return config
-    from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
-
-    threshold = criterion if isinstance(criterion, float) else criterion.threshold
-    match_type = "IN_ORDER" if trajectory == "business" else "EXACT"
-    config.criteria["tool_trajectory_avg_score"] = ToolTrajectoryCriterion(
-        threshold=threshold,
-        match_type=match_type,
-    )
-    return config
-
-
-def _configured_eval_models(payload: dict[str, Any], suite: EvalSuite, config_type: Any) -> Any:
-    """Capture implicit OpenAI-compatible transport without altering explicitly authored models."""
-
-    @lru_cache(maxsize=1)
-    def connector() -> LiteLLMModel:
-        """Resolve only when a model default is needed, once per configuration."""
-
-        return LiteLLMModel.from_openai_environment()
-
-    config = config_type.model_validate(
-        _apply_eval_model_defaults(payload, suite, lambda: connector().model)
-    )
-    if connector.cache_info().currsize:
-        default = connector()
-        # ADK constructs judges from model IDs, so keep the endpoint beside the
-        # config for the run-scoped transport adapter rather than changing env.
-        attach_model_transport_binding(
-            config, model=default.model,
-            completion_args=default.completion_args,
-        )
-    return config
+    return adk_eval_config(suite, trajectory)
 
 
 def eval_dependencies() -> tuple[Any, Any]:
-    """Validate the shared evaluation engine before loading either framework adapter."""
+    """Return the ADK evaluation engine's evaluator and eval-set classes."""
 
-    from .compatibility import FrameworkCompatibilityError, validate_framework_compatibility
+    from .evaluators.adk.config import eval_dependencies as adk_eval_dependencies
 
-    try:
-        validate_framework_compatibility("adk")
-    except FrameworkCompatibilityError as exc:
-        raise EvaluationError(str(exc)) from exc
-
-    try:
-        from google.adk.evaluation.agent_evaluator import AgentEvaluator
-        from google.adk.evaluation.eval_set import EvalSet
-    except ImportError as exc:  # pragma: no cover - declared framework extras
-        raise EvaluationError(
-            "Google ADK evaluation dependencies are required for evals"
-        ) from exc
-    return AgentEvaluator, EvalSet
+    return adk_eval_dependencies()
 
 
 def supported_metric_names() -> tuple[str, ...]:
-    """Reflect the installed ADK metric registry instead of freezing an allowlist."""
+    """Return the built-in metric names the ADK evaluation engine supports."""
 
-    from google.adk.evaluation.eval_metrics import PrebuiltMetrics
+    from .evaluators.adk.config import supported_metric_names as adk_metric_names
 
-    return tuple(sorted(metric.value for metric in PrebuiltMetrics))
-
-
-def _eval_file_schemas() -> tuple[type[Any], type[Any]]:
-    """Return the evaluator's eval-set and test-config schema classes.
-
-    The built-in evaluator is ADK's evaluation library, so ``*.evalset.json``
-    and ``test_config.json`` follow its schemas whatever the agent framework.
-    """
-
-    from google.adk.evaluation.eval_config import EvalConfig
-    from google.adk.evaluation.eval_set import EvalSet
-
-    return EvalSet, EvalConfig
+    return adk_metric_names()
 
 
 __all__ = [

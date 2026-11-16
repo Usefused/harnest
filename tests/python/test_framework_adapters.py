@@ -98,14 +98,10 @@ class RegisteredFrameworkContractTests(unittest.TestCase):
         names = set(framework_names())
         # Each remaining literal and why it is not adapter code.
         expected = {
-            # "adk" here is Google ADK's evaluation library, Harnest's built-in
-            # evaluator for every framework, not the agent framework.
-            "src/harnest/evaluation.py": 1,
-            "src/harnest/_eval_runner.py": 1,
-            "src/harnest/_eval_runner_config.py": 2,
-            "src/harnest/testing.py": 1,
-            "src/harnest/bundle.py": 1,
-            "engine/evaluation.go": 2,
+            # The config.yaml name of the built-in evaluation runner, which
+            # predates evaluation engines; it is not the agent framework.
+            "src/harnest/_eval_runner_config.py": 1,
+            "engine/evaluation.go": 1,
             # harnest upgrade rewrites retired LangGraph-only method names.
             "src/harnest/upgrade_framework_source.py": 1,
         }
@@ -304,16 +300,42 @@ class NewFrameworkExtensibilityTests(unittest.TestCase):
 _SRC = _ROOT / "src" / "harnest"
 _SDK_ROOTS = ("google.adk", "google.genai", "langgraph", "langchain")
 
-# The only shared modules allowed to import a framework SDK: Harnest's built-in
-# eval engine, which is ADK's evaluation library and evaluates agents from every
-# framework. It is not the ADK framework adapter. Any other SDK use belongs in
-# an adapter package.
+# The only shared modules allowed to import a framework SDK. Framework adapters
+# (frameworks/<name>/) and evaluation engines (evaluators/<name>/) own their
+# SDKs; anything else belongs in one of them.
 _SDK_IMPORT_DEBT = {
-    "eval_errors.py": "built-in ADK evaluator",
-    "eval_metrics.py": "built-in ADK evaluator",
-    "eval_model_transport.py": "built-in ADK evaluator",
-    "evaluation.py": "built-in ADK evaluator",
+    "eval_metrics.py": "@metric adapts scorers to the ADK engine's custom-metric contract",
 }
+
+# Shared modules that may import an evaluation engine directly. Everything else
+# reaches the engine through FrameworkAdapter.evaluator().
+_ENGINE_IMPORT_EXCEPTIONS = {
+    "evaluation.py": "keeps the public eval_config/eval_dependencies/supported_metric_names helpers",
+}
+
+
+def _engine_names():
+    """Name every evaluation engine package under harnest/evaluators/."""
+
+    return {path.name for path in (_SRC / "evaluators").iterdir() if (path / "__init__.py").is_file()}
+
+
+def _crosses_ownership(relative, module):
+    """Report a shared import of a framework adapter or, outside the allowed exceptions, an engine."""
+
+    parts = module.split(".")
+    if parts[:2] == ["harnest", "frameworks"] and len(parts) > 2:
+        return parts[2] in framework_names()
+    if parts[:2] == ["harnest", "evaluators"] and len(parts) > 2:
+        return parts[2] in _engine_names() and relative not in _ENGINE_IMPORT_EXCEPTIONS
+    return False
+
+
+def _is_engine_module(relative):
+    """Recognize code inside one evaluation engine package (evaluators/<name>/...)."""
+
+    parts = relative.removeprefix("src/harnest/").split("/")
+    return len(parts) > 2 and parts[0] == "evaluators"
 
 
 def _python_framework_literals(names):
@@ -322,7 +344,7 @@ def _python_framework_literals(names):
     found = {}
     for path in sorted((_ROOT / "src/harnest").rglob("*.py")) + sorted((_ROOT / "studio/src").rglob("*.py")):
         relative = path.relative_to(_ROOT).as_posix()
-        if relative.startswith("src/harnest/frameworks/"):
+        if relative.startswith("src/harnest/frameworks/") or _is_engine_module(relative):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         count = sum(isinstance(node, ast.Constant) and node.value in names for node in ast.walk(tree))
@@ -352,7 +374,7 @@ def _shared_modules():
 
     for path in sorted(_SRC.rglob("*.py")):
         relative = path.relative_to(_SRC).as_posix()
-        if not relative.startswith(("frameworks/", "_playground/", "_studio/")):
+        if not relative.startswith(("frameworks/", "_playground/", "_studio/")) and not _is_engine_module(relative):
             yield relative, ast.parse(path.read_text())
 
 
@@ -380,12 +402,11 @@ class OwnershipBoundaryTests(unittest.TestCase):
         sdk_importers = set()
         for relative, tree in _shared_modules():
             for module in _imported_modules(relative, tree):
-                parts = module.split(".")
-                if parts[:2] == ["harnest", "frameworks"] and len(parts) > 2 and parts[2] in framework_names():
+                if _crosses_ownership(relative, module):
                     violations.append(f"{relative}: {module}")
                 if module.startswith(_SDK_ROOTS):
                     sdk_importers.add(relative)
-        self.assertEqual(violations, [], "go through get_framework(...) instead")
+        self.assertEqual(violations, [], "go through get_framework(...) and adapter.evaluator() instead")
         self.assertEqual(sdk_importers, set(_SDK_IMPORT_DEBT), "update SDK debt when imports change")
 
 

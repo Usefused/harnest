@@ -14,7 +14,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from ._eval_runner_api import EvalRunnerContext, EvalRunnerResult
-from ._eval_runner_config import RunnerSpec
+from ._eval_runner_config import BUILTIN_RUNNER, RunnerSpec
 from .runtime import create_fastapi_app
 
 
@@ -63,7 +63,7 @@ class _Execution:
     artifact: Path
     project: Path
     run_dir: Path
-    run_adk: Callable[[Path], int]
+    run_builtin: Callable[[Path], int]
     report_base: Path
 
     def execute(self, spec: RunnerSpec) -> dict[str, Any]:
@@ -72,10 +72,10 @@ class _Execution:
         reports: list[Path] = []
         try:
             directory.mkdir()
-            if spec.name == "adk":
+            if spec.name == BUILTIN_RUNNER:
                 path = directory / "result.json"
                 try:
-                    self.run_adk(path)
+                    self.run_builtin(path)
                 finally:
                     if path.is_file():
                         reports.append(path)
@@ -95,7 +95,7 @@ class _Execution:
 
 def run_configured(
     runners: list[RunnerSpec], artifact: Path, project: Path, output: Path | None,
-    run_adk: Callable[[Path], int], publish: Callable[[Path, dict[str, Any]], None],
+    run_builtin: Callable[[Path], int], publish: Callable[[Path, dict[str, Any]], None],
     *, quiet: bool,
 ) -> int:
     """Write the combined verdict atomically, referring only to reports from this invocation."""
@@ -103,7 +103,7 @@ def run_configured(
     parent.mkdir(parents=True, exist_ok=True)
     run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     summary = parent / output.name if output else run_dir / "summary.json"
-    execution = _Execution(artifact, project, run_dir, run_adk, summary.parent)
+    execution = _Execution(artifact, project, run_dir, run_builtin, summary.parent)
     rows = [execution.execute(spec) for spec in runners]
     statuses = {row["status"] for row in rows}
     verdict = next((v for v in ("error", "failed", "not_evaluated") if v in statuses), "passed")

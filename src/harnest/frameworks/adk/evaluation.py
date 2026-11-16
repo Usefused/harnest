@@ -75,7 +75,7 @@ async def adk_evaluation_runtime(application: Any, driver: Any = None) -> AsyncI
 async def _close_evaluation_runtime(driver: Any, target: Any, primary: BaseException | None) -> None:
     """Retain the execution failure while cleaning each owned model exactly once."""
     if driver is None:
-        from ...eval_model_transport import close_owned_eval_model_transports
+        from ...evaluators.adk.model_transport import close_owned_eval_model_transports
 
         # Construction may fail before a runtime can adopt model ownership.
         await close_owned_eval_model_transports(target, primary_error=primary)
@@ -188,13 +188,17 @@ def run_builtin_evals(
     trajectory: str = "business",
     print_results: bool = True,
     result_output: Path | None = None,
+    engine: Any = None,
 ) -> int:
     """Run validated ADK eval sets with visible setup and suite milestones."""
 
-    from ...testing import _run_eval_suite
+    if engine is None:
+        from ..registry import get_framework
+
+        engine = get_framework("adk").evaluator()
 
     module_name = f"{artifact.name}.agent"
-    return _run_eval_suite(
+    return engine.run_suite(
         "adk",
         suite,
         lambda: _adk_eval_target(module_name),
@@ -209,7 +213,7 @@ def run_builtin_evals(
 async def _adk_eval_target(module_name: str) -> AsyncIterator[tuple[str, Any]]:
     """Keep native evaluation capabilities and model clients in one loop."""
 
-    from ...eval_model_transport import close_owned_eval_model_transports
+    from ...evaluators.adk.model_transport import close_owned_eval_model_transports
 
     module = sys.modules.get(module_name)
     target = getattr(module, "root_agent", None)
@@ -256,7 +260,7 @@ def prepared_adk_eval_app(app: Any) -> Iterator[Any]:
     from .context import adk_agent_context_plugins
     from .evaluation import evaluation_context_plugins
     from .evaluation_cleanup import guarded_eval_plugins, guarded_eval_app
-    from ...eval_errors import evaluation_error_boundary, evaluation_error_plugin
+    from ...evaluators.adk.errors import evaluation_error_boundary, evaluation_error_plugin
 
     enter, exit_plugin = adk_agent_context_plugins(app.root_agent.name)
     eval_enter, eval_exit = evaluation_context_plugins()
