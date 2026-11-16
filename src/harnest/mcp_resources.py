@@ -46,7 +46,7 @@ async def tool_capabilities(tools: list[Any], configured: Any, framework: str, *
 
 
 @asynccontextmanager
-async def managed_resource_client(configured: Any, *, framework: str = "langgraph") -> AsyncIterator[MCPResourceClient]:
+async def managed_resource_client(configured: Any, *, framework: str) -> AsyncIterator[MCPResourceClient]:
     """Acquire only this caller's lifecycle ownership and release it on every exit."""
 
     binding = configured._lifecycle_binding(framework)
@@ -70,7 +70,7 @@ def _bounded_result(value: Any, limit: int) -> dict[str, Any]:
 
 
 @asynccontextmanager
-async def resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult] | tuple[HTTPSession, SimpleNamespace]]:
+async def resource_session(configured: Any, framework: str, *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult] | tuple[HTTPSession, SimpleNamespace]]:
     """Share discovery selection across CLI, playground, and model-facing reads."""
 
     from .mcp_http_session import modern_session
@@ -86,7 +86,7 @@ async def resource_session(configured: Any, framework: str = "langgraph", *, mes
 
 
 @asynccontextmanager
-async def sdk_resource_session(configured: Any, framework: str = "langgraph", *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult]]:
+async def sdk_resource_session(configured: Any, framework: str, *, message_handler: Any = None) -> AsyncIterator[tuple[ClientSession, InitializeResult]]:
     """Own the SDK 1.x transport in one task for initialized-protocol servers."""
 
     from mcp import ClientSession, StdioServerParameters
@@ -99,7 +99,7 @@ async def sdk_resource_session(configured: Any, framework: str = "langgraph", *,
     if configured.transport == "stdio":
         transport = stdio_client(StdioServerParameters(**configured._stdio_configuration()))
     else:
-        options = configured.connection_options()
+        options = configured._connection_options()
         options.pop("transport")
         options.pop("session_kwargs", None)
         binding = configured._lifecycle_binding(framework)
@@ -120,7 +120,13 @@ async def sdk_resource_session(configured: Any, framework: str = "langgraph", *,
 class MCPResourceClient:
     """Connection-bound read API; resource data never becomes system instructions."""
 
-    def __init__(self, configured: Any, *, framework: str = "langgraph") -> None:
+    def __init__(self, configured: Any, *, framework: str | None = None) -> None:
+        """Bind to ``configured``; ``framework`` defaults to the one Harnest is running."""
+
+        if framework is None:
+            from .frameworks.context import current_framework
+
+            framework = current_framework().name
         self._configured = configured
         self._framework = framework
         self._closed = False

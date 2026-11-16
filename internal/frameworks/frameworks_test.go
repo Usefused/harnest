@@ -36,6 +36,12 @@ func TestRegistryExposesBothBuiltInFrameworks(t *testing.T) {
 	}
 }
 
+func TestDefaultIsARegisteredFramework(t *testing.T) {
+	if !Known(Default()) {
+		t.Fatalf("Default() = %q is not registered", Default())
+	}
+}
+
 func TestRuntimeRequirementsAppendSharedStoreDrivers(t *testing.T) {
 	adk, _ := Lookup("adk")
 	got := adk.RuntimeRequirements()

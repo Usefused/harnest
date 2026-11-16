@@ -34,13 +34,13 @@ framework (`WRAPPED_ONLY`) and checkpoints to native storage
 
 | Concern | Location |
 | --- | --- |
-| Release-owned metadata (names, distributions, version ranges, requirements, doctor modules, capabilities) | `src/harnest/frameworks/frameworks.json` (canonical) and `internal/frameworks/frameworks.json` (byte-identical Go copy) |
+| Release-owned metadata (names, the default framework, distributions, version ranges, requirements, doctor modules, capabilities) | `src/harnest/frameworks/frameworks.json` (canonical) and `internal/frameworks/frameworks.json` (byte-identical Go copy) |
 | Adapter contract | `src/harnest/frameworks/base.py` (`FrameworkAdapter`, `Capability`, errors) |
-| Registry | `src/harnest/frameworks/registry.py` (`get_framework`, `framework_names`, `_ADAPTERS`) |
+| Registry | `src/harnest/frameworks/registry.py` (`get_framework`, `framework_names`, `default_framework`, `_ADAPTERS`) |
 | ADK adapter, implementation, and public native types | `src/harnest/frameworks/adk/` |
 | LangGraph adapter, implementation, and public native types | `src/harnest/frameworks/langgraph/` |
-| Go metadata access | `internal/frameworks` (`Lookup`, `Known`, `Choices`, `Supports`) |
-| Per-framework `harnest init` starter files | `cmd/harnest/framework_scaffolds.go` |
+| Go metadata access | `internal/frameworks` (`Lookup`, `Known`, `Choices`, `Default`, `Supports`) |
+| Per-framework `harnest init` starter files | `internal/pysource/files/init/frameworks/<name>/`, read by `cmd/harnest/framework_scaffolds.go` |
 
 Inside each framework package, `adapter.py` is the entry point and the other
 modules are that framework's implementation, reached with lazy imports. The
@@ -133,9 +133,11 @@ capability without overriding its hooks:
    `require_framework` for framework-name validation, and
    `harnest.testing._run_eval_suite` for `run_builtin_evals`.
 3. Register the adapter class in `_ADAPTERS` in `registry.py`.
-4. Add a `frameworkScaffolds` entry in `cmd/harnest/framework_scaffolds.go`
-   with at least an `advanced` starter that writes `agent.py`
-   (`TestEveryFrameworkHasAScaffold` enforces this).
+4. Add the framework's `harnest init` files under
+   `internal/pysource/files/init/frameworks/<name>/`: `advanced/agent.py` (or
+   `agent.py.tmpl`) plus any files advanced mode needs, and optionally
+   `starter/` files that replace shared starter files in every mode. No Go
+   change is needed; `TestEveryFrameworkHasAScaffold` checks the folder.
 5. Add a durable-store schema migration. The Postgres schema
    (`store_postgres_schema.py`) constrains `framework` with a `CHECK` list,
    so bump `SCHEMA_VERSION` and migrate existing databases

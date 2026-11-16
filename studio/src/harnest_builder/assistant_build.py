@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 
+from harnest.frameworks import DEFAULT_FRAMEWORK
+
 PACKAGE = Path(__file__).parent
 SKILL_NAMES = ("harnest-authoring", "harnest-authentication", "fused-admin", "fused-auth")
 
@@ -45,7 +47,7 @@ def compile_assistant(output: Path, *, runtime_source: Path | None = None) -> Pa
         environment["HARNEST_BUILDER_REQUEST_TIMEOUT_SECONDS"] = "180"
         environment["HARNEST_BUILDER_MODEL"] = "ollama_chat/qwen3.5:cloud"
         result = subprocess.run(
-            [sys.executable, "-m", "harnest.cli", "compile", str(source), "--output", str(output), "--framework", "adk", "--mode", "managed"],
+            [sys.executable, "-m", "harnest.cli", "compile", str(source), "--output", str(output), "--framework", DEFAULT_FRAMEWORK, "--mode", "managed"],
             env=environment, capture_output=True, text=True, timeout=180, check=False,
         )
         if result.returncode:

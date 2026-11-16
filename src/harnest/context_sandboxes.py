@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .frameworks.registry import DEFAULT_FRAMEWORK
 from .sandbox import Sandbox
 from .sandbox_assignments import assigned_sandboxes
 from .sandbox_control import execution_control
@@ -33,7 +34,7 @@ def deny_sandbox_authority() -> Iterator[None]:
 class SandboxRegistry:
     """Retain one lazy provider per compiled agent grant, without model tools."""
 
-    def __init__(self, grants: Mapping[str, Mapping[str, Sandbox]] | None = None, *, framework: str = "adk") -> None:
+    def __init__(self, grants: Mapping[str, Mapping[str, Sandbox]] | None = None, *, framework: str = DEFAULT_FRAMEWORK) -> None:
         """Snapshot definitions and allocate runtimes without invoking factories."""
         self._agents = MappingProxyType({
             agent: MappingProxyType({name: SandboxRuntime(value, framework) for name, value in bindings.items()})

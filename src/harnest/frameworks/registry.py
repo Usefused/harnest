@@ -4,7 +4,8 @@
 distributions, version ranges, and capabilities; the Go CLI embeds a copy of
 the same file. This module pairs each entry with its Python adapter class.
 Adding a framework means adding one ``frameworks.json`` entry, one adapter
-package, and one line in :data:`_ADAPTERS`.
+package, and one line in :data:`_ADAPTERS`. ``default_framework`` in the same
+file names the framework used when none is given.
 """
 
 from __future__ import annotations
@@ -77,6 +78,12 @@ def shared_runtime_requirements() -> tuple[str, ...]:
     return tuple(_document()["shared_runtime_requirements"])
 
 
+def default_framework() -> FrameworkName:
+    """Return ``default_framework`` from frameworks.json, used when no framework is named."""
+
+    return require_framework(_document()["default_framework"], "default framework")
+
+
 def framework_names() -> tuple[FrameworkName, ...]:
     """Return registered framework names in stable CLI order."""
 
@@ -111,7 +118,13 @@ def get_framework(name: FrameworkName) -> FrameworkAdapter:
     return adapter_class(metadata)
 
 
+# Resolved once so function signatures can use it as their default.
+DEFAULT_FRAMEWORK: FrameworkName = default_framework()
+
+
 __all__ = [
+    "DEFAULT_FRAMEWORK",
+    "default_framework",
     "framework_metadata",
     "framework_names",
     "get_framework",

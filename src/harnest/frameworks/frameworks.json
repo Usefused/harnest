@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "default_framework": "adk",
   "shared_runtime_requirements": [
     "asyncpg>=0.30,<1",
     "redis>=6,<8"

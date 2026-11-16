@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-from .frameworks.registry import framework_names
+from .frameworks.registry import DEFAULT_FRAMEWORK, framework_names
 from .bundle import BundleError, compile_artifact
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
 from .upgrade import UpgradeError, apply_upgrade, plan_upgrade, render_upgrade_plan
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         help="root export in agent:<symbol> form (default: agent:root_agent)",
     )
     compile_parser.add_argument(
-        "--framework", choices=framework_names(), default="adk"
+        "--framework", choices=framework_names(), default=DEFAULT_FRAMEWORK
     )
     compile_parser.add_argument(
         "--mode", choices=("managed", "advanced"), default="managed"
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run tests/smoke in addition to tests/unit",
     )
     test_parser.add_argument(
-        "--framework", choices=framework_names(), default="adk"
+        "--framework", choices=framework_names(), default=DEFAULT_FRAMEWORK
     )
     test_parser.add_argument(
         "--mode", choices=("managed", "advanced"), default="managed"

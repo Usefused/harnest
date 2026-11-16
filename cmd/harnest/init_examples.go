@@ -6,7 +6,7 @@ import "harnest.dev/harnest/internal/pysource"
 
 // managedExampleScaffoldFiles adds inert samples only where the default profile
 // has no code, preserving its root agent and required storage implementation.
-func managedExampleScaffoldFiles(files map[string]string, agentName, framework string) map[string]string {
+func managedExampleScaffoldFiles(files map[string]string, agentName string) map[string]string {
 	samples := map[string]string{
 		"tools/_example.py":                                       pysource.Render("init/examples/tools/_example.py.tmpl", map[string]any{"Source": files["tools/echo.py"]}),
 		"sandbox/_example.py":                                     files["sandbox/_example.py"],
@@ -19,7 +19,7 @@ func managedExampleScaffoldFiles(files map[string]string, agentName, framework s
 	}
 	// Reuse the default profile unchanged: resources with existing code need no
 	// second example, and placeholders must not activate capabilities implicitly.
-	files = guidedScaffoldFiles(files, agentName, framework, "managed")
+	files = guidedScaffoldFiles(files, agentName, "managed")
 	for path, source := range samples {
 		files[path] = source
 	}

@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from harnest.frameworks import DEFAULT_FRAMEWORK
 from harnest.fused_connectors import FusedConnectorsService
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.base import RequestResponseEndpoint
@@ -284,7 +285,7 @@ def _configuration(root: Path) -> dict:
     try:
         config = yaml.safe_load(read(root, "config.yaml")["text"])
         framework = config.get("spec", {}).get("framework", {})
-        return {"name": config.get("metadata", {}).get("displayName", root.name), "framework": framework.get("name", "adk"), "mode": framework.get("mode", "managed")}
+        return {"name": config.get("metadata", {}).get("displayName", root.name), "framework": framework.get("name", DEFAULT_FRAMEWORK), "mode": framework.get("mode", "managed")}
     except (yaml.YAMLError, AttributeError):
         return {"name": root.name, "framework": "unknown", "mode": "unknown"}
 

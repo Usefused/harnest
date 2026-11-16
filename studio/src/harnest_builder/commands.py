@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from harnest.frameworks import framework_names
+from harnest.frameworks import DEFAULT_FRAMEWORK, framework_names
 from .catalog import COMMANDS, resource_name
 from pathlib import Path, PurePosixPath
 
@@ -28,7 +28,7 @@ class Command(BaseModel):
     name: str = ""
     kind: str = ""
     metric: str = Field(default="response_match_score", pattern=r"^[a-z][a-z0-9_]{0,127}$")
-    framework: str = "adk"
+    framework: str = DEFAULT_FRAMEWORK
     mode: str = "managed"
     profile: str = "minimal"
     environment_profile: Literal["runtime", "compile", "development", "eval"] = "runtime"

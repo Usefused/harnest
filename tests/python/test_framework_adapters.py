@@ -88,6 +88,30 @@ class RegisteredFrameworkContractTests(unittest.TestCase):
                 expected = set(metadata.requirements) | set(shared_runtime_requirements())
                 self.assertEqual(set(extras[metadata.install_extra]), expected)
 
+    def test_default_framework_is_registered(self):
+        """One default in frameworks.json replaces scattered "adk" literals."""
+        self.assertIn(registry.default_framework(), framework_names())
+        self.assertEqual(registry.DEFAULT_FRAMEWORK, registry.default_framework())
+
+    def test_shared_code_names_frameworks_only_where_expected(self):
+        """Framework-specific code belongs in its adapter; new framework literals fail here."""
+        names = set(framework_names())
+        # Each remaining literal and why it is not adapter code.
+        expected = {
+            # "adk" here is Google ADK's evaluation library, Harnest's built-in
+            # evaluator for every framework, not the agent framework.
+            "src/harnest/evaluation.py": 1,
+            "src/harnest/_eval_runner.py": 1,
+            "src/harnest/_eval_runner_config.py": 2,
+            "src/harnest/testing.py": 1,
+            "src/harnest/bundle.py": 1,
+            "engine/evaluation.go": 2,
+            # harnest upgrade rewrites retired LangGraph-only method names.
+            "src/harnest/upgrade_framework_source.py": 1,
+        }
+        found = {**_python_framework_literals(names), **_go_framework_literals(names)}
+        self.assertEqual(found, expected)
+
     def test_go_cli_embeds_identical_metadata(self):
         canonical = _ROOT / "src/harnest/frameworks/frameworks.json"
         embedded = _ROOT / "internal/frameworks/frameworks.json"
@@ -290,6 +314,37 @@ _SDK_IMPORT_DEBT = {
     "eval_model_transport.py": "built-in ADK evaluator",
     "evaluation.py": "built-in ADK evaluator",
 }
+
+
+def _python_framework_literals(names):
+    """Count string constants naming a framework in shared Python and Studio code."""
+
+    found = {}
+    for path in sorted((_ROOT / "src/harnest").rglob("*.py")) + sorted((_ROOT / "studio/src").rglob("*.py")):
+        relative = path.relative_to(_ROOT).as_posix()
+        if relative.startswith("src/harnest/frameworks/"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        count = sum(isinstance(node, ast.Constant) and node.value in names for node in ast.walk(tree))
+        if count:
+            found[relative] = count
+    return found
+
+
+def _go_framework_literals(names):
+    """Count quoted framework names in Go code outside internal/frameworks and tests."""
+
+    literal = re.compile(r'"(?:%s)"' % "|".join(map(re.escape, sorted(names))))
+    found = {}
+    for root in ("cmd", "engine", "internal"):
+        for path in sorted((_ROOT / root).rglob("*.go")):
+            relative = path.relative_to(_ROOT).as_posix()
+            if relative.endswith("_test.go") or relative.startswith("internal/frameworks/"):
+                continue
+            count = len(literal.findall(path.read_text(encoding="utf-8")))
+            if count:
+                found[relative] = count
+    return found
 
 
 def _shared_modules():

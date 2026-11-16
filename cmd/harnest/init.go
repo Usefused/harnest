@@ -62,7 +62,7 @@ func (a *application) newInitCommand() *cobra.Command {
 	command.Flags().StringArrayVar(&options, "option", nil, "pack option as key=value, or pack.key=value with several packs (repeatable)")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "with --pack: print the combined plan without creating the agent")
 	command.Flags().BoolVar(&asJSON, "json", false, "with --pack: print the plan as JSON")
-	command.Flags().StringVar(&framework, "framework", "adk", "agent framework: "+frameworks.Choices())
+	command.Flags().StringVar(&framework, "framework", frameworks.Default(), "agent framework: "+frameworks.Choices())
 	command.Flags().StringVar(&mode, "mode", "managed", "authoring mode: managed or advanced")
 	command.Flags().BoolVar(
 		&example,
@@ -251,7 +251,7 @@ func deploymentName(base string) (string, error) {
 }
 
 func createScaffold(directory, name string) (returnErr error) {
-	return createScaffoldForFramework(directory, name, "adk")
+	return createScaffoldForFramework(directory, name, frameworks.Default())
 }
 
 func createScaffoldForFramework(directory, name, framework string) (returnErr error) {
@@ -447,10 +447,10 @@ func scaffoldFilesForProfile(
 	name, framework, mode string,
 	profile scaffoldProfile,
 ) map[string]string {
-	adkIdentifier := agentscaffold.Identifier(name)
+	identifier := agentscaffold.Identifier(name)
 	files := agentscaffold.ManagedFiles(name, framework, 1907)
 	maps.Copy(files, map[string]string{
-		"agent.py":              pysource.Render("init/agent.py.tmpl", map[string]any{"Name": adkIdentifier}),
+		"agent.py":              pysource.Render("init/agent.py.tmpl", map[string]any{"Name": identifier}),
 		"tools/echo.py":         pysource.File("init/tools/echo.py"),
 		"lib/_README.md":        scaffoldLibraryGuide(),
 		"models/_README.md":     scaffoldModelsGuide(),
@@ -544,12 +544,12 @@ description: Apply the agent's core instructions when answering a general reques
     }
   ]
 }
-`, adkIdentifier),
-		"tests/unit/test_agent.py": pysource.Render("init/tests/unit/test_agent.py.tmpl", map[string]any{"Name": adkIdentifier}),
+`, identifier),
+		"tests/unit/test_agent.py": pysource.Render("init/tests/unit/test_agent.py.tmpl", map[string]any{"Name": identifier}),
 		// The two trailing tabs predate the move to pysource; kept so output is unchanged.
 		"tests/smoke/test_health.py": pysource.File("init/tests/smoke/test_health.py") + "\t\t",
 	})
-	applyFrameworkStarterFiles(files, framework, adkIdentifier, mode)
+	applyFrameworkStarterFiles(files, framework, identifier)
 	if mode == "advanced" {
 		files["config.yaml"] = strings.Replace(
 			files["config.yaml"], "    mode: managed", "    mode: advanced", 1,
@@ -569,19 +569,19 @@ description: Apply the agent's core instructions when answering a general reques
 		for _, directory := range managedResourceDirectories {
 			files[directory+"/_README.md"] = optionalFolderGuide(directory, mode)
 		}
-		files["tests/unit/test_agent.py"] = pysource.Render("init/advanced/tests/unit/test_agent.py.tmpl", map[string]any{"Name": adkIdentifier})
-		for path, content := range scaffoldFor(framework).advanced(adkIdentifier) {
+		files["tests/unit/test_agent.py"] = pysource.Render("init/advanced/tests/unit/test_agent.py.tmpl", map[string]any{"Name": identifier})
+		for path, content := range frameworkScaffoldFiles(framework, "advanced", identifier) {
 			files[path] = content
 		}
 	}
 	if profile == scaffoldMinimalProfile {
-		return strictMinimalScaffoldFiles(files, adkIdentifier, framework, mode)
+		return strictMinimalScaffoldFiles(files, identifier, mode)
 	}
 	if profile != scaffoldExampleProfile {
-		return guidedScaffoldFiles(files, adkIdentifier, framework, mode)
+		return guidedScaffoldFiles(files, identifier, mode)
 	}
 	if mode == "managed" {
-		return managedExampleScaffoldFiles(files, adkIdentifier, framework)
+		return managedExampleScaffoldFiles(files, identifier)
 	}
 	return files
 }
@@ -589,9 +589,9 @@ description: Apply the agent's core instructions when answering a general reques
 // strictMinimalScaffoldFiles keeps only the runnable root and required state store.
 func strictMinimalScaffoldFiles(
 	files map[string]string,
-	agentName, framework, mode string,
+	agentName, mode string,
 ) map[string]string {
-	files = guidedScaffoldFiles(files, agentName, framework, mode)
+	files = guidedScaffoldFiles(files, agentName, mode)
 	for path := range files {
 		if strings.HasSuffix(path, "/_README.md") {
 			delete(files, path)
@@ -603,7 +603,7 @@ func strictMinimalScaffoldFiles(
 // guidedScaffoldFiles keeps the runnable core and adds inert optional guides.
 func guidedScaffoldFiles(
 	files map[string]string,
-	agentName, framework, mode string,
+	agentName, mode string,
 ) map[string]string {
 	// Optional examples become ignored guides so discovery never grants
 	// capabilities in the default profile.
@@ -630,9 +630,6 @@ func guidedScaffoldFiles(
 	files["tests/smoke/_README.md"] = scaffoldTestGuide("smoke")
 	if mode == "managed" {
 		files["agent.py"] = agentscaffold.ManagedAgentSource(agentName)
-	}
-	if minimal := scaffoldFor(framework).minimal; minimal != nil {
-		minimal(files, mode)
 	}
 	return files
 }

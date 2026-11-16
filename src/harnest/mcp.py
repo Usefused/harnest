@@ -372,7 +372,23 @@ class MCPClient:
         return value
 
     def connection_options(self) -> dict[str, Any]:
-        """Return this server's connection options without opening a session."""
+        """Return this server's connection options without opening a session.
+
+        Lifecycle hooks on these connections see the framework Harnest is
+        compiling or invoking, so call this inside compilation or an invocation
+        when the client has lifecycle hooks.
+        """
+
+        return self._connection_options(lifecycle=True)
+
+    def _connection_options(
+        self, *, lifecycle: bool = False, framework: FrameworkName | None = None
+    ) -> dict[str, Any]:
+        """Build connection options, with the lifecycle factory for ``framework`` when asked.
+
+        ``framework=None`` means the running framework. Shared callers that bind
+        their own lifecycle leave ``lifecycle`` off.
+        """
 
         if self.transport == "stdio":
             return {
@@ -396,9 +412,9 @@ class MCPClient:
                 "read_timeout_seconds": timedelta(seconds=self.timeout_seconds)
             },
         }
-        binding = self._lifecycle_binding("langgraph")
+        binding = self._lifecycle_binding(framework) if lifecycle else None
         if binding is not None:
-            # LangChain forwards this factory to the same MCP SDK transport seam.
+            # Framework MCP adapters forward this factory to the MCP SDK transport.
             connection["httpx_client_factory"] = binding.client_factory()
         if self.portable is not None:
             from .agent_plugin_runtime import portable_http_factory
@@ -406,13 +422,17 @@ class MCPClient:
         return connection
 
     def _lifecycle_binding(
-        self, framework: FrameworkName
+        self, framework: FrameworkName | None
     ) -> _MCPClientLifecycleBinding | None:
-        """Resolve a privacy-safe framework binding for this connection."""
+        """Resolve a privacy-safe framework binding; ``None`` means the running framework."""
 
         controller = self._lifecycle_controller
         if controller is None:
             return None
+        if framework is None:
+            from .frameworks.context import current_framework
+
+            framework = current_framework().name
         name = self._client_name()
         context = MCPClientContext(
             name=name,

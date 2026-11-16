@@ -27,9 +27,9 @@ Everything framework-specific. One package per framework; see docs/frameworks.md
 - [`frameworks/adk/lowering.py`](../../src/harnest/frameworks/adk/lowering.py): Lower provider-neutral Harnest graphs to Google ADK workflows.
 - [`frameworks/adk/mcp_tools.py`](../../src/harnest/frameworks/adk/mcp_tools.py): Bind discovered ADK MCP tools to the managed invocation facade.
 - [`frameworks/adk/model_hooks.py`](../../src/harnest/frameworks/adk/model_hooks.py): Adapt portable model lifecycle hooks to one ADK plugin.
-- [`frameworks/adk/models.py`](../../src/harnest/frameworks/adk/models.py): Build ADK's LiteLLM adapter for Harnest's LiteLLMModel.
+- [`frameworks/adk/models.py`](../../src/harnest/frameworks/adk/models.py): Build ADK's LiteLLM adapter and its lifecycle client for Harnest's LiteLLMModel.
 - [`frameworks/adk/runtime.py`](../../src/harnest/frameworks/adk/runtime.py): Google ADK driver for the framework-neutral Harnest runtime.
-- [`frameworks/adk/sandbox.py`](../../src/harnest/frameworks/adk/sandbox.py): Scoped compatibility for native ADK code-execution continuation.
+- [`frameworks/adk/sandbox.py`](../../src/harnest/frameworks/adk/sandbox.py): Scoped compatibility for native ADK code-execution continuation and graph-node sandbox scope.
 - [`frameworks/adk/server.py`](../../src/harnest/frameworks/adk/server.py): Serve advanced ADK applications through ADK's own FastAPI server.
 - [`frameworks/adk/sessions.py`](../../src/harnest/frameworks/adk/sessions.py): Adapt Harnest's lifecycle-owned session store to Google ADK.
 - [`frameworks/adk/skill_selection.py`](../../src/harnest/frameworks/adk/skill_selection.py): Apply decision-based skill selection through an ADK before-model callback.
@@ -50,7 +50,7 @@ Everything framework-specific. One package per framework; see docs/frameworks.md
 - [`frameworks/langgraph/models.py`](../../src/harnest/frameworks/langgraph/models.py): Build LangChain's ChatLiteLLM adapter for Harnest's LiteLLMModel.
 - [`frameworks/langgraph/runtime.py`](../../src/harnest/frameworks/langgraph/runtime.py): LangGraph implementation of Harnest's framework-neutral runtime driver.
 - [`frameworks/langgraph/runtime_content.py`](../../src/harnest/frameworks/langgraph/runtime_content.py): Project authored input into LangGraph message content without running a graph.
-- [`frameworks/langgraph/sandbox.py`](../../src/harnest/frameworks/langgraph/sandbox.py): Expose a Harnest sandbox to LangGraph as a lazy, typed execution tool.
+- [`frameworks/langgraph/sandbox.py`](../../src/harnest/frameworks/langgraph/sandbox.py): Expose a Harnest sandbox to LangGraph as a lazy, typed execution tool, and scope native graph nodes.
 - [`frameworks/langgraph/skill_selection.py`](../../src/harnest/frameworks/langgraph/skill_selection.py): Apply decision-based skill selection through LangChain agent middleware.
 - [`frameworks/langgraph/storage.py`](../../src/harnest/frameworks/langgraph/storage.py): LangGraph-native storage types authors use in advanced mode.
 - [`frameworks/langgraph/tokens.py`](../../src/harnest/frameworks/langgraph/tokens.py): LangChain middleware for optional managed-agent token policies.
@@ -585,7 +585,7 @@ Small helpers used across areas.
 - [`extensions.go`](../../cmd/harnest/extensions.go): `harnest extensions`: searches the PyPI extension catalog and lists installed extensions.
 - [`extensions_local.go`](../../cmd/harnest/extensions_local.go): `harnest extensions init|install`: creates a local extension project and installs extensions into an agent.
 - [`framework_compatibility.go`](../../cmd/harnest/framework_compatibility.go): Framework package requirements, derived from the shared metadata in internal/frameworks.
-- [`framework_scaffolds.go`](../../cmd/harnest/framework_scaffolds.go): Starter files that differ by agent framework. Adding a framework adds one frameworkScaffolds entry here.
+- [`framework_scaffolds.go`](../../cmd/harnest/framework_scaffolds.go): Starter files that differ by agent framework, read from one folder per framework under internal/pysource/files/init/frameworks/.
 - [`init.go`](../../cmd/harnest/init.go): `harnest init`: creates a new agent from a scaffold profile, a template, or a pack.
 - [`init_examples.go`](../../cmd/harnest/init_examples.go): Example files `harnest init` writes into a managed agent's optional folders.
 - [`init_guides.go`](../../cmd/harnest/init_guides.go): README guides `harnest init` writes into each optional agent folder.

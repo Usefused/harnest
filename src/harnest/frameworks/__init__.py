@@ -24,6 +24,8 @@ from .base import (
     UnsupportedFrameworkFeature,
 )
 from .registry import (
+    DEFAULT_FRAMEWORK,
+    default_framework,
     framework_metadata,
     framework_names,
     get_framework,
@@ -43,6 +45,8 @@ __all__ = [
     "RuntimeSessions",
     "UnknownFrameworkError",
     "UnsupportedFrameworkFeature",
+    "DEFAULT_FRAMEWORK",
+    "default_framework",
     "framework_metadata",
     "framework_names",
     "get_framework",

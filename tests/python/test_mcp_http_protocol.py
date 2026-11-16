@@ -200,7 +200,7 @@ class MCPHTTPProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         from harnest.mcp_resources import resource_session
         with patch("harnest.mcp_resources.sdk_resource_session", sdk):
-            async with resource_session(self.configured) as (session, _):
+            async with resource_session(self.configured, "langgraph") as (session, _):
                 self.assertIs(session, native)
 
     async def test_tool_input_required_and_disconnect_never_replay(self):

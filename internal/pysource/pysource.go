@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -36,8 +37,17 @@ var (
 
 func init() {
 	err := fs.WalkDir(embedded, "files", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if err != nil {
 			return err
+		}
+		if ignored(name, entry.IsDir()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
 		}
 		data, err := embedded.ReadFile(name)
 		if err != nil {
@@ -55,6 +65,17 @@ func init() {
 	if err != nil {
 		panic(fmt.Sprintf("load embedded Python sources: %v", err))
 	}
+}
+
+// ignored reports local clutter that all: would otherwise embed: hidden files
+// such as .DS_Store, and Python bytecode an editor or interpreter left behind.
+// Without this, init would write those files into new agents.
+func ignored(name string, dir bool) bool {
+	base := path.Base(name)
+	if dir {
+		return base == "__pycache__" || (strings.HasPrefix(base, ".") && name != "files")
+	}
+	return strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".pyc")
 }
 
 // File returns a plain .py file from files/ exactly as written.
@@ -77,4 +98,24 @@ func Render(name string, data map[string]any) string {
 		panic(fmt.Sprintf("pysource: render %s: %v", name, err))
 	}
 	return output.String()
+}
+
+// Names lists the files under a folder of files/, such as "init/frameworks/adk/advanced/", in sorted order.
+func Names(folder string) []string {
+	var names []string
+	for name := range sources {
+		if strings.HasPrefix(name, folder) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Source returns a file from files/: a .py.tmpl file filled with data, any other file as written.
+func Source(name string, data map[string]any) string {
+	if strings.HasSuffix(name, templateSuffix) {
+		return Render(name, data)
+	}
+	return File(name)
 }

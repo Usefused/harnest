@@ -18,7 +18,7 @@ from harnest.mcp_lifecycle import propagate_mcp_lifecycles
 from harnest.model import resolve_model
 from ..context import framework_scope
 from harnest.structured import PydanticModel, provider_output_schema
-from harnest.sandbox_graph_scope import deny_adk_node
+from harnest.frameworks.adk.sandbox import deny_adk_node
 
 
 def _adk_route(route: Any) -> Any:

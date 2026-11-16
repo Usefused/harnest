@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ValidationError
 
+from ..frameworks.registry import DEFAULT_FRAMEWORK
 from ..upgrade import apply_upgrade, plan_upgrade
 from .context import LOCK, ProjectContext, ProjectFiles, ProjectYAML
 from .contracts import ChangeKind, ChangePlan, ProjectChange, ProjectError, ProjectPack, ProjectPlan, _File
@@ -63,7 +64,7 @@ def _init_arguments(framework: str | None, minimal: bool, template: str | None,
         return _template_arguments(template, template_sha256, framework, minimal)
     if template_sha256 is not None:
         raise ProjectError('template_sha256 requires a template (--template)')
-    arguments = ['--framework', framework if framework is not None else 'adk']
+    arguments = ['--framework', framework if framework is not None else DEFAULT_FRAMEWORK]
     if minimal:
         arguments.append('--minimal')
     arguments.extend(_profile_arguments(mode, minimal, example))

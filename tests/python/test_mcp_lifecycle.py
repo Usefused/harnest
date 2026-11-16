@@ -404,7 +404,8 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
         assert binding is not None
         await binding.start()
 
-        connection = client.connection_options()
+        with framework_scope("langgraph"):
+            connection = client.connection_options()
         factory = connection["httpx_client_factory"]
         http_client = factory(headers={"X-Adapter": "langgraph"}, timeout=1.0)
 
@@ -416,6 +417,23 @@ class MCPClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await http_client.aclose()
         await binding.close()
         self.assertEqual(lifecycle.events[-1], ("close", "langgraph"))
+
+    async def test_connection_options_label_hooks_with_the_running_framework(self):
+        """Shared MCP code never assumes a framework; hooks see the one Harnest runs."""
+        lifecycle = _RecordingLifecycle()
+        client = MCPClient.streamable_http("https://gateway.example/mcp", lifecycle=lifecycle)
+        binding = client._lifecycle_binding("adk")
+        assert binding is not None
+        await binding.start()
+        with framework_scope("adk"):
+            factory = client.connection_options()["httpx_client_factory"]
+        http_client = factory(headers={}, timeout=1.0)
+        self.assertEqual(lifecycle.events[-1], ("create", "adk"))
+        await http_client.aclose()
+        await binding.close()
+        with self.assertRaisesRegex(RuntimeError, "requires Harnest compilation"):
+            client.connection_options()
+        self.assertNotIn("httpx_client_factory", MCPClient.streamable_http("https://plain.example/mcp").connection_options())
 
 
 if __name__ == "__main__":

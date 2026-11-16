@@ -1936,7 +1936,8 @@ def _mcp_connections(
 def _configured_mcp_connection(configured: Any) -> dict[str, Any] | None:
     """Contain portable configuration failures without weakening native MCP policy."""
     try:
-        return configured.connection_options()
+        # The driver knows its own framework even before an invocation context exists.
+        return configured._connection_options(lifecycle=True, framework="langgraph")
     except Exception as error:
         if getattr(configured, "portable", None) is None:
             raise

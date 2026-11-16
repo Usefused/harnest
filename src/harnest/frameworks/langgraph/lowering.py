@@ -812,7 +812,7 @@ def _lower_node(
 ) -> Any:
     """Lower one portable or explicitly native value into a graph node."""
 
-    from ...sandbox_graph_scope import deny_langgraph_node
+    from .sandbox import deny_langgraph_node
 
     if isinstance(value, AgentDefinition):
         if value.mcp:
@@ -855,7 +855,7 @@ def _advanced_graph_node(value: _AdvancedAgentDefinition, Pregel: type[Any]) -> 
     # Validate at composition time so malformed native graphs fail compilation,
     # before a deployed request can enter an incomplete execution topology.
     value.target.validate()
-    from ...sandbox_graph_scope import deny_langgraph_node
+    from .sandbox import deny_langgraph_node
 
     return deny_langgraph_node(passthrough_native(value.target))
 

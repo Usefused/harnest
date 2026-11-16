@@ -50,6 +50,7 @@ type Framework struct {
 
 type document struct {
 	SchemaVersion             int         `json:"schema_version"`
+	DefaultFramework          string      `json:"default_framework"`
 	SharedRuntimeRequirements []string    `json:"shared_runtime_requirements"`
 	Frameworks                []Framework `json:"frameworks"`
 }
@@ -66,7 +67,16 @@ func mustParse(data []byte) document {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		panic(fmt.Sprintf("invalid embedded frameworks.json: %v", err))
 	}
+	if !slices.ContainsFunc(parsed.Frameworks, func(f Framework) bool { return f.Name == parsed.DefaultFramework }) {
+		panic(fmt.Sprintf("frameworks.json default_framework %q is not a registered framework", parsed.DefaultFramework))
+	}
 	return parsed
+}
+
+// Default returns the framework used when none is named, such as `harnest init`
+// without --framework. It is default_framework in frameworks.json.
+func Default() string {
+	return metadata.DefaultFramework
 }
 
 // All returns every registered framework in stable CLI order.

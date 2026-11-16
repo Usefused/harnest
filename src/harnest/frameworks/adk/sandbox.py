@@ -1,12 +1,15 @@
-"""Scoped compatibility for native ADK code-execution continuation."""
+"""Scoped compatibility for native ADK code-execution continuation and graph-node sandbox scope."""
 
 from __future__ import annotations
 
 from contextlib import aclosing
+import functools
 import json
 from typing import Any
 
+from ...context_sandboxes import deny_sandbox_authority
 from ...sandbox_adapters import _execute_portable, _portable_file, execution_context
+from ...sandbox_graph_scope import deny_event_stream
 from ...sandbox_control import execution_control
 from ...sandbox_runtime import SandboxRuntime
 from ...sandbox_types import (
@@ -158,3 +161,25 @@ def _adk_result(result: SandboxResult) -> Any:
     )
     native.metadata = metadata
     return native
+
+
+def deny_adk_node(target: Any) -> Any:
+    """Retain native node identity, validation, retries, and lifecycle ownership."""
+    if getattr(target, "_harnest_sandbox_graph_scoped", False):
+        return target
+    original = target.run
+
+    @functools.wraps(original)
+    async def run(*args: Any, **kwargs: Any) -> Any:
+        """Cover actual node execution, including generator advancement."""
+        with deny_sandbox_authority():
+            events = deny_event_stream(original(*args, **kwargs))
+        try:
+            async for event in events:
+                yield event
+        finally:
+            await events.aclose()
+
+    object.__setattr__(target, "run", run)
+    object.__setattr__(target, "_harnest_sandbox_graph_scoped", True)
+    return target

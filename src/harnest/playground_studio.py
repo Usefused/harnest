@@ -9,6 +9,7 @@ from typing import Any
 
 from starlette.requests import Request
 
+from .frameworks.registry import DEFAULT_FRAMEWORK
 from .playground_inspector import StudioInspectionError, inspect_workspace
 
 _SOURCE_LIMIT = 1024 * 1024
@@ -18,7 +19,7 @@ _SOURCE_SUFFIXES = frozenset({".py", ".md", ".mdx", ".yaml", ".yml", ".json", ".
 class PlaygroundStudioService:
     """Bind inspection to compiled source; never accept a browser-selected workspace."""
 
-    def __init__(self, source: Path, *, mode: str | None = None, framework: str = "adk") -> None:
+    def __init__(self, source: Path, *, mode: str | None = None, framework: str = DEFAULT_FRAMEWORK) -> None:
         """Capture the artifact path without inspecting or importing authored modules."""
 
         self.source = source.resolve()

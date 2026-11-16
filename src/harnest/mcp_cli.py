@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from harnest.frameworks.registry import framework_names
+from harnest.frameworks.registry import DEFAULT_FRAMEWORK, framework_names
 
 
 def add_mcp_parser(subparsers: Any) -> None:
@@ -18,7 +18,7 @@ def add_mcp_parser(subparsers: Any) -> None:
     parser.add_argument("client")
     parser.add_argument("identifier", nargs="?")
     parser.add_argument("--project", type=Path, default=Path("."))
-    parser.add_argument("--framework", choices=framework_names(), default="langgraph")
+    parser.add_argument("--framework", choices=framework_names(), default=DEFAULT_FRAMEWORK)
     parser.add_argument("--arg", action="append", default=[])
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--catalog", choices=("tools", "resources", "resource-templates", "prompts"))

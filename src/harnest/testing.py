@@ -24,6 +24,7 @@ from typing import Any, Iterator, Mapping
 
 import pytest
 
+from .frameworks.registry import DEFAULT_FRAMEWORK
 from .testing_storage import TaskStoreConformanceMixin
 from .testing_memory import MemoryStoreConformanceMixin
 from .testing_channels import ChannelStoreConformanceMixin
@@ -737,7 +738,7 @@ def run_agent_tests(
     eval_trajectory: str = "business",
     no_output: bool = False,
     eval_output: Path | None = None,
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     mode: str = "managed",
     cli_enabled: bool = False,
 ) -> int:

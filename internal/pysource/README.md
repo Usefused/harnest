@@ -6,15 +6,18 @@ binary at build time, so to change one, edit the file and rebuild.
 
 | Folder | Written or run by |
 | --- | --- |
-| `files/init/` | `harnest init`: the starter agent, its `examples/` (written with `--example`), and the ADK and LangGraph variants |
+| `files/init/` | `harnest init`: the starter agent, its `examples/` (written with `--example`), the advanced-mode test in `advanced/`, and `shared/` snippets also used in the folder guides |
+| `files/init/frameworks/<name>/` | What differs by framework: `advanced/` holds the files `--mode advanced` writes, and the optional `starter/` replaces shared starter files in every mode. Every file in these folders is written, so adding a file needs no Go change |
 | `files/managed/` | The minimal managed agent shared by `harnest init`, agent templates and Hostlier (`internal/agentscaffold`) |
-| `files/add/` | `harnest add tool|subagent|task|lifecycle|context|mcp|cron|channel` and `harnest add eval` custom metrics |
+| `files/add/` | `harnest add` for tools, subagents, tasks, lifecycle hooks, context providers, MCP clients, cron jobs and channels, plus custom metrics from `harnest add eval` |
 | `files/extension/` | `harnest extensions init` |
 | `files/pack/` | `harnest pack init` |
 | `files/probes/` | Scripts the CLI runs with `python -c` (`harnest doctor`, the environment check) |
 
 To find where a file is used, search the Go code for its path, for example
 `pysource.Render("add/tool.py.tmpl"` or `pysource.File("init/tools/echo.py")`.
+Files under `files/init/frameworks/` are read by folder instead. Hidden files and
+`__pycache__` folders are never embedded, so local clutter cannot reach new agents.
 
 ## Plain files and templates
 

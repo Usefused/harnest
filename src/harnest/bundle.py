@@ -50,7 +50,7 @@ from .frameworks.base import (
     FrameworkDependencyError,
     UnknownFrameworkError,
 )
-from .frameworks.registry import get_framework
+from .frameworks.registry import DEFAULT_FRAMEWORK, get_framework
 from .frameworks.context import current_framework, framework_scope
 from .graph import Graph
 from .extension_loader import (
@@ -226,7 +226,7 @@ def compile_agent(
     source: str | Path,
     *,
     entrypoint: str = "agent:root_agent",
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     mode: str = "managed",
 ) -> Any:
     """Compile a filesystem definition into its framework-specific target.
@@ -246,7 +246,7 @@ def compile_app(
     source: str | Path,
     *,
     entrypoint: str = "agent:root_agent",
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     mode: str = "managed",
 ) -> Any:
     """Compile a filesystem definition and return its provider application."""
@@ -261,7 +261,7 @@ def compile_application(
     source: str | Path,
     *,
     entrypoint: str,
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     mode: str = "managed",
 ) -> CompiledApplication:
     """Compile one managed definition or advanced framework application."""
@@ -738,7 +738,7 @@ def compile_artifact(
     output: str | Path,
     *,
     entrypoint: str = "agent:root_agent",
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     mode: str = "managed",
     cli_enabled: bool = False,
     bundle_selection: bool = True,
@@ -1495,7 +1495,7 @@ def _compose_definition(
     root: AgentDefinition,
     *,
     is_root: bool = True,
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     graph_resource_context: bool = False,
     capability_scope: str = "",
     extension_descriptors: Sequence[ExtensionDescriptor] = (),
@@ -2059,7 +2059,7 @@ def _compiled_task_imports(
 def _discover_subagents(
     directory: Path,
     *,
-    framework: str = "adk",
+    framework: str = DEFAULT_FRAMEWORK,
     capability_scope: str = "",
     skill_sources: Mapping[str, SkillSource] | None = None,
     skill_scopes: dict[str, SkillScope] | None = None,
