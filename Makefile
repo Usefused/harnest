@@ -26,7 +26,7 @@ test-e2e:
 test-live:
 	$(PYTHON) scripts/run_python_tests.py live
 
-quality: test complexity lint typing-quality studio-types skill-quality format-check vet validate-examples
+quality: test complexity lint typing-quality studio-types studio-tests skill-quality format-check vet validate-examples
 
 complexity:
 	$(PYTHON) scripts/check_python_complexity.py --max 10 src packages scripts tests/python examples/self-serve examples/channels examples/jev-triage examples/desktop-mcp-agent studio/src
@@ -41,10 +41,13 @@ codebase-map:
 typing-quality:
 	$(PYTHON) scripts/check_python_typing.py
 
-.PHONY: studio-types
+.PHONY: studio-types studio-tests
 studio-types:
 	npm --prefix studio/typing ci --ignore-scripts --no-audit --no-fund
 	npm --prefix studio/typing test
+
+studio-tests:
+	node --test studio/tests/*.test.mjs
 
 skill-quality:
 	$(PYTHON) scripts/check_skill_quality.py --max-words 400 .

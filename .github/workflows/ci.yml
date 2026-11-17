@@ -88,73 +88,33 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Run Python compatibility tests
+        if: matrix.python-version == '3.11'
+        run: make test-python PYTHON=python
+
       - name: Run quality gates
+        if: matrix.python-version == '3.12'
         # setup-python owns `python`; distro-specific python3.x executables may
         # point at a different environment without the dependencies above.
         run: make quality PYTHON=python
 
       - name: Validate installer shell
+        if: matrix.python-version == '3.12'
         run: sh -n install.sh
 
   studio-release:
     needs: changes
     if: needs.changes.outputs.core == 'true'
-    name: Native release smoke tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Pin a native arm64 runner; macos-latest repeatedly failed to allocate capacity.
-        # GitHub no longer runs macos-14 ("configuration macos-14-arm64-us-default is not supported").
-        os: [ubuntu-latest, macos-15, windows-latest]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-      - name: Install compiler and build dependencies
-        run: python -m pip install ".[adk,quality]" -c requirements/frameworks.txt
-      - name: Test Studio frontend
-        shell: bash
-        run: node --test studio/tests/*.test.mjs
-      - name: Test executable storage and native process behavior
-        run: go test ./internal/agentpack ./cmd/harnest-agent
-      - name: Test compiler executable packaging
-        run: go test ./cmd/harnest -run "Test(ProjectPackInit|CompileSelection|CompileManifest|RuntimeReport|NativeExecutable|WindowsConsole|WindowsNative|ExecutableOptions|SharedRuntime|RuntimePack|RuntimeBuild|PortableConsole)"
-      - name: Build release-equivalent CLI with bundled Studio
-        shell: bash
-        run: |
-          version=$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
-          python scripts/prepare_agent_launchers.py
-          python scripts/prepare_uv_assets.py --target "$(go env GOOS)-$(go env GOARCH)"
-          python scripts/build_runtime_wheel.py --version "$version" --outdir internal/runtimewheel/assets --no-isolation
-          go build -tags harnest_release -ldflags "-X main.version=$version" -o .cache/studio-release/harnest.exe ./cmd/harnest
-      - name: Test Windows installer, Python discovery, and upgrade moves
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          go test ./cmd/harnest -run 'TestPython(ResolutionPrecedence|LocationsFollowHostLayout)$'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest discover -s tests/python -p test_harnest_extensions.py -k upgrade_moves_lifecycle
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\scripts\test_windows_installer.ps1 -Cli .cache/studio-release/harnest.exe
-      - name: Launch bundled Studio outside the checkout
-        run: python scripts/smoke_studio_release.py --cli .cache/studio-release/harnest.exe
-      - name: Build and run attached and embedded agents outside the checkout
-        run: python scripts/smoke_agent_executable.py --cli .cache/studio-release/harnest.exe
+    uses: ./.github/workflows/native-release.yml
 
   framework-compatibility:
     needs: changes
     if: needs.changes.outputs.core == 'true'
     uses: ./.github/workflows/framework-compatibility.yml
+    with:
+      # Locked dependencies already run in both quality jobs. Keep the broad
+      # cross-product in scheduled/manual compatibility runs.
+      matrix: '{"include":[{"python":"3.11","resolution":"minimum"},{"python":"3.12","resolution":"latest"}]}'
 
   extensions:
     needs: changes

@@ -134,8 +134,21 @@ make quality
 
 `make quality` validates schemas, runs Python and Go tests, checks both languages
 for complexity above 10, verifies Go formatting, runs `go vet`, and exercises the
-offline Python-to-Go plan/compile/deploy contract. The same gate runs for pull
+offline Python-to-Go plan/compile/deploy contract. It also runs Studio's browser
+tests through `make studio-tests`. The same gate runs for pull
 requests and before a release is published from `main`.
+
+CI runs the full gate on Python 3.12 and the full Python suite on 3.11, avoiding
+duplicate Go, static, and browser checks. Branch compatibility jobs exercise
+minimum dependencies on 3.11 and latest dependencies on 3.12; scheduled and
+standalone manual runs retain all six Python/resolution combinations. Real Docker
+isolation checks run once with the latest dependencies on Python 3.12.
+
+`.github/workflows/native-release.yml` owns the shared native smoke tests. CI
+requires Linux, Windows, and macOS Intel; the capacity-constrained macOS arm64
+pool runs weekly and is selectable with the workflow's manual `arm64` input.
+Native jobs build only their host launcher with `prepare_agent_launchers.py
+--target`; release packaging still builds all six targets by omitting that flag.
 
 ## Internal orchestration validation
 

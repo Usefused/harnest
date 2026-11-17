@@ -2,6 +2,11 @@ name: Framework compatibility
 
 on:
   workflow_call:
+    inputs:
+      matrix:
+        description: Optional compatibility matrix for the calling CI workflow
+        type: string
+        default: ""
   schedule:
     - cron: '23 6 * * *'
   workflow_dispatch:
@@ -19,14 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        python: ['3.11', '3.12']
-        resolution: [locked, minimum, latest]
+      # Standalone scheduled/manual runs exercise every supported combination.
+      matrix: ${{ fromJSON(inputs.matrix || '{"python":["3.11","3.12"],"resolution":["locked","minimum","latest"]}') }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
       - name: Resolve supported framework dependencies
         env:
           RESOLUTION: ${{ matrix.resolution }}
@@ -63,8 +68,10 @@ jobs:
           tests/python/test_eval_transport_http.py
           tests/python/test_model_transport.py
       - name: Prepare real Docker isolation checks
+        if: matrix.python == '3.12' && matrix.resolution == 'latest'
         run: docker pull python:3.12-slim
       - name: Verify actual container limits and cleanup
+        if: matrix.python == '3.12' && matrix.resolution == 'latest'
         env:
           HARNEST_TEST_DOCKER: '1'
         run: python -m pytest -q official-extensions/docker/_tests/test_docker_live.py

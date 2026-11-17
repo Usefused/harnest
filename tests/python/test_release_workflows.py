@@ -1,3 +1,5 @@
+"""Verify CI selection, release packaging, and installer contracts."""
+
 import hashlib
 import json
 import os
@@ -493,7 +495,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn("https://github.com/Usefused/harnest", readme)
 
     def test_ci_coordinates_one_cancellable_branch_pipeline(self):
-        """Avoid push/PR duplication without dropping any validation matrices."""
+        """Run both Python suites while executing language-independent gates once."""
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]
         quality_step = next(
@@ -521,11 +523,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
             quality_job["strategy"]["matrix"]["python-version"], ["3.11", "3.12"]
         )
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
+        self.assertEqual(quality_step["if"], "matrix.python-version == '3.12'")
+        compatibility_step = next(
+            step for step in quality_job["steps"] if step["name"] == "Run Python compatibility tests"
+        )
+        self.assertEqual(compatibility_step["if"], "matrix.python-version == '3.11'")
+        self.assertEqual(compatibility_step["run"], "make test-python PYTHON=python")
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn("studio-tests", makefile.partition("quality:")[2].splitlines()[0])
+        self.assertIn("node --test studio/tests/*.test.mjs", makefile)
         self.assertNotIn("release-tag", workflow["jobs"])
         self.assertEqual(workflow["permissions"]["contents"], "read")
 
     def test_compatibility_is_reused_without_duplicate_branch_triggers(self):
-        """Preserve scheduled dependency coverage and both resolution matrices."""
+        """Keep boundary checks on branches and the full cross-product on scheduled runs."""
         workflow = load_yaml(".github/workflows/framework-compatibility.yml")
         self.assertEqual(
             set(workflow_events(workflow)), {"workflow_call", "workflow_dispatch", "schedule"}
@@ -537,9 +548,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
             caller["jobs"]["framework-compatibility"]["uses"],
             "./.github/workflows/framework-compatibility.yml",
         )
-        self.assertEqual(workflow["jobs"]["contracts"]["strategy"]["matrix"], {
+        inputs = workflow_events(workflow)["workflow_call"]["inputs"]
+        self.assertEqual(inputs["matrix"], {
+            "description": "Optional compatibility matrix for the calling CI workflow",
+            "type": "string", "default": "",
+        })
+        selected = json.loads(caller["jobs"]["framework-compatibility"]["with"]["matrix"])
+        self.assertEqual(selected, {"include": [
+            {"python": "3.11", "resolution": "minimum"},
+            {"python": "3.12", "resolution": "latest"},
+        ]})
+        matrix = workflow["jobs"]["contracts"]["strategy"]["matrix"]
+        fallback = re.fullmatch(r"\$\{\{ fromJSON\(inputs.matrix \|\| '(.*)'\) \}\}", matrix)
+        self.assertIsNotNone(fallback)
+        self.assertEqual(json.loads(fallback[1]), {
             "python": ["3.11", "3.12"], "resolution": ["locked", "minimum", "latest"],
         })
+        docker_steps = workflow["jobs"]["contracts"]["steps"][-2:]
+        for step in docker_steps:
+            self.assertEqual(step["if"], "matrix.python == '3.12' && matrix.resolution == 'latest'")
 
     def test_ci_example_test_withholds_external_credentials(self):
         """Keep the default example lane offline even on credentialed runners."""
@@ -707,14 +734,41 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertEqual(revision, expected_actions[repository])
 
     def test_native_executables_run_on_windows_in_release_ci(self):
-        """Keep native execution coverage alongside cross-compilation of release assets."""
-        job = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
-        self.assertEqual(set(job["strategy"]["matrix"]["os"]),
-                         {"ubuntu-latest", "macos-15", "windows-latest"})
+        """Keep three blocking platforms and schedule arm64 without repeating frontend tests."""
+        caller = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
+        self.assertEqual(caller["uses"], "./.github/workflows/native-release.yml")
+        workflow = load_yaml(".github/workflows/native-release.yml")
+        events = workflow_events(workflow)
+        self.assertEqual(set(events), {"workflow_call", "workflow_dispatch", "schedule"})
+        self.assertEqual(events["schedule"], [{"cron": "41 6 * * 1"}])
+        self.assertFalse(events["workflow_dispatch"]["inputs"]["arm64"]["default"])
+        job = workflow["jobs"]["smoke"]
+        matrix = job["strategy"]["matrix"]["os"]
+        self.assertIn("github.event_name == 'schedule' || inputs.arm64", matrix)
+        platforms = [json.loads(value) for value in re.findall(r"'(\[.*?\])'", matrix)]
+        self.assertEqual(platforms, [["macos-15"], ["ubuntu-latest", "macos-15-intel", "windows-latest"]])
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
-        self.assertIn("scripts/prepare_agent_launchers.py", scripts)
+        self.assertIn('scripts/prepare_agent_launchers.py --target "$(go env GOOS)-$(go env GOARCH)"', scripts)
         self.assertIn("go test ./internal/agentpack ./cmd/harnest-agent", scripts)
         self.assertIn("scripts/smoke_agent_executable.py --cli", scripts)
+        self.assertNotIn("node --test", scripts)
+        self.assertFalse(any(step.get("uses", "").startswith("actions/setup-node@") for step in job["steps"]))
+
+    @unittest.skipUnless(shutil.which("go"), "Go is required to build native launchers")
+    def test_native_smoke_builds_only_the_selected_launcher(self):
+        """A native build emits one real executable rather than rebuilding six targets."""
+        platform = subprocess.check_output(["go", "env", "GOOS", "GOARCH"], text=True).splitlines()
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/prepare_agent_launchers.py"),
+                 "--target", "-".join(platform), "--output-directory", directory],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([path.name for path in destination.iterdir()], ["agent_" + "_".join(platform)])
+            executable = next(destination.iterdir())
+            self.assertGreater(executable.stat().st_size, 1000)
 
     def test_goreleaser_embeds_the_versioned_wheel_before_go_build(self):
         """Release builds carry the resolver, native agent launcher, and matching wheel."""
