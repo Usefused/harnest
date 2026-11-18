@@ -75,6 +75,13 @@ def _protected_browser_open(url: str) -> dict[str, str]:
     raise AssertionError("client tool declaration bodies must not run")
 
 
+@client_tool(timeout_seconds=1)
+def _impatient_browser_open(url: str) -> dict[str, str]:
+    """Open a URL in the caller's browser, giving up after one second."""
+
+    raise AssertionError("client tool declaration bodies must not run")
+
+
 class HeaderAuthenticator:
     async def authenticate(self, connection):
         user_id = connection.headers.get("x-test-user")
@@ -501,6 +508,12 @@ class ClientToolDriver(FakeDriver):
         result = await self.invoke(request)
         for event in result.events:
             yield dict(event)
+
+
+class ExpiringClientToolDriver(ClientToolDriver):
+    async def invoke(self, request: InvocationRequest) -> InvocationResult:
+        await _impatient_browser_open(request.input)
+        raise AssertionError("an expired client tool must not resume")
 
 
 class CredentialHeaderAuthenticator(HeaderAuthenticator):
@@ -2652,6 +2665,36 @@ class ClientToolTransportTests(unittest.TestCase):
 
         self.assertEqual(cancelled["type"], "response.completed")
         self.assertEqual(cancelled["status"], "cancelled")
+
+    def test_live_reports_an_expired_client_tool_before_the_request_deadline(self):
+        # The tool gives up after 1s; the request deadline is 5s. The socket
+        # must hear the tool's own timeout, not wait for the transport one.
+        app = create_neutral_app(ExpiringClientToolDriver(), request_timeout=5)
+        with TestClient(app) as client:
+            client.post("/sessions", json={"id": "expiring-client"})
+            with client.websocket_connect("/live") as websocket:
+                websocket.send_json(
+                    {"type": "connect", "sessionId": "expiring-client"}
+                )
+                websocket.receive_json()
+                websocket.send_json(
+                    {"type": "response.create", "input": "https://example.test"}
+                )
+                created = websocket.receive_json()
+                requested = websocket.receive_json()
+                failed = websocket.receive_json()
+            polled = client.get(
+                f"/responses/{created['responseId']}",
+                params={"sessionId": "expiring-client"},
+            )
+
+        self.assertEqual(requested["type"], "client_tool.requested")
+        self.assertEqual(failed["type"], "error")
+        self.assertEqual(failed["responseId"], created["responseId"])
+        self.assertEqual(
+            failed["error"], "client tool '_impatient_browser_open' timed out"
+        )
+        self.assertEqual(polled.json()["status"], "failed")
 
     def test_approved_client_tool_resumes_through_both_boundaries(self):
         app = create_neutral_app(ApprovedClientToolDriver())

@@ -32,6 +32,9 @@ named-resource collisions fail rather than being resolved by load order.
 - Named `sandboxes` assignments and neutral `Sandbox` providers work on both
   frameworks. Native ADK executor providers, `output_key`, and
   `generate_content_config` remain ADK-specific.
+- Runtime `SubAgent` (`harnest.agent.SubAgent`) lowers a managed `Agent`
+  definition through the active ADK or LangGraph adapter on a private in-memory
+  driver; advanced mode does not offer `SubAgent` (see `python-api.md`).
 
 Use a portable graph when the same authored topology should work across both
 frameworks. Use callable nodes and `Event(route=...)` for deterministic routing;

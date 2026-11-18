@@ -310,16 +310,61 @@ async def _consume_client_tool(
                 request_id=request_id,
             )
         )
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        output = await asyncio.wait_for(inbound_frames.get(), timeout=remaining)
-        await client_tools.submit(
-            pending.id, user_id=pending.user_id, output=output
+        received, output = await _client_tool_result(
+            pending, inbound_frames, deadline=deadline
         )
+        if received:
+            await client_tools.submit(
+                pending.id, user_id=pending.user_id, output=output
+            )
     finally:
         state.pending_client_tool = None
         state.client_tool_result_received = False
+        _discard_stale_client_results(inbound_frames)
+
+
+async def _client_tool_result(
+    pending: PendingClientTool,
+    inbound_frames: asyncio.Queue[Any],
+    *,
+    deadline: float,
+) -> tuple[bool, Any]:
+    """Wait for this socket's client result, or stop once the tool has ended.
+
+    The tool's own ``timeout_seconds``, a cancelled run, or a result submitted
+    over HTTP finishes ``pending.future`` without a frame from this socket. The
+    run then reports what happened through its notifications, so the transport
+    must go back to reading them instead of staying silent until the request
+    deadline.
+    """
+
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise asyncio.TimeoutError
+    receive = asyncio.create_task(inbound_frames.get())
+    try:
+        done, _ = await asyncio.wait(
+            {receive, pending.future},
+            timeout=remaining,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        if not receive.done():
+            await _settle_cancelled_task(receive)
+    if pending.future.done():
+        # The run's outcome wins over a frame that raced the tool's end; that
+        # frame belongs to a request the store has already closed.
+        return False, None
+    if receive in done:
+        return True, receive.result()
+    raise asyncio.TimeoutError
+
+
+def _discard_stale_client_results(inbound_frames: asyncio.Queue[Any]) -> None:
+    """Drop results queued for an ended tool so none reach the next client tool."""
+
+    while not inbound_frames.empty():
+        inbound_frames.get_nowait()
 
 
 async def _send_live_suspension(

@@ -6,6 +6,8 @@
 
 - Fix `install.sh` failing on macOS and Linux with "absent from checksums.txt". The Windows MSI job rewrote the release checksum manifest with Windows line endings; it now keeps LF endings, and `install.sh` also accepts manifests that have CRLF endings, such as the one published with 2.0.0.
 
+- Fix live WebSocket responses going silent when a client tool's `timeout_seconds` ran out before the client answered. The socket now gets the run's outcome as soon as the tool times out, such as an `error` naming the timed-out client tool, instead of `Response timed out` at the request deadline, and the response status no longer stays `requires_action` meanwhile.
+
 ## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
 - Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.
