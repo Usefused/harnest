@@ -8,6 +8,19 @@
 
 - Fix live WebSocket responses going silent when a client tool's `timeout_seconds` ran out before the client answered. The socket now gets the run's outcome as soon as the tool times out, such as an `error` naming the timed-out client tool, instead of `Response timed out` at the request deadline, and the response status no longer stays `requires_action` meanwhile.
 
+## [2.1.0](https://github.com/Usefused/harnest/compare/v2.0.0...v2.1.0) (2026-11-18)
+
+
+### Features
+
+* add runtime SubAgent API for managed ADK and LangGraph apps ([c3ddc85](https://github.com/Usefused/harnest/commit/c3ddc85d4f10fef67fd928112f7641bc7924fe2f))
+
+
+### Fixes
+
+* accept CRLF checksum manifests in install.sh ([9d343e7](https://github.com/Usefused/harnest/commit/9d343e7184c4d95a1742ef77eff4f0be9169f4b3))
+* stop waiting on live socket once a pending client tool ends ([84b0492](https://github.com/Usefused/harnest/commit/84b04926351b051f4935d6343578e89ffeb2936a))
+
 ## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
 - Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.
