@@ -57,6 +57,7 @@ need_command curl
 need_command mktemp
 need_command tar
 need_command grep
+need_command tr
 need_command awk
 need_command dirname
 
@@ -138,9 +139,11 @@ trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 download "${release_base}/${archive}" "${temporary_directory}/${archive}"
 download "${release_base}/checksums.txt" "${temporary_directory}/checksums.txt"
 
-expected_checksum=$(awk -v archive="$archive" \
-  '$2 == archive || $2 == ("*" archive) { print $1; exit }' \
-  "${temporary_directory}/checksums.txt")
+# Strip carriage returns: a manifest rewritten on a Windows runner can carry
+# CRLF endings, which would otherwise leave "\r" on every archive name.
+expected_checksum=$(tr -d '\r' < "${temporary_directory}/checksums.txt" | \
+  awk -v archive="$archive" \
+    '$2 == archive || $2 == ("*" archive) { print $1; exit }')
 [ -n "$expected_checksum" ] || fail "${archive} is absent from checksums.txt"
 
 if command -v sha256sum >/dev/null 2>&1; then
