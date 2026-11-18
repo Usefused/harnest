@@ -637,6 +637,20 @@ prevents duplicate child sessions; cron tasks use a fixed automation principal.
 External durable waits return portable pending handles, while process-local
 approval and client-tool continuations fail closed after task execution.
 
+Runtime SubAgents (`harnest.agent.SubAgent`) let a tool, task, or lifecycle hook
+create an agent while it runs. The caller's `Agent` definition is lowered through
+the application's framework adapter with the root's framework extensions, then
+run by a private runtime driver with in-memory sessions and checkpoints, so its
+transcript never reaches application storage. The run reuses the in-process
+invocation path of `context.agent` under a context derived from the caller, which
+supplies the user, Agent Runtime Principal, and credentials. Tool lifecycle hooks
+come from the invocation pipeline, or from the root's listeners in a task, which
+has none. Ownership follows the innermost managed scope: an async `@tool` call,
+a task run, or an agent invocation. Each scope closes the SubAgents it still owns
+when it finishes, before its context is revoked. Nesting is limited to three
+SubAgents, and approval, client-tool, and durable waits fail closed because the
+private runtime cannot resume them. Advanced applications do not offer SubAgents.
+
 Setting scalars may use exact `${NAME}` environment references. Compilation
 validates their position and preserves the template bytes; the launcher resolves
 them before typed validation. Short `$NAME` syntax and partial interpolation are

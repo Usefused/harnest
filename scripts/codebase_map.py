@@ -44,9 +44,9 @@ AREAS: tuple[tuple[str, str, str], ...] = (
      "The Python half of the CLI. The Go binary in cmd/harnest runs these with `python -m`.",
      r"cli|runtime_cli|mcp_cli|channel_cli|provisioner_cli|orchestrator"),
     ("Authoring API",
-     "What agent code imports: agents, graphs, models, tools, skills, structured output, UI events.",
+     "What agent code imports: agents, runtime SubAgents, graphs, models, tools, skills, structured output, UI events.",
      r"__init__|agent/.*|graph|model|structured|output|skills|skill_selection|client_tool|client_input"
-     r"|_agent_tool|tool_arguments|ui|ui_output|tracing|a2a"),
+     r"|_agent_tool|_subagent.*|tool_arguments|ui|ui_output|tracing|a2a"),
     ("Lifecycle, extensions and plugins",
      "Decorator hooks, Harnest Extensions, standard Agent Plugins, and authored HTTP routes.",
      r"lifecycle.*|tool_lifecycle|extension.*|extensions/.*|_extension_project|agent_plugin.*"

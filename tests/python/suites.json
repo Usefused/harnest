@@ -173,6 +173,7 @@
       "test_server_config",
       "test_session_adk",
       "test_skill_selection_backends",
+      "test_subagent",
       "test_task_runtime_integration",
       "test_task_store_cron_sessions",
       "test_task_store_redis",

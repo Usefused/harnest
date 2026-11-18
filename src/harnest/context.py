@@ -115,6 +115,10 @@ class AgentContext:
     _ui_output: UIOutput = field(default_factory=UIOutput, repr=False, compare=False)
     _decision_output: DecisionOutput = field(default_factory=DecisionOutput, repr=False, compare=False)
     _skill_selection_cache: dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
+    # Runtime SubAgents: how to build them, and the run that owns the ones started
+    # outside a tool call. Both are absent where SubAgents are unavailable.
+    _subagent_host: Any = field(default=None, repr=False, compare=False)
+    _subagent_owner: Any = field(default=None, repr=False, compare=False)
 
     @overload
     def resource(self, name: str, expected_type: type[_ResourceT]) -> _ResourceT: ...
@@ -376,6 +380,8 @@ def create_agent_context(
     skill_registry: Any | None = None,
     sandbox_registry: Any | None = None,
     extension_bindings: Mapping[str, Any] | None = None,
+    subagent_host: Any = None,
+    subagent_owner: Any = None,
 ) -> AgentContext:
     """Create a context with a private mutable registry for provider binding."""
 
@@ -416,6 +422,8 @@ def create_agent_context(
         _skill_pins={},
         _extension_bindings=extensions,
         _lifetime=_ContextLifetime(),
+        _subagent_host=subagent_host,
+        _subagent_owner=subagent_owner,
     )
 
 
@@ -449,6 +457,9 @@ def derive_agent_context(active: AgentContext, *, agent_name: str) -> AgentConte
         # Child decisions belong to the same invocation output, with their own attribution.
         _decision_output=active._decision_output,
         _ui_output=active._ui_output,
+        # Nested agents share the run's SubAgent builder and ownership.
+        _subagent_host=active._subagent_host,
+        _subagent_owner=active._subagent_owner,
     )
 
 

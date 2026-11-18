@@ -56,6 +56,8 @@ from .model_hooks import model_invocation_scope
 from .session import SessionStore
 from .skills import SkillRegistry
 from .tool_lifecycle import ToolLifecyclePipeline, _tool_lifecycle_pipeline_scope
+from ._subagent import close_owned_subagents
+from ._subagent_owner import SubAgentOwner
 
 
 class ExtensionTransformError(TypeError):
@@ -291,6 +293,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         credential_provider: CredentialProvider | None = None,
         manage_credential_provider: bool = True,
         extension_bindings: Callable[[], Mapping[str, Any]] | None = None,
+        subagent_host: Any | None = None,
     ) -> None:
         """Validate application resources without acquiring runtime ownership."""
 
@@ -321,6 +324,7 @@ class LifecycleRuntimeDriver(RuntimeDriver):
         self._credential_provider = credential_provider
         self._manage_credential_provider = manage_credential_provider
         self._extension_bindings = extension_bindings
+        self._subagent_host = subagent_host
         self._credential_provider_started = False
         self._application_resources: dict[str, Any] = {}
         self._resource_lock = asyncio.Lock()
@@ -589,10 +593,14 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                         request, lifecycle_context, agent_context
                     )
         finally:
-            # ContextVars are copied into child tasks, so resetting this task's
-            # token alone cannot remove capabilities from work that outlives it.
-            revoke_context(agent_context)
-            revoke_agent_principal(principal_binding)
+            try:
+                # SubAgents started outside a tool call belong to the invocation.
+                await close_owned_subagents(agent_context)
+            finally:
+                # ContextVars are copied into child tasks, so resetting this task's
+                # token alone cannot remove capabilities from work that outlives it.
+                revoke_context(agent_context)
+                revoke_agent_principal(principal_binding)
 
     async def _invoke_bound(
         self,
@@ -717,8 +725,11 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                         ), self._credential_scope():
                             await _close_iterator(iterator)
         finally:
-            revoke_context(agent_context)
-            revoke_agent_principal(principal_binding)
+            try:
+                await close_owned_subagents(agent_context)
+            finally:
+                revoke_context(agent_context)
+                revoke_agent_principal(principal_binding)
 
     def _agent_context(self, request: InvocationRequest) -> AgentContext:
         """Give each invocation an isolated view over shared application values."""
@@ -740,6 +751,10 @@ class LifecycleRuntimeDriver(RuntimeDriver):
             sandbox_registry=self._sandbox_registry,
             extension_bindings=(
                 None if self._extension_bindings is None else self._extension_bindings()
+            ),
+            subagent_host=self._subagent_host,
+            subagent_owner=(
+                None if self._subagent_host is None else SubAgentOwner("agent invocation")
             ),
         )
 
@@ -773,8 +788,11 @@ class LifecycleRuntimeDriver(RuntimeDriver):
                     await self._bind_invocation_resources(active)
                     yield
         finally:
-            revoke_context(active)
-            revoke_agent_principal(principal_binding)
+            try:
+                await close_owned_subagents(active)
+            finally:
+                revoke_context(active)
+                revoke_agent_principal(principal_binding)
 
     def _credential_scope(self) -> Any:
         """Bind credentials separately from enumerable agent resources."""

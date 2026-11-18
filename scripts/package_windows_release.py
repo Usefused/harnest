@@ -49,7 +49,9 @@ def package_release(repo: str, tag: str, output: Path) -> list[Path]:
     lines = [line for line in checksums.splitlines() if line.strip() and line.split()[-1].lstrip("*") not in names]
     for artifact in artifacts:
         lines.append(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}")
-    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Write bytes, not text: text mode on the Windows runner would emit CRLF,
+    # and POSIX installers compare archive names exactly.
+    manifest.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
     return [*artifacts, manifest]
 
 

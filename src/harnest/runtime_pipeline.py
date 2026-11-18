@@ -20,6 +20,7 @@ def build_runtime_pipeline(
     *,
     manage_credential_provider: bool = True,
     extension_manager: ExtensionRuntimeManager | None = None,
+    subagent_host: Any | None = None,
 ) -> RuntimeDriver:
     """Wrap one backend in the single supported capability ownership order."""
 
@@ -52,6 +53,7 @@ def build_runtime_pipeline(
             if extension_manager is None
             else extension_manager.invocation_bindings
         ),
+        subagent_host=subagent_host,
     )
     if extension_manager is not None:
         current = ExtensionHostRuntimeDriver(current, extension_manager)

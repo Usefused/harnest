@@ -10,6 +10,13 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from ..agent_principal import AgentRuntimePermissionError, AgentRuntimePrincipal
 from .._agent_tool import tool
+from .._subagent import (
+    SubAgent,
+    SubAgentClosedError,
+    SubAgentDepthError,
+    SubAgentError,
+    SubAgentUnavailableError,
+)
 from ..client_tool import (
     ClientToolError,
     ClientToolExecution,
@@ -217,6 +224,11 @@ __all__ = [
     "ClientToolExecution",
     "InMemoryClientToolStore",
     "PendingClientTool",
+    "SubAgent",
+    "SubAgentClosedError",
+    "SubAgentDepthError",
+    "SubAgentError",
+    "SubAgentUnavailableError",
     "ToolCallRequest",
     "ToolLifecycleContext",
     "ToolLifecycleError",

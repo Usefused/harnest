@@ -65,8 +65,9 @@ is adapter-owned.
 Prefer filesystem composition over
 manually populating discovered resources. These explicit object fields are not
 name-based access selectors for resource folders: filesystem location defines
-which discovered resources an agent owns. Harnest does not define a separate
-`SubAgent` class.
+which discovered resources an agent owns. Nested subagents use `Agent`;
+`SubAgent` is only for agents your code creates while it runs (see Runtime
+SubAgents).
 
 Define these Pydantic types in root `models/**/*.py`, not beside each use. A
 model in `models/support.py` imports as `harnest.models.support`; no
@@ -184,6 +185,46 @@ clients submit `{"output": ...}` to `/client-tools/{requestId}`; WebSocket
 clients answer `client_tool.requested` with `client_tool.result`. Unit-test the
 client implementation separately from this declaration. Client tools fail
 closed outside managed runtime execution.
+
+## Runtime SubAgents
+
+Use `SubAgent` when code must create an agent while it runs, for example a
+specialist whose instruction depends on the request. Static helpers still go in
+`subagents/`.
+
+```python
+from harnest.agent import Agent, SubAgent, tool
+from harnest.lib.research import search_web, specialist_model
+
+
+@tool
+async def research(topic: str) -> str:
+    """Research a topic with a short-lived specialist."""
+    async with SubAgent(Agent(
+        name="researcher",
+        model=specialist_model(),
+        instruction=f"Research {topic} and cite sources.",
+        tools=[search_web],
+    )) as researcher:
+        await researcher.run(f"Find three sources on {topic}")
+        reply = await researcher.run("Summarise them")
+    return reply.output_text
+```
+
+Whoever starts a SubAgent owns it: the innermost tool call, task run, or agent
+invocation. `async with` closes it at the end of the block; `await
+SubAgent(...).start()` keeps it open until `close()` or until its owner
+finishes, which closes it automatically. `run()` returns the same
+`AgentResponse` as `context.agent`; turns share one conversation.
+
+A SubAgent gets only the model, tools, and MCP clients in its definition, plus
+the caller's user, Agent Runtime Principal, credentials, and the root's model
+and tool lifecycle hooks. Its sessions are private and in memory. Models and
+plain MCP clients can be shared, but an `MCPClient` with lifecycle hooks belongs
+to one agent: give each SubAgent its own client and lifecycle instance. It needs
+an inline `instruction`, exchanges text only, and works only in managed agents.
+Human approval, client tools, durable waits, sandboxes, and nesting deeper than
+three SubAgents raise `SubAgentError` subclasses.
 
 ## Authentication and credentials
 

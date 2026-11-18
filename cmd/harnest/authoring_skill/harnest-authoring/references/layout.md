@@ -172,7 +172,8 @@ application-owned helpers rather than packaging the application as a plugin.
   importable throughout the bundle rather than attached to an agent's
   discovered resource scope.
 - Do not add `Agent` tool/skill name lists as access selectors. Location grants
-  scope. There is no separate `SubAgent` class; nested definitions use `Agent`.
+  scope. Nested definitions use `Agent`; `SubAgent` only wraps an `Agent` that
+  code creates and runs while the agent is serving.
 - Keep executable eval assets at the root. Nested eval files may be validated
   during compilation but are not run by `harnest test --evals`.
 

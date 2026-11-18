@@ -323,7 +323,18 @@ def _wrap_runtime_driver(
         application.lifecycle_extensions,
         manage_credential_provider=manage_credential_provider,
         extension_manager=extension_manager,
+        subagent_host=_subagent_host(application),
     )
+
+
+def _subagent_host(application: Any) -> Any | None:
+    """Offer runtime SubAgents to managed applications; advanced mode has none yet."""
+
+    if application.mode != "managed":
+        return None
+    from ._subagent import SubAgentHost
+
+    return SubAgentHost(application)
 
 
 def _direct_result(result: Any) -> dict[str, Any]:

@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 
 from .lifecycle import LifecycleListener
 from .lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
+from ._subagent_owner import tool_owner_scope
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -217,15 +218,17 @@ def _wrap_async_tool(function: F) -> F:
         from .agent_principal import require_capability
 
         require_capability(invoke, name=function.__name__)
-        pipeline = _ACTIVE_TOOL_PIPELINE.get()
-        if pipeline is None:
-            return await function(*args, **kwargs)
-        request = ToolCallRequest(function.__name__, tuple(args), kwargs)
+        # SubAgents this call starts, including in its hooks, end with the call.
+        async with tool_owner_scope():
+            pipeline = _ACTIVE_TOOL_PIPELINE.get()
+            if pipeline is None:
+                return await function(*args, **kwargs)
+            request = ToolCallRequest(function.__name__, tuple(args), kwargs)
 
-        async def handler(updated: ToolCallRequest) -> Any:
-            return await function(*updated.args, **dict(updated.kwargs))
+            async def handler(updated: ToolCallRequest) -> Any:
+                return await function(*updated.args, **dict(updated.kwargs))
 
-        return await pipeline.run(request, handler, _tool_context(request.name))
+            return await pipeline.run(request, handler, _tool_context(request.name))
 
     return invoke  # type: ignore[return-value]
 

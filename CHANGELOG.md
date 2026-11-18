@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add `SubAgent` to `harnest.agent`. A tool, task, cron job, or lifecycle hook can create an `Agent` while it runs, talk to it over several turns, and close it, or let it close automatically when the tool call, task run, or agent invocation that started it finishes. SubAgents work on ADK and LangGraph. Each runs on a private runtime with in-memory sessions, so its conversation never reaches the agent's session store. It inherits the caller's user, Agent Runtime Principal, credentials, and the root's model and tool lifecycle hooks, and uses only the model, tools, and MCP clients in its definition. Advanced mode, structured input or output, sandboxes, human approval, client tools, and durable waits inside a SubAgent are not supported yet.
+
+- Fix `install.sh` failing on macOS and Linux with "absent from checksums.txt". The Windows MSI job rewrote the release checksum manifest with Windows line endings; it now keeps LF endings, and `install.sh` also accepts manifests that have CRLF endings, such as the one published with 2.0.0.
+
 ## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
 - Allow Studio's default pack compatibility range and the company-support example pack to accept Harnest 2.x, fixing Studio startup and pack loading in 2.0 releases.

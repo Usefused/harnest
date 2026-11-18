@@ -30,6 +30,8 @@ from .context import (
 from . import context
 from .context_session import invocation_session_context
 from ._context_agent import LocalAgentRuntime, activate_context_agent
+from ._subagent import SubAgentHost, close_owned_subagents
+from ._subagent_owner import SubAgentOwner
 from .continuation import (
     ContinuationConflictError,
     ProviderPendingContinuation,
@@ -336,7 +338,11 @@ class TaskExecutionRuntime:
                     ):
                         return await _resolve_task_call(compiled.function, arguments)
             finally:
-                revoke_context(active)
+                try:
+                    # SubAgents started by the task, outside a tool, end with it.
+                    await close_owned_subagents(active)
+                finally:
+                    revoke_context(active)
 
     def _agent_scope(
         self,
@@ -371,6 +377,7 @@ class TaskExecutionRuntime:
             if self._extension_manager is None
             else self._extension_manager.invocation_bindings()
         )
+        host = self._subagent_host()
         return create_agent_context(
             framework=snapshot["framework"],
             agent_name=snapshot["agent_name"],
@@ -386,7 +393,20 @@ class TaskExecutionRuntime:
             skill_registry=capabilities.skill_registry,
             sandbox_registry=capabilities.sandbox_registry,
             extension_bindings=bindings,
+            subagent_host=host,
+            subagent_owner=None if host is None else SubAgentOwner("task run"),
         )
+
+    def _subagent_host(self) -> Any | None:
+        """Build SubAgents for managed task runs from the same compiled application."""
+
+        if self._application.mode != "managed":
+            return None
+        host = getattr(self, "_subagent_host_value", None)
+        if host is None:
+            host = SubAgentHost(self._application)
+            self._subagent_host_value = host
+        return host
 
     def _session_store(self) -> SessionStore | None:
         """Use only a portable store that can acquire the task's session lease."""

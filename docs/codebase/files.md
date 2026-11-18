@@ -87,10 +87,12 @@ The Python half of the CLI. The Go binary in cmd/harnest runs these with `python
 
 ### Authoring API
 
-What agent code imports: agents, graphs, models, tools, skills, structured output, UI events.
+What agent code imports: agents, runtime SubAgents, graphs, models, tools, skills, structured output, UI events.
 
 - [`__init__.py`](../../src/harnest/__init__.py): Public domain namespaces for Harnest agents.
 - [`_agent_tool.py`](../../src/harnest/_agent_tool.py): Primary agent tool decorator implementation.
+- [`_subagent.py`](../../src/harnest/_subagent.py): Runtime SubAgents: short-lived agents that code creates and owns during a run.
+- [`_subagent_owner.py`](../../src/harnest/_subagent_owner.py): Private ownership scopes that close runtime SubAgents when their creator ends.
 - [`a2a.py`](../../src/harnest/a2a.py): Lazy outbound A2A 1.x client and portable remote-agent graph node.
 - [`agent/__init__.py`](../../src/harnest/agent/__init__.py): Framework-neutral managed agent definitions and tool contracts.
 - [`agent/approval.py`](../../src/harnest/agent/approval.py): Framework-neutral human approval declarations and execution state.

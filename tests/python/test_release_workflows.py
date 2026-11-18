@@ -48,7 +48,7 @@ def write_executable(path: Path, source: str):
     path.chmod(0o755)
 
 
-def write_installer_fakes(directory: Path, version: str):
+def write_installer_fakes(directory: Path, version: str, checksum_newline: str = "\\n"):
     write_executable(
         directory / "uname",
         """
@@ -69,7 +69,7 @@ def write_installer_fakes(directory: Path, version: str):
           shift
         done
         case "$output" in
-          *checksums.txt) printf 'abc harnest_{version}_darwin_arm64.tar.gz\\n' > "$output" ;;
+          *checksums.txt) printf 'abc harnest_{version}_darwin_arm64.tar.gz{checksum_newline}' > "$output" ;;
           *) printf 'archive' > "$output" ;;
         esac
         """,
@@ -225,6 +225,45 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertEqual(cli.read_bytes(), b"verified executable")
             self.assertEqual(list(cli.parent.iterdir()), [cli])
             self.assertFalse((root / "unrelated.txt").exists())
+
+    def test_windows_release_manifest_keeps_lf_line_endings(self):
+        """Publish checksums.txt with LF endings so POSIX installers can match archive names."""
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            import package_windows_release
+        version = "1.2.3"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "out"
+            zip_name = f"harnest_{version}_windows_amd64.zip"
+            darwin_entry = f"{'a' * 64}  harnest_{version}_darwin_amd64.tar.gz"
+
+            def fake_release_command(*args, repo):
+                destination = Path(args[args.index("--dir") + 1])
+                archive = destination / zip_name
+                with zipfile.ZipFile(archive, "w") as package:
+                    package.writestr("harnest.exe", b"cli")
+                zip_entry = f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {zip_name}"
+                # Simulate a manifest that already picked up CRLF on a previous run.
+                (destination / "checksums.txt").write_bytes(
+                    f"{darwin_entry}\r\n{zip_entry}\r\n".encode()
+                )
+                return ""
+
+            def fake_build(cli, build_version, arch, destination):
+                msi = destination / f"harnest_{build_version}_windows_{arch}.msi"
+                msi.write_bytes(b"msi")
+                return msi
+
+            with patch.object(package_windows_release, "release_command", fake_release_command), \
+                    patch.object(package_windows_release, "build", fake_build):
+                package_windows_release.package_release("owner/repo", f"v{version}", output)
+
+            manifest = (output / "checksums.txt").read_bytes()
+            self.assertNotIn(b"\r", manifest)
+            names = [line.split()[-1] for line in manifest.decode().splitlines()]
+            self.assertEqual(
+                names,
+                [f"harnest_{version}_darwin_amd64.tar.gz", zip_name, f"harnest_{version}_windows_amd64.msi"],
+            )
 
     def test_windows_installer_rejects_unrepresentable_versions(self):
         """Refuse MSI version truncation, which could silently permit an unintended downgrade."""
@@ -1055,6 +1094,34 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 (legacy_bin / "harnest").read_text(),
             )
             self.assertFalse((root / "home" / ".local/bin/harnest").exists())
+
+    def test_installer_accepts_a_crlf_checksum_manifest(self):
+        """Release v2.0.0 shipped a CRLF manifest; the installer must still find its archive."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            test_version = "9.8.7"
+            write_installer_fakes(fake_bin, test_version, checksum_newline="\\r\\n")
+            environment = {
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "HOME": str(root / "home"),
+                "HARNEST_VERSION": test_version,
+                "HARNEST_YES": "1",
+                "HARNEST_INSTALL_DIR": str(root / "bin"),
+            }
+
+            result = subprocess.run(
+                ["/bin/sh", str(ROOT / "install.sh")],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"Installed Harnest {test_version}", result.stdout)
+            self.assertTrue((root / "bin" / "harnest").exists())
 
     def test_source_fallback_matches_project_version(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

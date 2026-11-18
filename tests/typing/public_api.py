@@ -115,3 +115,19 @@ async def authored_decorators(skill: SkillContext) -> None:
     assert_type(skill.credentials, CredentialContext)
     assert_type(skill.storage, StorageContext)
     assert_type(skill.resource("company", CompanyService), CompanyService)
+
+
+from harnest.agent import Agent, SubAgent, SubAgentError
+
+
+async def runtime_subagent(model: str) -> str:
+    async with SubAgent(Agent(name="helper", model=model, instruction="Help.")) as helper:
+        reply: AgentResponse = await helper.run("Summarise this", request_timeout=30)
+        assert_type(helper.session_id, str | None)
+    try:
+        await helper.run("again")
+    except SubAgentError:
+        pass
+    started: SubAgent = await SubAgent(Agent(name="other", model=model, instruction="Help.")).start()
+    await started.close()
+    return reply.output_text

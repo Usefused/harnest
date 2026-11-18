@@ -184,6 +184,9 @@ _ACTIVE_AGENT_RUNTIME: ContextVar[_ContextAgentBinding | None] = ContextVar(
 class LocalAgentRuntime:
     """Invoke a final compiled runtime driver without an HTTP round trip."""
 
+    # Audit records name what was invoked; SubAgents reuse this runtime.
+    _audit_action = "root_agent"
+
     def __init__(
         self,
         driver: RuntimeDriver,
@@ -244,27 +247,27 @@ class LocalAgentRuntime:
             )
         except SessionConflictError:
             if not reuse_existing:
-                _audit("session.create", self._trigger, "failed", self._driver)
+                _audit("session.create", self._trigger, "failed", self._driver, self._audit_action)
                 raise
             try:
                 existing = await self._driver.get_session(
                     session_id=selected_id, user_id=self._user_id
                 )
             except Exception:
-                _audit("session.create", self._trigger, "failed", self._driver)
+                _audit("session.create", self._trigger, "failed", self._driver, self._audit_action)
                 raise
             if existing is None:
-                _audit("session.create", self._trigger, "failed", self._driver)
+                _audit("session.create", self._trigger, "failed", self._driver, self._audit_action)
                 raise RuntimeError("agent session creation conflict was not readable")
-            _audit("session.create", self._trigger, "unchanged", self._driver)
+            _audit("session.create", self._trigger, "unchanged", self._driver, self._audit_action)
         except asyncio.CancelledError:
-            _audit("session.create", self._trigger, "cancelled", self._driver)
+            _audit("session.create", self._trigger, "cancelled", self._driver, self._audit_action)
             raise
         except Exception:
-            _audit("session.create", self._trigger, "failed", self._driver)
+            _audit("session.create", self._trigger, "failed", self._driver, self._audit_action)
             raise
         else:
-            _audit("session.create", self._trigger, "committed", self._driver)
+            _audit("session.create", self._trigger, "committed", self._driver, self._audit_action)
         return self._session(selected_id)
 
     async def open_session(self, session_id: str) -> AgentSession:
@@ -371,23 +374,23 @@ class LocalAgentRuntime:
             else:
                 response = _agent_response(result, request.invocation_id)
         except asyncio.TimeoutError as error:
-            _audit("invoke", self._trigger, "failed", self._driver)
+            _audit("invoke", self._trigger, "failed", self._driver, self._audit_action)
             raise AgentInvocationTimeout("local agent invocation timed out") from error
         except asyncio.CancelledError:
-            _audit("invoke", self._trigger, "cancelled", self._driver)
+            _audit("invoke", self._trigger, "cancelled", self._driver, self._audit_action)
             raise
         except AgentContinuationUnsupportedError:
-            _audit("invoke", self._trigger, "failed", self._driver)
+            _audit("invoke", self._trigger, "failed", self._driver, self._audit_action)
             raise
         except Exception:
-            _audit("invoke", self._trigger, "failed", self._driver)
+            _audit("invoke", self._trigger, "failed", self._driver, self._audit_action)
             raise
         finally:
             await self._stop_run(run, join_terminal=join_terminal)
         outcome = (
             "suspended" if isinstance(response, AgentPendingResponse) else "committed"
         )
-        _audit("invoke", self._trigger, outcome, self._driver)
+        _audit("invoke", self._trigger, outcome, self._driver, self._audit_action)
         return response
 
     async def _stream(
@@ -451,7 +454,7 @@ class LocalAgentRuntime:
             raise
         finally:
             await self._stop_run(run, join_terminal=join_terminal)
-            _audit("invoke", self._trigger, outcome, self._driver)
+            _audit("invoke", self._trigger, outcome, self._driver, self._audit_action)
 
     def _start_run(self, request: InvocationRequest, *, stream: bool) -> Any:
         """Install the same wait scopes as neutral HTTP without its wire layer."""
@@ -835,6 +838,7 @@ def _audit(
     trigger: str,
     outcome: str,
     driver: RuntimeDriver,
+    action: str = "root_agent",
 ) -> None:
     """Record only low-cardinality execution facts after durable boundaries."""
 
@@ -843,7 +847,7 @@ def _audit(
         operation=f"context_agent.{operation}",
         trigger=trigger,
         outcome=outcome,
-        action="root_agent",
+        action=action,
         framework=driver.info.framework or "unknown",
     )
 
