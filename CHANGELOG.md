@@ -1,12 +1,22 @@
 # Changelog
 
-## Unreleased
+## [2.1.0](https://github.com/Usefused/harnest/compare/v2.0.0...v2.1.0) (2026-11-18)
 
 - Add `SubAgent` to `harnest.agent`. A tool, task, cron job, or lifecycle hook can create an `Agent` while it runs, talk to it over several turns, and close it, or let it close automatically when the tool call, task run, or agent invocation that started it finishes. SubAgents work on ADK and LangGraph. Each runs on a private runtime with in-memory sessions, so its conversation never reaches the agent's session store. It inherits the caller's user, Agent Runtime Principal, credentials, and the root's model and tool lifecycle hooks, and uses only the model, tools, and MCP clients in its definition. Advanced mode, structured input or output, sandboxes, human approval, client tools, and durable waits inside a SubAgent are not supported yet.
 
 - Fix `install.sh` failing on macOS and Linux with "absent from checksums.txt". The Windows MSI job rewrote the release checksum manifest with Windows line endings; it now keeps LF endings, and `install.sh` also accepts manifests that have CRLF endings, such as the one published with 2.0.0.
 
 - Fix live WebSocket responses going silent when a client tool's `timeout_seconds` ran out before the client answered. The socket now gets the run's outcome as soon as the tool times out, such as an `error` naming the timed-out client tool, instead of `Response timed out` at the request deadline, and the response status no longer stays `requires_action` meanwhile.
+
+### Features
+
+* add runtime SubAgent API for managed ADK and LangGraph apps ([c3ddc85](https://github.com/Usefused/harnest/commit/c3ddc85d4f10fef67fd928112f7641bc7924fe2f))
+
+
+### Fixes
+
+* accept CRLF checksum manifests in install.sh ([9d343e7](https://github.com/Usefused/harnest/commit/9d343e7184c4d95a1742ef77eff4f0be9169f4b3))
+* stop waiting on live socket once a pending client tool ends ([84b0492](https://github.com/Usefused/harnest/commit/84b04926351b051f4935d6343578e89ffeb2936a))
 
 ## [2.0.0](https://github.com/Usefused/harnest/compare/v1.8.1...v2.0.0) (2026-11-16)
 
