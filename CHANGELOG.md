@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## [2.1.1](https://github.com/Usefused/harnest/compare/v2.1.0...v2.1.1) (2026-11-23)
 
 - Update the pinned LiteLLM runtime dependency to `1.110.2` (lifting the `filelock<4` cap for CVE-2026 `filelock` fixes) and refresh Python, Go, and example lock-file dependencies (`fastmcp`, `opentelemetry-*`, `nltk`, `pytest`, and Go modules).
+
+### Fixes
+
+* **deps:** update LiteLLM to 1.110.2 and refresh runtime dependencies ([e30a951](https://github.com/Usefused/harnest/commit/e30a95174bdce455f69e80cfd0f9c20cba7d09cf))
 
 ## [2.1.0](https://github.com/Usefused/harnest/compare/v2.0.0...v2.1.0) (2026-11-18)
 
