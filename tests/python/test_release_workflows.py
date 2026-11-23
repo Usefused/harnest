@@ -900,7 +900,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn(f"{package}/py.typed", archived_paths)
         requirements = distribution_requirements(metadata_text)
         self.assertEqual(requirements["anyio"], "<5,>=4.5")
-        self.assertEqual(requirements["litellm"], "==1.106.6")
+        # Keep the staged wheel aligned with the reviewed LiteLLM security pin.
+        self.assertEqual(requirements["litellm"], "==1.110.2")
         self.assertNotIn("harnest-postgres", requirements)
         self.assertNotIn("harnest-redis", requirements)
         self.assertIn("harnest/extensions/docker.pyi", archived_paths)
@@ -1042,10 +1043,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
             (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )["project"]["optional-dependencies"]
 
-        self.assertEqual(extras["test"], ["pytest>=8,<9"])
+        self.assertEqual(extras["test"], ["pytest>=9.0.3,<10"])
         self.assertIn("google-cloud-aiplatform>=2.7,<3", extras["eval"])
         self.assertIn("harnest[eval,adk-mcp]", extras["all"])
-        self.assertNotIn("pytest>=8,<9", extras["adk"])
+        # Serving extras must not pull test tooling into production environments.
+        self.assertFalse(any("pytest" in value for value in extras["adk"]))
         self.assertFalse(
             any("eval" in value or "extensions" in value for value in extras["adk"])
         )
