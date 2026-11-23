@@ -4,6 +4,13 @@
 
 - Update the pinned LiteLLM runtime dependency to `1.110.2` (lifting the `filelock<4` cap for CVE-2026 `filelock` fixes) and refresh Python, Go, and example lock-file dependencies (`fastmcp`, `opentelemetry-*`, `nltk`, `pytest`, and Go modules).
 
+## [2.1.1](https://github.com/Usefused/harnest/compare/v2.1.0...v2.1.1) (2026-11-23)
+
+
+### Fixes
+
+* **deps:** update LiteLLM to 1.110.2 and refresh runtime dependencies ([e30a951](https://github.com/Usefused/harnest/commit/e30a95174bdce455f69e80cfd0f9c20cba7d09cf))
+
 ## [2.1.0](https://github.com/Usefused/harnest/compare/v2.0.0...v2.1.0) (2026-11-18)
 
 - Add `SubAgent` to `harnest.agent`. A tool, task, cron job, or lifecycle hook can create an `Agent` while it runs, talk to it over several turns, and close it, or let it close automatically when the tool call, task run, or agent invocation that started it finishes. SubAgents work on ADK and LangGraph. Each runs on a private runtime with in-memory sessions, so its conversation never reaches the agent's session store. It inherits the caller's user, Agent Runtime Principal, credentials, and the root's model and tool lifecycle hooks, and uses only the model, tools, and MCP clients in its definition. Advanced mode, structured input or output, sandboxes, human approval, client tools, and durable waits inside a SubAgent are not supported yet.
