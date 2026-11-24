@@ -17,7 +17,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	command := newRootCommand(defaultSystem(), version)
+	sys := defaultSystem()
+	embedded, err := loadEmbeddedPack(sys)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "harnest:", err)
+		os.Exit(1)
+	}
+	command := newRootCommandWithPack(sys, version, embedded)
 	command.SetArgs(os.Args[1:])
 	if err := command.ExecuteContext(ctx); err != nil {
 		var exit exitCodeError
@@ -25,7 +31,7 @@ func main() {
 			// The child process already reported its own failure.
 			os.Exit(exit.code)
 		}
-		fmt.Fprintln(os.Stderr, "harnest:", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", command.Use, err)
 		os.Exit(1)
 	}
 }

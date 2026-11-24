@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/packbinary"
 	"harnest.dev/harnest/internal/runtimewheel"
 )
 
@@ -28,7 +29,7 @@ func packLockIdentity(bundle engine.Bundle) (string, error) {
 }
 
 // packLockConstraints preserves existing production pins while resolving one shared closure.
-func packLockConstraints(plan runtimePackPlan, staging, wheelPath string) ([]string, error) {
+func packLockConstraints(plan runtimePackPlan, staging, wheelPath string, embedded *packbinary.LoadedPack) ([]string, error) {
 	contents, err := os.ReadFile(wheelPath)
 	if err != nil {
 		return nil, err
@@ -36,7 +37,7 @@ func packLockConstraints(plan runtimePackPlan, staging, wheelPath string) ([]str
 	wheel := runtimewheel.Artifact{Name: filepath.Base(wheelPath), Contents: contents}
 	var paths []string
 	for index, bundle := range plan.Owners {
-		body, err := packOwnerConstraint(bundle, wheel, wheelPath)
+		body, err := packOwnerConstraint(bundle, wheel, wheelPath, embedded)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +54,7 @@ func packLockConstraints(plan runtimePackPlan, staging, wheelPath string) ([]str
 }
 
 // packOwnerConstraint refuses stale locks rather than silently changing deployed dependency pins.
-func packOwnerConstraint(bundle engine.Bundle, wheel runtimewheel.Artifact, wheelPath string) (string, error) {
+func packOwnerConstraint(bundle engine.Bundle, wheel runtimewheel.Artifact, wheelPath string, embedded *packbinary.LoadedPack) (string, error) {
 	filename := filepath.Join(bundle.Directory, runtimeRequirementsLockFile)
 	data, err := readRegularDependencyFile(filename)
 	if os.IsNotExist(err) {
@@ -66,6 +67,7 @@ func packOwnerConstraint(bundle engine.Bundle, wheel runtimewheel.Artifact, whee
 	if err != nil {
 		return "", err
 	}
+	attachEmbeddedPackPlan(&plan, embedded)
 	if err = validateFrozenRuntimeLock(bundle, wheel, plan, runtimeEnvironmentProfile, filename); err != nil {
 		return "", err
 	}
@@ -74,5 +76,6 @@ func packOwnerConstraint(bundle engine.Bundle, wheel runtimewheel.Artifact, whee
 		return "", err
 	}
 	body = strings.Replace(body, runtimeWheelMarker, runtimeWheelURI(wheelPath), 1)
-	return strings.ReplaceAll(body, runtimeProjectMarker, strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/")), nil
+	body = strings.ReplaceAll(body, runtimeProjectMarker, strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/"))
+	return substitutePackWheelMarker(body, plan.PackWheelsDir)
 }

@@ -486,10 +486,17 @@ def client_tool(
         setattr(invoke, "__harnest_tool__", True)
         setattr(invoke, "__harnest_client_tool__", True)
         if schema is not None:
-            invoke.__annotations__ = {
-                **getattr(fn, "__annotations__", {}),
-                "return": schema,
-            }
+            from ._annotations import set_callable_annotations
+
+            # Publish via __annotate__ so approval wrappers retain the declared
+            # return schema under Python 3.14 PEP 649.
+            set_callable_annotations(
+                invoke,
+                {
+                    **getattr(fn, "__annotations__", {}),
+                    "return": schema,
+                },
+            )
             invoke.__signature__ = inspect.signature(fn).replace(  # type: ignore[attr-defined]
                 return_annotation=schema
             )

@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
+from ..._annotations import set_callable_annotations
 from ...durable import ResumeArtifact, _required_identity, _tool_name, is_durable_tool, framework_durable_call
 
 
@@ -62,11 +63,14 @@ def langgraph_durable_callable(value: Callable[..., Any]) -> Callable[..., Any]:
     )
     # LangChain reads type hints separately from inspect.signature when it
     # decides which arguments are runtime-injected and hidden from the model.
-    invoke.__annotations__ = {
-        **getattr(value, "__annotations__", {}),
-        call_id_name: Annotated[str, InjectedToolCallId],
-        config_name: RunnableConfig,
-    }
+    set_callable_annotations(
+        invoke,
+        {
+            **getattr(value, "__annotations__", {}),
+            call_id_name: Annotated[str, InjectedToolCallId],
+            config_name: RunnableConfig,
+        },
+    )
     return invoke
 
 

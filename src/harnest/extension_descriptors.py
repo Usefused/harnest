@@ -204,6 +204,38 @@ def discover_application_extensions(root: str | Path) -> tuple[ExtensionDescript
     return discover_extensions(directory)
 
 
+def discover_merged_extensions(
+    root: str | Path,
+    extra_directory: str | Path | None = None,
+) -> tuple[ExtensionDescriptor, ...]:
+    """Merge project extensions with pack-owned extensions and block shadowing."""
+
+    root_path = Path(root)
+    project = discover_application_extensions(root_path)
+    if extra_directory is None:
+        return project
+    pack_extensions = discover_extensions(extra_directory)
+    if not pack_extensions:
+        return project
+    from .application_layout import lifecycle_directory
+
+    # Pack extensions copy into compiled source/extensions/, so legacy root extensions/ is incompatible.
+    if lifecycle_directory(root_path) == root_path / "extensions":
+        raise ExtensionConventionError(
+            "pack-owned extensions require canonical lifecycle/ layout; run `harnest upgrade`"
+        )
+    pack_names = {item.name.casefold() for item in pack_extensions}
+    for item in project:
+        if item.name.casefold() in pack_names:
+            raise ExtensionConventionError(
+                f"agent extension {item.name!r} conflicts with pack-owned extension"
+            )
+    combined = (*project, *pack_extensions)
+    _validate_casefold_names(combined)
+    _validate_dependency_projects(combined)
+    return _dependency_order(combined)
+
+
 def discover_legacy_extensions(directory: str | Path) -> tuple[ExtensionDescriptor, ...]:
     """Read removed extension packages solely for ``harnest upgrade``."""
 

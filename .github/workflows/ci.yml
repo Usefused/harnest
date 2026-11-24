@@ -59,7 +59,7 @@ jobs:
           --health-retries 10
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.14"]
     env:
       HARNEST_TEST_POSTGRES_DSN: postgresql://harnest:harnest@127.0.0.1:5432/harnest
       HARNEST_TEST_POSTGRES_URL: postgresql://harnest:harnest@127.0.0.1:5432/harnest
@@ -93,13 +93,13 @@ jobs:
         run: make test-python PYTHON=python
 
       - name: Run quality gates
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.14'
         # setup-python owns `python`; distro-specific python3.x executables may
         # point at a different environment without the dependencies above.
         run: make quality PYTHON=python
 
       - name: Validate installer shell
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.14'
         run: sh -n install.sh
 
   studio-release:
@@ -114,7 +114,7 @@ jobs:
     with:
       # Locked dependencies already run in both quality jobs. Keep the broad
       # cross-product in scheduled/manual compatibility runs.
-      matrix: '{"include":[{"python":"3.11","resolution":"minimum"},{"python":"3.12","resolution":"latest"}]}'
+      matrix: '{"include":[{"python":"3.11","resolution":"minimum"},{"python":"3.14","resolution":"latest"}]}'
 
   extensions:
     needs: changes

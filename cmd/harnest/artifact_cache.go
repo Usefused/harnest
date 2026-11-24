@@ -35,7 +35,7 @@ func (a *application) prepareCachedServeArtifact(
 	if err != nil {
 		return "", false, err
 	}
-	fingerprint := serveArtifactFingerprint(bundle, python, a.version)
+	fingerprint := serveArtifactFingerprintWithPack(bundle, python, a.version, a.embeddedPackDigest())
 	if artifact, found := a.cachedServeArtifact(cache, bundle, fingerprint); found {
 		pruneServeArtifactsAsync(cache.root, fingerprint)
 		return artifact, true, nil
@@ -55,7 +55,7 @@ func (a *application) prepareCachedServeArtifact(
 	); err != nil {
 		return "", false, err
 	}
-	if _, err := a.system.loadCompiledArtifact(artifact, bundle); err != nil {
+	if _, err := a.loadCompiledArtifact(artifact, bundle); err != nil {
 		return "", false, fmt.Errorf("validate cached compiled artifact: %w", err)
 	}
 	// Publication is complete before removal starts, so a failed compilation
@@ -103,6 +103,13 @@ func ensureRegularPrivateDirectory(path, label string) error {
 func serveArtifactFingerprint(
 	bundle engine.Bundle, python pythonSelection, version string,
 ) string {
+	return serveArtifactFingerprintWithPack(bundle, python, version, "")
+}
+
+// serveArtifactFingerprintWithPack includes embedded pack identity so pack upgrades invalidate cached artifacts.
+func serveArtifactFingerprintWithPack(
+	bundle engine.Bundle, python pythonSelection, version, packDigest string,
+) string {
 	digest := sha256.New()
 	for _, value := range []string{
 		serveArtifactCacheVersion,
@@ -113,7 +120,19 @@ func serveArtifactFingerprint(
 		digest.Write([]byte(value))
 		digest.Write([]byte{0})
 	}
+	if packDigest != "" {
+		digest.Write([]byte("pack:" + packDigest))
+		digest.Write([]byte{0})
+	}
 	return hex.EncodeToString(digest.Sum(nil))
+}
+
+// embeddedPackDigest returns the active pack binary digest, or empty for standard Harnest.
+func (a *application) embeddedPackDigest() string {
+	if a.embeddedPack == nil {
+		return ""
+	}
+	return a.embeddedPack.Manifest.Digest
 }
 
 // cachedServeArtifact rejects stale, corrupt, or source-mismatched generations.
@@ -121,7 +140,7 @@ func (a *application) cachedServeArtifact(
 	cache serveArtifactCache, bundle engine.Bundle, fingerprint string,
 ) (string, bool) {
 	artifact := filepath.Join(cache.root, fingerprint)
-	if _, err := a.system.loadCompiledArtifact(artifact, bundle); err != nil {
+	if _, err := a.loadCompiledArtifact(artifact, bundle); err != nil {
 		return "", false
 	}
 	return artifact, true

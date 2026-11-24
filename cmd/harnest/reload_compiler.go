@@ -93,7 +93,7 @@ func (p *reloadCompilerPool) compile(
 func (p *reloadCompilerPool) compilerFor(
 	bundle engine.Bundle, python pythonSelection,
 ) (*reloadCompiler, error) {
-	environment := configuredEnvironment(bundle)
+	environment := p.application.packSubprocessEnv(configuredEnvironment(bundle))
 	identity := reloadCompilerIdentity(python.Executable, environment)
 	if p.current != nil && p.current.identity == identity {
 		return p.current, nil

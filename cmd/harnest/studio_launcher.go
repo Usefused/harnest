@@ -26,7 +26,7 @@ func (a *application) newStudioCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			packArguments, err := studioPackArguments(packs, options)
+			packArguments, err := studioPackArguments(a.prependEmbeddedPack(packs, false), options)
 			if err != nil {
 				return err
 			}

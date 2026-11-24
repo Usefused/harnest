@@ -138,11 +138,11 @@ offline Python-to-Go plan/compile/deploy contract. It also runs Studio's browser
 tests through `make studio-tests`. The same gate runs for pull
 requests and before a release is published from `main`.
 
-CI runs the full gate on Python 3.12 and the full Python suite on 3.11, avoiding
+CI runs the full gate on Python 3.14 and the full Python suite on 3.11, avoiding
 duplicate Go, static, and browser checks. Branch compatibility jobs exercise
-minimum dependencies on 3.11 and latest dependencies on 3.12; scheduled and
+minimum dependencies on 3.11 and latest dependencies on 3.14; scheduled and
 standalone manual runs retain all six Python/resolution combinations. Real Docker
-isolation checks run once with the latest dependencies on Python 3.12.
+isolation checks run once with the latest dependencies on Python 3.14.
 
 `.github/workflows/native-release.yml` owns the shared native smoke tests. CI
 requires Linux, Windows, and macOS Intel; the capacity-constrained macOS arm64

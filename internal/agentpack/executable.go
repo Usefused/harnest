@@ -53,7 +53,7 @@ func WriteExecutable(output string, launcher []byte, artifact, pack string, m Ma
 	if err = appendPayload(file, artifact, pack, m, embed, environment); err != nil {
 		return err
 	}
-	if err = extendMachO(file); err != nil {
+	if err = ExtendMachO(file); err != nil {
 		return err
 	}
 	if err = file.Chmod(0755); err != nil {
@@ -148,7 +148,7 @@ func openArchive(filename string) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	end, err := executablePayloadEnd(file)
+	end, err := ExecutablePayloadEnd(file)
 	if err != nil {
 		file.Close()
 		return nil, err

@@ -11,15 +11,18 @@ from dataclasses import dataclass
 import importlib.util
 from importlib.metadata import PackageNotFoundError, version as installed_version
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 from types import ModuleType
 from typing import Any, Literal, Mapping, Sequence
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from ..frameworks.registry import framework_metadata
 from .contracts import ProjectError, ProjectPack, validate_pack_name
 from .context import yaml_mapping
 
@@ -51,6 +54,67 @@ class PackRequirements(_Strict):
         return value
 
 
+def _validate_pack_relative_path(value: str, label: str) -> str:
+    """Validate one canonical pack-relative path without allowing escapes or links."""
+    # Reject empty, absolute, backslash, or non-canonical paths before filesystem access.
+    path = PurePosixPath(value)
+    if not value or not path.parts or path.is_absolute() or "\\" in value or str(path) != value:
+        raise ValueError(f"{label} must be a canonical pack-relative path: {value!r}")
+    if any(part in {".", ".."} for part in path.parts):
+        raise ValueError(f"{label} must not escape the pack directory: {value!r}")
+    return value
+
+
+def _compiler_owned_distributions() -> frozenset[str]:
+    """Return normalized distribution names owned by Harnest and its framework adapters."""
+    names: set[str] = {"harnest"}
+    for metadata in framework_metadata().values():
+        for entry in metadata.requirements + metadata.mcp_requirements:
+            names.add(canonicalize_name(Requirement(entry).name))
+    return frozenset(names)
+
+
+class PackPackages(_Strict):
+    """Enforced Python wheels and pinned requirements bundled into a pack binary."""
+    wheels: list[str] = Field(default_factory=list, max_length=64)
+    requirements: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("wheels")
+    @classmethod
+    def _wheels(cls, values: list[str]) -> list[str]:
+        """Ensure wheel or local package paths stay inside the pack folder."""
+        return [_validate_pack_relative_path(item, "packages.wheels entry") for item in values]
+
+    @field_validator("requirements")
+    @classmethod
+    def _requirements(cls, values: list[str]) -> list[str]:
+        """Validate PEP 508 requirements and block overriding compiler-owned packages."""
+        owned = _compiler_owned_distributions()
+        validated: list[str] = []
+        for raw in values:
+            text = raw.strip()
+            # Reject multiline or direct URL/file directives that bypass pip-compile policy.
+            if not text or "\n" in text or "\r" in text:
+                raise ValueError(f"invalid package requirement: {raw!r}")
+            try:
+                parsed = Requirement(text)
+            except InvalidRequirement as exc:
+                raise ValueError(f"invalid package requirement {raw!r}: {exc}") from exc
+            if parsed.url is not None:
+                raise ValueError(
+                    f"packages.requirements must not use direct URLs ({raw!r}); "
+                    "bundle local wheels under packages.wheels instead"
+                )
+            normalized = canonicalize_name(parsed.name)
+            # Compiler-owned frameworks stay pinned to the Harnest release.
+            if normalized in owned:
+                raise ValueError(
+                    f"packages.requirements must not declare compiler-owned package {normalized!r}"
+                )
+            validated.append(text)
+        return validated
+
+
 class PackManifest(_Strict):
     """The inert pack.yaml contract; the ``studio`` section is validated by Studio."""
     apiVersion: Literal["harnest.dev/pack/v1"]
@@ -60,7 +124,22 @@ class PackManifest(_Strict):
     description: str = Field(default="", max_length=4000)
     command: str | None = None
     requires: PackRequirements = Field(default_factory=PackRequirements)
+    skills: list[str] = Field(default_factory=list, max_length=64)
+    packages: PackPackages = Field(default_factory=PackPackages)
+    extensions: list[str] = Field(default_factory=list, max_length=32)
     studio: dict[str, Any] | None = None
+
+    @field_validator("skills")
+    @classmethod
+    def _skills(cls, values: list[str]) -> list[str]:
+        """Ensure coding-IDE skill folders are canonical pack-relative paths."""
+        return [_validate_pack_relative_path(item, "skills entry") for item in values]
+
+    @field_validator("extensions")
+    @classmethod
+    def _extensions(cls, values: list[str]) -> list[str]:
+        """Ensure pack extension folders are canonical pack-relative paths."""
+        return [_validate_pack_relative_path(item, "extensions entry") for item in values]
 
     @field_validator("name")
     @classmethod

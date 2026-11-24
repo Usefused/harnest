@@ -13,6 +13,7 @@ import (
 
 	"harnest.dev/harnest/engine"
 	"harnest.dev/harnest/internal/frameworks"
+	"harnest.dev/harnest/internal/packbinary"
 )
 
 var (
@@ -20,7 +21,13 @@ var (
 	distributionSeparatorRuns = regexp.MustCompile(`[-_.]+`)
 )
 
+// validateAgentDependencyPolicy enforces Harnest's compiler-owned dependency boundaries.
 func validateAgentDependencyPolicy(bundle engine.Bundle) error {
+	return validateAgentDependencyPolicyWithPack(bundle, nil)
+}
+
+// validateAgentDependencyPolicyWithPack rejects agent overrides of compiler- or pack-owned packages.
+func validateAgentDependencyPolicyWithPack(bundle engine.Bundle, embedded *packbinary.LoadedPack) error {
 	path := filepath.Join(bundle.Directory, bundle.Config.Spec.Runtime.DependencyFile)
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -34,9 +41,9 @@ func validateAgentDependencyPolicy(bundle engine.Bundle) error {
 	if err != nil {
 		return err
 	}
-	if err := rejectCompilerOwnedRequirements(
-		authoredDependencyRequirements(document), "pyproject.toml", owned,
-	); err != nil {
+	protected := packProtectedDistributions(embedded)
+	rootRequirements := authoredDependencyRequirements(document)
+	if err := rejectOwnedRequirements(rootRequirements, "pyproject.toml", owned, protected, embedded); err != nil {
 		return err
 	}
 	plan, err := inspectRuntimeDependencyPlan(bundle)
@@ -48,11 +55,51 @@ func validateAgentDependencyPolicy(bundle engine.Bundle) error {
 		if projectErr != nil {
 			return projectErr
 		}
-		if err := rejectCompilerOwnedRequirements(requirements, project, owned); err != nil {
+		if err := rejectOwnedRequirements(requirements, project, owned, protected, embedded); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// rejectOwnedRequirements checks both compiler-owned and pack-owned distribution policies.
+func rejectOwnedRequirements(
+	requirements []string,
+	source string,
+	owned map[string]struct{},
+	protected map[string]struct{},
+	embedded *packbinary.LoadedPack,
+) error {
+	if err := rejectCompilerOwnedRequirements(requirements, source, owned); err != nil {
+		return err
+	}
+	if len(protected) == 0 || embedded == nil {
+		return nil
+	}
+	for _, requirement := range requirements {
+		name := normalizedRequirementName(requirement)
+		if _, exists := protected[name]; exists {
+			return fmt.Errorf(
+				"%s must not declare pack-owned package %q; upgrade %s to change pack-managed packages",
+				source, name, embedded.Manifest.Command,
+			)
+		}
+	}
+	return nil
+}
+
+// packProtectedDistributions collects normalized distribution names enforced by an embedded pack.
+func packProtectedDistributions(embedded *packbinary.LoadedPack) map[string]struct{} {
+	if embedded == nil || len(embedded.Manifest.ProtectedPackages) == 0 {
+		return nil
+	}
+	protected := make(map[string]struct{}, len(embedded.Manifest.ProtectedPackages))
+	for _, name := range embedded.Manifest.ProtectedPackages {
+		if normalized := normalizedRequirementName(name); normalized != "" {
+			protected[normalized] = struct{}{}
+		}
+	}
+	return protected
 }
 
 // rejectCompilerOwnedRequirements applies one package-ownership policy per project.

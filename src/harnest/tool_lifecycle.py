@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 
 from .lifecycle import LifecycleListener
 from .lifecycle_transition import Finish, Next, TransitionContext, UNCHANGED
+from ._annotations import preserve_wrapped_annotations
 from ._subagent_owner import tool_owner_scope
 
 
@@ -230,6 +231,7 @@ def _wrap_async_tool(function: F) -> F:
 
             return await pipeline.run(request, handler, _tool_context(request.name))
 
+    preserve_wrapped_annotations(invoke, function)
     return invoke  # type: ignore[return-value]
 
 
@@ -248,6 +250,7 @@ def _wrap_sync_tool(function: F) -> F:
         handler = lambda updated: function(*updated.args, **dict(updated.kwargs))
         return pipeline.run_sync(request, handler, _tool_context(request.name))
 
+    preserve_wrapped_annotations(invoke, function)
     return invoke  # type: ignore[return-value]
 
 

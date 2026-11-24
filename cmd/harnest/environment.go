@@ -133,13 +133,14 @@ func (a *application) syncAgentEnvironment(
 func (a *application) prepareAgentEnvironment(
 	command *cobra.Command, bundle engine.Bundle, profile environmentProfile, frozen, lease bool,
 ) (pythonSelection, error) {
-	if err := validateAgentDependencyPolicy(bundle); err != nil {
+	if err := validateAgentDependencyPolicyWithPack(bundle, a.embeddedPack); err != nil {
 		return pythonSelection{}, err
 	}
 	plan, err := inspectProfileDependencyPlan(bundle, profile)
 	if err != nil {
 		return pythonSelection{}, err
 	}
+	attachEmbeddedPackPlan(&plan, a.embeddedPack)
 	wheel, err := a.system.embeddedWheel(a.version)
 	if err != nil {
 		return pythonSelection{}, fmt.Errorf("load embedded Harnest wheel: %w", err)
@@ -280,6 +281,9 @@ func environmentFingerprint(
 	}
 	for _, requirement := range plan.CompileRequirements {
 		digest.Write([]byte("\x00compile:" + requirement))
+	}
+	if plan.PackDigest != "" {
+		digest.Write([]byte("\x00pack:" + plan.PackDigest))
 	}
 	for _, path := range plan.ProjectFiles {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, false); err != nil {
@@ -573,7 +577,9 @@ func (a *application) createAgentVirtualEnvironment(
 	arguments := []string{
 		"venv",
 		"--python", bundle.Config.Spec.Runtime.Version,
-		"--managed-python",
+		// Prefer an existing compatible system Python before falling back to
+		// a uv-managed download so hosts with Python 3.14 avoid redundant fetches.
+		"--python-preference", "system",
 		// Profiles share a stable path; clear packages left by the previous profile.
 		"--clear",
 		staged.directory,

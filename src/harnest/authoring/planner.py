@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -100,7 +101,9 @@ def _template_arguments(template: str, sha256: str | None, framework: str | None
 def _run_core_init(stage: Path, command: Sequence[str], init_arguments: Sequence[str]) -> dict[str, _File]:
     """Use the shipped CLI for scaffolds and templates before composing pack changes."""
     arguments = [*command, 'init', str(stage), *init_arguments]
-    result = subprocess.run(arguments, capture_output=True, text=True, check=False)
+    # Tell standalone pack binaries to run core scaffolding instead of re-entering pack init.
+    environment = {**os.environ, 'HARNEST_PACK_CORE_INIT': '1'}
+    result = subprocess.run(arguments, capture_output=True, text=True, check=False, env=environment)
     if result.returncode:
         raise ProjectError(f"Harnest init failed (exit {result.returncode}): {result.stderr.strip()}")
     return snapshot(stage)

@@ -378,6 +378,7 @@ Docker Compose and Kubernetes deployment.
 Harnest packs and branded CLIs (`harnest pack ...`).
 
 - [`authoring/__init__.py`](../../src/harnest/authoring/__init__.py): Harnest packs: company scaffolds, typed settings, reviewable migrations and commands.
+- [`authoring/binary_payload.py`](../../src/harnest/authoring/binary_payload.py): Validate and stage pack payloads for standalone branded Harnest CLI binaries.
 - [`authoring/context.py`](../../src/harnest/authoring/context.py): Read-only views and operation builders passed to trusted project pack hooks.
 - [`authoring/contracts.py`](../../src/harnest/authoring/contracts.py): Typed declarations for trusted, explicitly installed project customisation packs.
 - [`authoring/distribution.py`](../../src/harnest/authoring/distribution.py): Build a pack into a wheel whose console script is the pack's branded command.
@@ -398,6 +399,7 @@ Logging and OpenTelemetry.
 
 Small helpers used across areas.
 
+- [`_annotations.py`](../../src/harnest/_annotations.py): PEP 649-safe annotation helpers for Harnest tool and runtime wrappers.
 - [`_exception_notes.py`](../../src/harnest/_exception_notes.py): Shared support for sanitized exception diagnostics.
 - [`_features.py`](../../src/harnest/_features.py): Process-owned opt-ins for unreleased Harnest functionality.
 - [`_json.py`](../../src/harnest/_json.py): One JSON normalization boundary for public results and durable state.
@@ -601,6 +603,7 @@ Small helpers used across areas.
 - [`main.go`](../../cmd/harnest/main.go): Entry point of the `harnest` CLI.
 - [`mcp.go`](../../cmd/harnest/mcp.go): `harnest mcp`: forwards MCP operations to the Python runtime.
 - [`mode.go`](../../cmd/harnest/mode.go): `harnest mode advanced --check`: reports what moving an agent from managed to advanced mode would change.
+- [`pack_binary.go`](../../cmd/harnest/pack_binary.go): Builds and loads standalone branded pack binaries that embed Harnest plus company pack payloads.
 - [`pack_commands.go`](../../cmd/harnest/pack_commands.go): `harnest pack validate|build|run|types`: pack commands that run pack code in Python.
 - [`playground.go`](../../cmd/harnest/playground.go): Stages the embedded development playground UI used by `harnest serve`.
 - [`project_pack_init.go`](../../cmd/harnest/project_pack_init.go): `harnest pack` and `harnest pack init NAME`: scaffolds a new Harnest pack (pack.yaml and pack.py).
@@ -688,6 +691,11 @@ Small helpers used across areas.
 ### internal/frameworks/
 
 - [`frameworks.go`](../../internal/frameworks/frameworks.go): Package frameworks exposes the release-owned agent framework metadata shared with the Python compiler.
+
+### internal/packbinary/
+
+- [`binary.go`](../../internal/packbinary/binary.go): Stamps, detects, and materializes standalone branded Harnest CLI binaries with appended pack payloads.
+- [`manifest.go`](../../internal/packbinary/manifest.go): Defines and validates the manifest embedded inside a standalone branded Harnest pack binary.
 
 ### internal/pysource/
 

@@ -136,8 +136,14 @@ func TestPackRunPassesCompanyFlagsThrough(t *testing.T) {
 	}
 	assertContainsAll(t, "pack run", string(mustReadTestFile(t, record)), []string{"pack\nrun\n" + pack + "\ncheck\n--strict\n-v"})
 	output := filepath.Join(t.TempDir(), "dist")
-	if _, _, err := executeForTest(t, defaultSystem(), "pack", "build", pack, "--output", output); err != nil {
+	if _, _, err := executeForTest(t, defaultSystem(), "pack", "build", pack, "--format", "wheel", "--output", output); err != nil {
 		t.Fatal(err)
 	}
 	assertContainsAll(t, "pack build", string(mustReadTestFile(t, record)), []string{"pack\nbuild\n" + pack + "\n--output\n" + output})
+	if _, _, err := executeForTest(t, defaultSystem(), "pack", "build", pack, "--format", "wheel", "--base-binary", "/tmp/harnest"); err == nil {
+		t.Fatal("accepted --base-binary with --format wheel")
+	}
+	if _, _, err := executeForTest(t, defaultSystem(), "pack", "build", pack, "--format", "invalid"); err == nil {
+		t.Fatal("accepted invalid --format value")
+	}
 }

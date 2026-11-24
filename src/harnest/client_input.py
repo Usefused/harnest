@@ -11,6 +11,7 @@ from typing import Any, get_type_hints
 
 from pydantic import BaseModel
 
+from ._annotations import set_callable_annotations
 from .client_tool import ClientToolError, _CURRENT
 from .structured import PydanticModel, validate_output_schema
 
@@ -114,11 +115,14 @@ def client_input(
             return json.loads(encoded_response)
 
         invoke.__signature__ = signature  # type: ignore[attr-defined]
-        invoke.__annotations__ = {
+        annotations = {
             key: parameter.annotation for key, parameter in signature.parameters.items()
             if parameter.annotation is not inspect.Parameter.empty
         }
-        invoke.__annotations__["return"] = dict[str, Any]
+        annotations["return"] = dict[str, Any]
+        # Publish via __annotate__ so outer approval and lifecycle wrappers
+        # preserve public parameter hints under Python 3.14 PEP 649.
+        set_callable_annotations(invoke, annotations)
         setattr(invoke, "__harnest_tool__", True)
         setattr(invoke, "__harnest_client_input__", True)
         from .agent.approval import wrap_approved_tool

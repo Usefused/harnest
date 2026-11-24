@@ -55,7 +55,7 @@ func TestSharedRuntimePlanRejectsPythonMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.ReplaceAll(string(data), "3.12", "3.11"))
+	data = []byte(strings.ReplaceAll(string(data), "3.14", "3.13"))
 	if err = os.WriteFile(config, data, 0600); err != nil {
 		t.Fatal(err)
 	}

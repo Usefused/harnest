@@ -64,7 +64,7 @@ func (a *application) newCompileCommand() *cobra.Command {
 				a,
 				python,
 				withCLICompilerInterface(compilerArguments, bundle),
-				configuredEnvironment(bundle),
+				a.packSubprocessEnv(configuredEnvironment(bundle)),
 				command.InOrStdin(),
 				command.OutOrStdout(),
 				command.ErrOrStderr(),
@@ -128,7 +128,7 @@ func (a *application) newTestCommand() *cobra.Command {
 			)
 			return runPythonCLI(
 				command.Context(), a, python, pythonArguments,
-				configuredEnvironment(bundle), command.InOrStdin(),
+				a.packSubprocessEnv(configuredEnvironment(bundle)), command.InOrStdin(),
 				command.OutOrStdout(), command.ErrOrStderr(),
 			)
 		},
@@ -406,7 +406,7 @@ func (a *application) compileBundle(
 	var output bytes.Buffer
 	args := []string{"compile", bundle.Directory, "--source-run", "--output", artifact, "--entrypoint", bundle.Config.Spec.Entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
 	args = withCLICompilerInterface(args, bundle)
-	return runPythonCLI(command.Context(), a, python, args, configuredEnvironment(bundle), stdin, &output, command.ErrOrStderr())
+	return runPythonCLI(command.Context(), a, python, args, a.packSubprocessEnv(configuredEnvironment(bundle)), stdin, &output, command.ErrOrStderr())
 }
 
 // withCLICompilerInterface keeps source policy identical across every compile path.

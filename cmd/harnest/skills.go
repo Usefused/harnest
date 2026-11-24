@@ -23,8 +23,9 @@ const (
 )
 
 type bundledCodingAgentSkill struct {
-	name string
-	root string
+	name  string
+	root  string
+	files fs.FS
 }
 
 var bundledCodingAgentSkills = []bundledCodingAgentSkill{
@@ -32,6 +33,40 @@ var bundledCodingAgentSkills = []bundledCodingAgentSkill{
 	{name: authenticationSkillName, root: authenticationSkillRoot},
 	{name: studioSkillName, root: "authoring_skill/" + studioSkillName},
 	{name: studioUISkillName, root: "authoring_skill/" + studioUISkillName},
+}
+
+// effectiveCodingAgentSkills merges Harnest's built-ins with embedded pack skills.
+func (a *application) effectiveCodingAgentSkills() []bundledCodingAgentSkill {
+	skills := make([]bundledCodingAgentSkill, 0, len(bundledCodingAgentSkills))
+	for _, skill := range bundledCodingAgentSkills {
+		skill.files = authoringSkill
+		skills = append(skills, skill)
+	}
+	if a.embeddedPack == nil {
+		return skills
+	}
+	packFS := os.DirFS(a.embeddedPack.Root)
+	for _, entry := range a.embeddedPack.Manifest.Skills {
+		skills = mergeCodingAgentSkill(skills, bundledCodingAgentSkill{
+			name:  entry.Name,
+			root:  entry.Root,
+			files: packFS,
+		})
+	}
+	return skills
+}
+
+// mergeCodingAgentSkill appends new pack skills and replaces same-named built-ins in place.
+func mergeCodingAgentSkill(
+	skills []bundledCodingAgentSkill, candidate bundledCodingAgentSkill,
+) []bundledCodingAgentSkill {
+	for index, existing := range skills {
+		if existing.name == candidate.name {
+			skills[index] = candidate
+			return skills
+		}
+	}
+	return append(skills, candidate)
 }
 
 // authoringSkill contains focused guidance for coding agents that modify
@@ -78,11 +113,11 @@ func (a *application) newSkillsShowCommand() *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			skill, err := bundledSkill(name)
+			skill, err := bundledSkill(a.effectiveCodingAgentSkills(), name)
 			if err != nil {
 				return err
 			}
-			contents, err := authoringSkill.ReadFile(skill.root + "/SKILL.md")
+			contents, err := fs.ReadFile(skill.files, skill.root+"/SKILL.md")
 			if err != nil {
 				return fmt.Errorf("read embedded %s skill: %w", skill.name, err)
 			}
@@ -118,7 +153,7 @@ func (a *application) newSkillsInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			destinations := skillDestinations(project, target)
+			destinations := skillDestinations(a.effectiveCodingAgentSkills(), project, target)
 			for _, destination := range destinations {
 				if err := validateSkillDestination(destination.path, force); err != nil {
 					return err
@@ -165,10 +200,12 @@ type skillDestination struct {
 }
 
 // skillDestinations maps every bundled skill into one coding-agent convention.
-func skillDestinations(project string, target codingAgentTarget) []skillDestination {
+func skillDestinations(
+	skills []bundledCodingAgentSkill, project string, target codingAgentTarget,
+) []skillDestination {
 	directory := filepath.Join(project, filepath.FromSlash(target.relativeSkillsDir))
-	destinations := make([]skillDestination, 0, len(bundledCodingAgentSkills))
-	for _, skill := range bundledCodingAgentSkills {
+	destinations := make([]skillDestination, 0, len(skills))
+	for _, skill := range skills {
 		destinations = append(destinations, skillDestination{
 			skill: skill,
 			path:  filepath.Join(directory, skill.name),
@@ -177,11 +214,11 @@ func skillDestinations(project string, target codingAgentTarget) []skillDestinat
 	return destinations
 }
 
-// bundledSkill resolves only declared skill names from the embedded filesystem.
-func bundledSkill(name string) (bundledCodingAgentSkill, error) {
-	names := make([]string, 0, len(bundledCodingAgentSkills))
+// bundledSkill resolves only declared skill names from the active skill catalog.
+func bundledSkill(skills []bundledCodingAgentSkill, name string) (bundledCodingAgentSkill, error) {
+	names := make([]string, 0, len(skills))
 	// Selection is explicit so `show` cannot read arbitrary embedded files.
-	for _, skill := range bundledCodingAgentSkills {
+	for _, skill := range skills {
 		names = append(names, skill.name)
 		if name == skill.name {
 			return skill, nil
@@ -326,7 +363,11 @@ func validateSkillDestination(destination string, force bool) error {
 
 // copyEmbeddedSkill materializes one declared embedded tree into staging.
 func copyEmbeddedSkill(skill bundledCodingAgentSkill, destination string) error {
-	return fs.WalkDir(authoringSkill, skill.root, func(path string, entry fs.DirEntry, walkErr error) error {
+	sourceFS := skill.files
+	if sourceFS == nil {
+		sourceFS = authoringSkill
+	}
+	return fs.WalkDir(sourceFS, skill.root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -341,7 +382,7 @@ func copyEmbeddedSkill(skill bundledCodingAgentSkill, destination string) error 
 			}
 			return nil
 		}
-		contents, err := authoringSkill.ReadFile(path)
+		contents, err := fs.ReadFile(sourceFS, path)
 		if err != nil {
 			return fmt.Errorf("read embedded skill file %s: %w", path, err)
 		}

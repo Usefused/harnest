@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Iterator, Literal, TypeVar
 
+from .._annotations import preserve_wrapped_annotations
 from ..logging import get_logger
 
 if TYPE_CHECKING:
@@ -612,6 +613,7 @@ def wrap_approved_tool(function: F) -> F:
         return result
 
     wrapped = async_call
+    preserve_wrapped_annotations(wrapped, function)
     setattr(wrapped, _POLICY_ATTRIBUTE, policy)
     setattr(wrapped, _WRAPPED_ATTRIBUTE, True)
     setattr(wrapped, "__harnest_tool__", True)

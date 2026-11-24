@@ -81,7 +81,8 @@ func (a *application) installStudioEnvironment(command *cobra.Command, directory
 	}
 	defer cleanupWheel()
 	environment := mergedEnvironment(map[string]string{"UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1"})
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "venv", "--python", uvbootstrap.ManagedPythonVersion, "--managed-python", "--clear", directory); err != nil {
+	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download.
+	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "venv", "--python", uvbootstrap.SupportedPythonSpec, "--python-preference", "system", "--clear", directory); err != nil {
 		return fmt.Errorf("create Studio environment: %w", err)
 	}
 	python := runtimePythonPath(directory)

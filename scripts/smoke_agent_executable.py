@@ -75,7 +75,7 @@ skills:
     (directory / "team-guide.md").write_text("Only for teammates.", encoding="utf-8")
     (directory / "pyproject.toml").write_text(
         f'[project]\nname="{name}"\nversion="0.1.0"\n'
-        f'requires-python=">=3.12,<3.13"\ndependencies=["{dependency}"]\n', encoding="utf-8")
+        f'requires-python=">=3.14,<3.15"\ndependencies=["{dependency}"]\n', encoding="utf-8")
     with (directory / "pyproject.toml").open("a", encoding="utf-8") as project:
         project.write('[project.optional-dependencies]\nportable=["colorama==0.4.6"]\nunused=["harnest-never-install-unused==1"]\n')
     (directory / "harnest-compile.yaml").write_text("version: 1\nextras: [portable]\n", encoding="utf-8")
@@ -94,7 +94,7 @@ spec:
     cli: true
   runtime:
     dependencyFile: pyproject.toml
-    version: '3.12'
+    version: '3.14'
 ''', encoding="utf-8")
     return directory
 

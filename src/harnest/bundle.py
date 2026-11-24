@@ -79,7 +79,8 @@ from .extension_descriptors import (
     EXTENSION_CONTENT_CAPABILITIES,
     ExtensionConventionError,
     ExtensionDescriptor,
-    discover_application_extensions,
+    discover_extensions,
+    discover_merged_extensions,
     validate_extension_dependencies,
 )
 from .sandbox import Sandbox
@@ -790,6 +791,7 @@ def compile_artifact(
         )
         try:
             _copy_selected_source(source_directory, staging / "source", selection)
+            _copy_pack_extensions(source_directory, staging / "source")
             # Runtime policy stays mutable beside the launcher; source remains hashed.
             (staging / SERVER_CONFIG_FILENAME).write_text(
                 server_contents, encoding="utf-8"
@@ -2280,13 +2282,43 @@ def _discover_capability_plugins(directory: Path) -> tuple[PluginResources, ...]
         raise BundleConventionError(str(exc)) from exc
 
 
+def _pack_extensions_directory(directory: Path) -> Path | None:
+    """Resolve active pack-owned extensions unless loading an already-compiled artifact."""
+    # Compiled artifacts already embed pack extensions inside source/extensions/.
+    if directory.name == "source" and (directory.parent / "harnest-manifest.json").is_file():
+        return None
+    raw = os.environ.get("HARNEST_PACK_EXTENSIONS", "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _copy_pack_extensions(source_directory: Path, destination_source: Path) -> None:
+    """Embed active pack-owned extensions into compiled artifacts without touching authored repos."""
+    pack_dir = _pack_extensions_directory(source_directory)
+    if pack_dir is None or not pack_dir.exists():
+        return
+    extensions = discover_extensions(pack_dir)
+    if not extensions:
+        return
+    target_root = destination_source / "extensions"
+    target_root.mkdir(parents=True, exist_ok=True)
+    for descriptor in extensions:
+        target = target_root / descriptor.name
+        if target.exists():
+            raise BundleConventionError(
+                f"agent extension {descriptor.name!r} conflicts with pack-owned extension"
+            )
+        shutil.copytree(descriptor.directory, target)
+
+
 def _discover_extensions(
     directory: Path,
 ) -> tuple[ExtensionDescriptor, ...]:
-    """Resolve canonical extension packages before importing application code."""
+    """Resolve canonical and pack-owned extension packages before importing application code."""
 
     try:
-        return discover_application_extensions(directory)
+        return discover_merged_extensions(directory, _pack_extensions_directory(directory))
     except (ExtensionConventionError, ApplicationLayoutError) as exc:
         raise BundleConventionError(str(exc)) from exc
 

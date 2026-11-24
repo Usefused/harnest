@@ -106,7 +106,7 @@ func TestStudioCachesOnlyCompleteReleaseRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := string(mustReadTestFile(t, calls))
-	assertContainsAll(t, "Studio bootstrap", output, []string{"venv --python 3.12", "pip install --python", ".whl[studio]", "-I -c", "harnest-manifest.json"})
+	assertContainsAll(t, "Studio bootstrap", output, []string{"venv --python >=3.11,<3.15 --python-preference system", "pip install --python", ".whl[studio]", "-I -c", "harnest-manifest.json"})
 	second, err := app.prepareStudioEnvironment(command, filepath.Join(root, "studio"), wheel)
 	if err != nil || first.Executable != second.Executable {
 		t.Fatalf("cached runtime: %v, %v", second, err)

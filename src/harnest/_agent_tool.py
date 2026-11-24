@@ -7,6 +7,7 @@ import functools
 import inspect
 from typing import Any, TypeVar, overload
 
+from ._annotations import set_callable_annotations
 from .assets import AssetScope
 from .client_tool import current_transient_media
 from .stored_media import model_uses_stored, stage_stored_media
@@ -162,10 +163,13 @@ def _validated_tool(function: F, schema: PydanticModel) -> F:
         wrapped = sync_call
     # Framework tool builders inspect the return annotation to advertise the
     # same schema that Harnest enforces after execution.
-    wrapped.__annotations__ = {
-        **getattr(function, "__annotations__", {}),
-        "return": schema,
-    }
+    set_callable_annotations(
+        wrapped,
+        {
+            **getattr(function, "__annotations__", {}),
+            "return": schema,
+        },
+    )
     wrapped.__signature__ = inspect.signature(function).replace(  # type: ignore[attr-defined]
         return_annotation=schema
     )

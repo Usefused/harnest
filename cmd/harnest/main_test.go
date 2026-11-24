@@ -481,7 +481,9 @@ func TestPythonResolutionPrecedence(t *testing.T) {
 		"env-python":                  "/resolved/env-python",
 		runtimePythonPath("/runtime"): "/resolved/managed-python",
 		runtimePythonPath(filepath.Join("/home/test", ".harnest", "runtime")): "/resolved/default-managed-python",
-		"python3": "/resolved/python3",
+		"python3.14": "/resolved/python3.14",
+		"python3.12": "/resolved/python3.12",
+		"python3":    "/resolved/python3",
 	}
 	environment := map[string]string{
 		"HARNEST_PYTHON":      "env-python",
@@ -499,24 +501,25 @@ func TestPythonResolutionPrecedence(t *testing.T) {
 		commandContext: defaultSystem().commandContext,
 	}
 	app := application{system: sys, pythonFlag: "flag-python"}
-	selection, err := app.resolvePython()
-	if err != nil || selection.Executable != "/resolved/flag-python" {
-		t.Fatalf("flag resolution = %#v, %v", selection, err)
-	}
+	assertResolvedPython(t, app, "/resolved/flag-python", "flag")
 	app.pythonFlag = ""
-	selection, err = app.resolvePython()
-	if err != nil || selection.Executable != "/resolved/env-python" {
-		t.Fatalf("environment resolution = %#v, %v", selection, err)
-	}
+	assertResolvedPython(t, app, "/resolved/env-python", "environment")
 	delete(environment, "HARNEST_PYTHON")
-	selection, err = app.resolvePython()
-	if err != nil || selection.Executable != "/resolved/managed-python" {
-		t.Fatalf("managed resolution = %#v, %v", selection, err)
-	}
+	assertResolvedPython(t, app, "/resolved/managed-python", "managed")
 	delete(available, runtimePythonPath("/runtime"))
-	selection, err = app.resolvePython()
-	if err != nil || selection.Executable != "/resolved/python3" {
-		t.Fatalf("PATH resolution = %#v, %v", selection, err)
+	assertResolvedPython(t, app, "/resolved/python3.14", "versioned 3.14 PATH")
+	delete(available, "python3.14")
+	assertResolvedPython(t, app, "/resolved/python3.12", "versioned 3.12 PATH")
+	delete(available, "python3.12")
+	assertResolvedPython(t, app, "/resolved/python3", "PATH")
+}
+
+// assertResolvedPython checks that Python discovery picks the expected interpreter.
+func assertResolvedPython(t *testing.T, app application, want, label string) {
+	t.Helper()
+	selection, err := app.resolvePython()
+	if err != nil || selection.Executable != want {
+		t.Fatalf("%s resolution = %#v, %v (want %q)", label, selection, err, want)
 	}
 }
 
@@ -533,7 +536,7 @@ func TestPythonLocationsFollowHostLayout(t *testing.T) {
 	if got := pathPythonCandidates("windows"); strings.Join(got, ",") != "python,python3" {
 		t.Fatalf("windows PATH candidates = %v", got)
 	}
-	if got := pathPythonCandidates("linux"); strings.Join(got, ",") != "python3" {
+	if got := pathPythonCandidates("linux"); strings.Join(got, ",") != "python3.14,python3.13,python3.12,python3.11,python3" {
 		t.Fatalf("linux PATH candidates = %v", got)
 	}
 }
@@ -785,7 +788,7 @@ fi
 
 func TestDoctorReportsReadyRuntime(t *testing.T) {
 	python := writeExecutable(t, `#!/bin/sh
-printf '%s\n' '{"executable":"/runtime/python","python":"3.12.8","supported":true,"packages":[{"name":"harnest","ok":true,"version":"0.1.0","error":""},{"name":"google-adk","ok":true,"version":"2.0.0","error":""},{"name":"litellm","ok":true,"version":"1.84.0","error":""},{"name":"pytest","ok":true,"version":"8.4.0","error":""}]}'
+printf '%s\n' '{"executable":"/runtime/python","python":"3.14.4","supported":true,"packages":[{"name":"harnest","ok":true,"version":"0.1.0","error":""},{"name":"google-adk","ok":true,"version":"2.0.0","error":""},{"name":"litellm","ok":true,"version":"1.84.0","error":""},{"name":"pytest","ok":true,"version":"8.4.0","error":""}]}'
 `)
 	stdout, _, err := executeForTest(t, defaultSystem(), "--python", python, "doctor")
 	if err != nil {

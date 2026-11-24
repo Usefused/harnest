@@ -45,8 +45,13 @@ func (a *application) newInitCommand() *cobra.Command {
 		Short: "Scaffold a self-contained filesystem agent",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			if len(packs) > 0 {
-				return a.runPackInit(command, arguments, packs, options, dryRun, asJSON)
+			effectivePacks := packs
+			// Skip auto-attaching the embedded pack when planner.py invokes core init in staging.
+			if a.system.getenv(packCoreInitEnv) != "1" {
+				effectivePacks = a.prependEmbeddedPack(packs, true)
+			}
+			if len(effectivePacks) > 0 {
+				return a.runPackInit(command, arguments, effectivePacks, options, dryRun, asJSON)
 			}
 			for _, flag := range []string{"option", "dry-run", "json"} {
 				if command.Flags().Changed(flag) {

@@ -49,7 +49,7 @@ func packPlanArguments(action, directory, executable string, packs, options []st
 
 // runPackPython runs one `python -m harnest.cli pack ...` action.
 func (a *application) runPackPython(command *cobra.Command, arguments []string) error {
-	python, err := a.resolvePython()
+	python, err := a.packPython(command)
 	if err != nil {
 		return err
 	}
@@ -77,31 +77,52 @@ func (a *application) newPackValidateCommand() *cobra.Command {
 	}
 }
 
+// newPackBuildCommand builds either a standalone branded CLI binary (default) or a launcher wheel.
 func (a *application) newPackBuildCommand() *cobra.Command {
-	var output string
+	var output, format, baseBinary string
 	command := &cobra.Command{
 		Use:   "build PACK",
-		Short: "Build a wheel that installs the pack's branded command",
-		Long: `Build harnest-pack-NAME as a wheel. Installing it adds the pack's command
-(pack.yaml command, default NAME): COMMAND init|upgrade|studio run Harnest with
-this pack attached, the pack's own commands run its handlers, and anything else
-is passed to Harnest. The command calls the harnest executable on PATH, or
-HARNEST_CLI when set.`,
+		Short: "Build a standalone branded CLI binary (or wheel) for this pack",
+		Long: `Build a standalone branded CLI binary (default, --format binary) that embeds
+Harnest plus this pack's hooks, Studio sub-pack, coding-IDE skills, protected
+Python packages, and auto-loaded Harnest Extensions so downstream teams do not
+need to install Harnest separately.
+
+Pass --format wheel to build the lightweight harnest-pack-NAME Python launcher
+wheel that delegates to an existing harnest executable on PATH.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			packs, err := resolvePackFolders(arguments)
-			if err != nil {
-				return err
-			}
-			absolute, err := filepath.Abs(output)
-			if err != nil {
-				return err
-			}
-			return a.runPackPython(command, []string{"pack", "build", packs[0], "--output", absolute})
+			return a.runPackBuild(command, arguments[0], output, format, baseBinary)
 		},
 	}
 	command.Flags().StringVarP(&output, "output", "o", "dist", "output directory")
+	command.Flags().StringVar(&format, "format", "binary", "output format: binary (default) or wheel")
+	command.Flags().StringVar(&baseBinary, "base-binary", "", "with --format binary: path to a base harnest executable to stamp (default: current binary)")
 	return command
+}
+
+// runPackBuild validates format flags and dispatches to binary stamping or wheel building.
+func (a *application) runPackBuild(
+	command *cobra.Command, packArg, output, format, baseBinary string,
+) error {
+	if format != "binary" && format != "wheel" {
+		return fmt.Errorf("--format must be binary or wheel")
+	}
+	if format == "wheel" && baseBinary != "" {
+		return fmt.Errorf("--base-binary requires --format binary")
+	}
+	packs, err := resolvePackFolders([]string{packArg})
+	if err != nil {
+		return err
+	}
+	absolute, err := filepath.Abs(output)
+	if err != nil {
+		return err
+	}
+	if format == "wheel" {
+		return a.runPackPython(command, []string{"pack", "build", packs[0], "--output", absolute})
+	}
+	return a.buildPackBinary(command, packs[0], absolute, baseBinary)
 }
 
 func (a *application) newPackRunCommand() *cobra.Command {

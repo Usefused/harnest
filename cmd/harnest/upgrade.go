@@ -28,8 +28,9 @@ With --pack, the same core migration is combined with each pack's own
 migrations into one reviewed plan. Without --pack, pack migrations are not run.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			if len(packs) > 0 {
-				return a.runPackUpgrade(command, arguments[0], packs, options, apply, asJSON)
+			effectivePacks := a.prependEmbeddedPack(packs, true)
+			if len(effectivePacks) > 0 {
+				return a.runPackUpgrade(command, arguments[0], effectivePacks, options, apply, asJSON)
 			}
 			for _, flag := range []string{"option", "json"} {
 				if command.Flags().Changed(flag) {

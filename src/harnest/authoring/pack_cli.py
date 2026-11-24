@@ -38,6 +38,11 @@ def run_pack_command(arguments: Sequence[str], *, stdout: TextIO | None = None,
             from .distribution import build_pack
             print(f"Built {build_pack(args.pack, args.output)}", file=output)
             return 0
+        if args.action == "prepare-binary":
+            from .binary_payload import prepare_pack_binary
+            manifest = prepare_pack_binary(args.pack, args.staging, uv_executable=args.uv)
+            print(json.dumps(manifest, sort_keys=True), file=output)
+            return 0
     except (ProjectError, OSError) as exc:
         print(f"harnest: {exc}", file=errors)
         return 1
@@ -66,6 +71,10 @@ def _parser() -> argparse.ArgumentParser:
     build = actions.add_parser("build")
     build.add_argument("pack", type=Path)
     build.add_argument("--output", type=Path, default=Path("dist"))
+    prepare = actions.add_parser("prepare-binary")
+    prepare.add_argument("pack", type=Path)
+    prepare.add_argument("--staging", type=Path, required=True)
+    prepare.add_argument("--uv", default=None)
     return parser
 
 
@@ -114,15 +123,23 @@ def _finish(plan: ProjectPlan, *, applying: bool, as_json: bool, output: TextIO)
 
 
 def _validate(roots: Sequence[Path], output: TextIO) -> int:
+    """Validate manifests, hooks, Studio sub-packs, and binary payload declarations."""
+    from .binary_payload import validate_pack_payload
+
     packs = load_packs(roots)
     for pack in packs:
         studio = check_studio(pack)
+        validate_pack_payload(pack)
         project = pack.project
         print(f"{pack.name} {pack.manifest.version}: command `{pack.manifest.command_name}`", file=output)
         print(f"  project hooks: {'schema ' + str(project.schema_version) if project else 'none'}", file=output)
         commands = ", ".join(item.name for item in project.commands) if project else ""
         print(f"  commands: {commands or 'none'}", file=output)
         print(f"  studio: {studio}", file=output)
+        print(f"  skills: {len(pack.manifest.skills)}", file=output)
+        packages = len(pack.manifest.packages.wheels) + len(pack.manifest.packages.requirements)
+        print(f"  packages: {packages}", file=output)
+        print(f"  extensions: {len(pack.manifest.extensions)}", file=output)
     return 0
 
 

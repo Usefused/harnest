@@ -19,7 +19,7 @@ func TestBootstrapPythonMinimum(t *testing.T) {
 	if err != nil {
 		t.Skip("Python is unavailable for bootstrap probe integration")
 	}
-	for _, minor := range []int{10, 11, 12} {
+	for _, minor := range []int{10, 11, 14} {
 		t.Run(fmt.Sprintf("3.%d", minor), func(t *testing.T) {
 			sys := defaultSystem()
 			sys.commandContext = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
@@ -29,6 +29,7 @@ func TestBootstrapPythonMinimum(t *testing.T) {
 			}
 			app := application{system: sys}
 			err := app.validateBootstrapPython(context.Background(), python)
+			// Python 3.11 and newer satisfy the minimum runtime floor.
 			if (err == nil) != (minor >= 11) {
 				t.Fatalf("Python 3.%d: validation error = %v", minor, err)
 			}
@@ -111,7 +112,7 @@ fi
 		t.Fatal(err)
 	}
 	assertContainsAll(t, "managed Python output", stdout, []string{
-		"installing managed Python 3.12 with embedded uv 0.12.6",
+		"installing managed Python 3.14 with embedded uv 0.12.6",
 		"Installed embedded Harnest runtime test-version",
 	})
 	calls, err := os.ReadFile(record)
@@ -120,7 +121,7 @@ fi
 	}
 	assertContainsAll(t, "embedded uv calls", string(calls), []string{
 		managedPythonDirectory(runtimeDirectory),
-		"venv --python 3.12 --managed-python --clear " + runtimeDirectory,
+		"venv --python 3.14 --managed-python --clear " + runtimeDirectory,
 		"pip install --python " + runtimePythonPath(runtimeDirectory) + " --upgrade ",
 		"harnest-test-version-py3-none-any.whl",
 	})

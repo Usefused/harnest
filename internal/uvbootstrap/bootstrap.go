@@ -9,8 +9,11 @@ import (
 )
 
 const (
-	ManagedPythonVersion = "3.12"
-	placeholderPrefix    = "harnest uv placeholder"
+	// ManagedPythonVersion is downloaded by uv when no compatible system Python is available.
+	ManagedPythonVersion = "3.14"
+	// SupportedPythonSpec matches any host interpreter supported by Harnest before falling back to uv.
+	SupportedPythonSpec = ">=3.11,<3.15"
+	placeholderPrefix   = "harnest uv placeholder"
 )
 
 //go:embed version.txt

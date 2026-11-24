@@ -15,6 +15,7 @@ import (
 	"harnest.dev/harnest/engine"
 	"harnest.dev/harnest/internal/agentlauncher"
 	"harnest.dev/harnest/internal/agentpack"
+	"harnest.dev/harnest/internal/packbinary"
 )
 
 type executableOptions struct {
@@ -134,7 +135,7 @@ func (a *application) prepareExecutableRuntime(bundle engine.Bundle, pack string
 	if err != nil {
 		return m, "", err
 	}
-	if err = validatePackAgent(bundle, m); err != nil {
+	if err = validatePackAgentWithPack(bundle, m, a.embeddedPack); err != nil {
 		return m, "", err
 	}
 	cache, err := agentpack.CacheDirectory(a.system.getenv("HARNEST_AGENT_CACHE"), a.system.userCacheDir)
@@ -155,14 +156,14 @@ func (a *application) compilePackedArtifact(command *cobra.Command, bundle engin
 	args := []string{"compile", bundle.Directory, "--output", artifact, "--entrypoint", entrypoint, "--framework", bundle.Config.Spec.Framework.Name, "--mode", bundle.Config.Spec.Framework.EffectiveMode()}
 	python, argv := agentpack.PythonCommand(root, m, "harnest.cli", withCLICompilerInterface(args, bundle))
 	process := a.system.commandContext(command.Context(), python, argv...)
-	process.Env = agentpack.Environment(root, m)
+	process.Env = a.packSubprocessEnv(agentpack.Environment(root, m))
 	for key, value := range bundle.Config.Spec.Environment {
 		process.Env = append(process.Env, key+"="+value)
 	}
 	if err = runCommand(process, command.InOrStdin(), io.Discard, command.ErrOrStderr()); err != nil {
 		return err
 	}
-	if _, err = a.system.loadCompiledArtifact(artifact, bundle); err != nil {
+	if _, err = a.loadCompiledArtifact(artifact, bundle); err != nil {
 		return err
 	}
 	return nil
@@ -227,13 +228,19 @@ func signAgentExecutable(command *cobra.Command, a *application, output string) 
 
 // validatePackAgent requires declared dependency coverage, including extension and MCP requirements.
 func validatePackAgent(bundle engine.Bundle, m agentpack.Manifest) error {
-	if err := validateAgentDependencyPolicy(bundle); err != nil {
+	return validatePackAgentWithPack(bundle, m, nil)
+}
+
+// validatePackAgentWithPack verifies declared coverage including any embedded pack dependencies.
+func validatePackAgentWithPack(bundle engine.Bundle, m agentpack.Manifest, embedded *packbinary.LoadedPack) error {
+	if err := validateAgentDependencyPolicyWithPack(bundle, embedded); err != nil {
 		return err
 	}
 	plan, err := inspectCompileDependencyPlan(bundle)
 	if err != nil {
 		return err
 	}
+	attachEmbeddedPackPlan(&plan, embedded)
 	identity, err := runtimePackInput(bundle, plan)
 	if err != nil {
 		return err

@@ -9,8 +9,11 @@ func TestPinnedBootstrapVersions(t *testing.T) {
 	if Version != "0.12.6" {
 		t.Fatalf("unexpected uv version %q", Version)
 	}
-	if ManagedPythonVersion != "3.12" {
+	if ManagedPythonVersion != "3.14" {
 		t.Fatalf("unexpected managed Python version %q", ManagedPythonVersion)
+	}
+	if SupportedPythonSpec != ">=3.11,<3.15" {
+		t.Fatalf("unexpected supported Python range %q", SupportedPythonSpec)
 	}
 }
 

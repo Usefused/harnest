@@ -12,6 +12,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/packbinary"
 )
 
 const (
@@ -21,13 +22,32 @@ const (
 
 // runtimeDependencyPlan is the filesystem-only input used before Python imports.
 type runtimeDependencyPlan struct {
-	ProjectFiles        []string
-	CompileRequirements []string
-	HasMCP              bool
-	CustomEvalOnly      bool
-	EvalGroup           bool
+	ProjectFiles          []string
+	CompileRequirements   []string
+	HasMCP                bool
+	CustomEvalOnly        bool
+	EvalGroup             bool
+	PackDigest            string
+	PackWheelsDir         string
+	PackWheels            []packbinary.WheelEntry
+	PackRequirements      []string
+	PackExtensionProjects []string
 	// rootDocument is the agent's decoded pyproject.toml, read once per plan.
 	rootDocument map[string]any
+}
+
+// attachEmbeddedPackPlan binds pack-owned wheels, requirements, and extension projects to a dependency plan.
+func attachEmbeddedPackPlan(plan *runtimeDependencyPlan, embedded *packbinary.LoadedPack) {
+	if embedded == nil {
+		return
+	}
+	plan.PackDigest = embedded.Manifest.Digest
+	if len(embedded.Manifest.Wheels) > 0 {
+		plan.PackWheelsDir = embedded.WheelsDir()
+		plan.PackWheels = append([]packbinary.WheelEntry{}, embedded.Manifest.Wheels...)
+	}
+	plan.PackRequirements = append([]string{}, embedded.Manifest.Requirements...)
+	plan.PackExtensionProjects = embedded.ExtensionProjectFiles()
 }
 
 // inspectRuntimeDependencyPlan joins declared dependencies without guessing a

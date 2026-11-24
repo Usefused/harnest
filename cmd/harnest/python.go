@@ -64,7 +64,9 @@ func pathPythonCandidates(goos string) []string {
 		// or the Microsoft Store placeholder, so it is only a last resort.
 		return []string{"python", "python3"}
 	}
-	return []string{"python3"}
+	// Prefer supported versioned commands (newest first) ahead of generic python3
+	// so older OS interpreters (such as macOS /usr/bin/python3) do not shadow them.
+	return []string{"python3.14", "python3.13", "python3.12", "python3.11", "python3"}
 }
 
 func (a *application) runtimeDirectory(requested string) (string, error) {

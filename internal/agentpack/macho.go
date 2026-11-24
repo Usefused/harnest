@@ -9,8 +9,8 @@ import (
 	"os"
 )
 
-// extendMachO places the payload inside __LINKEDIT so macOS can sign the complete executable.
-func extendMachO(file *os.File) error {
+// ExtendMachO places an appended payload inside __LINKEDIT so macOS can sign the complete executable.
+func ExtendMachO(file *os.File) error {
 	image, err := macho.NewFile(file)
 	if err != nil {
 		return nil
@@ -35,8 +35,8 @@ func extendMachO(file *os.File) error {
 	return fmt.Errorf("Mach-O launcher has no __LINKEDIT segment")
 }
 
-// executablePayloadEnd excludes macOS signatures, which can exceed ZIP's end-search window.
-func executablePayloadEnd(file *os.File) (int64, error) {
+// ExecutablePayloadEnd excludes macOS signatures, which can exceed ZIP's end-search window.
+func ExecutablePayloadEnd(file *os.File) (int64, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return 0, err

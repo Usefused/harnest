@@ -45,7 +45,7 @@ spec:
     name: %s
     mode: managed
   runtime:
-    version: "3.12"
+    version: "3.14"
     dependencyFile: pyproject.toml
   # Set your OpenAI-compatible endpoint and model before making live calls.
   environment:
@@ -106,7 +106,7 @@ func agentPyproject(name string) string {
 	return fmt.Sprintf(`[project]
 name = %s
 version = "0.1.0"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = []
 
 [dependency-groups]

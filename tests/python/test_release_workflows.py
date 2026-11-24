@@ -559,10 +559,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "./.github/workflows/validate-extensions.yml",
         )
         self.assertEqual(
-            quality_job["strategy"]["matrix"]["python-version"], ["3.11", "3.12"]
+            quality_job["strategy"]["matrix"]["python-version"], ["3.11", "3.14"]
         )
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
-        self.assertEqual(quality_step["if"], "matrix.python-version == '3.12'")
+        self.assertEqual(quality_step["if"], "matrix.python-version == '3.14'")
         compatibility_step = next(
             step for step in quality_job["steps"] if step["name"] == "Run Python compatibility tests"
         )
@@ -595,17 +595,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         selected = json.loads(caller["jobs"]["framework-compatibility"]["with"]["matrix"])
         self.assertEqual(selected, {"include": [
             {"python": "3.11", "resolution": "minimum"},
-            {"python": "3.12", "resolution": "latest"},
+            {"python": "3.14", "resolution": "latest"},
         ]})
         matrix = workflow["jobs"]["contracts"]["strategy"]["matrix"]
         fallback = re.fullmatch(r"\$\{\{ fromJSON\(inputs.matrix \|\| '(.*)'\) \}\}", matrix)
         self.assertIsNotNone(fallback)
         self.assertEqual(json.loads(fallback[1]), {
-            "python": ["3.11", "3.12"], "resolution": ["locked", "minimum", "latest"],
+            "python": ["3.11", "3.14"], "resolution": ["locked", "minimum", "latest"],
         })
         docker_steps = workflow["jobs"]["contracts"]["steps"][-2:]
         for step in docker_steps:
-            self.assertEqual(step["if"], "matrix.python == '3.12' && matrix.resolution == 'latest'")
+            self.assertEqual(step["if"], "matrix.python == '3.14' && matrix.resolution == 'latest'")
 
     def test_ci_example_test_withholds_external_credentials(self):
         """Keep the default example lane offline even on credentialed runners."""

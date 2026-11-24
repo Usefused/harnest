@@ -151,6 +151,7 @@
       "test_named_sandbox_frameworks",
       "test_named_sandbox_runtime",
       "test_neutral_runtime",
+      "test_pack_binary",
       "test_playground_builder",
       "test_playground_connectors",
       "test_playground_evals",
@@ -191,6 +192,7 @@
       "test_frameworks",
       "test_hatchet_extension_consumer",
       "test_init_examples",
+      "test_pack_binary_e2e",
       "test_upgrade",
       "test_memory_agent"
     ],

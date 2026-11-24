@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/engine"
+	"harnest.dev/harnest/internal/packbinary"
 	"harnest.dev/harnest/internal/runtimewheel"
 	"harnest.dev/harnest/internal/uvbootstrap"
 )
@@ -104,6 +105,8 @@ type system struct {
 	embeddedUV           func() (uvbootstrap.Artifact, error)
 	loadCompiledArtifact func(string, engine.Bundle) (engine.CompiledArtifact, error)
 	userCacheDir         func() (string, error)
+	executablePath       func() (string, error)
+	embeddedPack         *packbinary.LoadedPack
 	httpClient           *http.Client
 	pypiBaseURL          string
 }
@@ -118,19 +121,30 @@ func defaultSystem() system {
 		embeddedUV:           uvbootstrap.Embedded,
 		loadCompiledArtifact: engine.LoadCompiledArtifact,
 		userCacheDir:         os.UserCacheDir,
+		executablePath:       os.Executable,
 		pypiBaseURL:          "https://pypi.org",
 	}
 }
 
 type application struct {
-	system     system
-	version    string
-	pythonFlag string
+	system       system
+	version      string
+	pythonFlag   string
+	embeddedPack *packbinary.LoadedPack
 }
 
 // newRootCommand assembles the user-facing CLI and its shared process policy.
 func newRootCommand(sys system, cliVersion string) *cobra.Command {
-	app := &application{system: sys, version: cliVersion}
+	if sys.executablePath == nil {
+		sys.executablePath = os.Executable
+	}
+	embedded, _ := loadEmbeddedPack(sys)
+	return newRootCommandWithPack(sys, cliVersion, embedded)
+}
+
+// newRootCommandWithPack binds an optional materialized pack binary into the CLI tree.
+func newRootCommandWithPack(sys system, cliVersion string, embedded *packbinary.LoadedPack) *cobra.Command {
+	app := &application{system: sys, version: cliVersion, embeddedPack: embedded}
 	command := &cobra.Command{
 		Use:           "harnest",
 		Short:         "Build, test, and run filesystem-first agent graphs",
@@ -170,6 +184,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 		app.newModeCommand(),
 		app.newUpgradeCommand(),
 	)
+	app.registerEmbeddedPackCommands(command)
 	return command
 }
 

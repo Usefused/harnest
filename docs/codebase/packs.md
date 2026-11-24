@@ -13,7 +13,9 @@ A pack is one folder:
 
 - `pack.yaml`: inert data, read without running code. It holds `name`,
   `version`, `title`, `description`, `command` (the branded command name),
-  `requires` (Harnest and Studio versions), and an optional `studio:` sub-pack.
+  `requires` (Harnest and Studio versions), optional `skills` (coding-IDE skills),
+  optional `packages` (`wheels` and pinned `requirements`), optional `extensions`
+  (pack-owned Harnest Extensions), and an optional `studio:` sub-pack.
 - `pack.py`: optional and trusted. It defines
   `pack = ProjectPack(schema_version=..., options=..., templates=...)` with
   `@pack.initialize` (new agents), `@pack.migration(from_version=,
@@ -73,11 +75,25 @@ and `packs.py`. It never imports `pack.py`.
 ## Building and distributing a branded CLI
 
 The public [Build a company CLI](https://usefused.com/docs/harnest/build/project-packs/cli)
-page covers `harnest pack init|validate|build` and publishing. Two internal
-points matter when you change it: the wheel holds only the pack folder and the
-launcher, with no dependencies (so it never vendors Python, Harnest, Studio,
-or credentials), and the launcher finds Harnest through `HARNEST_CLI` or
-`PATH` at run time.
+page covers `harnest pack init|validate|build` and publishing. `harnest pack build`
+defaults to `--format binary`, which stages the validated pack folder plus any
+declared `skills`, `packages` (prebuilt wheels, locally built wheels, and pinned
+PEP 508 requirements), and `extensions` via `authoring/binary_payload.py`, then
+stamps them as an appended ZIP payload onto a base `harnest` binary using
+[internal/packbinary](../../internal/packbinary/binary.go) and
+[cmd/harnest/pack_binary.go](../../cmd/harnest/pack_binary.go) (pass
+`--base-binary` to stamp another target binary). Downstream teams run the
+resulting standalone `<command>` executable directly without installing `harnest`.
+On startup, the binary materializes its payload into a content-addressed cache,
+rebrands the CLI and `@pack.command` subcommands, merges pack coding-IDE skills
+into `<command> skills show|install`, injects protected packages into runtime
+locks and agent executables (`dependency_policy.go`, `environment_runtime_lock.go`,
+`runtime_pack_plan.go`), and auto-loads pack-owned extensions into compiled
+artifacts via `HARNEST_PACK_EXTENSIONS` without copying files into agent repos.
+
+Pass `--format wheel` to build the lightweight `harnest-pack-<name>` launcher
+wheel instead: the wheel holds only the pack folder and the stdlib launcher,
+with no dependencies, and finds `harnest` through `HARNEST_CLI` or `PATH`.
 
 ## Dependency ownership
 

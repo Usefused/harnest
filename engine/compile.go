@@ -152,11 +152,21 @@ func decodeCompiledManifest(reader io.Reader) (CompiledManifest, error) {
 }
 
 // LoadCompiledArtifact validates a retained artifact against its current source.
+// LoadCompiledArtifact validates a compiled artifact strictly against its authored bundle.
 func LoadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, error) {
-	return loadCompiledArtifact(directory, source)
+	return loadCompiledArtifactWithPackExtensions(directory, source, "")
+}
+
+// LoadCompiledArtifactWithPackExtensions validates authored files against source and pack extension files against packExtensionsDir.
+func LoadCompiledArtifactWithPackExtensions(directory string, source Bundle, packExtensionsDir string) (CompiledArtifact, error) {
+	return loadCompiledArtifactWithPackExtensions(directory, source, packExtensionsDir)
 }
 
 func loadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, error) {
+	return loadCompiledArtifactWithPackExtensions(directory, source, "")
+}
+
+func loadCompiledArtifactWithPackExtensions(directory string, source Bundle, packExtensionsDir string) (CompiledArtifact, error) {
 	directory, err := existingDirectory(directory)
 	if err != nil {
 		return CompiledArtifact{}, fmt.Errorf("resolve compiled artifact: %w", err)
@@ -177,20 +187,20 @@ func loadCompiledArtifact(directory string, source Bundle) (CompiledArtifact, er
 	if closeErr != nil {
 		return CompiledArtifact{}, fmt.Errorf("close compiled manifest: %w", closeErr)
 	}
-	if err := validateCompiledManifest(directory, source, manifest); err != nil {
+	if err := validateCompiledManifest(directory, source, manifest, packExtensionsDir); err != nil {
 		return CompiledArtifact{}, err
 	}
 	return CompiledArtifact{Directory: directory, ManifestPath: manifestPath, Manifest: manifest}, nil
 }
 
-func validateCompiledManifest(directory string, source Bundle, manifest CompiledManifest) error {
+func validateCompiledManifest(directory string, source Bundle, manifest CompiledManifest, packExtensionsDir string) error {
 	if err := validateCompiledServerConfig(directory); err != nil {
 		return err
 	}
 	if err := validateCompiledIdentity(source, manifest); err != nil {
 		return err
 	}
-	if err := validateCompiledSource(directory, source, manifest); err != nil {
+	if err := validateCompiledSourceWithPackExtensions(directory, source, manifest, packExtensionsDir); err != nil {
 		return err
 	}
 	seen, err := validateCompiledFiles(directory, manifest.Files)
@@ -661,9 +671,22 @@ func validateCompiledCheckpoint(manifest CompiledManifest) error {
 
 // validateCompiledSource binds retained files to the source snapshot without requiring project-only content.
 func validateCompiledSource(directory string, source Bundle, manifest CompiledManifest) error {
+	return validateCompiledSourceWithPackExtensions(directory, source, manifest, "")
+}
+
+// validateCompiledSourceWithPackExtensions verifies retained files against authored source or embedded pack extensions.
+func validateCompiledSourceWithPackExtensions(directory string, source Bundle, manifest CompiledManifest, packExtensionsDir string) error {
 	_, err := existingDirectory(filepath.Join(directory, filepath.FromSlash(manifest.SourceDirectory)))
 	if err != nil {
 		return fmt.Errorf("resolve compiled source directory: %w", err)
+	}
+	resolvedPackExtensions := ""
+	if packExtensionsDir != "" {
+		// Canonicalize symlinks (such as /var -> /private/var on macOS) to match containedRegularFile checks.
+		resolvedPackExtensions, err = existingDirectory(packExtensionsDir)
+		if err != nil {
+			return fmt.Errorf("resolve pack extensions directory: %w", err)
+		}
 	}
 	currentDigest, err := digestDirectory(source.Directory)
 	if err != nil {
@@ -672,19 +695,31 @@ func validateCompiledSource(directory string, source Bundle, manifest CompiledMa
 	if currentDigest != source.Digest {
 		return fmt.Errorf("source bundle changed during compilation: %q does not match %q", currentDigest, source.Digest)
 	}
-	// Python owns content selection. Go verifies every retained byte against the
-	// original source; validateCompiledFiles separately verifies the artifact copy.
+	// Python owns content selection. Go verifies every retained byte against its
+	// original source (or embedded pack extension root); validateCompiledFiles checks the copy.
 	for _, record := range manifest.Files {
 		relative, retained := strings.CutPrefix(record.Path, manifest.SourceDirectory+"/")
 		if !retained {
 			continue
 		}
-		record.Path = relative
-		if err := validateCompiledRecordFile(source.Directory, record); err != nil {
+		if err := validateCompiledSourceRecord(source.Directory, resolvedPackExtensions, relative, record); err != nil {
 			return fmt.Errorf("compiled source differs from authored source: %w", err)
 		}
 	}
 	return nil
+}
+
+// validateCompiledSourceRecord checks authored files against sourceRoot and pack-owned extensions against packExtensionsDir.
+func validateCompiledSourceRecord(sourceRoot, packExtensionsDir, relative string, record CompiledFile) error {
+	if extRel, ok := strings.CutPrefix(relative, "extensions/"); ok && packExtensionsDir != "" {
+		// Pack-owned extensions live in the materialized pack cache rather than the authored repo.
+		if _, err := os.Lstat(filepath.Join(packExtensionsDir, filepath.FromSlash(extRel))); err == nil {
+			record.Path = extRel
+			return validateCompiledRecordFile(packExtensionsDir, record)
+		}
+	}
+	record.Path = relative
+	return validateCompiledRecordFile(sourceRoot, record)
 }
 
 func validateCompiledFiles(directory string, files []CompiledFile) (map[string]struct{}, error) {

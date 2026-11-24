@@ -108,7 +108,7 @@ func TestScaffoldKeepsFrameworkRequirementsCompilerOwned(t *testing.T) {
 			}
 			assertContainsAll(t, "generated pyproject", string(contents), []string{
 				`name = "` + framework + `-agent"`,
-				`requires-python = ">=3.12,<3.13"`,
+				`requires-python = ">=3.14,<3.15"`,
 				`dependencies = []`,
 				`[tool.uv]`,
 				`package = false`,

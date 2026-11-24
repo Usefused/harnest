@@ -36,7 +36,7 @@ func TestEnvironmentSyncIsIsolatedLockedAndCached(t *testing.T) {
 	})
 	firstCalls := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "uv calls", firstCalls, []string{
-		"venv --python 3.12 --managed-python --clear",
+		"venv --python 3.14 --python-preference system --clear",
 		"pip compile --python",
 		filepath.Join(resolvedAgent, "pyproject.toml"),
 		"pip sync --python",
@@ -695,7 +695,7 @@ func TestCompileUsesSynchronizedAgentPython(t *testing.T) {
 
 	contents := string(mustReadTestFile(t, calls))
 	assertContainsAll(t, "environment compile calls", contents, []string{
-		"venv --python 3.12",
+		"venv --python 3.14 --python-preference system",
 		filepath.Join(resolvedAgent, "pyproject.toml"),
 		"pip sync --python",
 		"PYTHON -m harnest.cli compile " + resolvedAgent,

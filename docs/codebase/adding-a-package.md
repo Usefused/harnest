@@ -10,8 +10,9 @@ how agents should receive it.
 | [Harnest Extension](#3-a-harnest-extension) | When an agent installs it with `harnest extensions install` | It plugs into an agent's lifecycle: storage, sandboxes, channels, hooks |
 
 To change the CLI itself (new subcommands, new scaffolds), see
-[README.md](README.md#common-changes). To give every new agent your defaults
-and a company command, see [packs.md](packs.md).
+[README.md](README.md#common-changes). To ship a standalone branded CLI binary
+with company defaults, coding-IDE skills, protected wheels/requirements, and
+auto-loaded extensions without forking Harnest, see [packs.md](packs.md).
 
 ## How Python reaches an agent
 

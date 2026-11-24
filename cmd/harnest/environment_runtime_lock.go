@@ -42,7 +42,7 @@ func (a *application) prepareRuntimeLock(
 			return "", nil, err
 		}
 	}
-	rendered, cleanup, err := renderRuntimeLock(bundle, staged, lockPath)
+	rendered, cleanup, err := renderRuntimeLock(bundle, staged, plan, lockPath)
 	if err != nil {
 		return "", nil, err
 	}
@@ -78,6 +78,7 @@ func (a *application) resolveRuntimeLock(
 		arguments = append(arguments, "--group", plan.ProjectFiles[0]+":eval")
 	}
 	arguments = append(arguments, plan.ProjectFiles...)
+	arguments = append(arguments, plan.PackExtensionProjects...)
 	if err := a.runRuntimeCommandWithEnvironment(
 		command, staged.environment, staged.uvPath, arguments...,
 	); err != nil {
@@ -120,6 +121,7 @@ func createRuntimeLockInput(
 		lines = append(lines, pin)
 	}
 	lines = append(lines, plan.CompileRequirements...)
+	lines = append(lines, packLockInputLines(plan)...)
 	path, cleanup, err := createRuntimeLockTemporary(bundle, ".runtime-lock-input-*")
 	if err != nil {
 		return "", nil, err
@@ -165,6 +167,10 @@ func normalizeRuntimeLock(
 	// Relative direct references must survive a checkout moving between machines.
 	projectPrefix := strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/") + "/"
 	body = strings.ReplaceAll(body, projectPrefix, runtimeProjectMarker+"/")
+	if plan.PackWheelsDir != "" {
+		packWheelsPrefix := strings.TrimSuffix(runtimeWheelURI(plan.PackWheelsDir), "/") + "/"
+		body = strings.ReplaceAll(body, packWheelsPrefix, packWheelsLockMarker+"/")
+	}
 	digest, err := runtimeLockInputFingerprint(bundle, wheel, plan, profile)
 	if err != nil {
 		return nil, err
@@ -194,6 +200,9 @@ func runtimeLockInputFingerprint(
 	}
 	for _, requirement := range plan.CompileRequirements {
 		digest.Write([]byte("\x00compile:" + requirement))
+	}
+	if plan.PackDigest != "" {
+		digest.Write([]byte("\x00pack:" + plan.PackDigest))
 	}
 	for _, path := range plan.ProjectFiles {
 		if err := hashEnvironmentDependencyInput(digest, bundle.Directory, path, false); err != nil {
@@ -265,9 +274,9 @@ func splitRuntimeLock(contents []byte) (string, string, error) {
 	return digest, body, nil
 }
 
-// renderRuntimeLock substitutes only the trusted, hash-bound release wheel location.
+// renderRuntimeLock substitutes only the trusted, hash-bound release and pack wheel locations.
 func renderRuntimeLock(
-	bundle engine.Bundle, staged stagedAgentEnvironment, source string,
+	bundle engine.Bundle, staged stagedAgentEnvironment, plan runtimeDependencyPlan, source string,
 ) (string, func(), error) {
 	contents, err := readRegularDependencyFile(source)
 	if err != nil {
@@ -280,6 +289,10 @@ func renderRuntimeLock(
 	rendered := strings.Replace(body, runtimeWheelMarker, runtimeWheelURI(staged.wheelPath), 1)
 	projectPrefix := strings.TrimSuffix(runtimeWheelURI(bundle.Directory), "/")
 	rendered = strings.ReplaceAll(rendered, runtimeProjectMarker, projectPrefix)
+	rendered, err = substitutePackWheelMarker(rendered, plan.PackWheelsDir)
+	if err != nil {
+		return "", nil, err
+	}
 	path, cleanup, err := createRuntimeLockTemporary(bundle, ".runtime-lock-install-*")
 	if err != nil {
 		return "", nil, err
@@ -289,6 +302,29 @@ func renderRuntimeLock(
 		return "", nil, fmt.Errorf("render runtime dependency lock: %w", err)
 	}
 	return path, cleanup, nil
+}
+
+// packLockInputLines renders bundled pack wheels and pinned PEP 508 requirements for uv pip compile.
+func packLockInputLines(plan runtimeDependencyPlan) []string {
+	lines := make([]string, 0, len(plan.PackWheels)+len(plan.PackRequirements))
+	for _, wheel := range plan.PackWheels {
+		wheelPath := filepath.Join(plan.PackWheelsDir, filepath.Base(wheel.Filename))
+		lines = append(lines, fmt.Sprintf("%s @ %s", wheel.Name, runtimeWheelURI(wheelPath)))
+	}
+	lines = append(lines, plan.PackRequirements...)
+	return lines
+}
+
+// substitutePackWheelMarker resolves embedded pack wheel markers or rejects locks missing their pack binary.
+func substitutePackWheelMarker(body, packWheelsDir string) (string, error) {
+	if !strings.Contains(body, packWheelsLockMarker) {
+		return body, nil
+	}
+	if strings.TrimSpace(packWheelsDir) == "" {
+		return "", fmt.Errorf("runtime lock references embedded pack wheels; run with the branded pack CLI binary")
+	}
+	prefix := strings.TrimSuffix(runtimeWheelURI(packWheelsDir), "/")
+	return strings.ReplaceAll(body, packWheelsLockMarker, prefix), nil
 }
 
 // refreshRuntimeLockMetadata accounts for the framework pin recorded after first install.

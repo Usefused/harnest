@@ -58,14 +58,19 @@ The installer checks versioned Python commands from 3.14 down to 3.11, then
 `python3` and `python`, and uses the first interpreter that actually reports
 Python 3.11 or newer. This avoids selecting an older operating-system `python3`
 when a supported Homebrew, pyenv, or other installation is present. If none is
-compatible, embedded `uv` installs pinned CPython 3.12 under the Harnest data
+compatible, embedded `uv` installs pinned CPython 3.14 under the Harnest data
 directory and creates the runtime from it. Harnest does not modify the system
 Python installation. `HARNEST_BOOTSTRAP_PYTHON` requires an exact host
 interpreter instead of allowing the managed fallback.
 
 `HARNEST_PYTHON` is different: it overrides the interpreter used later by the
 `harnest` command. The CLI normally resolves Python in this order: `--python`,
-`HARNEST_PYTHON`, the managed `HARNEST_RUNTIME_DIR`, then `python3` on `PATH`.
+`HARNEST_PYTHON`, the managed `HARNEST_RUNTIME_DIR`, then supported versioned
+interpreters (`python3.14` down to `python3.11`) and `python3` on `PATH`.
+Managed agent, Studio, and pack CLI environments also prefer any compatible
+system Python (`--python-preference system`, matching `>=3.11,<3.15` for Studio
+and pack CLI runtimes or the agent's declared `spec.runtime.version`) before
+falling back to a `uv`-managed Python 3.14 download.
 
 Add the install directory to `PATH` if necessary, then verify both layers:
 

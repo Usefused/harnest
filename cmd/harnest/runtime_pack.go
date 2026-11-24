@@ -48,7 +48,7 @@ func (a *application) buildRuntimePack(command *cobra.Command, options runtimePa
 	if err = requireNewPackPath(output); err != nil {
 		return err
 	}
-	plan, err := sharedRuntimePlan(options.agents)
+	plan, err := sharedRuntimePlanWithPack(options.agents, a.embeddedPack)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,8 @@ func (a *application) preparePackPayload(command *cobra.Command, uv, wheel, stag
 	lock := filepath.Join(staging, "requirements.lock")
 	args := []string{"pip", "compile", "--python", python, "--generate-hashes", "--no-header", "--no-annotate", "--output-file", lock, requirements}
 	args = append(args, plan.Projects...)
-	constraints, err := packLockConstraints(plan, staging, wheel)
+	args = append(args, plan.PackExtensionProjects...)
+	constraints, err := packLockConstraints(plan, staging, wheel, a.embeddedPack)
 	if err != nil {
 		return payload, err
 	}
@@ -193,7 +194,7 @@ func (a *application) preparePackPayload(command *cobra.Command, uv, wheel, stag
 	if err = json.Unmarshal(result, &payload.Harnest); err != nil {
 		return payload, err
 	}
-	return payload, normalizePackLock(lock, wheel)
+	return payload, normalizePackLock(lock, wheel, plan.PackWheelsDir)
 }
 
 // packInterpreter selects only uv's relocatable CPython distribution, never a host framework install.
@@ -225,13 +226,17 @@ func (a *application) packCommandOutput(command *cobra.Command, executable strin
 	return output.Bytes(), err
 }
 
-// normalizePackLock removes the staged wheel location from the retained build record.
-func normalizePackLock(filename, wheel string) error {
+// normalizePackLock removes machine-local release and pack wheel paths from the retained build record.
+func normalizePackLock(filename, wheel, packWheelsDir string) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
 	value := strings.ReplaceAll(string(data), runtimeWheelURI(wheel), runtimeWheelMarker)
+	if packWheelsDir != "" {
+		packPrefix := strings.TrimSuffix(runtimeWheelURI(packWheelsDir), "/") + "/"
+		value = strings.ReplaceAll(value, packPrefix, packWheelsLockMarker+"/")
+	}
 	return os.WriteFile(filename, []byte(value), 0600)
 }
 
