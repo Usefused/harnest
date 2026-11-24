@@ -248,6 +248,7 @@ class SubAgent:
                 metadata=active.metadata,
             )
             runtime._audit_action = "subagent"
+            runtime._inherit_waits = True
             session = await runtime.create_session()
             owner.adopt(self)
         except BaseException:
@@ -267,9 +268,10 @@ class SubAgent:
     ) -> "AgentResponse":
         """Send one message and wait for the reply; turns share one conversation.
 
-        Turns run one at a time. Tools inside a SubAgent cannot wait for human
-        approval, client tools, or durable results yet; reaching one raises
-        ``SubAgentError``.
+        Turns run one at a time. Human approvals and client tools use the
+        calling run's continuation channel. Without a caller that can service
+        these waits, they raise ``SubAgentError``. Durable waits are unsupported.
+        The request timeout includes time spent awaiting approvals and clients.
         """
 
         self._require_open()
@@ -387,10 +389,16 @@ _WAIT_LABELS = {
 
 
 def _unsupported_wait(name: str, kind: str) -> SubAgentError:
+    """Explain whether a wait lacks an interactive caller or durable support."""
+
     label = _WAIT_LABELS.get(kind, "an unsupported")
+    reason = (
+        "durable waits are not supported inside SubAgents yet"
+        if kind == "external_continuation"
+        else "the calling run cannot service human approvals or client tools"
+    )
     return SubAgentError(
-        f"SubAgent {name!r} stopped at {label} wait; human approval, client tools, "
-        "and durable waits are not supported inside SubAgents yet"
+        f"SubAgent {name!r} stopped at {label} wait; {reason}"
     )
 
 

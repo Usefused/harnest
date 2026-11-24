@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Runtime `SubAgent` tools can request human approval and execute client tools through the calling run's continuation channel on ADK and LangGraph, including nested SubAgents. Conversations remain private, and cancelling or timing out a child clears its pending requests without cancelling the parent. These waits still require a caller that can service them; durable waits remain unsupported.
+
 ## [2.1.1](https://github.com/Usefused/harnest/compare/v2.1.0...v2.1.1) (2026-11-23)
 
 - Update the pinned LiteLLM runtime dependency to `1.110.2` (lifting the `filelock<4` cap for CVE-2026 `filelock` fixes) and refresh Python, Go, and example lock-file dependencies (`fastmcp`, `opentelemetry-*`, `nltk`, `pytest`, and Go modules).

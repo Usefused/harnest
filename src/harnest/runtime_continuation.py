@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
-from contextlib import aclosing, nullcontext
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import aclosing, contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import Any
 
 from .agent.approval import (
@@ -32,6 +33,11 @@ from .durable import FrameworkDurableSuspended
 from .output import (
     _agent_metadata_from_runtime_event,
     _aggregate_token_usage,
+)
+
+
+_ACTIVE_WAIT_RUN: ContextVar[ApprovalRun | None] = ContextVar(
+    "harnest_active_wait_run", default=None
 )
 
 
@@ -326,8 +332,9 @@ def start_approval_run(
     *,
     stream: bool,
     external_continuations: Any | None = None,
+    inherit_waits: bool = False,
 ) -> ApprovalRun:
-    """Start a resumable invocation under every process-local wait authority."""
+    """Start a run, optionally routing SubAgent waits through its live caller."""
 
     run = store.create_run(
         user_id=request.user_id,
@@ -339,33 +346,20 @@ def start_approval_run(
         """Wait for the concurrency gate before entering scoped continuations."""
 
         await run.activation.wait()
-        execution = ClientToolExecution(client_tools, run)
         try:
-            # Client tools wrap approvals because a resumed approved tool may
-            # itself suspend on a browser- or application-owned client tool.
             continuation_scope = (
                 nullcontext()
                 if external_continuations is None
                 else external_continuations.execution(run, request)
             )
-            # The run owns the shared channel; each HTTP request still owns
-            # and revokes the authentication binding carried through it.
-            with continuation_scope, client_tool_execution(execution), _principal_handoff(request.user_id) as authority:
-                run._authority = authority
-                with approval_execution(
-                    ApprovalExecution(
-                        user_id=request.user_id,
-                        session_id=request.session_id,
-                        call_id=request.invocation_id,
-                        store=store,
-                        run=run,
-                    )
-                ):
-                    result = (
-                        await collect_stream(driver, request, run)
-                        if stream
-                        else await driver.invoke(request)
-                    )
+            with continuation_scope, _run_wait_scope(
+                store, client_tools, run, inherit_waits=inherit_waits,
+            ):
+                result = (
+                    await collect_stream(driver, request, run)
+                    if stream
+                    else await driver.invoke(request)
+                )
         except FrameworkDurableSuspended:
             # The framework adapter raises only after its native checkpoint is
             # committed. Arming here closes the callback-before-checkpoint race
@@ -387,14 +381,46 @@ def start_approval_run(
             run.notifications.put_nowait(("error", exc))
         else:
             run.notifications.put_nowait(("result", result))
-        finally:
-            # This owns transient bytes from every boundary: request input,
-            # server tools, and client tools. Model adapters normally commit
-            # consumed leases earlier; terminal cleanup covers every other path.
-            execution.transient_media.clear()
 
     run.task = asyncio.create_task(execute())
     return run
+
+
+@contextmanager
+def _run_wait_scope(
+    store: InMemoryApprovalStore,
+    client_tools: InMemoryClientToolStore,
+    run: ApprovalRun,
+    *,
+    inherit_waits: bool,
+) -> Iterator[None]:
+    """Keep child results private while the caller owns interactive continuations."""
+
+    parent = _ACTIVE_WAIT_RUN.get() if inherit_waits else None
+    # A different user's run can never lend interactive execution authority.
+    if parent is not None and parent.user_id == run.user_id:
+        # Copied contexts must not revive a continuation whose owner finished.
+        if parent.task is None or parent.task.done():
+            raise RuntimeError("the calling continuation has ended")
+        # Retain the parent's stores, response identity, and refreshed auth
+        # channel. A child's timeout must not revoke these shared resources.
+        yield
+        return
+    execution = ClientToolExecution(client_tools, run)
+    token = _ACTIVE_WAIT_RUN.set(run)
+    try:
+        # Client tools wrap approvals: an approved tool may request client work.
+        with client_tool_execution(execution), _principal_handoff(run.user_id) as authority:
+            run._authority = authority
+            with approval_execution(ApprovalExecution(
+                user_id=run.user_id, session_id=run.session_id,
+                call_id=run.call_id, store=store, run=run,
+            )):
+                yield
+    finally:
+        _ACTIVE_WAIT_RUN.reset(token)
+        # Only the owner clears media; borrowed bytes can outlive a child turn.
+        execution.transient_media.clear()
 
 
 async def next_run_boundary(run: ApprovalRun, *, timeout: float) -> tuple[str, Any]:

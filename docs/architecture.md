@@ -648,8 +648,14 @@ come from the invocation pipeline, or from the root's listeners in a task, which
 has none. Ownership follows the innermost managed scope: an async `@tool` call,
 a task run, or an agent invocation. Each scope closes the SubAgents it still owns
 when it finishes, before its context is revoked. Nesting is limited to three
-SubAgents, and approval, client-tool, and durable waits fail closed because the
-private runtime cannot resume them. Advanced applications do not offer SubAgents.
+SubAgents. `runtime_continuation` lets these private invocations borrow the
+caller's approval and client-tool execution scopes, keeping pending requests
+under the parent's response/session identity and authentication handoff. Child
+results stay private; the LangGraph adapter clears inherited runnable callbacks
+and checkpoint settings before entering a separate runtime invocation. A child's
+timeout or cancellation releases only its own waiters. Without a caller that can
+service interactive waits, they fail closed.
+Durable waits remain unsupported. Advanced applications do not offer SubAgents.
 
 Setting scalars may use exact `${NAME}` environment references. Compilation
 validates their position and preserves the template bytes; the launcher resolves

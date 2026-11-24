@@ -250,7 +250,7 @@ class InMemoryApprovalStore:
     async def suspend(
         self, run: ApprovalRun, challenge: ApprovalChallenge
     ) -> PendingApproval:
-        """Suspend an invocation until its challenge is approved or rejected."""
+        """Wait for a decision, releasing this challenge if its caller is cancelled."""
 
         execution = ApprovalExecution(run.user_id, run.session_id, run.call_id)
         pending, future = self._request_waiter(run, challenge)
@@ -262,9 +262,25 @@ class InMemoryApprovalStore:
             with self._lock:
                 _consume_grant(pending, challenge, execution, clock=self._clock)
             return pending
+        except asyncio.CancelledError:
+            self._cancel_waiter(pending)
+            raise
         finally:
             if pending.status in {"denied", "expired"}:
                 self._release_waiter(pending.id)
+
+    def _cancel_waiter(self, pending: PendingApproval) -> None:
+        """Cancel one child's wait without cancelling its parent's other work."""
+
+        with self._lock:
+            waiter = self._waiters.pop(pending.id, None)
+            # Whole-run cancellation may already have removed and audited it.
+            if waiter is None:
+                return
+            pending.status = "execution_cancelled"
+            pending.finished_at = self._clock()
+        waiter.timer.cancel()
+        _audit(pending, "execution_cancelled", "cancelled")
 
     def _request_waiter(
         self, run: ApprovalRun, challenge: ApprovalChallenge

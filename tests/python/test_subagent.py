@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import textwrap
@@ -151,7 +153,7 @@ def _write_agent(root: Path, framework: str) -> None:
         f"""
         from harnest.agent import Agent, tool
         from harnest.agent.approval import request_human_approval
-        from _subagent_fixture import model
+        from _subagent_fixture import model, record
 
 
         @tool
@@ -161,6 +163,7 @@ def _write_agent(root: Path, framework: str) -> None:
             async with request_human_approval(
                 action="research.probe", message="Allow probing?", arguments={{}},
             ):
+                record("approved_work", True)
                 return "ok"
 
 
@@ -176,24 +179,26 @@ def _write_agent(root: Path, framework: str) -> None:
     _write(
         root / "tools" / "approve.py",
         """
-        from harnest.agent import SubAgent, SubAgentError, tool
+        from harnest.agent import SubAgent, tool
+        from harnest.agent.approval import ApprovalDenied, _CURRENT_EXECUTION
         from harnest.lib.guarded import guarded_researcher
         from _subagent_fixture import record
 
 
         @tool
         async def approve(topic: str) -> str:
-            '''Show that a SubAgent cannot wait for human approval.'''
+            '''Wait for the parent's client to approve a SubAgent operation.'''
 
+            record("approval_run", _CURRENT_EXECUTION.get().run)
             async with SubAgent(guarded_researcher()) as sub:
+                record("approval_handle", sub)
                 try:
-                    await sub.run("probe the sources")
-                except SubAgentError as error:
-                    record("approval_error", str(error))
-                    return "refused"
-            return "ran"
+                    return (await sub.run("probe the sources")).output_text
+                except ApprovalDenied:
+                    return "denied"
         """,
     )
+    _write_interactive_tools(root, framework)
     _write(
         root / "lifecycle" / "audit.py",
         """
@@ -239,17 +244,74 @@ def _write_agent(root: Path, framework: str) -> None:
     write_session_store(root)
 
 
+def _write_interactive_tools(root: Path, framework: str) -> None:
+    """Exercise a protected client-tool declaration through nested SubAgents."""
+
+    _write(
+        root / "lib" / "interactive.py",
+        f"""
+        from pydantic import BaseModel
+        from harnest.agent import Agent, SubAgent, client_tool, tool
+        from harnest.agent.approval import require_human_approval
+        from harnest.runtime_auth import _active_authenticated_principal
+        from _subagent_fixture import model, record
+
+
+        class Selection(BaseModel):
+            text: str
+
+
+        @client_tool
+        @require_human_approval(message="Read the selection?")
+        async def probe() -> Selection:
+            '''Read the current selection from the connected client.'''
+            raise AssertionError("client declarations must not execute")
+
+
+        @tool
+        async def nested_probe(topic: str) -> str:
+            '''Run an interactive child inside another SubAgent.'''
+            async with SubAgent(Agent(
+                name="researcher", model=model({framework!r}, "researcher"),
+                instruction="Research.", tools=[probe],
+            )) as sub:
+                record("interactive_handle", sub)
+                reply = await sub.run("probe")
+                principal = _active_authenticated_principal()
+                record("resumed_user", None if principal is None else principal.user_id)
+                return reply.output_text
+
+
+        @tool
+        async def interact(topic: str) -> str:
+            '''Delegate a client request through two runtime SubAgents.'''
+            async with SubAgent(Agent(
+                name="lead", model=model({framework!r}, "lead"),
+                instruction="Delegate.", tools=[nested_probe],
+            )) as sub:
+                record("interactive_handle", sub)
+                return (await sub.run("nested_probe")).output_text
+        """,
+    )
+    _write(root / "tools" / "interact.py", "from harnest.lib.interactive import interact\n")
+
+
 @unittest.skipUnless(FRAMEWORKS, "ADK or LangGraph is required")
 class SubAgentRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         fixture.JOURNAL.clear()
 
-    def _client(self, framework: str, tmp: str) -> TestClient:
+    def _client(self, framework: str, tmp: str, *, authenticator=None) -> TestClient:
+        """Compile the fixture with optional request-scoped authentication."""
+
         root = Path(tmp) / "source"
         artifact = Path(tmp) / "artifact"
         _write_agent(root, framework)
         compile_artifact(root, artifact, framework=framework)
-        return TestClient(create_fastapi_app(artifact), raise_server_exceptions=True)
+        return TestClient(
+            create_fastapi_app(artifact, authenticator=authenticator),
+            raise_server_exceptions=True,
+        )
 
     def _respond(self, client: TestClient, text: str) -> dict:
         response = client.post("/responses", json={"input": text})
@@ -315,17 +377,126 @@ class SubAgentRuntimeTests(unittest.TestCase):
                 (handle,) = fixture.entries("hook_handle")
                 self.assertFalse(handle.is_open)
 
-    def test_subagent_tools_cannot_wait_for_human_approval(self) -> None:
+    def test_subagent_tools_wait_for_human_approval(self) -> None:
+        """Only approved child work runs, under the parent's response identity."""
+
         for framework in FRAMEWORKS:
             with self.subTest(framework=framework), tempfile.TemporaryDirectory() as tmp:
                 fixture.JOURNAL.clear()
                 with self._client(framework, tmp) as client:
                     body = self._respond(client, "approve")
-                # The parent run completes; the approval never surfaces as its own.
-                self.assertEqual(body["status"], "completed")
-                self.assertEqual(body["outputText"], "root saw: refused")
-                (message,) = fixture.entries("approval_error")
-                self.assertIn("stopped at a human approval wait", message)
+                    self.assertEqual(body["status"], "requires_action")
+                    self.assertEqual(fixture.entries("approved_work"), [])
+                    (handle,) = fixture.entries("approval_handle")
+                    self.assertTrue(handle.is_open)
+                    self.assertNotEqual(handle.session_id, body["sessionId"])
+                    action = body["requiredAction"]
+                    self.assertEqual(action["callId"], body["id"])
+                    completed = client.post(
+                        f"/approvals/{action['id']}", json={"decision": "approve"},
+                    ).json()
+                self.assertEqual(completed["id"], body["id"])
+                self.assertEqual(completed["outputText"], "root saw: sub turn 1: probe=ok")
+                self.assertEqual(fixture.entries("approved_work"), [True])
+                self.assertFalse(handle.is_open)
+
+    def test_subagent_approval_denial_prevents_protected_work(self) -> None:
+        """Keep the parent's denial contract without executing protected child work."""
+
+        for framework in FRAMEWORKS:
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as tmp:
+                fixture.JOURNAL.clear()
+                with self._client(framework, tmp) as client:
+                    body = self._respond(client, "approve")
+                    completed = client.post(
+                        f"/approvals/{body['requiredAction']['id']}",
+                        json={"decision": "deny"},
+                    )
+                    self.assertEqual(completed.status_code, 200, completed.text)
+                    # Denial replies immediately; join cleanup before shutting
+                    # down the test server and its framework event loop.
+                    client.portal.call(
+                        asyncio.wait_for, fixture.entries("approval_run")[0].task, 5,
+                    )
+                self.assertEqual(completed.json()["status"], "denied")
+                self.assertEqual(fixture.entries("approved_work"), [])
+                self.assertFalse(fixture.entries("approval_handle")[0].is_open)
+
+    def test_streaming_parent_publishes_subagent_approval(self) -> None:
+        """A streaming root exposes the child's wait under its own response ID."""
+
+        for framework in FRAMEWORKS:
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as tmp:
+                fixture.JOURNAL.clear()
+                with self._client(framework, tmp) as client:
+                    response = client.post(
+                        "/responses", json={"input": "approve", "stream": True},
+                    )
+                    events = [
+                        json.loads(line[6:]) for line in response.text.splitlines()
+                        if line.startswith("data: ")
+                    ]
+                    (requested,) = [event for event in events if event["type"] == "approval.requested"]
+                    self.assertEqual(requested["approval"]["callId"], requested["responseId"])
+                    completed = client.post(
+                        f"/approvals/{requested['approval']['id']}",
+                        json={"decision": "approve"},
+                    )
+                    self.assertEqual(completed.status_code, 200, completed.text)
+                    self.assertEqual(completed.json()["id"], requested["responseId"])
+                    self.assertEqual(completed.json()["outputText"], "root saw: sub turn 1: probe=ok")
+
+    def test_nested_subagent_approval_then_typed_client_tool(self) -> None:
+        """Resume nested children using the parent's approval and client endpoints."""
+
+        from harnest.runtime_auth import AuthPrincipal
+
+        class Authenticator:
+            async def authenticate(self, connection):
+                """Give each request its own revocable identity binding."""
+
+                return AuthPrincipal(connection.headers.get("x-user", "alice"))
+
+        for framework in FRAMEWORKS:
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as tmp:
+                fixture.JOURNAL.clear()
+                with self._client(framework, tmp, authenticator=Authenticator()) as client:
+                    body = self._respond(client, "interact")
+                    self.assertEqual(body["status"], "requires_action")
+                    denied = client.post(
+                        f"/approvals/{body['requiredAction']['id']}",
+                        json={"decision": "approve"}, headers={"x-user": "mallory"},
+                    )
+                    self.assertEqual(denied.status_code, 404, denied.text)
+                    approved = client.post(
+                        f"/approvals/{body['requiredAction']['id']}",
+                        json={"decision": "approve"},
+                    )
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    pending = approved.json()
+                    action = pending["requiredAction"]
+                    self.assertEqual(action["type"], "client_tool")
+                    self.assertEqual(action["name"], "probe")
+                    self.assertEqual(action["callId"], body["id"])
+                    self.assertEqual(pending["sessionId"], body["sessionId"])
+                    endpoint = f"/client-tools/{action['id']}"
+                    denied = client.post(
+                        endpoint, json={"output": {"text": "wrong user"}},
+                        headers={"x-user": "mallory"},
+                    )
+                    self.assertEqual(denied.status_code, 404, denied.text)
+                    invalid = client.post(endpoint, json={"output": {"invalid": True}})
+                    self.assertEqual(invalid.status_code, 409, invalid.text)
+                    completed = client.post(endpoint, json={"output": {"text": "selected"}})
+                    self.assertEqual(completed.status_code, 200, completed.text)
+                    self.assertEqual(completed.json()["id"], body["id"])
+                    self.assertIn("selected", completed.json()["outputText"])
+                    self.assertEqual(completed.json()["status"], "completed")
+                    replayed = client.post(endpoint, json={"output": {"text": "again"}})
+                    self.assertIn(replayed.status_code, (404, 409))
+                self.assertEqual(len(fixture.entries("interactive_handle")), 2)
+                self.assertTrue(all(not sub.is_open for sub in fixture.entries("interactive_handle")))
+                self.assertEqual(fixture.entries("resumed_user"), ["alice"])
 
     def test_nesting_is_bounded(self) -> None:
         for framework in FRAMEWORKS:
@@ -491,6 +662,106 @@ class SubAgentContractTests(unittest.IsolatedAsyncioTestCase):
         for timeout in (0, -1, float("inf"), True):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 SubAgent(self._agent(), request_timeout=timeout)
+
+
+class SubAgentWaitLifetimeTests(unittest.IsolatedAsyncioTestCase):
+    """Exercise child wait cleanup without model or transport timing dependencies."""
+
+    @asynccontextmanager
+    async def _child(self, *, parent_waits: bool = True):
+        """Bind a real SubAgent to a small driver and optional parent wait channel."""
+
+        from contextlib import ExitStack
+        from harnest import context
+        from harnest.agent.approval import InMemoryApprovalStore
+        from harnest.client_tool import InMemoryClientToolStore
+        from harnest.runtime_continuation import _run_wait_scope
+        from harnest.tool_lifecycle import ToolLifecyclePipeline
+        from test_context_agent import _FakeDriver
+
+        class Host:
+            def check_mcp_ownership(self, definition):
+                """The fake driver has no MCP resources to share."""
+
+            async def open_driver(self, definition):
+                """Use the existing portable approval/client-tool driver fixture."""
+
+                return _FakeDriver()
+
+            def tool_pipeline(self):
+                """Provide an empty root hook pipeline for task-style callers."""
+
+                return ToolLifecyclePipeline(())
+
+        store, clients = InMemoryApprovalStore(), InMemoryClientToolStore()
+        run = store.create_run(user_id="alice", session_id="root", call_id="root-call")
+        run.task = asyncio.current_task()
+        active = context.create_agent_context(
+            framework="langgraph", agent_name="root", invocation_id="root-call",
+            user_id="alice", session_id="root", metadata={}, resources={},
+            subagent_host=Host(), subagent_owner=SubAgentOwner("invocation"),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(context.activate_context(active))
+            # Task/cron callers deliberately lack a transport continuation scope.
+            if parent_waits:
+                stack.enter_context(_run_wait_scope(store, clients, run, inherit_waits=False))
+            async with SubAgent(Agent(
+                name="child", model="openai/gpt-4o-mini", instruction="Help.",
+            )) as child:
+                yield child, store, clients, run
+
+    async def test_unattended_waits_still_fail_closed(self) -> None:
+        """A task without a connected caller cannot leave process-local requests."""
+
+        async with self._child(parent_waits=False) as (child, _, _, _):
+            for message in ("approval", "client-tool"):
+                with self.subTest(message=message), self.assertRaisesRegex(
+                    SubAgentError, "calling run cannot service",
+                ):
+                    await child.run(message)
+
+    async def test_timeout_clears_child_approval_and_parent_remains_usable(self) -> None:
+        """A child's deadline cancels only its wait, including its approval timer."""
+
+        from harnest.agent.approval import ApprovalEnforcementError
+        from harnest.context import AgentInvocationTimeout
+
+        async with self._child() as (child, store, clients, run):
+            task = asyncio.create_task(child.run("approval", request_timeout=0.05))
+            kind, pending = await asyncio.wait_for(run.notifications.get(), 1)
+            self.assertEqual(kind, "approval")
+            with self.assertRaises(AgentInvocationTimeout):
+                await task
+            self.assertEqual(pending.status, "execution_cancelled")
+            self.assertIsNone(store.run_for(pending))
+            with self.assertRaises(ApprovalEnforcementError):
+                store.decide(pending.id, user_id="alice", decision="approve")
+            await self._resume_client(child, clients, run)
+
+    async def test_cancellation_clears_client_request_and_parent_remains_usable(self) -> None:
+        """Cancelling a child removes its client request and preserves parent authority."""
+
+        async with self._child() as (child, _, clients, run):
+            task = asyncio.create_task(child.run("client-tool"))
+            kind, pending = await asyncio.wait_for(run.notifications.get(), 1)
+            self.assertEqual(kind, "client_tool")
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            with self.assertRaises(KeyError):
+                await clients.submit(pending.id, user_id="alice", output="late")
+            await self._resume_client(child, clients, run)
+
+    async def _resume_client(self, child, clients, run) -> None:
+        """Prove the original parent channel still resumes a later child turn."""
+
+        task = asyncio.create_task(child.run("client-tool"))
+        kind, pending = await asyncio.wait_for(run.notifications.get(), 1)
+        self.assertEqual(kind, "client_tool")
+        self.assertEqual(pending.call_id, "root-call")
+        await clients.submit(pending.id, user_id="alice", output="accepted")
+        self.assertEqual((await task).output_text, "client-tool")
 
 
 class SubAgentMCPOwnershipTests(unittest.TestCase):

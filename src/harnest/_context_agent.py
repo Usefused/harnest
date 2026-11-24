@@ -186,6 +186,8 @@ class LocalAgentRuntime:
 
     # Audit records name what was invoked; SubAgents reuse this runtime.
     _audit_action = "root_agent"
+    # Only owner-scoped SubAgents borrow the caller's interactive wait channel.
+    _inherit_waits = False
 
     def __init__(
         self,
@@ -457,7 +459,7 @@ class LocalAgentRuntime:
             _audit("invoke", self._trigger, outcome, self._driver, self._audit_action)
 
     def _start_run(self, request: InvocationRequest, *, stream: bool) -> Any:
-        """Install the same wait scopes as neutral HTTP without its wire layer."""
+        """Install local wait scopes or borrow the owning SubAgent caller's scopes."""
 
         run = start_approval_run(
             self._approvals,
@@ -465,6 +467,7 @@ class LocalAgentRuntime:
             self._driver,
             request,
             stream=stream,
+            inherit_waits=self._inherit_waits,
             external_continuations=getattr(
                 self._driver, "external_continuations", None
             ),

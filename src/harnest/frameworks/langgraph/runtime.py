@@ -284,7 +284,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
         )
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
-        """Run one graph invocation and return canonical neutral events."""
+        """Run an independent graph invocation and return canonical neutral events."""
 
         session_id = await self._session_id_for_request(request)
         native_resume = _native_resume(request.input)
@@ -312,7 +312,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             target = await self._target_for_run()
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
-                with self._mcp_invocation_scope():
+                with _isolated_runnable_context(), self._mcp_invocation_scope():
                     result = await _target_invoke(target, graph_input, config)
                 await self._store_result(session, result, scope=scope)
                 if _has_native_interrupt(result):
@@ -350,7 +350,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
     async def stream(
         self, request: InvocationRequest
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield visible LangGraph output as canonical neutral events."""
+        """Yield this invocation's output without inheriting another run's stream."""
 
         target = await self._target_for_run()
         if not callable(getattr(target, "astream", None)):
@@ -387,7 +387,7 @@ class LangGraphRuntimeDriver(RuntimeDriver):
             state = _StreamState(state_snapshot=dict(session.record.state))
             scope_token = _MODEL_ASSET_SCOPE.set(scope)
             try:
-                with self._mcp_invocation_scope():
+                with _isolated_runnable_context(), self._mcp_invocation_scope():
                     async for event in _target_stream(
                         target,
                         graph_input,
@@ -1360,6 +1360,22 @@ def _durability_options(method: Any) -> dict[str, str]:
     # Older compatible targets do not expose durability. Pregel 1.2 does, and
     # sync ordering is what makes a returned interrupt safe for another replica.
     return {"durability": "sync"} if supported else {}
+
+
+@contextmanager
+def _isolated_runnable_context() -> Iterator[None]:
+    """Keep a private runtime's output and checkpoint settings inside its driver."""
+
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    # LangGraph inherits callbacks even when an explicit thread ID is supplied.
+    # A runtime SubAgent must not publish messages into its caller's stream or
+    # inherit its native checkpoint namespace; Harnest scopes remain active.
+    token = var_child_runnable_config.set(None)
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 async def _target_invoke(
