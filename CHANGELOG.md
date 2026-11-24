@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## [2.3.0](https://github.com/Usefused/harnest/compare/v2.2.0...v2.3.0) (2026-11-24)
 
 - Raised Harnest's default and managed fallback Python version to **3.14** (while continuing to support Python **3.11–3.14**). Managed agent, Studio, and pack CLI environments now prefer any compatible system Python (`--python-preference system`, matching `>=3.11,<3.15` for Studio and pack CLI runtimes or the agent's declared `spec.runtime.version`) before falling back to a `uv`-managed Python 3.14 download, and `PATH` discovery checks `python3.14` down to `python3.11` ahead of generic `python3` (relocatable standalone agent executables built by `harnest runtime build` / `harnest compile --format executable` continue to bundle `uv`'s relocatable CPython). Fixed PEP 649 `__annotate__` propagation across `@client_input`, `@tool`, `@client_tool`, durable LangGraph tools, approval wrappers, and tool lifecycle wrappers on Python 3.14.
 - `harnest pack build` now defaults to building a standalone branded native CLI binary (`--format binary`, with `--format wheel` kept as opt-in and `--base-binary` for stamping target binaries). Downstream teams can run the branded executable without installing Harnest separately. Packs can declare coding-IDE `skills` (merged into `<command> skills install|show`, with optional replacement of same-named built-in skills), protected `packages` (`wheels`—prebuilt `.whl` files or local Python packages—and pinned PEP 508 `requirements` injected into environments and agent binaries and blocked from `pyproject.toml` overrides), and pack-owned `extensions` auto-loaded into compiled artifacts without copying editable source into agent repositories.
+
+### Features
+
+* upgrade default python version to 3.14 and add binary packing support ([c2b1a17](https://github.com/Usefused/harnest/commit/c2b1a176acc42ce3bf0b7538aa4f1edc9f16add8))
 
 ## [2.2.0](https://github.com/Usefused/harnest/compare/v2.1.1...v2.2.0) (2026-11-24)
 
