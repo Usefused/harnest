@@ -1014,9 +1014,15 @@ async def _run_local_application(application: Any, args: Any, message: str) -> N
 
 def _connection_hint(error: Exception) -> str:
     """Suggest endpoint checks for connection failures without printing provider payloads."""
-    if type(error).__name__ == "APIConnectionError":
-        return ". Check that the configured model server is running and reachable at OPENAI_BASE_URL."
-    return ""
+
+    from .model_transport import endpoint_origin, is_connection_error
+
+    # Inspect both direct and wrapped connection failures across ADK and LangGraph.
+    if not is_connection_error(error):
+        return ""
+    origin = endpoint_origin(os.getenv("OPENAI_BASE_URL"))
+    location = f" ({origin})" if origin else ""
+    return f". Check that the configured model server is running and reachable at OPENAI_BASE_URL{location}."
 
 
 def _run_command(args: Any) -> int:

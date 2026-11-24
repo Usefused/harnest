@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 _TRANSPORT_ARGUMENTS = frozenset(
@@ -36,13 +37,21 @@ class FrameworkToolClient:
         """Route the final async request after framework tools and hooks are applied."""
         _check_model_endpoint(kwargs)
         _route_function_tools(args, kwargs)
-        return await self._delegate.acompletion(*args, **kwargs)
+        try:
+            return await self._delegate.acompletion(*args, **kwargs)
+        except Exception as exc:
+            _reraise_connection_error(exc, kwargs)
+            raise
 
     def completion(self, *args: Any, **kwargs: Any) -> Any:
         """Apply the same tool ownership rule to synchronous and streaming calls."""
         _check_model_endpoint(kwargs)
         _route_function_tools(args, kwargs)
-        return self._delegate.completion(*args, **kwargs)
+        try:
+            return self._delegate.completion(*args, **kwargs)
+        except Exception as exc:
+            _reraise_connection_error(exc, kwargs)
+            raise
 
 
 # The placeholder endpoint `harnest init` writes; equal to the Go constant
@@ -57,6 +66,70 @@ def _check_model_endpoint(arguments: Mapping[str, Any]) -> None:
             "The example model endpoint cannot serve requests. Set OPENAI_BASE_URL "
             "to your OpenAI-compatible API and OPENAI_MODEL to a model it serves."
         )
+
+
+_CONNECTION_ERROR_NAMES = frozenset(
+    {"APIConnectionError", "ConnectError", "ClientConnectorError", "ConnectTimeout"}
+)
+
+
+def _connection_cause(error: BaseException) -> BaseException | None:
+    """Return the first genuine connection error in the chain, or None."""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    # Walk explicit and implicit causes so wrapped provider exceptions (such as
+    # LiteLLM InternalServerError wrapping openai.APIConnectionError) are detected.
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ConnectionError) or type(current).__name__ in _CONNECTION_ERROR_NAMES:
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def is_connection_error(error: BaseException) -> bool:
+    """Report whether an exception or its cause chain represents a network connection failure."""
+
+    return _connection_cause(error) is not None
+
+
+def endpoint_origin(api_base: Any) -> str:
+    """Extract only scheme and host[:port] so diagnostics never disclose credentials or paths."""
+
+    if not isinstance(api_base, str) or not api_base.strip():
+        return ""
+    parsed = urlsplit(api_base.strip())
+    # Exclude userinfo, path, and query so embedded tokens or routes cannot leak.
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"{parsed.scheme}://{host}:{parsed.port}" if parsed.port else f"{parsed.scheme}://{host}"
+
+
+def _reraise_connection_error(error: Exception, kwargs: Mapping[str, Any]) -> None:
+    """Convert LiteLLM's misclassified InternalServerError on connection failures to APIConnectionError."""
+
+    # Only reclassify provider wrappers that mislabel a client-side connect error as HTTP 500.
+    cause = _connection_cause(error)
+    if type(error).__name__ != "InternalServerError" or cause is None:
+        return
+    origin = endpoint_origin(kwargs.get("api_base"))
+    location = f" ({origin})" if origin else ""
+    message = (
+        f"Could not connect to the configured model server{location}. "
+        "Check that the server is running and reachable at OPENAI_BASE_URL."
+    )
+    try:
+        from litellm.exceptions import APIConnectionError
+    except ImportError:
+        raise ConnectionError(message) from cause
+    # Chain from the underlying connection error so tracebacks drop LiteLLM's bogus InternalServerError.
+    raise APIConnectionError(
+        message=message,
+        llm_provider=getattr(error, "llm_provider", "openai"),
+        model=getattr(error, "model", str(kwargs.get("model", ""))),
+    ) from cause
 
 
 def _route_function_tools(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:

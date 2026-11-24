@@ -68,6 +68,49 @@ class ScaffoldEndpointTests(unittest.TestCase):
             _check_model_endpoint({"api_base": SCAFFOLD_BASE_URL})
         _check_model_endpoint({"api_base": "https://gateway.invalid/v1"})
 
+    def test_framework_tool_client_reclassifies_wrapped_connection_error(self):
+        """LiteLLM InternalServerError wrapping a connect error becomes APIConnectionError."""
+        import asyncio
+        from litellm.exceptions import APIConnectionError, InternalServerError
+        from harnest.model_transport import FrameworkToolClient, endpoint_origin
+
+        # Ensure userinfo, path, and query are stripped from diagnostic origins.
+        self.assertEqual(
+            endpoint_origin("https://user:secret@models.example.com:8443/v1/chat?token=abc"),
+            "https://models.example.com:8443",
+        )
+
+        class _ConnectFailDelegate:
+            """Raise LiteLLM's InternalServerError wrapping an OS connection refusal."""
+
+            async def acompletion(self, *args, **kwargs):
+                try:
+                    raise ConnectionRefusedError("connect failed")
+                except ConnectionRefusedError as cause:
+                    raise InternalServerError(
+                        message="OpenAIException - Connection error.",
+                        llm_provider="openai",
+                        model="gpt-4o-mini",
+                    ) from cause
+
+        class _Server500Delegate:
+            """Raise a genuine HTTP 500 InternalServerError without a connect cause."""
+
+            async def acompletion(self, *args, **kwargs):
+                raise InternalServerError(
+                    message="upstream 500", llm_provider="openai", model="gpt-4o-mini"
+                )
+
+        wrapped_connect = FrameworkToolClient(_ConnectFailDelegate())
+        with self.assertRaises(APIConnectionError) as ctx:
+            asyncio.run(wrapped_connect.acompletion(api_base="http://127.0.0.1:1/v1", model="openai/gpt-4o-mini"))
+        self.assertIn("http://127.0.0.1:1", str(ctx.exception))
+        self.assertIn("OPENAI_BASE_URL", str(ctx.exception))
+
+        wrapped_500 = FrameworkToolClient(_Server500Delegate())
+        with self.assertRaises(InternalServerError):
+            asyncio.run(wrapped_500.acompletion(api_base="http://127.0.0.1:1/v1", model="openai/gpt-4o-mini"))
+
 
 class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

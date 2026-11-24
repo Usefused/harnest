@@ -30,12 +30,13 @@ func slotMatches(slot, name string) bool {
 // replacementSlot uses one bounded alternate when a running command owns the primary.
 // The caller holds the project lock; the final lease check precedes any mutation.
 func replacementSlot(root, slot string) (string, error) {
-	leases, err := os.ReadDir(filepath.Join(root, environmentLeaseDirectory, slot))
-	if os.IsNotExist(err) || (err == nil && len(leases) == 0) {
-		return slot, nil
-	}
+	active, err := activeSlotLeases(filepath.Join(root, environmentLeaseDirectory, slot))
 	if err != nil {
 		return "", err
+	}
+	// Reuse the primary slot whenever no live process holds a lease on it.
+	if active == 0 {
+		return slot, nil
 	}
 	return slot + "-next", nil
 }

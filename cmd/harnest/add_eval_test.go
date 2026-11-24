@@ -204,3 +204,41 @@ func TestAddEvalRejectsConfigLinks(t *testing.T) {
 		t.Fatal("changed external config")
 	}
 }
+
+// TestAddEvalScopedWritesPerSetConfig isolates criteria in <set>.test_config.json sidecars.
+func TestAddEvalScopedWritesPerSetConfig(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "agent")
+	if _, _, err := executeForTest(t, defaultSystem(), "init", root, "--minimal"); err != nil {
+		t.Fatal(err)
+	}
+	toolOut, _, err := executeForTest(t, defaultSystem(), "add", "eval", "tool-calls", "--project", root, "--metric", "tool_trajectory_avg_score", "--scoped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "scoped tool eval output", toolOut, []string{"tool_trajectory_avg_score", "evals/tool_calls.test_config.json"})
+	if _, _, err := executeForTest(t, defaultSystem(), "add", "eval", "answer-quality", "--project", root, "--metric", "final_response_match_v2", "--scoped"); err != nil {
+		t.Fatal(err)
+	}
+	// Shared evals/test_config.json must not be created when every set is scoped.
+	if _, err := os.Stat(filepath.Join(root, "evals", "test_config.json")); !os.IsNotExist(err) {
+		t.Fatalf("scoped eval unexpectedly created shared test_config.json: %v", err)
+	}
+	assertScopedEvalCriteria(t, filepath.Join(root, "evals", "tool_calls.test_config.json"), "tool_trajectory_avg_score", "final_response_match_v2")
+	assertScopedEvalCriteria(t, filepath.Join(root, "evals", "answer_quality.test_config.json"), "final_response_match_v2", "tool_trajectory_avg_score")
+	if _, _, err := executeForTest(t, defaultSystem(), "add", "eval", "custom-metric", "--project", root, "--metric", "custom", "--scoped"); err == nil {
+		t.Fatal("accepted --scoped with --metric custom")
+	}
+}
+
+// assertScopedEvalCriteria checks that a sidecar config includes only its own metric.
+func assertScopedEvalCriteria(t *testing.T, path, present, absent string) {
+	t.Helper()
+	var config map[string]any
+	if err := json.Unmarshal(mustReadTestFile(t, path), &config); err != nil {
+		t.Fatal(err)
+	}
+	criteria := config["criteria"].(map[string]any)
+	if criteria[present] == nil || criteria[absent] != nil {
+		t.Fatalf("%s criteria = %v, want %q without %q", path, criteria, present, absent)
+	}
+}

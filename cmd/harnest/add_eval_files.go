@@ -13,7 +13,7 @@ import (
 )
 
 // addEvalResource applies the same root, naming, and no-overwrite rules as other resources.
-func addEvalResource(project, requested string, choice evalScaffold) (string, error) {
+func addEvalResource(project, requested string, choice evalScaffold, scoped bool) (string, error) {
 	if choice.ID == "custom" {
 		path, _, err := addAgentResource(project, requested, agentResourceScaffold{
 			Kind: "eval", Directory: "lib", Source: customEvalSource,
@@ -31,11 +31,11 @@ func addEvalResource(project, requested string, choice evalScaffold) (string, er
 	if err := validateAgentResourceCompatibility(root, agentResourceScaffold{Kind: "eval"}); err != nil {
 		return "", err
 	}
-	return createEvalFiles(root, name, choice)
+	return createEvalFiles(root, name, choice, scoped)
 }
 
 // createEvalFiles validates configuration before writing and rolls back a failed paired update.
-func createEvalFiles(root, name string, choice evalScaffold) (path string, returnErr error) {
+func createEvalFiles(root, name string, choice evalScaffold, scoped bool) (path string, returnErr error) {
 	directory := filepath.Join(root, "evals")
 	madeDirectory, err := prepareAgentResourceDirectory(directory, "evals")
 	if err != nil {
@@ -46,7 +46,13 @@ func createEvalFiles(root, name string, choice evalScaffold) (path string, retur
 			_ = os.Remove(directory)
 		}
 	}()
-	configPath := filepath.Join(directory, "test_config.json")
+	configName := "test_config.json"
+	// Scoped eval sets write a dedicated <set>.test_config.json sidecar so their
+	// criteria stay isolated from unrelated eval sets sharing evals/test_config.json.
+	if scoped {
+		configName = name + ".test_config.json"
+	}
+	configPath := filepath.Join(directory, configName)
 	previous, updated, err := evalConfigUpdate(configPath, choice)
 	if err != nil {
 		return "", err

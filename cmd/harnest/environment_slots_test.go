@@ -193,3 +193,33 @@ func assertLegacyEnvironmentLeaseBlocksMigration(t *testing.T, sys system, agent
 		t.Fatalf("migration created an extra environment while legacy commands are active: %v", err)
 	}
 }
+
+// TestEnvironmentSlotsReapStaleDeadPIDLeasesAndLocks recovers from crashed or force-killed commands.
+func TestEnvironmentSlotsReapStaleDeadPIDLeasesAndLocks(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	t.Setenv("HARNEST_ENV_TEST_CALLS", filepath.Join(root, "calls.txt"))
+	sys := environmentTestSystem(t, root)
+	mustSyncAgentEnvironment(t, sys, agent)
+
+	// Simulate an unclean exit leaving behind both slot leases and the project lock directory.
+	deadPID := "999999\n"
+	for _, slot := range []string{"agent", "agent-next"} {
+		leaseDir := filepath.Join(agent, ".harnest", environmentLeaseDirectory, slot)
+		if err := os.MkdirAll(leaseDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWriteEnvironmentFixture(t, filepath.Join(leaseDir, "use-dead"), deadPID)
+	}
+	lockDir := filepath.Join(agent, ".harnest", "environment.lock")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEnvironmentFixture(t, filepath.Join(lockDir, "pid"), deadPID)
+
+	mustChangeEnvironmentDependencyInput(t, agent)
+	mustSyncAgentEnvironment(t, sys, agent)
+	assertEnvironmentSlots(t, agent, "agent")
+	if _, err := os.Stat(filepath.Join(agent, ".harnest", environmentLeaseDirectory, "agent", "use-dead")); !os.IsNotExist(err) {
+		t.Fatalf("dead lease file was not reaped: %v", err)
+	}
+}

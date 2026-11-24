@@ -464,13 +464,45 @@ func replaceIDEEnvironmentLink(path, target string) error {
 
 // lockEnvironment serializes environment publication, replacement, leases, and cleanup.
 func lockEnvironment(path string) (func(), error) {
-	if err := os.Mkdir(path, 0o755); err != nil {
-		if os.IsExist(err) {
-			return nil, &environmentBusyError{message: fmt.Sprintf("another agent environment sync is in progress: %s", path)}
-		}
-		return nil, fmt.Errorf("lock agent environment: %w", err)
+	if err := acquireLockDirectory(path); err != nil {
+		return nil, err
 	}
-	return func() { _ = os.Remove(path) }, nil
+	pidPath := filepath.Join(path, "pid")
+	// Record the owning PID so a future command can recover if this process is killed abruptly.
+	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600)
+	return func() {
+		_ = os.Remove(pidPath)
+		_ = os.Remove(path)
+	}, nil
+}
+
+// acquireLockDirectory creates the lock directory, reaping one owned by an exited process.
+func acquireLockDirectory(path string) error {
+	err := os.Mkdir(path, 0o755)
+	if err == nil {
+		return nil
+	}
+	if !os.IsExist(err) {
+		return fmt.Errorf("lock agent environment: %w", err)
+	}
+	// Recover automatically when the previous lock holder died without running cleanup.
+	if reapStaleLockDirectory(path) {
+		if retryErr := os.Mkdir(path, 0o755); retryErr == nil {
+			return nil
+		}
+	}
+	return &environmentBusyError{message: fmt.Sprintf("another agent environment sync is in progress: %s", path)}
+}
+
+// reapStaleLockDirectory removes an environment lock only when its recorded PID has exited.
+func reapStaleLockDirectory(path string) bool {
+	pid, ok := readLeasePID(filepath.Join(path, "pid"))
+	// Preserve locks without a readable PID (legacy CLIs or newly racing creators).
+	if !ok || processAlive(pid) {
+		return false
+	}
+	_ = os.Remove(filepath.Join(path, "pid"))
+	return os.Remove(path) == nil
 }
 
 // installAgentEnvironment publishes only after the complete runtime lock is installed and verified.

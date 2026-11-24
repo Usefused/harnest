@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -46,6 +48,12 @@ func leaseAgentPythonLocked(project string, selection pythonSelection) (pythonSe
 		return pythonSelection{}, fmt.Errorf("create agent environment lease: %w", err)
 	}
 	leasePath := lease.Name()
+	// Stamp the holder PID so crashed or force-killed commands never strand a slot permanently.
+	if _, err := fmt.Fprintf(lease, "%d\n", os.Getpid()); err != nil {
+		_ = lease.Close()
+		_ = os.Remove(leasePath)
+		return pythonSelection{}, fmt.Errorf("write agent environment lease: %w", err)
+	}
 	if err := lease.Close(); err != nil {
 		_ = os.Remove(leasePath)
 		return pythonSelection{}, fmt.Errorf("close agent environment lease: %w", err)
@@ -205,7 +213,52 @@ func unleasedEnvironment(root string, entry os.DirEntry) bool {
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return false
 	}
-	leases := filepath.Join(root, environmentLeaseDirectory, entry.Name())
-	leaseEntries, err := os.ReadDir(leases)
-	return os.IsNotExist(err) || (err == nil && len(leaseEntries) == 0)
+	active, err := activeSlotLeases(filepath.Join(root, environmentLeaseDirectory, entry.Name()))
+	return err == nil && active == 0
+}
+
+// activeSlotLeases counts live leases in one slot directory, reaping any whose owning PID exited.
+func activeSlotLeases(leaseDir string) (int, error) {
+	entries, err := os.ReadDir(leaseDir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	active := 0
+	for _, entry := range entries {
+		path := filepath.Join(leaseDir, entry.Name())
+		if isStaleLeaseFile(path) {
+			// Reclaim lease files left behind by crashed or force-killed commands.
+			_ = os.Remove(path)
+			continue
+		}
+		active++
+	}
+	// Remove the lease directory once all stale entries have been reaped.
+	if active == 0 {
+		_ = os.Remove(leaseDir)
+	}
+	return active, nil
+}
+
+// isStaleLeaseFile returns true only when a regular lease file records a PID that has exited.
+func isStaleLeaseFile(path string) bool {
+	pid, ok := readLeasePID(path)
+	// Empty or non-PID files (legacy CLIs or fixtures) stay treated as live leases.
+	return ok && !processAlive(pid)
+}
+
+// readLeasePID parses a positive decimal PID from a regular file without following symlinks.
+func readLeasePID(path string) (int, bool) {
+	data, err := readRegularDependencyFile(path)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }

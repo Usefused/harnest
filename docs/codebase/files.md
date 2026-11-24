@@ -606,6 +606,8 @@ Small helpers used across areas.
 - [`pack_binary.go`](../../cmd/harnest/pack_binary.go): Builds and loads standalone branded pack binaries that embed Harnest plus company pack payloads.
 - [`pack_commands.go`](../../cmd/harnest/pack_commands.go): `harnest pack validate|build|run|types`: pack commands that run pack code in Python.
 - [`playground.go`](../../cmd/harnest/playground.go): Stages the embedded development playground UI used by `harnest serve`.
+- [`process_alive_unix.go`](../../cmd/harnest/process_alive_unix.go): Unix process liveness probe used to reap stale environment locks and leases after crashes.
+- [`process_alive_windows.go`](../../cmd/harnest/process_alive_windows.go): Windows process liveness probe used to reap stale environment locks and leases after crashes.
 - [`project_pack_init.go`](../../cmd/harnest/project_pack_init.go): `harnest pack` and `harnest pack init NAME`: scaffolds a new Harnest pack (pack.yaml and pack.py).
 - [`provision.go`](../../cmd/harnest/provision.go): `harnest provision`: forwards provisioning to the Python provisioner.
 - [`python.go`](../../cmd/harnest/python.go): Chooses the Python interpreter for a command and loads the agent bundle it runs against.

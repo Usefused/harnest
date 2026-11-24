@@ -124,6 +124,33 @@ class RuntimeCLITests(unittest.TestCase):
                     self.assertEqual(_run_command(args), 1)
                 self.assertEqual(stderr.getvalue(), f"harnest-agent: {expected}\n")
 
+    def test_run_connection_hint_covers_wrapped_provider_connection_errors(self):
+        """Both direct and wrapped connection failures emit the sanitized OPENAI_BASE_URL hint."""
+        args = _runtime_parser().parse_args(["--artifact", "/unused", "run", "hello"])
+
+        class InternalServerError(Exception):
+            """Stand-in for LiteLLM's InternalServerError wrapper."""
+
+        try:
+            raise ConnectionRefusedError("secret-host-detail")
+        except ConnectionRefusedError as cause:
+            wrapped = InternalServerError("private payload")
+            wrapped.__cause__ = cause
+
+        stderr = StringIO()
+        with (
+            patch.dict(os.environ, {"OPENAI_BASE_URL": "http://user:tok@127.0.0.1:11434/v1?k=v"}),
+            patch("harnest.runtime._compiled_cli_enabled", return_value=True),
+            patch("harnest.runtime._run_local_artifact", side_effect=wrapped),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(_run_command(args), 1)
+        output = stderr.getvalue()
+        self.assertIn("local invocation failed with InternalServerError", output)
+        self.assertIn("OPENAI_BASE_URL (http://127.0.0.1:11434)", output)
+        self.assertNotIn("secret-host-detail", output)
+        self.assertNotIn("tok", output)
+
     def test_text_output_keeps_tool_progress_on_stderr(self):
         items = (
             SimpleNamespace(
