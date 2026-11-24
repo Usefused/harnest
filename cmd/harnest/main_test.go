@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -475,15 +476,18 @@ func isRequiredStoreResource(directory, name string) bool {
 	return directory == "lifecycle" && name == "storage.py"
 }
 
+// TestPythonResolutionPrecedence verifies explicit overrides, managed runtime, and host PATH order.
 func TestPythonResolutionPrecedence(t *testing.T) {
 	available := map[string]string{
 		"flag-python":                 "/resolved/flag-python",
 		"env-python":                  "/resolved/env-python",
 		runtimePythonPath("/runtime"): "/resolved/managed-python",
 		runtimePythonPath(filepath.Join("/home/test", ".harnest", "runtime")): "/resolved/default-managed-python",
-		"python3.14": "/resolved/python3.14",
-		"python3.12": "/resolved/python3.12",
-		"python3":    "/resolved/python3",
+	}
+	candidates := pathPythonCandidates(runtime.GOOS)
+	// Seed every host PATH candidate so precedence matches the current OS layout.
+	for _, candidate := range candidates {
+		available[candidate] = "/resolved/" + candidate
 	}
 	environment := map[string]string{
 		"HARNEST_PYTHON":      "env-python",
@@ -507,11 +511,11 @@ func TestPythonResolutionPrecedence(t *testing.T) {
 	delete(environment, "HARNEST_PYTHON")
 	assertResolvedPython(t, app, "/resolved/managed-python", "managed")
 	delete(available, runtimePythonPath("/runtime"))
-	assertResolvedPython(t, app, "/resolved/python3.14", "versioned 3.14 PATH")
-	delete(available, "python3.14")
-	assertResolvedPython(t, app, "/resolved/python3.12", "versioned 3.12 PATH")
-	delete(available, "python3.12")
-	assertResolvedPython(t, app, "/resolved/python3", "PATH")
+	// Remove each host candidate in order to verify fallback through the full PATH list.
+	for _, candidate := range candidates {
+		assertResolvedPython(t, app, "/resolved/"+candidate, "PATH "+candidate)
+		delete(available, candidate)
+	}
 }
 
 // assertResolvedPython checks that Python discovery picks the expected interpreter.
