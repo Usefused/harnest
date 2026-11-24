@@ -1,11 +1,8 @@
 # Changelog
 
-## Unreleased
-
-- Runtime `SubAgent` tools can request human approval and execute client tools through the calling run's continuation channel on ADK and LangGraph, including nested SubAgents. Conversations remain private, and cancelling or timing out a child clears its pending requests without cancelling the parent. These waits still require a caller that can service them; durable waits remain unsupported.
-
 ## [2.2.0](https://github.com/Usefused/harnest/compare/v2.1.1...v2.2.0) (2026-11-24)
 
+- Runtime `SubAgent` tools can request human approval and execute client tools through the calling run's continuation channel on ADK and LangGraph, including nested SubAgents. Conversations remain private, and cancelling or timing out a child clears its pending requests without cancelling the parent. These waits still require a caller that can service them; durable waits remain unsupported.
 
 ### Features
 
