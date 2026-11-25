@@ -113,10 +113,12 @@ func (a *application) newExtensionSearchCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Warn with the active branded CLI prefix when serving from the stale offline PyPI cache.
 			if stale {
-				fmt.Fprintln(
+				fmt.Fprintf(
 					command.ErrOrStderr(),
-					"harnest: PyPI unavailable; using cached extension catalog",
+					"%s: PyPI unavailable; using cached extension catalog\n",
+					a.cliName(),
 				)
 			}
 			return renderExtensionSearch(command.OutOrStdout(), results, jsonOutput)

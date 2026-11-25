@@ -384,8 +384,10 @@
     "MCPResourceError",
     "MCPResourceEvent",
     "MCPSubscription",
+    "MCPToolAnnotations",
     "MCPToolCallError",
     "MCPToolCallRequest",
+    "MCPToolInfo",
     "MCPToolLifecycleContext",
     "MCPToolUnavailableError",
     "ManagedMCPClient"

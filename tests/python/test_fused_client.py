@@ -92,3 +92,34 @@ class FusedClientTests(unittest.TestCase):
         self.assertEqual(namespace["client"]().permission, "crm.use")
         with self.assertRaises(ValueError):
             client_source(replace(client, approval=object()))
+
+    def test_dynamic_tool_permissions_work_with_fused_mcp_client(self):
+        """Ensure FusedMCPClient forwards callable tool_permissions to MCPClient cleanly."""
+
+        from harnest.mcp import MCPToolAnnotations, MCPToolInfo
+
+        def classify(tool: MCPToolInfo) -> str | None:
+            """Grant read vs write permissions dynamically from MCP hints and names."""
+            # Server-asserted read-only hints map to crm.read.
+            if tool.annotations.read_only is True or tool.name.startswith("get_"):
+                return "crm.read"
+            return "crm.write"
+
+        client = FusedMCPClient.from_openapi(
+            "crm.yaml",
+            name="business",
+            permission="crm.use",
+            tool_permissions=classify,
+        )
+        self.assertEqual(
+            client.permissions_for_tool(
+                MCPToolInfo(name="lookup", annotations=MCPToolAnnotations(read_only=True))
+            ),
+            ("crm.use", "crm.read"),
+        )
+        self.assertEqual(
+            client.permissions_for_tool(MCPToolInfo(name="update_customer")),
+            ("crm.use", "crm.write"),
+        )
+        with self.assertRaises(ValueError):
+            client_source(client)

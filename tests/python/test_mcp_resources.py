@@ -362,6 +362,110 @@ class MCPResourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TypeError):
             MCPSubscription("knowledge://handbook", lambda event: None)
 
+    async def test_list_tools_and_inspect_enforce_dynamic_tool_permissions(self):
+        """Filter list_tools and inspect through dynamic classifiers using full MCPToolInfo."""
+
+        from mcp import types
+        from harnest.agent import AgentRuntimePrincipal
+        from harnest.agent_principal import (
+            activate_agent_principal,
+            create_agent_principal_binding,
+            revoke_agent_principal,
+        )
+        from harnest.mcp import MCPToolInfo
+
+        list_result = types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name="inspect_catalog",
+                    description="Read-only inspection.",
+                    inputSchema={"type": "object", "properties": {}},
+                    annotations=types.ToolAnnotations(readOnlyHint=True),
+                ),
+                types.Tool(
+                    name="list_items",
+                    description="List items by prefix.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="update_item",
+                    description="Modify an item.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="drop_index",
+                    description="Unmapped dangerous tool.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+            ]
+        )
+        session = SimpleNamespace(list_tools=AsyncMock(return_value=list_result))
+        initialized = SimpleNamespace(
+            serverInfo=types.Implementation(name="catalog", version="1.0"),
+            protocolVersion="2025-03-26",
+            capabilities=types.ServerCapabilities(tools=types.ToolsCapability()),
+        )
+
+        @asynccontextmanager
+        async def connection(*_args):
+            """Yield the fake session carrying annotated tools."""
+            yield session, initialized
+
+        def classify(tool: MCPToolInfo) -> str | None:
+            """Classify read-only annotations and read prefixes separately from writes and None."""
+            # Grant catalog.read to annotated read-only tools and list_ prefixes.
+            if tool.annotations.read_only is True or tool.name.startswith("list_"):
+                return "catalog.read"
+            # Leave drop_ tools untagged so they stay denied under any active principal.
+            if tool.name.startswith("drop_"):
+                return None
+            return "catalog.write"
+
+        configured = MCPClient.streamable_http(
+            "https://mcp.invalid/mcp",
+            tool_permissions=classify,
+        )
+        read_binding = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"catalog.read"})
+        )
+        all_binding = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"catalog.read", "catalog.write"})
+        )
+        with patch("harnest.mcp_resources.resource_session", connection):
+            try:
+                async with configured.connect() as resource_client:
+                    with activate_agent_principal(read_binding):
+                        listed = await resource_client.list_tools()
+                        inspected = await resource_client.inspect()
+                    with activate_agent_principal(all_binding):
+                        listed_all = await resource_client.list_tools()
+            finally:
+                revoke_agent_principal(read_binding)
+                revoke_agent_principal(all_binding)
+
+        self.assertEqual(
+            [item["name"] for item in listed["tools"]],
+            ["inspect_catalog", "list_items"],
+        )
+        self.assertEqual(
+            [item["name"] for item in inspected["tools"]["tools"]],
+            ["inspect_catalog", "list_items"],
+        )
+        self.assertEqual(
+            [item["name"] for item in listed_all["tools"]],
+            ["inspect_catalog", "list_items", "update_item"],
+        )
+
+        # Fail closed: invalid return values from a classifier propagate directly.
+        broken = MCPClient.streamable_http(
+            "https://mcp.invalid/mcp",
+            tool_permissions=lambda _tool: 123,  # type: ignore[arg-type,return-value]
+        )
+        with patch("harnest.mcp_resources.resource_session", connection):
+            async with broken.connect() as resource_client:
+                with self.assertRaises(TypeError):
+                    await resource_client.list_tools()
+
 
 if __name__ == "__main__":
     unittest.main()

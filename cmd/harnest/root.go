@@ -146,7 +146,7 @@ func newRootCommand(sys system, cliVersion string) *cobra.Command {
 func newRootCommandWithPack(sys system, cliVersion string, embedded *packbinary.LoadedPack) *cobra.Command {
 	app := &application{system: sys, version: cliVersion, embeddedPack: embedded}
 	command := &cobra.Command{
-		Use:           "harnest",
+		Use:           app.cliName(),
 		Short:         "Build, test, and run filesystem-first agent graphs",
 		Long:          rootDescription,
 		Version:       cliVersion,

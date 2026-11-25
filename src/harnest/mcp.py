@@ -5,6 +5,7 @@ from __future__ import annotations
 
 
 
+import inspect
 import os
 import re
 from contextlib import AbstractAsyncContextManager
@@ -41,7 +42,8 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 __all__ = [
     "MCPClientUnavailableError", "MCPContext", "MCPContextUnavailableError",
-    "MCPLifecycleError", "MCPLifecyclePipeline", "MCPToolCallError", "MCPToolCallRequest",
+    "MCPLifecycleError", "MCPLifecyclePipeline", "MCPToolAnnotations",
+    "MCPToolCallError", "MCPToolCallRequest", "MCPToolInfo",
     "MCPToolLifecycleContext", "MCPToolUnavailableError", "ManagedMCPClient",
     "MCPClient",
     "MCPClientContext",
@@ -50,6 +52,128 @@ __all__ = [
     "MCPResourceClient", "MCPResourceError",
     "MCPResourceEvent", "MCPSubscription",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class MCPToolAnnotations:
+    """Server-asserted MCP tool annotations exposed to dynamic permission classifiers."""
+
+    title: str | None = None
+    read_only: bool | None = None
+    destructive: bool | None = None
+    idempotent: bool | None = None
+    open_world: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MCPToolInfo:
+    """Immutable remote MCP tool descriptor passed to dynamic permission classifiers."""
+
+    name: str
+    description: str = ""
+    annotations: MCPToolAnnotations = field(default_factory=MCPToolAnnotations)
+
+
+_MCPToolPermissionValue = str | Sequence[str] | set[str] | frozenset[str] | None
+_MCPToolPermissionClassifier = Callable[[MCPToolInfo], _MCPToolPermissionValue]
+
+
+def _annotation_field(raw: Any, snake: str, camel: str) -> Any:
+    """Read one MCP annotation hint from either camelCase wire data or snake_case fields."""
+
+    # Mapping payloads come from JSON/Pydantic dumps and may use wire camelCase
+    # keys or Python snake_case keys; check explicitly against None so False survives.
+    if isinstance(raw, Mapping):
+        value = raw.get(camel)
+        if value is not None:
+            return value
+        return raw.get(snake)
+    # SDK ToolAnnotations objects use camelCase attributes while custom descriptors may use snake_case.
+    value = getattr(raw, camel, None)
+    if value is not None:
+        return value
+    return getattr(raw, snake, None)
+
+
+def _mcp_tool_annotations(raw: Any) -> MCPToolAnnotations:
+    """Normalize raw MCP annotations into an immutable, strictly typed snapshot."""
+
+    # Absence of annotations means the server made no hints; keep every field None.
+    if raw is None:
+        return MCPToolAnnotations()
+    # Reuse already-normalized snapshots without copying.
+    if isinstance(raw, MCPToolAnnotations):
+        return raw
+    title = _annotation_field(raw, "title", "title")
+    read_only = _annotation_field(raw, "read_only", "readOnlyHint")
+    destructive = _annotation_field(raw, "destructive", "destructiveHint")
+    idempotent = _annotation_field(raw, "idempotent", "idempotentHint")
+    open_world = _annotation_field(raw, "open_world", "openWorldHint")
+    # Restrict boolean hints to real bool values so non-bool metadata cannot
+    # accidentally satisfy truthiness checks like read_only=True.
+    return MCPToolAnnotations(
+        title=title if isinstance(title, str) else None,
+        read_only=read_only if isinstance(read_only, bool) else None,
+        destructive=destructive if isinstance(destructive, bool) else None,
+        idempotent=idempotent if isinstance(idempotent, bool) else None,
+        open_world=open_world if isinstance(open_world, bool) else None,
+    )
+
+
+def mcp_tool_info_from_remote(tool: Any, *, name: str | None = None) -> MCPToolInfo:
+    """Extract canonical name, description, and annotations from a discovered MCP tool."""
+
+    # Already-normalized descriptors only need optional canonical-name override.
+    if isinstance(tool, MCPToolInfo):
+        if name is None or name == tool.name:
+            return tool
+        return MCPToolInfo(
+            name=name,
+            description=tool.description,
+            annotations=tool.annotations,
+        )
+    # Resource discovery returns JSON dict payloads from tools/list responses.
+    if isinstance(tool, Mapping):
+        resolved_name = name if name is not None else str(tool.get("name", ""))
+        raw_description = tool.get("description")
+        description = raw_description if isinstance(raw_description, str) else ""
+        return MCPToolInfo(
+            name=resolved_name,
+            description=description,
+            annotations=_mcp_tool_annotations(tool.get("annotations")),
+        )
+    # ADK wraps the underlying MCP SDK Tool on _mcp_tool; some adapters expose raw_mcp_tool.
+    raw_mcp_tool = getattr(tool, "raw_mcp_tool", None)
+    if raw_mcp_tool is None:
+        raw_mcp_tool = getattr(tool, "_mcp_tool", None)
+    # Prefer an explicit canonical name (for frameworks that already applied a prefix),
+    # then the wrapped MCP tool's remote name, then the adapter tool's name.
+    if name is not None:
+        resolved_name = name
+    elif raw_mcp_tool is not None and isinstance(getattr(raw_mcp_tool, "name", None), str) and raw_mcp_tool.name:
+        resolved_name = raw_mcp_tool.name
+    else:
+        resolved_name = str(getattr(tool, "name", ""))
+    # Prefer the raw MCP tool description when present, falling back to the adapter tool.
+    raw_description = getattr(raw_mcp_tool, "description", None) if raw_mcp_tool is not None else None
+    if not isinstance(raw_description, str):
+        raw_description = getattr(tool, "description", None)
+    description = raw_description if isinstance(raw_description, str) else ""
+    # Check wrapped MCP annotations first, then direct annotations, then LangChain
+    # StructuredTool.metadata where langchain-mcp-adapters stores dumped ToolAnnotations.
+    raw_annotations = getattr(raw_mcp_tool, "annotations", None) if raw_mcp_tool is not None else None
+    if raw_annotations is None:
+        raw_annotations = getattr(tool, "annotations", None)
+    if raw_annotations is None:
+        metadata = getattr(tool, "metadata", None)
+        if isinstance(metadata, Mapping):
+            nested = metadata.get("annotations")
+            raw_annotations = nested if nested is not None else metadata
+    return MCPToolInfo(
+        name=resolved_name,
+        description=description,
+        annotations=_mcp_tool_annotations(raw_annotations),
+    )
 
 
 def _expand(value: str) -> str:
@@ -86,7 +210,9 @@ class MCPClient:
     cwd: str | None = None
     portable: Any = field(default=None, repr=False)
     permission: str | None = None
-    tool_permissions: Mapping[str, str] = field(default_factory=dict, repr=False)
+    tool_permissions: Mapping[str, str] | _MCPToolPermissionClassifier = field(
+        default_factory=dict, repr=False
+    )
     resources: Sequence[str] | None = None
     prompts: Sequence[str] | None = None
     max_content_bytes: int = 1024 * 1024
@@ -128,7 +254,7 @@ class MCPClient:
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
         permission: str | None = None,
-        tool_permissions: Mapping[str, str] | None = None,
+        tool_permissions: Mapping[str, str] | _MCPToolPermissionClassifier | None = None,
         timeout_seconds: float = 30,
         lifecycle: MCPClientLifecycle | None = None,
         resources: Sequence[str] | None = None,
@@ -138,6 +264,8 @@ class MCPClient:
     ) -> "MCPClient":
         """Create an MCP client that starts and communicates with a subprocess."""
 
+        # Preserve explicit non-None values so invalid falsy inputs fail validation.
+        resolved_tool_permissions = {} if tool_permissions is None else tool_permissions
         return cls(
             "stdio",
             command=command,
@@ -148,7 +276,7 @@ class MCPClient:
             tool_filter=tools,
             tool_name_prefix=prefix,
             permission=permission,
-            tool_permissions=tool_permissions or {},
+            tool_permissions=resolved_tool_permissions,
             timeout_seconds=timeout_seconds,
             lifecycle=lifecycle,
         )
@@ -162,7 +290,7 @@ class MCPClient:
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
         permission: str | None = None,
-        tool_permissions: Mapping[str, str] | None = None,
+        tool_permissions: Mapping[str, str] | _MCPToolPermissionClassifier | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
@@ -173,6 +301,8 @@ class MCPClient:
     ) -> "MCPClient":
         """Create an MCP client using the Streamable HTTP transport."""
 
+        # Preserve explicit non-None values so invalid falsy inputs fail validation.
+        resolved_tool_permissions = {} if tool_permissions is None else tool_permissions
         return cls(
             "streamable-http",
             resources=resources, prompts=prompts, max_content_bytes=max_content_bytes,
@@ -182,7 +312,7 @@ class MCPClient:
             tool_filter=tools,
             tool_name_prefix=prefix,
             permission=permission,
-            tool_permissions=tool_permissions or {},
+            tool_permissions=resolved_tool_permissions,
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
             lifecycle=lifecycle,
@@ -197,7 +327,7 @@ class MCPClient:
         tools: Sequence[str] | None = None,
         prefix: str | None = None,
         permission: str | None = None,
-        tool_permissions: Mapping[str, str] | None = None,
+        tool_permissions: Mapping[str, str] | _MCPToolPermissionClassifier | None = None,
         timeout_seconds: float = 30,
         sse_read_timeout_seconds: float = 300,
         lifecycle: MCPClientLifecycle | None = None,
@@ -208,6 +338,8 @@ class MCPClient:
     ) -> "MCPClient":
         """Create an MCP client using the legacy HTTP/SSE transport."""
 
+        # Preserve explicit non-None values so invalid falsy inputs fail validation.
+        resolved_tool_permissions = {} if tool_permissions is None else tool_permissions
         return cls(
             "sse",
             resources=resources, prompts=prompts, max_content_bytes=max_content_bytes,
@@ -217,7 +349,7 @@ class MCPClient:
             tool_filter=tools,
             tool_name_prefix=prefix,
             permission=permission,
-            tool_permissions=tool_permissions or {},
+            tool_permissions=resolved_tool_permissions,
             timeout_seconds=timeout_seconds,
             sse_read_timeout_seconds=sse_read_timeout_seconds,
             lifecycle=lifecycle,
@@ -288,31 +420,93 @@ class MCPClient:
         return managed_resource_client(self, framework=current_framework().name)
 
     def _validate_permissions(self) -> None:
-        """Freeze client and tool requirements using permissioned-tool identifiers."""
+        """Freeze static permission mappings or verify synchronous dynamic classifiers."""
 
         from .agent_principal import validate_permission
 
+        # Validate the optional client-wide permission upfront at authoring time.
         if self.permission is not None:
             validate_permission(self.permission)
-        if not isinstance(self.tool_permissions, Mapping):
-            raise TypeError("MCP tool_permissions must be a mapping")
-        normalized: dict[str, str] = {}
-        for name, permission in self.tool_permissions.items():
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("MCP permission tool names must be non-empty strings")
-            normalized[name] = validate_permission(permission)
-        object.__setattr__(
-            self, "tool_permissions", MappingProxyType(normalized)
-        )
+        # Static mappings are validated and frozen so later mutation cannot alter policy.
+        if isinstance(self.tool_permissions, Mapping):
+            normalized: dict[str, str] = {}
+            for name, permission in self.tool_permissions.items():
+                # Reject blank tool names that can never match a valid MCP tool identifier.
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("MCP permission tool names must be non-empty strings")
+                normalized[name] = validate_permission(permission)
+            object.__setattr__(
+                self, "tool_permissions", MappingProxyType(normalized)
+            )
+            return
+        # Reject non-callables, classes, and async callables because classification runs
+        # synchronously during tool projection across both sync and async boundaries.
+        if not callable(self.tool_permissions):
+            raise TypeError("MCP tool_permissions must be a mapping or callable")
+        if isinstance(self.tool_permissions, type):
+            raise TypeError(
+                "MCP tool_permissions classifier must be a callable function, not a class"
+            )
+        if inspect.iscoroutinefunction(self.tool_permissions) or inspect.iscoroutinefunction(
+            getattr(self.tool_permissions, "__call__", None)
+        ):
+            raise TypeError(
+                "MCP tool_permissions classifier must be synchronous, not async"
+            )
+
+    def permissions_for_tool(self, tool: str | MCPToolInfo) -> tuple[str, ...]:
+        """Resolve client and per-tool permissions for one discovered remote MCP tool."""
+
+        from .agent_principal import validate_permission
+
+        # Normalize plain tool names to a descriptor so both static and dynamic
+        # policies share one resolution path.
+        if isinstance(tool, str):
+            descriptor = MCPToolInfo(name=tool)
+        elif isinstance(tool, MCPToolInfo):
+            descriptor = tool
+        else:
+            raise TypeError("tool must be a tool name string or MCPToolInfo")
+
+        resolved: list[str] = []
+        # Include the client-wide permission first when declared.
+        if self.permission is not None:
+            resolved.append(self.permission)
+
+        # Static mappings look up by exact remote tool name; dynamic callables
+        # classify the full descriptor and validate every returned identifier.
+        if isinstance(self.tool_permissions, Mapping):
+            mapped = self.tool_permissions.get(descriptor.name)
+            if mapped is not None:
+                resolved.append(mapped)
+        else:
+            result = self.tool_permissions(descriptor)
+            # None adds no tool-level permission, leaving untagged tools denied under a principal.
+            if result is None:
+                pass
+            elif isinstance(result, str):
+                resolved.append(validate_permission(result))
+            elif not isinstance(result, (bytes, bytearray)) and isinstance(
+                result, (Sequence, set, frozenset)
+            ):
+                for item in result:
+                    resolved.append(validate_permission(item))
+            else:
+                # Close an accidentally returned coroutine to avoid RuntimeWarning before failing closed.
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise TypeError(
+                    "MCP tool_permissions classifier must return a permission string, "
+                    "a collection of permission strings, or None"
+                )
+
+        # Deduplicate while preserving deterministic declaration order.
+        return tuple(dict.fromkeys(resolved))
 
     def required_permissions_for(self, tool_name: str) -> frozenset[str]:
         """Combine an optional client requirement with one remote-tool requirement."""
 
-        return frozenset(
-            item
-            for item in (self.permission, self.tool_permissions.get(tool_name))
-            if item is not None
-        )
+        return frozenset(self.permissions_for_tool(MCPToolInfo(name=tool_name)))
 
     def _initialize_lifecycle(self) -> None:
         """Validate and privately bind the optional remote-client lifecycle."""
@@ -529,12 +723,16 @@ def _validate_approval_tools(
 
 
 def _validate_mcp_permission_tools(
-    tool_permissions: Mapping[str, str],
+    tool_permissions: Mapping[str, str] | _MCPToolPermissionClassifier,
     remote_names: Sequence[str],
     capability_id: str,
 ) -> None:
-    """Fail closed when permission metadata names an unavailable remote tool."""
+    """Fail closed when static permission metadata names an unavailable remote tool."""
 
+    # Dynamic classifiers inspect whatever tools the server exposes at discovery
+    # time, so only static name mappings have fixed keys to validate.
+    if not isinstance(tool_permissions, Mapping):
+        return
     missing = sorted(set(tool_permissions) - set(remote_names))
     if missing:
         raise ValueError(

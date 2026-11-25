@@ -153,10 +153,11 @@ class PackBinaryTests(unittest.TestCase):
             encoding="utf-8",
         )
         _write_minimal_wheel(pack_dir / "wheels" / "acme_prebuilt-1.0.0-py3-none-any.whl", "acme-prebuilt")
-        wheels_yaml = "    - wheels/acme_prebuilt-1.0.0-py3-none-any.whl\n"
+        packages_yaml = "  - wheels/acme_prebuilt-1.0.0-py3-none-any.whl\n"
         if include_local_pkg:
             _write_local_package(pack_dir / "local-pkg", "acme-local")
-            wheels_yaml += "    - local-pkg\n"
+            packages_yaml += "  - local-pkg\n"
+        packages_yaml += "  - acme-sdk==2.1.0\n"
         _write_pack_extension(pack_dir / "company-ext" / "acme_guard", "acme_guard")
         (pack_dir / "pack.yaml").write_text(
             "apiVersion: harnest.dev/pack/v1\n"
@@ -167,10 +168,7 @@ class PackBinaryTests(unittest.TestCase):
             "skills:\n"
             "  - coding-skills/acme-standards\n"
             "packages:\n"
-            "  wheels:\n"
-            f"{wheels_yaml}"
-            "  requirements:\n"
-            "    - acme-sdk==2.1.0\n"
+            f"{packages_yaml}"
             "extensions:\n"
             "  - company-ext/acme_guard\n",
             encoding="utf-8",
@@ -202,11 +200,23 @@ class PackBinaryTests(unittest.TestCase):
         (bad_req / "pack.yaml").write_text(
             "apiVersion: harnest.dev/pack/v1\n"
             "name: acme\nversion: 1.0.0\ntitle: Acme\n"
-            "packages:\n  requirements:\n    - harnest==1.0.0\n",
+            "packages:\n  - harnest==1.0.0\n",
             encoding="utf-8",
         )
         with self.assertRaises(ProjectError):
             load_pack(bad_req)
+
+        # Reject the removed packages.wheels/requirements mapping with a clear error message.
+        legacy_map = self.root / "legacy-map"
+        legacy_map.mkdir()
+        (legacy_map / "pack.yaml").write_text(
+            "apiVersion: harnest.dev/pack/v1\n"
+            "name: acme\nversion: 1.0.0\ntitle: Acme\n"
+            "packages:\n  requirements:\n    - acme-sdk==2.1.0\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ProjectError):
+            load_pack(legacy_map)
 
         bad_skill = self.root / "bad-skill"
         (bad_skill / "skills" / "wrong-name").mkdir(parents=True)
@@ -271,6 +281,74 @@ class PackBinaryTests(unittest.TestCase):
                 os.environ.pop("HARNEST_PACK_EXTENSIONS", None)
             else:
                 os.environ["HARNEST_PACK_EXTENSIONS"] = previous
+
+    def test_branded_cli_name_prefixes_errors_and_sanitizes_env(self) -> None:
+        """HARNEST_CLI_NAME rebrands Python CLI/pack errors and wheel launchers while rejecting unsafe values."""
+        from io import StringIO
+        import subprocess
+        from unittest.mock import patch
+        from harnest.authoring.distribution import _launcher
+        from harnest.cli import cli_name, main as cli_main
+        from harnest.studio_server import _initialization_failure
+
+        # Valid kebab-case HARNEST_CLI_NAME must prefix pack_cli and harnest.cli errors.
+        with patch.dict(os.environ, {"HARNEST_CLI_NAME": "acme-cli"}):
+            self.assertEqual(cli_name(), "acme-cli")
+            stderr = StringIO()
+            code = run_pack_command(["validate", str(self.root / "missing-pack")], stdout=StringIO(), stderr=stderr)
+            self.assertEqual(code, 1)
+            self.assertTrue(stderr.getvalue().startswith("acme-cli: "), stderr.getvalue())
+
+            run_err = StringIO()
+            run_code = run_pack_command(["run", str(self.root / "missing-pack")], stdout=StringIO(), stderr=run_err)
+            self.assertEqual(run_code, 2)
+            self.assertIn("usage: acme-cli pack run", run_err.getvalue())
+
+            cli_err = StringIO()
+            with patch("sys.stderr", cli_err):
+                cli_code = cli_main(["compile", str(self.root / "missing-agent"), "--output", str(self.root / "out")])
+            self.assertEqual(cli_code, 2)
+            self.assertTrue(cli_err.getvalue().startswith("acme-cli: "), cli_err.getvalue())
+
+            # Studio initialization error formatter must strip the active branded prefix cleanly.
+            completed = subprocess.CompletedProcess(["acme-cli"], 1, stdout="", stderr="acme-cli: directory is not empty\n")
+            self.assertEqual(_initialization_failure(completed), "directory is not empty")
+
+        # Unsafe or malformed HARNEST_CLI_NAME values must fall back to "harnest".
+        with patch.dict(os.environ, {"HARNEST_CLI_NAME": "bad\nname"}):
+            self.assertEqual(cli_name(), "harnest")
+
+        # Generated wheel launchers must pass HARNEST_CLI_NAME when invoking harnest.
+        pack = load_pack(self._create_full_pack(include_local_pkg=False))
+        launcher_source = _launcher(pack, ())
+        self.assertIn('"HARNEST_CLI_NAME": NAME', launcher_source)
+
+    def test_pack_finish_omits_backup_line_for_init_and_keeps_it_for_upgrade(self) -> None:
+        """Pack init prints Initialized without a confusing Backup path; upgrade keeps Applied. Backup."""
+        from io import StringIO
+        from unittest.mock import patch
+        from harnest.authoring.contracts import ChangeKind, ProjectChange, ProjectPlan
+        from harnest.authoring.pack_cli import _finish
+
+        target = self.root / "new-agent"
+        plan = ProjectPlan(
+            root=target,
+            changes=(ProjectChange(ChangeKind.CREATE, "config.yaml", ("harnest",)),),
+            blockers=(),
+            _before={},
+            _after={},
+            _root_existed=False,
+        )
+        fake_backup = target / ".harnest" / "project-backups" / "abc123"
+        with patch("harnest.authoring.pack_cli.apply_project_plan", return_value=fake_backup):
+            init_out = StringIO()
+            self.assertEqual(_finish(plan, applying=True, as_json=False, output=init_out, is_init=True), 0)
+            self.assertIn(f"Initialized {target}", init_out.getvalue())
+            self.assertNotIn("Backup:", init_out.getvalue())
+
+            upgrade_out = StringIO()
+            self.assertEqual(_finish(plan, applying=True, as_json=False, output=upgrade_out, is_init=False), 0)
+            self.assertIn(f"Applied. Backup: {fake_backup}", upgrade_out.getvalue())
 
 
 if __name__ == "__main__":

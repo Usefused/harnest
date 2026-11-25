@@ -2015,6 +2015,7 @@ def _apply_mcp_permissions(
     """Attach declared MCP requirements to discovered native tool objects."""
 
     from ...agent_principal import attach_required_permissions
+    from ...mcp import mcp_tool_info_from_remote
 
     prefix = f"{server_name}_"
     named = [
@@ -2030,8 +2031,11 @@ def _apply_mcp_permissions(
         server_name,
     )
     for tool, name in named:
+        # Preserve the unprefixed remote tool name alongside adapter metadata so
+        # dynamic classifiers see canonical names and server annotations.
+        tool_info = mcp_tool_info_from_remote(tool, name=name)
         attach_required_permissions(
-            tool, tuple(configured.required_permissions_for(name))
+            tool, configured.permissions_for_tool(tool_info)
         )
 
 

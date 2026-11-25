@@ -13,6 +13,7 @@ import (
 
 var version = "dev"
 
+// main boots the CLI, loads any embedded pack payload, and formats top-level errors with the active command name.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -20,7 +21,12 @@ func main() {
 	sys := defaultSystem()
 	embedded, err := loadEmbeddedPack(sys)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "harnest:", err)
+		// Fall back to HARNEST_CLI_NAME (when valid) or "harnest" because pack metadata could not be loaded yet.
+		prefix := sanitizeCLIName(sys.getenv(cliNameEnv))
+		if prefix == "" {
+			prefix = "harnest"
+		}
+		fmt.Fprintf(os.Stderr, "%s: %v\n", prefix, err)
 		os.Exit(1)
 	}
 	command := newRootCommandWithPack(sys, version, embedded)

@@ -39,7 +39,7 @@ from harnest.client_tool import client_tool
 from harnest._context_agent import _resolve_invocation_agent_principal
 from harnest import context
 from harnest.context import activate_context, create_agent_context, revoke_context
-from harnest.mcp import MCPClient
+from harnest.mcp import MCPClient, MCPToolAnnotations, MCPToolInfo, mcp_tool_info_from_remote
 from harnest.graph import START, Edge, Graph
 from harnest.mcp_context import (
     MCPClientUnavailableError,
@@ -652,6 +652,396 @@ class AgentRuntimePrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             revoke_context(active)
             revoke_agent_principal(binding)
+
+    def test_dynamic_tool_permissions_authoring_validation_rejects_invalid_classifiers(self):
+        """Reject non-mappings, classes, and async callables at authoring time."""
+
+        async def async_classifier(_tool: MCPToolInfo) -> str:
+            """Async function that must be rejected for sync permission resolution."""
+            return "catalog.read"
+
+        class AsyncCallableClassifier:
+            """Callable instance with an async __call__ that must also be rejected."""
+
+            async def __call__(self, _tool: MCPToolInfo) -> str:
+                return "catalog.read"
+
+        class ClassClassifier:
+            """Class object that must not be accepted as a classifier function."""
+
+            def __init__(self, _tool: MCPToolInfo) -> None:
+                pass
+
+        for bad in (123, ["catalog.read"], async_classifier, AsyncCallableClassifier(), ClassClassifier):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                MCPClient.streamable_http(
+                    "https://mcp.invalid/mcp",
+                    tool_permissions=bad,  # type: ignore[arg-type]
+                )
+
+    def test_dynamic_tool_permissions_classify_by_name_annotations_and_multi_grant(self):
+        """Verify name patterns, read_only hints, multiple grants, client permission, and fail-closed errors."""
+
+        def classify_catalog(tool: MCPToolInfo) -> str | tuple[str, ...] | None:
+            """Classify read, write, audited, and denied tools from name and hints."""
+            # Audit-sensitive tools require both read and audit grants simultaneously.
+            if tool.name == "export_audit":
+                return ("catalog.read", "audit.log")
+            # Server-asserted read-only tools and read prefixes need only read permission.
+            if tool.annotations.read_only is True or tool.name.startswith(("get_", "list_")):
+                return "catalog.read"
+            # Destructive or unmapped tools explicitly return None to stay default-deny.
+            if tool.name == "drop_all":
+                return None
+            return "catalog.write"
+
+        client = MCPClient.streamable_http(
+            "https://mcp.invalid/mcp",
+            permission="catalog.connect",
+            tool_permissions=classify_catalog,
+        )
+
+        self.assertEqual(
+            client.permissions_for_tool(MCPToolInfo(name="get_item")),
+            ("catalog.connect", "catalog.read"),
+        )
+        self.assertEqual(
+            client.permissions_for_tool(
+                MCPToolInfo(
+                    name="inspect_catalog",
+                    annotations=MCPToolAnnotations(read_only=True),
+                )
+            ),
+            ("catalog.connect", "catalog.read"),
+        )
+        self.assertEqual(
+            client.permissions_for_tool(MCPToolInfo(name="update_item")),
+            ("catalog.connect", "catalog.write"),
+        )
+        self.assertEqual(
+            client.permissions_for_tool(MCPToolInfo(name="export_audit")),
+            ("catalog.connect", "catalog.read", "audit.log"),
+        )
+        self.assertEqual(
+            client.permissions_for_tool(MCPToolInfo(name="drop_all")),
+            ("catalog.connect",),
+        )
+        # Without client-wide permission, returning None or () leaves the tool untagged (default-deny).
+        no_client_perm = MCPClient.stdio(
+            "python",
+            "server.py",
+            tool_permissions=lambda info: None if info.name == "drop_all" else (),
+        )
+        self.assertEqual(no_client_perm.permissions_for_tool("drop_all"), ())
+        self.assertEqual(no_client_perm.permissions_for_tool("empty_tuple"), ())
+
+    def test_dynamic_tool_permissions_fail_closed_on_bad_return_or_exception(self):
+        """Propagate classifier errors and reject malformed permission return values."""
+
+        async def _unused_coro() -> str:
+            """Produce a coroutine object to test runtime rejection of async return values."""
+            return "catalog.read"
+
+        def bad_return_type(_tool: MCPToolInfo):
+            """Return an unsupported non-string type."""
+            return 123
+
+        def bad_bytes(_tool: MCPToolInfo):
+            """Return bytes, which is a Sequence but not valid permission strings."""
+            return b"catalog.read"
+
+        def bad_permission_name(_tool: MCPToolInfo) -> str:
+            """Return a string that violates the permission identifier grammar."""
+            return "bad permission"
+
+        def bad_coro(_tool: MCPToolInfo):
+            """Return an unawaited coroutine object from a synchronous lambda."""
+            return _unused_coro()
+
+        def raising_classifier(_tool: MCPToolInfo) -> str:
+            """Raise an application error that must not be swallowed into allow."""
+            raise RuntimeError("classifier failed")
+
+        for classifier, expected in (
+            (bad_return_type, TypeError),
+            (bad_bytes, TypeError),
+            (bad_coro, TypeError),
+            (bad_permission_name, ValueError),
+            (raising_classifier, RuntimeError),
+        ):
+            client = MCPClient.sse(
+                "https://mcp.invalid/sse",
+                tool_permissions=classifier,  # type: ignore[arg-type]
+            )
+            with self.subTest(classifier=classifier.__name__), self.assertRaises(expected):
+                client.permissions_for_tool(MCPToolInfo(name="get_item"))
+
+    def test_mcp_tool_info_from_remote_extracts_annotations_from_all_shapes(self):
+        """Normalize MCP annotations across dicts, MCP SDK objects, ADK tools, and LangChain tools."""
+
+        from mcp import types as mcp_types
+        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+        from harnest.frameworks.adk.mcp_tools import http_mcp_tool
+
+        sdk_tool = mcp_types.Tool(
+            name="search_products",
+            description="Search the product catalog.",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=mcp_types.ToolAnnotations(
+                title="Search Products",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        )
+        dict_info = mcp_tool_info_from_remote(
+            sdk_tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+        )
+        adk_tool = http_mcp_tool(sdk_tool, SimpleNamespace())
+        adk_info = mcp_tool_info_from_remote(adk_tool)
+        lc_tool = convert_mcp_tool_to_langchain_tool(
+            SimpleNamespace(),
+            sdk_tool,
+            server_name="catalog",
+            tool_name_prefix=True,
+        )
+        lc_info = mcp_tool_info_from_remote(lc_tool, name="search_products")
+
+        expected = MCPToolInfo(
+            name="search_products",
+            description="Search the product catalog.",
+            annotations=MCPToolAnnotations(
+                title="Search Products",
+                read_only=True,
+                destructive=False,
+                idempotent=True,
+                open_world=False,
+            ),
+        )
+        self.assertEqual(dict_info, expected)
+        self.assertEqual(adk_info, expected)
+        self.assertEqual(lc_info, expected)
+
+    async def test_adk_mcp_discovery_enforces_dynamic_tool_permissions(self):
+        """Discover and filter ADK MCP tools with a dynamic classifier even without client permission."""
+
+        from mcp import types as mcp_types
+        from harnest.frameworks.adk.mcp_tools import http_mcp_tool
+        from harnest.mcp_resources import DiscoveredMCPTools
+
+        discovered = 0
+        read_schema = mcp_types.Tool(
+            name="search_items",
+            description="Read items.",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=mcp_types.ToolAnnotations(readOnlyHint=True),
+        )
+        write_schema = mcp_types.Tool(
+            name="update_item",
+            description="Update one item.",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=mcp_types.ToolAnnotations(readOnlyHint=False),
+        )
+        audit_schema = mcp_types.Tool(
+            name="export_audit",
+            description="Export audit report.",
+            inputSchema={"type": "object", "properties": {}},
+        )
+        hidden_schema = mcp_types.Tool(
+            name="delete_everything",
+            description="Dangerous unmapped operation.",
+            inputSchema={"type": "object", "properties": {}},
+        )
+
+        class Toolset:
+            """Fake ADK toolset yielding real HTTPTool wrappers with MCP annotations."""
+
+            async def get_tools(self, _readonly_context=None):
+                nonlocal discovered
+                discovered += 1
+                calls = SimpleNamespace()
+                return DiscoveredMCPTools(
+                    [
+                        http_mcp_tool(read_schema, calls),
+                        http_mcp_tool(write_schema, calls),
+                        http_mcp_tool(audit_schema, calls),
+                        http_mcp_tool(hidden_schema, calls),
+                    ]
+                )
+
+        def classify(tool: MCPToolInfo) -> str | tuple[str, ...] | None:
+            """Map readOnlyHint, multi-grant audit, write, and None (default-deny)."""
+            # Read-only annotated tools require only catalog.read.
+            if tool.annotations.read_only is True:
+                return "catalog.read"
+            # Audit exports require two grants simultaneously.
+            if tool.name == "export_audit":
+                return ("catalog.read", "audit.log")
+            # Explicitly returning None keeps dangerous tools denied under a principal.
+            if tool.name.startswith("delete_"):
+                return None
+            return "catalog.write"
+
+        client = MCPClient.sse(
+            "https://mcp.invalid/sse",
+            prefix="catalog",
+            tool_permissions=classify,
+        )
+        governed = toolset_type(client, Toolset)()
+        read_only = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"catalog.read"})
+        )
+        read_and_audit = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"catalog.read", "audit.log"})
+        )
+        empty = create_agent_principal_binding(AgentRuntimePrincipal.create())
+        try:
+            with activate_agent_principal(read_only):
+                read_tools = await governed.get_tools()
+            with activate_agent_principal(read_and_audit):
+                audit_tools = await governed.get_tools()
+            with activate_agent_principal(empty):
+                empty_tools = await governed.get_tools()
+        finally:
+            revoke_agent_principal(read_only)
+            revoke_agent_principal(read_and_audit)
+            revoke_agent_principal(empty)
+
+        self.assertEqual(discovered, 3)
+        self.assertEqual([item.name for item in read_tools], ["search_items"])
+        self.assertEqual(
+            [item.name for item in audit_tools], ["search_items", "export_audit"]
+        )
+        self.assertEqual(empty_tools, [])
+
+    def test_langgraph_mcp_discovery_enforces_dynamic_tool_permissions(self):
+        """Attach dynamic classifier permissions on LangChain MCP tools and project them by principal."""
+
+        from mcp import types as mcp_types
+        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+        from harnest.frameworks.langgraph.runtime import _apply_mcp_permissions
+
+        schemas = (
+            mcp_types.Tool(
+                name="get_customer",
+                description="Fetch one customer.",
+                inputSchema={"type": "object", "properties": {}},
+                annotations=mcp_types.ToolAnnotations(readOnlyHint=True),
+            ),
+            mcp_types.Tool(
+                name="update_customer",
+                description="Modify one customer.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            mcp_types.Tool(
+                name="export_customers",
+                description="Bulk export.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            mcp_types.Tool(
+                name="purge_customers",
+                description="Unclassified dangerous operation.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+        )
+        lc_tools = [
+            convert_mcp_tool_to_langchain_tool(
+                SimpleNamespace(),
+                schema,
+                server_name="crm",
+                tool_name_prefix=True,
+            )
+            for schema in schemas
+        ]
+        seen_names: list[str] = []
+
+        def classify(tool: MCPToolInfo) -> str | tuple[str, ...] | None:
+            """Record canonical remote names and classify tools dynamically."""
+            seen_names.append(tool.name)
+            # Server-asserted read-only tools need only crm.read.
+            if tool.annotations.read_only is True:
+                return "crm.read"
+            # Bulk exports require both read and export permissions.
+            if tool.name == "export_customers":
+                return ("crm.read", "crm.export")
+            # Returning None leaves the tool untagged (default-deny).
+            if tool.name == "purge_customers":
+                return None
+            return "crm.write"
+
+        client = MCPClient.streamable_http(
+            "https://mcp.invalid/mcp",
+            permission="crm.connect",
+            tool_permissions=classify,
+        )
+        _apply_mcp_permissions(lc_tools, "crm", client)
+        # Classifier must receive unprefixed canonical remote names.
+        self.assertEqual(
+            seen_names,
+            ["get_customer", "update_customer", "export_customers", "purge_customers"],
+        )
+
+        class Request:
+            """Minimal ModelRequest stub for _project_principal_tools."""
+
+            tools = lc_tools
+
+            def override(self, *, tools):
+                """Return a projected request carrying only allowed tools."""
+                return SimpleNamespace(tools=tools)
+
+        # Without client-wide crm.connect, even crm.read is insufficient.
+        missing_connect = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"crm.read"})
+        )
+        read_principal = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(permissions={"crm.connect", "crm.read"})
+        )
+        export_principal = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(
+                permissions={"crm.connect", "crm.read", "crm.export"}
+            )
+        )
+        try:
+            with activate_agent_principal(missing_connect):
+                self.assertEqual(_project_principal_tools(Request()).tools, [])
+            with activate_agent_principal(read_principal):
+                # purge_customers returned None, so only crm.connect applies; wait — check explicit no-client-permission default-deny below!
+                read_names = [item.name for item in _project_principal_tools(Request()).tools]
+            with activate_agent_principal(export_principal):
+                export_names = [item.name for item in _project_principal_tools(Request()).tools]
+        finally:
+            revoke_agent_principal(missing_connect)
+            revoke_agent_principal(read_principal)
+            revoke_agent_principal(export_principal)
+
+        self.assertEqual(read_names, ["crm_get_customer", "crm_purge_customers"])
+        self.assertEqual(
+            export_names,
+            ["crm_get_customer", "crm_export_customers", "crm_purge_customers"],
+        )
+
+        # Without a client-wide permission, a tool returning None is strictly hidden under a principal.
+        no_base_client = MCPClient.streamable_http(
+            "https://mcp.invalid/mcp",
+            tool_permissions=classify,
+        )
+        _apply_mcp_permissions(lc_tools, "crm", no_base_client)
+        wide_principal = create_agent_principal_binding(
+            AgentRuntimePrincipal.create(
+                permissions={"crm.read", "crm.write", "crm.export"}
+            )
+        )
+        try:
+            with activate_agent_principal(wide_principal):
+                visible = [item.name for item in _project_principal_tools(Request()).tools]
+        finally:
+            revoke_agent_principal(wide_principal)
+        self.assertEqual(
+            visible,
+            ["crm_get_customer", "crm_update_customer", "crm_export_customers"],
+        )
 
 
 if __name__ == "__main__":

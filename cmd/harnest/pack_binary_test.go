@@ -3,13 +3,21 @@
 package main
 
 import (
+	"context"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"harnest.dev/harnest/internal/packbinary"
 	"harnest.dev/harnest/internal/runtimewheel"
+	"harnest.dev/harnest/internal/uvbootstrap"
 )
 
 // writePackFixtureFile creates parent directories and writes one regular test fixture file.
@@ -275,5 +283,168 @@ func TestPackEnvSyncResolvesBundledWheelsRequirementsAndExtensions(t *testing.T)
 	plainSys := environmentTestSystem(t, root)
 	if _, _, err := executeForTest(t, plainSys, "env", "sync", agentDir, "--frozen"); err == nil {
 		t.Fatal("plain Harnest accepted a frozen lock bound to an embedded pack")
+	}
+}
+
+// enterUnlinkedWorkingDirectory switches the test process into a removed directory on Unix and restores CWD on cleanup.
+func enterUnlinkedWorkingDirectory(t *testing.T) string {
+	t.Helper()
+	original, err := os.Getwd()
+	// Abort if the current directory cannot be captured before changing directories.
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := os.MkdirTemp("", "harnest-unlinked-cwd-*")
+	// Abort if a disposable working directory cannot be created.
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Restore the original directory before other cleanups run so later tests observe a valid CWD.
+	t.Cleanup(func() {
+		_ = os.Chdir(original)
+		_ = os.RemoveAll(stale)
+	})
+	// Enter the disposable directory before unlinking it to simulate a deleted shell working directory.
+	if err := os.Chdir(stale); err != nil {
+		t.Fatal(err)
+	}
+	// Unix permits unlinking an active CWD whereas Windows holds an exclusive directory lock.
+	if runtime.GOOS != "windows" {
+		if err := os.Remove(stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return stale
+}
+
+// clearSimulatingUVScript returns a fake uv script that requires a valid CWD and deletes the venv target on --clear.
+func clearSimulatingUVScript() []byte {
+	return []byte(`#!/bin/sh
+set -eu
+cwd=$(pwd -P)
+printf 'UV_PWD=%s ARGS=%s\n' "$cwd" "$*" >> "$HARNEST_UV_PWD_RECORD"
+if [ "$1" = "venv" ]; then
+	for directory in "$@"; do :; done
+	rm -rf "$directory"
+	mkdir -p "$directory/bin"
+	post_cwd=$(pwd -P)
+	printf 'POST_CLEAR_PWD=%s\n' "$post_cwd" >> "$HARNEST_UV_PWD_RECORD"
+	printf '#!/bin/sh\nset -eu\ncwd=$(pwd -P)\nprintf "PYTHON_PWD=%%s ARGS=%%s\\n" "$cwd" "$*" >> "$HARNEST_UV_PWD_RECORD"\n' > "$directory/bin/python"
+	chmod 0755 "$directory/bin/python"
+fi
+`)
+}
+
+// TestInstallPackCLIEnvironmentPinsWorkingDirectoryOutsideClearedTarget verifies CLI bootstrap survives an unlinked CWD and --clear.
+func TestInstallPackCLIEnvironmentPinsWorkingDirectoryOutsideClearedTarget(t *testing.T) {
+	root := t.TempDir()
+	cliRoot := filepath.Join(root, "cli")
+	record := filepath.Join(root, "uv-pwd.txt")
+	t.Setenv("HARNEST_UV_PWD_RECORD", record)
+
+	var recorded []*exec.Cmd
+	sys := defaultSystem()
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		return uvbootstrap.Artifact{Name: "uv", Contents: clearSimulatingUVScript()}, nil
+	}
+	sys.commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, name, args...)
+		recorded = append(recorded, cmd)
+		return cmd
+	}
+
+	staleDir := enterUnlinkedWorkingDirectory(t)
+	app := &application{system: sys, version: "0.21.3"}
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	wheel := runtimewheel.Artifact{Name: "harnest-test.whl", Contents: []byte("pack cli release")}
+
+	selection, err := app.preparePackCLIEnvironment(command, cliRoot, wheel)
+	// Bootstrapping the CLI runtime must succeed even when the caller's shell CWD has been removed.
+	if err != nil {
+		t.Fatalf("preparePackCLIEnvironment failed from unlinked CWD: %v", err)
+	}
+	targetDir := filepath.Dir(filepath.Dir(selection.Executable))
+	expectedDir := filepath.Dir(targetDir)
+	// Expect both uv venv and uv pip install subprocesses to be captured.
+	if len(recorded) != 2 {
+		t.Fatalf("expected 2 uv invocations, got %d", len(recorded))
+	}
+	for index, cmd := range recorded {
+		// Every bootstrap command must pin Dir to the existing parent rather than inheriting CWD or targeting the cleared directory.
+		if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == targetDir || cmd.Dir != expectedDir {
+			t.Fatalf("command %d (%v) used Dir=%q, want %q (not stale %q or cleared target %q)", index, cmd.Args, cmd.Dir, expectedDir, staleDir, targetDir)
+		}
+	}
+	log := string(mustReadTestFile(t, record))
+	resolvedExpectedDir, err := filepath.EvalSymlinks(expectedDir)
+	// Normalize macOS /var -> /private/var symlinks before comparing with `pwd -P`.
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "pack CLI uv working directory log", log, []string{
+		"UV_PWD=" + resolvedExpectedDir + " ARGS=venv ",
+		"POST_CLEAR_PWD=" + resolvedExpectedDir,
+		"UV_PWD=" + resolvedExpectedDir + " ARGS=pip install ",
+	})
+}
+
+// TestBrandedCLINamePropagatesToWarningsAndPythonSubprocesses verifies warnings, root Use, and subprocess env use the branded command name.
+func TestBrandedCLINamePropagatesToWarningsAndPythonSubprocesses(t *testing.T) {
+	loaded := makeLoadedPackFixture(t, nil)
+	cacheRoot := t.TempDir()
+	cachePath := filepath.Join(cacheRoot, "harnest", "extensions", "pypi.json")
+	// Seed a stale cache so offline PyPI lookup emits the cached-catalog warning on stderr.
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeExtensionCatalogCache(cachePath, extensionCatalogCache{
+		Version:   extensionCatalogCacheVersion,
+		FetchedAt: time.Now().Add(-time.Hour),
+		ETag:      `"stale"`,
+		Projects:  []string{"harnest-extension-offline"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transport := extensionRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return extensionHTTPResponse(http.StatusServiceUnavailable, "", nil), nil
+	})
+	sys := extensionSearchTestSystem(transport, cacheRoot)
+	sys.embeddedPack = loaded
+	_, stderr, err := executeForTest(t, sys, "extensions", "search", "offline")
+	// Offline extension search must succeed using the cached catalog while warning with the branded prefix.
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "acme: PyPI unavailable; using cached extension catalog") {
+		t.Fatalf("expected branded offline warning, got stderr=%q", stderr)
+	}
+
+	// Verify runPythonCLI passes HARNEST_CLI_NAME=acme into Python subprocess environments.
+	pySys := defaultSystem()
+	pySys.embeddedPack = loaded
+	pySys.commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$HARNEST_CLI_NAME"`)
+	}
+	app := &application{system: pySys, version: "2.3.0", embeddedPack: loaded}
+	var out strings.Builder
+	err = runPythonCLI(context.Background(), app, pythonSelection{Executable: "python3"}, []string{"pack", "validate"}, nil, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runPythonCLI failed: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "acme" {
+		t.Fatalf("expected HARNEST_CLI_NAME=acme in Python subprocess, got %q", out.String())
+	}
+
+	// Verify HARNEST_CLI_NAME rebrands wheel-launched harnest while rejecting unsafe values.
+	t.Setenv(cliNameEnv, "acme-cli")
+	wheelRoot := newRootCommand(defaultSystem(), "2.3.0")
+	if wheelRoot.Use != "acme-cli" {
+		t.Fatalf("expected wheel-launched root Use=acme-cli, got %q", wheelRoot.Use)
+	}
+	t.Setenv(cliNameEnv, "bad\nvalue")
+	fallbackRoot := newRootCommand(defaultSystem(), "2.3.0")
+	if fallbackRoot.Use != "harnest" {
+		t.Fatalf("expected unsafe HARNEST_CLI_NAME to fall back to harnest, got %q", fallbackRoot.Use)
 	}
 }

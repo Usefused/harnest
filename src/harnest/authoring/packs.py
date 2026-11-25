@@ -74,45 +74,38 @@ def _compiler_owned_distributions() -> frozenset[str]:
     return frozenset(names)
 
 
-class PackPackages(_Strict):
-    """Enforced Python wheels and pinned requirements bundled into a pack binary."""
-    wheels: list[str] = Field(default_factory=list, max_length=64)
-    requirements: list[str] = Field(default_factory=list, max_length=128)
+def _looks_like_pack_path(value: str) -> bool:
+    """Return True when a packages entry syntactically identifies a local path rather than a PEP 508 requirement."""
+    # Slashes, backslashes, wheel suffixes, or leading dots unambiguously indicate filesystem paths.
+    return "/" in value or "\\" in value or value.endswith(".whl") or value.startswith(".")
 
-    @field_validator("wheels")
-    @classmethod
-    def _wheels(cls, values: list[str]) -> list[str]:
-        """Ensure wheel or local package paths stay inside the pack folder."""
-        return [_validate_pack_relative_path(item, "packages.wheels entry") for item in values]
 
-    @field_validator("requirements")
-    @classmethod
-    def _requirements(cls, values: list[str]) -> list[str]:
-        """Validate PEP 508 requirements and block overriding compiler-owned packages."""
-        owned = _compiler_owned_distributions()
-        validated: list[str] = []
-        for raw in values:
-            text = raw.strip()
-            # Reject multiline or direct URL/file directives that bypass pip-compile policy.
-            if not text or "\n" in text or "\r" in text:
-                raise ValueError(f"invalid package requirement: {raw!r}")
-            try:
-                parsed = Requirement(text)
-            except InvalidRequirement as exc:
-                raise ValueError(f"invalid package requirement {raw!r}: {exc}") from exc
-            if parsed.url is not None:
-                raise ValueError(
-                    f"packages.requirements must not use direct URLs ({raw!r}); "
-                    "bundle local wheels under packages.wheels instead"
-                )
-            normalized = canonicalize_name(parsed.name)
-            # Compiler-owned frameworks stay pinned to the Harnest release.
-            if normalized in owned:
-                raise ValueError(
-                    f"packages.requirements must not declare compiler-owned package {normalized!r}"
-                )
-            validated.append(text)
-        return validated
+def _validate_package_entry(raw: str, owned: frozenset[str]) -> str:
+    """Validate one unified pack.yaml packages entry as a pack-relative path or PEP 508 requirement."""
+    # Reject empty or multiline entries before path or requirement parsing.
+    if not raw or not raw.strip() or "\n" in raw or "\r" in raw:
+        raise ValueError(f"invalid package entry: {raw!r}")
+    text = raw.strip()
+    # Path-shaped entries must stay canonical and contained within the pack folder.
+    if _looks_like_pack_path(text):
+        return _validate_pack_relative_path(text, "packages entry")
+    try:
+        parsed = Requirement(text)
+    except InvalidRequirement as exc:
+        raise ValueError(f"invalid package requirement {raw!r}: {exc}") from exc
+    # Direct URL/file specs bypass reproducible lock verification; require pack-relative paths instead.
+    if parsed.url is not None:
+        raise ValueError(
+            f"packages must not use direct URLs ({raw!r}); "
+            "reference a pack-relative .whl or package directory instead"
+        )
+    normalized = canonicalize_name(parsed.name)
+    # Compiler-owned frameworks stay pinned to the Harnest release.
+    if normalized in owned:
+        raise ValueError(
+            f"packages must not declare compiler-owned package {normalized!r}"
+        )
+    return text
 
 
 class PackManifest(_Strict):
@@ -125,9 +118,27 @@ class PackManifest(_Strict):
     command: str | None = None
     requires: PackRequirements = Field(default_factory=PackRequirements)
     skills: list[str] = Field(default_factory=list, max_length=64)
-    packages: PackPackages = Field(default_factory=PackPackages)
+    packages: list[str] = Field(default_factory=list, max_length=128)
     extensions: list[str] = Field(default_factory=list, max_length=32)
     studio: dict[str, Any] | None = None
+
+    @field_validator("packages", mode="before")
+    @classmethod
+    def _reject_legacy_packages_mapping(cls, value: Any) -> Any:
+        """Give authors a clear error if they pass the removed packages.wheels/requirements mapping."""
+        # Reject dict payloads explicitly so strict list validation points directly at the unified list format.
+        if isinstance(value, dict):
+            raise ValueError(
+                "packages must be a list of PEP 508 requirements or pack-relative .whl / package directory paths"
+            )
+        return value
+
+    @field_validator("packages")
+    @classmethod
+    def _packages(cls, values: list[str]) -> list[str]:
+        """Validate every unified packages entry and block overriding compiler-owned distributions."""
+        owned = _compiler_owned_distributions()
+        return [_validate_package_entry(item, owned) for item in values]
 
     @field_validator("skills")
     @classmethod

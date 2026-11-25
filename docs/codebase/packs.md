@@ -14,7 +14,7 @@ A pack is one folder:
 - `pack.yaml`: inert data, read without running code. It holds `name`,
   `version`, `title`, `description`, `command` (the branded command name),
   `requires` (Harnest and Studio versions), optional `skills` (coding-IDE skills),
-  optional `packages` (`wheels` and pinned `requirements`), optional `extensions`
+  optional `packages` (PEP 508 requirements, local Python package directories, or `.whl` files), optional `extensions`
   (pack-owned Harnest Extensions), and an optional `studio:` sub-pack.
 - `pack.py`: optional and trusted. It defines
   `pack = ProjectPack(schema_version=..., options=..., templates=...)` with

@@ -164,8 +164,10 @@ func runPythonCLI(
 		commandArguments = append([]string{"-u"}, commandArguments...)
 	}
 	command := app.system.commandContext(ctx, python.Executable, commandArguments...)
-	if environment != nil {
-		command.Env = environment
+	// Propagate the branded CLI name so Python pack and compiler errors match the active executable.
+	effectiveEnv := withCLINameEnv(environment, app.cliName())
+	if effectiveEnv != nil {
+		command.Env = effectiveEnv
 	}
 	if err := runCommand(command, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("run Python Harnest CLI: %w", err)

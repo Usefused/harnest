@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +20,17 @@ from .frameworks.registry import DEFAULT_FRAMEWORK, framework_names
 from .bundle import BundleError, compile_artifact
 from .orchestrator import AgentSource, Orchestrator, define_orchestrator
 from .upgrade import UpgradeError, apply_upgrade, plan_upgrade, render_upgrade_plan
+
+_CLI_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+
+def cli_name() -> str:
+    """Return the active branded CLI command name, defaulting to 'harnest'."""
+    override = os.environ.get("HARNEST_CLI_NAME", "").strip()
+    # Accept only valid kebab-case command names so untrusted env values cannot inject control characters.
+    if override and _CLI_NAME_PATTERN.fullmatch(override):
+        return override
+    return "harnest"
 
 
 def load_orchestrator(path: Path) -> Orchestrator:
@@ -49,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         from .authoring.pack_cli import run_pack_command
 
         return run_pack_command(arguments[1:])
-    parser = argparse.ArgumentParser(prog="harnest")
+    parser = argparse.ArgumentParser(prog=cli_name())
     subparsers = parser.add_subparsers(dest="command", required=True)
     from .mcp_cli import add_mcp_parser, run_mcp_command
     from .channel_cli import add_channels_parser, run_channels_command
@@ -181,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         TypeError,
         ValueError,
     ) as exc:
-        print(f"harnest: {exc}", file=sys.stderr)
+        print(f"{cli_name()}: {exc}", file=sys.stderr)
         return 2
 
 

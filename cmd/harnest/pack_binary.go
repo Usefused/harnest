@@ -27,8 +27,57 @@ const (
 	packCoreInitEnv      = "HARNEST_PACK_CORE_INIT"
 	packExtensionsEnv    = "HARNEST_PACK_EXTENSIONS"
 	packCacheOverrideEnv = "HARNEST_PACK_CACHE"
+	cliNameEnv           = "HARNEST_CLI_NAME"
 	packWheelsLockMarker = "__HARNEST_PACK_WHEELS_URI__"
 )
+
+// sanitizeCLIName accepts only a valid kebab-case CLI token to block control-character injection from env vars.
+func sanitizeCLIName(value string) string {
+	trimmed := strings.TrimSpace(value)
+	// Reject empty values or non-command tokens so untrusted environment overrides never corrupt stderr prefixes.
+	if trimmed == "" || !scaffoldNamePattern.MatchString(trimmed) {
+		return ""
+	}
+	return trimmed
+}
+
+// cliName returns the active branded command name, falling back to "harnest".
+func (a *application) cliName() string {
+	// Embedded pack binaries own their branded identity regardless of caller environment variables.
+	if a.embeddedPack != nil && strings.TrimSpace(a.embeddedPack.Manifest.Command) != "" {
+		return strings.TrimSpace(a.embeddedPack.Manifest.Command)
+	}
+	// Wheel-launched wrappers forward to harnest and propagate the branded command through HARNEST_CLI_NAME.
+	if a.system.getenv != nil {
+		if override := sanitizeCLIName(a.system.getenv(cliNameEnv)); override != "" {
+			return override
+		}
+	}
+	return "harnest"
+}
+
+// withCLINameEnv sets or replaces HARNEST_CLI_NAME in an environment slice without duplicating keys.
+func withCLINameEnv(base []string, name string) []string {
+	// Skip mutating the environment when running as unbranded harnest.
+	if name == "" || name == "harnest" {
+		return base
+	}
+	source := base
+	// Inherit the current process environment when the caller passed nil so subprocesses keep PATH and credentials.
+	if source == nil {
+		source = os.Environ()
+	}
+	prefix := cliNameEnv + "="
+	result := make([]string, 0, len(source)+1)
+	for _, entry := range source {
+		// Drop any inherited HARNEST_CLI_NAME so the active binary's branding wins deterministically.
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, prefix+name)
+}
 
 // loadEmbeddedPack checks the running executable for an appended pack payload and materializes it.
 func loadEmbeddedPack(sys system) (*packbinary.LoadedPack, error) {
@@ -96,12 +145,14 @@ func (a *application) prependEmbeddedPack(packs []string, requireProjectHooks bo
 	return append([]string{embeddedDir}, packs...)
 }
 
-// packSubprocessEnv appends HARNEST_PACK_EXTENSIONS when the binary owns embedded extensions.
+// packSubprocessEnv appends pack extension and CLI-branding variables for Python subprocesses.
 func (a *application) packSubprocessEnv(base []string) []string {
-	if a.embeddedPack == nil || len(a.embeddedPack.Manifest.Extensions) == 0 {
-		return base
+	env := base
+	// Attach embedded pack extensions when the standalone binary bundles them.
+	if a.embeddedPack != nil && len(a.embeddedPack.Manifest.Extensions) > 0 {
+		env = append(append([]string{}, env...), packExtensionsEnv+"="+a.embeddedPack.ExtensionsDir())
 	}
-	return append(append([]string{}, base...), packExtensionsEnv+"="+a.embeddedPack.ExtensionsDir())
+	return withCLINameEnv(env, a.cliName())
 }
 
 // loadCompiledArtifact validates a compiled artifact while recognizing embedded pack extensions.
@@ -168,30 +219,41 @@ func (a *application) preparePackCLIEnvironment(
 func (a *application) installPackCLIEnvironment(
 	command *cobra.Command, directory string, wheel runtimewheel.Artifact,
 ) error {
+	target, err := absoluteRuntimeTarget(directory)
+	// Resolve relative paths before setting process.Dir so uv creates the CLI venv at the intended location.
+	if err != nil {
+		return err
+	}
 	artifact, err := a.system.embeddedUV()
+	// Abort bootstrap if the embedded uv binary is unavailable.
 	if err != nil {
 		return fmt.Errorf("load CLI Python bootstrap: %w", err)
 	}
 	uv, cleanupUV, err := stageUV(artifact)
+	// Abort if embedded uv cannot be written to an executable temp path.
 	if err != nil {
 		return err
 	}
 	defer cleanupUV()
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
+	// Abort if the embedded Harnest wheel cannot be staged for installation.
 	if err != nil {
 		return err
 	}
 	defer cleanupWheel()
 	environment := mergedEnvironment(map[string]string{"UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1"})
-	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download.
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "venv", "--python", uvbootstrap.SupportedPythonSpec, "--python-preference", "system", "--clear", directory); err != nil {
+	workingDirectory := runtimeCommandWorkingDirectory(target, uv)
+	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download;
+	// pin process.Dir outside target so --clear never deletes uv's CWD and unlinked shell CWDs cannot fail bootstrap.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, uv, "venv", "--python", uvbootstrap.SupportedPythonSpec, "--python-preference", "system", "--clear", target); err != nil {
 		return fmt.Errorf("create CLI runtime environment: %w", err)
 	}
-	python := runtimePythonPath(directory)
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "pip", "install", "--python", python, wheelPath); err != nil {
+	python := runtimePythonPath(target)
+	// Run pip install in the same existing working directory to avoid inheriting an unlinked shell CWD.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, uv, "pip", "install", "--python", python, wheelPath); err != nil {
 		return fmt.Errorf("install bundled CLI runtime: %w", err)
 	}
-	return os.Chmod(directory, 0o700)
+	return os.Chmod(target, 0o700)
 }
 
 // buildPackBinary stages a validated pack payload in Python and stamps it onto a Harnest binary.

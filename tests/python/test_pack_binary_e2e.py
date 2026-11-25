@@ -102,8 +102,7 @@ def _create_company_pack(pack_dir: Path) -> None:
         "apiVersion: harnest.dev/pack/v1\nname: acme\nversion: 1.5.0\n"
         "title: Acme agents\ncommand: acme\n"
         "skills:\n  - coding-skills/acme-standards\n  - coding-skills/harnest-authoring\n"
-        "packages:\n  wheels:\n    - wheels/acme_prebuilt-1.0.0-py3-none-any.whl\n    - local-pkg\n"
-        "  requirements:\n    - acme-sdk==2.1.0\n"
+        "packages:\n  - wheels/acme_prebuilt-1.0.0-py3-none-any.whl\n  - local-pkg\n  - acme-sdk==2.1.0\n"
         "extensions:\n  - company-ext/acme_guard\n",
         encoding="utf-8",
     )

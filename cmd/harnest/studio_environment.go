@@ -66,34 +66,46 @@ func (a *application) prepareStudioEnvironment(command *cobra.Command, root stri
 
 // installStudioEnvironment stages release assets and publishes no cache marker on partial failure.
 func (a *application) installStudioEnvironment(command *cobra.Command, directory string, wheel runtimewheel.Artifact) error {
+	target, err := absoluteRuntimeTarget(directory)
+	// Resolve relative paths before pinning process.Dir so uv targets the intended Studio environment directory.
+	if err != nil {
+		return err
+	}
 	artifact, err := a.system.embeddedUV()
+	// Abort Studio bootstrap if the embedded uv binary cannot be loaded.
 	if err != nil {
 		return fmt.Errorf("load Studio Python bootstrap: %w", err)
 	}
 	uv, cleanupUV, err := stageUV(artifact)
+	// Abort if embedded uv cannot be staged on disk.
 	if err != nil {
 		return err
 	}
 	defer cleanupUV()
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
+	// Abort if the embedded Harnest wheel cannot be staged on disk.
 	if err != nil {
 		return err
 	}
 	defer cleanupWheel()
 	environment := mergedEnvironment(map[string]string{"UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1"})
-	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download.
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "venv", "--python", uvbootstrap.SupportedPythonSpec, "--python-preference", "system", "--clear", directory); err != nil {
+	workingDirectory := runtimeCommandWorkingDirectory(target, uv)
+	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download;
+	// pin process.Dir outside target so --clear never deletes uv's CWD and unlinked shell CWDs cannot fail bootstrap.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, uv, "venv", "--python", uvbootstrap.SupportedPythonSpec, "--python-preference", "system", "--clear", target); err != nil {
 		return fmt.Errorf("create Studio environment: %w", err)
 	}
-	python := runtimePythonPath(directory)
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, uv, "pip", "install", "--python", python, wheelPath+"[studio]"); err != nil {
+	python := runtimePythonPath(target)
+	// Run pip install in the same existing working directory so uv never depends on the caller's shell CWD.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, uv, "pip", "install", "--python", python, wheelPath+"[studio]"); err != nil {
 		return fmt.Errorf("install bundled Studio: %w", err)
 	}
 	// A wheel missing browser assets or the compiled server is never cached as ready.
 	check := "from pathlib import Path; import harnest_builder.app as a; from harnest_builder.assistant_build import PACKAGE; assert all((a.STATIC / p).is_file() for p in a.ASSETS); assert (PACKAGE / '_assistant' / 'harnest-manifest.json').is_file()"
-	if err := a.runRuntimeCommandWithEnvironment(command, environment, python, "-I", "-c", check); err != nil {
+	// Verify Studio assets from the same stable working directory so isolated Python never fails on a stale CWD.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, python, "-I", "-c", check); err != nil {
 		return fmt.Errorf("verify bundled Studio: %w", err)
 	}
 	// Keep the cache owned by this user; agent workspaces remain separate.
-	return os.Chmod(directory, 0o700)
+	return os.Chmod(target, 0o700)
 }

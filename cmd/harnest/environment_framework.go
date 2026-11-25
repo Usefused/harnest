@@ -67,10 +67,12 @@ func parseFrameworkRequirement(data []byte, framework string) (string, error) {
 // recordFrameworkResolution reads metadata from the actual installed project interpreter.
 func (a *application) recordFrameworkResolution(command *cobra.Command, bundle engine.Bundle, staged stagedAgentEnvironment, frozen bool) error {
 	args := []string{"-m", "harnest.project_lock", bundle.Directory, bundle.Config.Spec.Framework.Name}
+	// Preserve frozen verification mode when checking an already-locked agent environment.
 	if frozen {
 		args = append(args, "--frozen")
 	}
-	if err := a.runRuntimeCommandWithEnvironment(command, staged.environment, staged.python, args...); err != nil {
+	// Pin execution to bundle.Directory so project lock recording never fails when invoked from an unlinked shell CWD.
+	if err := a.runRuntimeCommandInDirectory(command, bundle.Directory, staged.environment, staged.python, args...); err != nil {
 		return fmt.Errorf("record resolved framework in harnest.lock: %w", err)
 	}
 	return nil
@@ -78,7 +80,8 @@ func (a *application) recordFrameworkResolution(command *cobra.Command, bundle e
 
 // verifyAndRecordFramework refuses an environment with incompatible transitive dependencies.
 func (a *application) verifyAndRecordFramework(command *cobra.Command, bundle engine.Bundle, staged stagedAgentEnvironment, frozen bool) error {
-	if err := a.runRuntimeCommandWithEnvironment(command, staged.environment, staged.uvPath, "pip", "check", "--python", staged.python); err != nil {
+	// Pin uv pip check to bundle.Directory so dependency verification does not depend on the caller's shell CWD.
+	if err := a.runRuntimeCommandInDirectory(command, bundle.Directory, staged.environment, staged.uvPath, "pip", "check", "--python", staged.python); err != nil {
 		return fmt.Errorf("verify resolved dependency compatibility: %w", err)
 	}
 	return a.recordFrameworkResolution(command, bundle, staged, frozen)

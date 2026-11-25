@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -151,4 +152,59 @@ func TestStudioReleasedBinaryDoesNotSilentlyUseUnbundledPython(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "bundled Studio") {
 		t.Fatalf("unexpected error %v", err)
 	}
+}
+
+// TestInstallStudioEnvironmentPinsWorkingDirectoryOutsideClearedTarget verifies Studio bootstrap survives an unlinked CWD and --clear.
+func TestInstallStudioEnvironmentPinsWorkingDirectoryOutsideClearedTarget(t *testing.T) {
+	root := t.TempDir()
+	studioRoot := filepath.Join(root, "studio")
+	record := filepath.Join(root, "studio-uv-pwd.txt")
+	t.Setenv("HARNEST_UV_PWD_RECORD", record)
+
+	var recorded []*exec.Cmd
+	sys := defaultSystem()
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		return uvbootstrap.Artifact{Name: "uv", Contents: clearSimulatingUVScript()}, nil
+	}
+	sys.commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, name, args...)
+		recorded = append(recorded, cmd)
+		return cmd
+	}
+
+	staleDir := enterUnlinkedWorkingDirectory(t)
+	app := &application{system: sys, version: "0.21.3"}
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	wheel := runtimewheel.Artifact{Name: "harnest-test.whl", Contents: []byte("studio release")}
+
+	selection, err := app.prepareStudioEnvironment(command, studioRoot, wheel)
+	// Studio bootstrap must succeed even when the user launches it from a removed shell directory.
+	if err != nil {
+		t.Fatalf("prepareStudioEnvironment failed from unlinked CWD: %v", err)
+	}
+	targetDir := filepath.Dir(filepath.Dir(selection.Executable))
+	expectedDir := filepath.Dir(targetDir)
+	// Expect uv venv, uv pip install, and the isolated Studio asset verification probe.
+	if len(recorded) != 3 {
+		t.Fatalf("expected 3 Studio bootstrap commands, got %d", len(recorded))
+	}
+	for index, cmd := range recorded {
+		// Every bootstrap subprocess must run in the existing parent directory, never the stale CWD or cleared venv target.
+		if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == targetDir || cmd.Dir != expectedDir {
+			t.Fatalf("command %d (%v) used Dir=%q, want %q (not stale %q or cleared target %q)", index, cmd.Args, cmd.Dir, expectedDir, staleDir, targetDir)
+		}
+	}
+	log := string(mustReadTestFile(t, record))
+	resolvedExpectedDir, err := filepath.EvalSymlinks(expectedDir)
+	// Normalize symlinked temp roots before matching `pwd -P` output.
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContainsAll(t, "Studio bootstrap working directory log", log, []string{
+		"UV_PWD=" + resolvedExpectedDir + " ARGS=venv ",
+		"POST_CLEAR_PWD=" + resolvedExpectedDir,
+		"UV_PWD=" + resolvedExpectedDir + " ARGS=pip install ",
+		"PYTHON_PWD=" + resolvedExpectedDir + " ARGS=-I -c ",
+	})
 }

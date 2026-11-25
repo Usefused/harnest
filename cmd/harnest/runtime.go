@@ -119,16 +119,27 @@ func (a *application) installRuntime(
 	return installErr
 }
 
+// installRuntimeWithPython creates and populates the managed runtime using a host Python interpreter.
 func (a *application) installRuntimeWithPython(
 	command *cobra.Command,
 	directory, bootstrap, wheelPath string,
 ) error {
-	if err := a.runRuntimeCommand(command, bootstrap, "-m", "venv", directory); err != nil {
+	target, err := absoluteRuntimeTarget(directory)
+	// Fail early if a relative target directory cannot be resolved before pinning subprocess Dir.
+	if err != nil {
+		return err
+	}
+	workingDirectory := runtimeCommandWorkingDirectory(target, wheelPath)
+	// Run venv creation in a guaranteed-existing directory outside target so a removed caller CWD cannot break setup.
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, nil, bootstrap, "-m", "venv", target); err != nil {
 		return runtimeBootstrapError{cause: fmt.Errorf("create managed Python environment: %w", err)}
 	}
-	python := runtimePythonPath(directory)
-	if err := a.runRuntimeCommand(
+	python := runtimePythonPath(target)
+	// Keep pip install pinned to the same stable working directory while installing the staged wheel.
+	if err := a.runRuntimeCommandInDirectory(
 		command,
+		workingDirectory,
+		nil,
 		python,
 		"-m", "pip", "--disable-pip-version-check", "install", "--upgrade", wheelPath,
 	); err != nil {
@@ -142,16 +153,24 @@ func isRuntimeBootstrapError(err error) bool {
 	return errors.As(err, &bootstrapErr)
 }
 
+// installRuntimeWithManagedPython bootstraps a managed Python interpreter and Harnest wheel via embedded uv.
 func (a *application) installRuntimeWithManagedPython(
 	command *cobra.Command,
 	directory, wheelPath string,
 	discoveryErr error,
 ) error {
+	target, err := absoluteRuntimeTarget(directory)
+	// Resolve relative targets before changing process.Dir so uv creates the environment at the requested location.
+	if err != nil {
+		return err
+	}
 	artifact, err := a.system.embeddedUV()
+	// Surface missing embedded uv artifacts alongside the earlier host-Python discovery failure.
 	if err != nil {
 		return fmt.Errorf("bootstrap managed Python after %v: %w", discoveryErr, err)
 	}
 	uvPath, cleanup, err := stageUV(artifact)
+	// Abort if embedded uv cannot be materialized to an executable staging path.
 	if err != nil {
 		return err
 	}
@@ -165,21 +184,26 @@ func (a *application) installRuntimeWithManagedPython(
 	environment := mergedEnvironment(map[string]string{
 		"UV_NO_CONFIG":          "1",
 		"UV_NO_PROGRESS":        "1",
-		"UV_PYTHON_INSTALL_DIR": managedPythonDirectory(directory),
+		"UV_PYTHON_INSTALL_DIR": managedPythonDirectory(target),
 	})
-	if err := a.runRuntimeCommandWithEnvironment(
+	workingDirectory := runtimeCommandWorkingDirectory(target, uvPath)
+	// Pin uv's working directory outside target so --clear cannot unlink uv's own CWD and stale shell CWDs never fail bootstrap.
+	if err := a.runRuntimeCommandInDirectory(
 		command,
+		workingDirectory,
 		environment,
 		uvPath,
-		"venv", "--python", uvbootstrap.ManagedPythonVersion, "--managed-python", "--clear", directory,
+		"venv", "--python", uvbootstrap.ManagedPythonVersion, "--managed-python", "--clear", target,
 	); err != nil {
 		return fmt.Errorf("install managed Python %s: %w", uvbootstrap.ManagedPythonVersion, err)
 	}
-	if err := a.runRuntimeCommandWithEnvironment(
+	// Install the staged wheel from the same verified working directory so uv never depends on the caller's shell CWD.
+	if err := a.runRuntimeCommandInDirectory(
 		command,
+		workingDirectory,
 		environment,
 		uvPath,
-		"pip", "install", "--python", runtimePythonPath(directory), "--upgrade", wheelPath,
+		"pip", "install", "--python", runtimePythonPath(target), "--upgrade", wheelPath,
 	); err != nil {
 		return fmt.Errorf("install embedded Harnest runtime: %w", err)
 	}
@@ -268,20 +292,71 @@ func (a *application) runRuntimeCommand(command *cobra.Command, executable strin
 	)
 }
 
+// runRuntimeCommandWithEnvironment runs a runtime subprocess with explicit environment variables.
 func (a *application) runRuntimeCommandWithEnvironment(
 	command *cobra.Command,
 	environment []string,
 	executable string,
 	arguments ...string,
 ) error {
+	return a.runRuntimeCommandInDirectory(command, "", environment, executable, arguments...)
+}
+
+// runRuntimeCommandInDirectory executes a runtime subprocess with optional working directory and environment overrides.
+func (a *application) runRuntimeCommandInDirectory(
+	command *cobra.Command,
+	directory string,
+	environment []string,
+	executable string,
+	arguments ...string,
+) error {
 	process := a.system.commandContext(command.Context(), executable, arguments...)
-	process.Env = environment
+	// Setting process.Dir insulates uv and bootstrap interpreters from removed or unlinked caller CWDs.
+	if directory != "" {
+		process.Dir = directory
+	}
+	// Apply explicit environment variables only when provided so callers can inherit process defaults cleanly.
+	if environment != nil {
+		process.Env = environment
+	}
 	return runCommand(
 		process,
 		command.InOrStdin(),
 		command.OutOrStdout(),
 		command.ErrOrStderr(),
 	)
+}
+
+// absoluteRuntimeTarget normalizes target paths without consulting os.Getwd when already absolute.
+func absoluteRuntimeTarget(directory string) (string, error) {
+	// Avoid filepath.Abs for absolute paths because os.Getwd fails when invoked from an unlinked shell directory.
+	if filepath.IsAbs(directory) {
+		return filepath.Clean(directory), nil
+	}
+	return filepath.Abs(directory)
+}
+
+// runtimeCommandWorkingDirectory chooses an existing directory outside targetDirectory so `uv venv --clear`
+// never removes its own working directory and callers in unlinked shells never trigger missing-CWD errors.
+func runtimeCommandWorkingDirectory(targetDirectory, stagedAssetPath string) string {
+	cleanedTarget := filepath.Clean(targetDirectory)
+	parent := filepath.Dir(cleanedTarget)
+	// Prefer targetDirectory's parent when it exists and is distinct from the cleared target itself.
+	if parent != "" && parent != cleanedTarget {
+		// Verify parent exists on disk before using it because fresh runtime installs may not have created ~/.harnest yet.
+		if info, err := os.Stat(parent); err == nil && info.IsDir() {
+			return parent
+		}
+	}
+	stagedDirectory := filepath.Dir(stagedAssetPath)
+	// Fall back to the staged asset directory created by MkdirTemp when the target's parent does not exist yet.
+	if stagedDirectory != "" {
+		// Guard against synthetic test paths where stagedAssetPath may not live on disk.
+		if info, err := os.Stat(stagedDirectory); err == nil && info.IsDir() {
+			return stagedDirectory
+		}
+	}
+	return os.TempDir()
 }
 
 func stageRuntimeWheel(artifact runtimewheel.Artifact) (string, func(), error) {

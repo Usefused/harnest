@@ -31,7 +31,7 @@ from ..extension_descriptors import (
 )
 from .contracts import ProjectError
 from .distribution import _pack_files
-from .packs import Pack, _compiler_owned_distributions, check_studio, load_pack
+from .packs import Pack, _compiler_owned_distributions, _looks_like_pack_path, check_studio, load_pack
 
 BINARY_FORMAT = "harnest.pack-binary/v1"
 BINARY_MANIFEST = "harnest-pack-binary.json"
@@ -46,7 +46,7 @@ _SKIPPED_SOURCE_PARTS = frozenset({
 def validate_pack_payload(pack: Pack) -> None:
     """Validate coding skills, bundled packages, and extensions without executing code."""
     _validate_skills(pack)
-    _validate_wheel_entries(pack)
+    _partition_packages(pack)
     _validate_extensions(pack)
 
 
@@ -65,10 +65,11 @@ def prepare_pack_binary(
     target.mkdir(parents=True, exist_ok=True)
     _stage_pack_folder(pack, target)
     skill_records = _stage_skills(pack, target)
-    wheel_records = _stage_wheels(pack, target, uv_executable=uv_executable)
+    local_packages, requirements = _partition_packages(pack)
+    wheel_records = _stage_wheels(local_packages, target, uv_executable=uv_executable)
     extension_records = _stage_extensions(pack, target)
     manifest = _build_binary_manifest(
-        pack, target, skill_records, wheel_records, extension_records,
+        pack, target, skill_records, wheel_records, requirements, extension_records,
     )
     (target / BINARY_MANIFEST).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -149,25 +150,50 @@ def _check_skill_frontmatter(path: Path, expected_name: str, label: str) -> None
         )
 
 
-def _validate_wheel_entries(pack: Pack) -> list[Path]:
-    """Check that every packages.wheels entry is a .whl file or local pyproject directory."""
+def _is_bare_requirement(entry: str) -> bool:
+    """Return True when a PEP 508 entry is a plain name with no version, extras, or markers."""
+    parsed = Requirement(entry)
+    return not parsed.specifier and not parsed.extras and parsed.marker is None
+
+
+def _validate_local_package_entry(pack: Pack, relative: str, owned: frozenset[str]) -> Path:
+    """Validate that one local packages entry is a contained .whl file or pyproject.toml directory."""
+    candidate = _resolve_contained_path(pack.root, relative, "packages")
+    # Accept prebuilt wheels directly after verifying their distribution metadata.
+    if candidate.is_file() and candidate.suffix == ".whl":
+        dist_name = _wheel_distribution_name(candidate)
+        _reject_compiler_owned(dist_name, relative, owned)
+        return candidate
+    # Accept local Python package directories that can be built into wheels at pack build time.
+    if candidate.is_dir() and (candidate / "pyproject.toml").is_file():
+        _validate_local_package_tree(candidate, relative, owned)
+        return candidate
+    raise ProjectError(
+        f"packages entry must be a .whl file or Python package directory with pyproject.toml: {relative}"
+    )
+
+
+def _partition_packages(pack: Pack) -> tuple[list[Path], list[str]]:
+    """Classify unified pack.yaml packages entries into local wheel/package sources and index requirements."""
     owned = _compiler_owned_distributions()
-    entries: list[Path] = []
-    for relative in pack.manifest.packages.wheels:
-        candidate = _resolve_contained_path(pack.root, relative, "packages.wheels")
-        if candidate.is_file() and candidate.suffix == ".whl":
-            dist_name = _wheel_distribution_name(candidate)
-            _reject_compiler_owned(dist_name, relative, owned)
-            entries.append(candidate)
+    local_sources: list[Path] = []
+    requirements: list[str] = []
+    for entry in pack.manifest.packages:
+        # Explicit path entries (containing /, .whl, etc.) must resolve to a local wheel or package folder.
+        if _looks_like_pack_path(entry):
+            local_sources.append(_validate_local_package_entry(pack, entry, owned))
             continue
-        if candidate.is_dir() and (candidate / "pyproject.toml").is_file():
-            _validate_local_package_tree(candidate, relative, owned)
-            entries.append(candidate)
-            continue
-        raise ProjectError(
-            f"packages.wheels entry must be a .whl file or Python package directory with pyproject.toml: {relative}"
-        )
-    return entries
+        # A bare single-segment name that exists at the pack root refers to a local package directory.
+        if _is_bare_requirement(entry):
+            probe = pack.root / entry
+            if probe.is_symlink() or probe.exists():
+                local_sources.append(_validate_local_package_entry(pack, entry, owned))
+                continue
+        requirements.append(entry)
+    # Keep bundled wheel payloads bounded to prevent oversized single-file binaries.
+    if len(local_sources) > 64:
+        raise ProjectError("pack may bundle at most 64 local wheels or package directories")
+    return local_sources, requirements
 
 
 def _validate_local_package_tree(directory: Path, label: str, owned: frozenset[str]) -> None:
@@ -282,7 +308,7 @@ def _stage_skills(pack: Pack, staging: Path) -> list[dict[str, str]]:
 
 
 def _stage_wheels(
-    pack: Pack, staging: Path, *, uv_executable: str | None,
+    local_packages: list[Path], staging: Path, *, uv_executable: str | None,
 ) -> list[dict[str, str]]:
     """Copy prebuilt wheels and build local Python package folders into staging/wheels."""
     owned = _compiler_owned_distributions()
@@ -290,7 +316,7 @@ def _stage_wheels(
     seen_distributions: set[str] = set()
     seen_filenames: set[str] = set()
     wheels_dir = staging / "wheels"
-    for source in _validate_wheel_entries(pack):
+    for source in local_packages:
         wheels_dir.mkdir(parents=True, exist_ok=True)
         staged = _materialize_wheel(source, wheels_dir, uv_executable=uv_executable)
         dist_name = _wheel_distribution_name(staged)
@@ -396,6 +422,7 @@ def _build_binary_manifest(
     staging: Path,
     skills: list[dict[str, str]],
     wheels: list[dict[str, str]],
+    requirements: list[str],
     extensions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Assemble the canonical pack binary manifest with a complete payload digest."""
@@ -403,7 +430,6 @@ def _build_binary_manifest(
         {"name": cmd.name, "help": cmd.help}
         for cmd in (pack.project.commands if pack.project else ())
     ]
-    requirements = list(pack.manifest.packages.requirements)
     protected = sorted({
         *(item["name"] for item in wheels),
         *(canonicalize_name(Requirement(req).name) for req in requirements),

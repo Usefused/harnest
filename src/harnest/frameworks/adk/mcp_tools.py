@@ -23,6 +23,7 @@ from ...mcp import (
     _invoke_governed_mcp_call,
     _validate_approval_tools,
     _validate_mcp_permission_tools,
+    mcp_tool_info_from_remote,
 )
 from ...mcp_capability_tools import _check_names, capability_functions
 from ...mcp_lifecycle import attach_mcp_lifecycle
@@ -344,7 +345,12 @@ def toolset_type(client: Any, base: Any) -> Any:
     configured = client
     policy = client.approval
     required_permission = client.permission
-    tool_permissions = dict(client.tool_permissions)
+    # Copy static mappings defensively; keep dynamic classifiers callable as-is.
+    tool_permissions = (
+        dict(client.tool_permissions)
+        if isinstance(client.tool_permissions, Mapping)
+        else client.tool_permissions
+    )
     client_name = client._client_name()
     public_name = client.identity or client.tool_name_prefix or client_name
 
@@ -371,7 +377,14 @@ def toolset_type(client: Any, base: Any) -> Any:
             )
             # Even an otherwise ungoverned client must cross principal
             # projection so an active principal cannot discover untagged tools.
-            untagged_client = not client_requirements and not tool_permissions
+            # A callable classifier may assign permissions per discovered tool,
+            # so treat it as tagged and defer evaluation until discovery.
+            has_tool_permissions = (
+                bool(tool_permissions)
+                if isinstance(tool_permissions, Mapping)
+                else callable(tool_permissions)
+            )
+            untagged_client = not client_requirements and not has_tool_permissions
             if (
                 untagged_client
                 and not permissions_are_available(())
@@ -396,11 +409,10 @@ def toolset_type(client: Any, base: Any) -> Any:
                 # BaseToolset applies its presentation prefix only after
                 # this method returns, so these are canonical remote names.
                 name = str(getattr(remote_tool, "name", ""))
-                requirements = tuple(
-                    item
-                    for item in (required_permission, tool_permissions.get(name))
-                    if item is not None
-                )
+                # Extract remote tool metadata (including MCP annotations) before
+                # resolving static or dynamic permissions.
+                tool_info = mcp_tool_info_from_remote(remote_tool, name=name)
+                requirements = configured.permissions_for_tool(tool_info)
                 attach_required_permissions(remote_tool, requirements)
                 if policy is not None and policy.applies_to(name):
                     # ADK creates MCP tools only after discovery. Wrapping its

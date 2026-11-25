@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 from typing import Sequence, TextIO
 
+from ..cli import cli_name
 from ..frameworks.registry import framework_names
 from .contracts import ProjectError, ProjectPlan
 from .filesystem import apply_project_plan
@@ -44,13 +45,14 @@ def run_pack_command(arguments: Sequence[str], *, stdout: TextIO | None = None,
             print(json.dumps(manifest, sort_keys=True), file=output)
             return 0
     except (ProjectError, OSError) as exc:
-        print(f"harnest: {exc}", file=errors)
+        print(f"{cli_name()}: {exc}", file=errors)
         return 1
     raise AssertionError(args.action)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="harnest pack")
+    """Build the internal pack subcommand parser using the active branded CLI name."""
+    parser = argparse.ArgumentParser(prog=f"{cli_name()} pack")
     actions = parser.add_subparsers(dest="action", required=True)
     init = actions.add_parser("init")
     init.add_argument("directory", type=Path)
@@ -95,30 +97,42 @@ def _planner(args: argparse.Namespace) -> tuple[ProjectPlanner, dict]:
 
 
 def _init(args: argparse.Namespace, output: TextIO) -> int:
+    """Plan and optionally apply a new agent scaffold using the selected packs."""
     planner, options = _planner(args)
     plan = planner.plan_init(args.directory, options=options, framework=args.framework,
                              minimal=args.minimal, mode=args.mode, example=args.example,
                              template=args.template, template_sha256=args.template_sha256)
-    return _finish(plan, applying=not args.dry_run, as_json=args.json, output=output)
+    return _finish(plan, applying=not args.dry_run, as_json=args.json, output=output, is_init=True)
 
 
 def _upgrade(args: argparse.Namespace, output: TextIO) -> int:
+    """Plan and optionally apply core and pack migrations to an existing agent."""
     planner, options = _planner(args)
     plan = planner.plan_upgrade(args.directory, options=options)
-    code = _finish(plan, applying=args.apply, as_json=args.json, output=output)
+    code = _finish(plan, applying=args.apply, as_json=args.json, output=output, is_init=False)
+    # Remind the user how to commit a clean upgrade preview when changes are pending.
     if code == 0 and not args.apply and not args.json and plan.changes:
         print("Run the same command with --apply to make these changes.", file=output)
     return code
 
 
-def _finish(plan: ProjectPlan, *, applying: bool, as_json: bool, output: TextIO) -> int:
+def _finish(
+    plan: ProjectPlan, *, applying: bool, as_json: bool, output: TextIO, is_init: bool = False,
+) -> int:
+    """Render one project plan, apply it when authorized, and report the completion summary."""
     print(json.dumps(plan.public(), indent=2) if as_json else plan.render(), file=output, end="" if not as_json else "\n", flush=True)
+    # Block application whenever planning produced unresolved conflicts or validation errors.
     if plan.blockers:
         return 2
+    # Apply the reviewed plan only when the caller authorized filesystem writes.
     if applying:
         backup = apply_project_plan(plan)
         if backup is not None and not as_json:
-            print(f"Applied. Backup: {backup}", file=output)
+            # Fresh init projects have no prior files backed up, so avoid printing a misleading backup path.
+            if is_init:
+                print(f"Initialized {plan.root}", file=output)
+            else:
+                print(f"Applied. Backup: {backup}", file=output)
     return 0
 
 
@@ -137,27 +151,29 @@ def _validate(roots: Sequence[Path], output: TextIO) -> int:
         print(f"  commands: {commands or 'none'}", file=output)
         print(f"  studio: {studio}", file=output)
         print(f"  skills: {len(pack.manifest.skills)}", file=output)
-        packages = len(pack.manifest.packages.wheels) + len(pack.manifest.packages.requirements)
-        print(f"  packages: {packages}", file=output)
+        print(f"  packages: {len(pack.manifest.packages)}", file=output)
         print(f"  extensions: {len(pack.manifest.extensions)}", file=output)
     return 0
 
 
 def _run(arguments: list[str], output: TextIO, errors: TextIO) -> int:
     """Run one company command: `harnest pack run PACK COMMAND [ARGS...]`."""
+    prog = cli_name()
+    # Require both the pack folder and command name before loading pack hooks.
     if len(arguments) < 2:
-        print("usage: harnest pack run PACK COMMAND [ARGS...]", file=errors)
+        print(f"usage: {prog} pack run PACK COMMAND [ARGS...]", file=errors)
         return 2
     root, name, rest = Path(arguments[0]), arguments[1], arguments[2:]
     try:
         pack = load_pack(root)
     except (ProjectError, OSError) as exc:
-        print(f"harnest: {exc}", file=errors)
+        print(f"{prog}: {exc}", file=errors)
         return 1
     commands = {item.name: item for item in (pack.project.commands if pack.project else ())}
+    # Report available commands with the active CLI prefix when an unknown command is requested.
     if name not in commands:
         known = ", ".join(sorted(commands)) or "none"
-        print(f"harnest: pack {pack.name} has no command {name!r} (commands: {known})", file=errors)
+        print(f"{prog}: pack {pack.name} has no command {name!r} (commands: {known})", file=errors)
         return 2
     result = commands[name].handler(list(rest))
     return int(result or 0)

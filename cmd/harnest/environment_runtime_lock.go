@@ -79,8 +79,9 @@ func (a *application) resolveRuntimeLock(
 	}
 	arguments = append(arguments, plan.ProjectFiles...)
 	arguments = append(arguments, plan.PackExtensionProjects...)
-	if err := a.runRuntimeCommandWithEnvironment(
-		command, staged.environment, staged.uvPath, arguments...,
+	// Run uv pip compile in bundle.Directory so relative project references resolve cleanly even from an unlinked shell CWD.
+	if err := a.runRuntimeCommandInDirectory(
+		command, bundle.Directory, staged.environment, staged.uvPath, arguments...,
 	); err != nil {
 		return fmt.Errorf("resolve complete %s dependency lock: %w", profile, err)
 	}

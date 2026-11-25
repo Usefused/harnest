@@ -141,7 +141,9 @@ def main() -> int:
     else:
         command = [harnest, *arguments]
     try:
-        return subprocess.call(command)
+        # Propagate the branded command name so forwarded Harnest warnings and errors match this launcher.
+        env = {{**os.environ, "HARNEST_CLI_NAME": NAME}}
+        return subprocess.call(command, env=env)
     except FileNotFoundError:
         print(f"{{NAME}}: Harnest CLI not found ({{harnest}}); install Harnest or set HARNEST_CLI", file=sys.stderr)
         return 127

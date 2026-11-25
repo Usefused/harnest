@@ -219,3 +219,70 @@ func writeNamedExecutable(t *testing.T, directory, name, contents string) string
 	}
 	return path
 }
+
+// TestInstallRuntimeWithManagedPythonPinsWorkingDirectory verifies managed uv install avoids caller CWD, --clear target, and missing parents.
+func TestInstallRuntimeWithManagedPythonPinsWorkingDirectory(t *testing.T) {
+	cases := []struct {
+		name         string
+		parentExists bool
+	}{
+		{name: "existing_parent", parentExists: true},
+		{name: "missing_parent_falls_back_to_staged_uv_dir", parentExists: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			record := filepath.Join(root, "runtime-uv-pwd.txt")
+			t.Setenv("HARNEST_UV_PWD_RECORD", record)
+			runtimeDirectory := filepath.Join(root, "runtime")
+			// Simulate a first-time install where ~/.harnest does not exist yet on disk.
+			if !tc.parentExists {
+				runtimeDirectory = filepath.Join(root, "uncreated-home", "runtime")
+			}
+
+			var recorded []*exec.Cmd
+			sys := defaultSystem()
+			sys.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+			sys.embeddedWheel = testEmbeddedWheel(t)
+			sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+				return uvbootstrap.Artifact{Name: "uv", Contents: clearSimulatingUVScript()}, nil
+			}
+			sys.commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				cmd := exec.CommandContext(ctx, name, args...)
+				recorded = append(recorded, cmd)
+				return cmd
+			}
+
+			staleDir := enterUnlinkedWorkingDirectory(t)
+			_, _, err := executeForTest(t, sys, "runtime", "install", "--directory", runtimeDirectory)
+			// Managed Python bootstrap must succeed from an unlinked CWD regardless of whether parent exists yet.
+			if err != nil {
+				t.Fatalf("runtime install failed: %v", err)
+			}
+			// Expect both uv venv and uv pip install calls to be recorded.
+			if len(recorded) != 2 {
+				t.Fatalf("expected 2 uv invocations, got %d", len(recorded))
+			}
+			for index, cmd := range recorded {
+				// Dir must always be an explicit existing directory outside both the stale caller CWD and cleared target.
+				if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == runtimeDirectory {
+					t.Fatalf("command %d (%v) used invalid Dir=%q (stale=%q target=%q)", index, cmd.Args, cmd.Dir, staleDir, runtimeDirectory)
+				}
+				// Use parent when it already existed; otherwise fall back to the staged uv directory rather than a missing parent.
+				if tc.parentExists {
+					if cmd.Dir != filepath.Dir(runtimeDirectory) {
+						t.Fatalf("command %d used Dir=%q, want %q", index, cmd.Dir, filepath.Dir(runtimeDirectory))
+					}
+				} else if cmd.Dir != filepath.Dir(cmd.Path) {
+					t.Fatalf("command %d with missing parent used Dir=%q, want staged uv dir %q", index, cmd.Dir, filepath.Dir(cmd.Path))
+				}
+			}
+			log := string(mustReadTestFile(t, record))
+			assertContainsAll(t, "managed runtime uv log", log, []string{
+				"POST_CLEAR_PWD=",
+				"ARGS=venv --python 3.14 --managed-python --clear " + runtimeDirectory,
+				"ARGS=pip install --python " + runtimePythonPath(runtimeDirectory),
+			})
+		})
+	}
+}

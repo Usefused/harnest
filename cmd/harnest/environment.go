@@ -616,8 +616,10 @@ func (a *application) createAgentVirtualEnvironment(
 		"--clear",
 		staged.directory,
 	}
-	if err := a.runRuntimeCommandWithEnvironment(
-		command, staged.environment, staged.uvPath, arguments...,
+	workingDirectory := runtimeCommandWorkingDirectory(staged.directory, staged.uvPath)
+	// Run uv outside staged.directory so --clear cannot unlink uv's CWD and stale shell CWDs never fail env sync.
+	if err := a.runRuntimeCommandInDirectory(
+		command, workingDirectory, staged.environment, staged.uvPath, arguments...,
 	); err != nil {
 		return fmt.Errorf("create agent virtual environment: %w", err)
 	}
@@ -628,8 +630,11 @@ func (a *application) createAgentVirtualEnvironment(
 func (a *application) syncLockedRuntime(
 	command *cobra.Command, staged stagedAgentEnvironment, lockPath string,
 ) error {
-	if err := a.runRuntimeCommandWithEnvironment(
+	workingDirectory := runtimeCommandWorkingDirectory(staged.directory, staged.uvPath)
+	// Run uv pip sync in an existing managed directory so an unlinked caller shell CWD cannot abort sync.
+	if err := a.runRuntimeCommandInDirectory(
 		command,
+		workingDirectory,
 		staged.environment,
 		staged.uvPath,
 		"pip", "sync", "--python", staged.python, "--require-hashes", lockPath,

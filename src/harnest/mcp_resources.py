@@ -185,20 +185,27 @@ class MCPResourceClient:
     async def _execute(self, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Contain provider errors and close short-lived sessions without masking cancellation."""
 
+        # Refuse reads after the managing scope has released its credentials.
         if self._closed:
             raise MCPResourceError("MCP read client is closed")
         try:
             async with resource_session(self._configured, self._framework) as (session, initialized):
+                # Fetch raw catalogues inside the transport boundary so SDK errors stay redacted.
                 if operation == "inspect":
-                    return await self._inspect(session, initialized)
-                result = await self._request(session, initialized.capabilities, operation, arguments)
-                return self._filter(result)
+                    raw = await self._fetch_inspect(session, initialized)
+                else:
+                    raw = await self._request(session, initialized.capabilities, operation, arguments)
         except MCPResourceError:
             raise
         except Exception as error:
             failure = _resource_failure(error, operation)
-        # SDK errors can contain endpoint URLs, tokens, or server-controlled text.
-        raise failure from None
+            # SDK errors can contain endpoint URLs, tokens, or server-controlled text.
+            raise failure from None
+        # Apply local allowlist and permission projection outside the transport
+        # error handler so dynamic classifier validation errors propagate directly.
+        if operation == "inspect":
+            return self._finalize_inspect(raw)
+        return self._filter(raw)
 
     async def _request(self, session: Any, capabilities: Any, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Avoid unsupported optional requests and preserve paginated results."""
@@ -218,8 +225,8 @@ class MCPResourceClient:
             return {"resourceTemplates": []}
         return _bounded_result(result, self._configured.max_content_bytes)
 
-    async def _inspect(self, session: Any, initialized: Any) -> dict[str, Any]:
-        """Return one page of each catalogue, exposing cursors instead of unbounded discovery."""
+    async def _fetch_inspect(self, session: Any, initialized: Any) -> dict[str, Any]:
+        """Fetch one raw page of each advertised catalogue inside the transport boundary."""
 
         result = {
             "serverInfo": initialized.serverInfo.model_dump(mode="json"),
@@ -227,21 +234,32 @@ class MCPResourceClient:
             "capabilities": initialized.capabilities.model_dump(mode="json", exclude_none=True),
         }
         for operation in ("list_tools", "list_resources", "list_resource_templates", "list_prompts"):
-            result[operation.removeprefix("list_")] = self._filter(
-                await self._request(session, initialized.capabilities, operation, {})
+            result[operation.removeprefix("list_")] = await self._request(
+                session, initialized.capabilities, operation, {}
             )
+        return result
+
+    def _finalize_inspect(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Filter each fetched catalogue and enforce the combined discovery byte limit."""
+
+        for key in ("tools", "resources", "resource_templates", "prompts"):
+            result[key] = self._filter(result[key])
+        # Enforce the aggregate payload cap after projection so inspect stays bounded.
         if len(json.dumps(result).encode()) > self._configured.max_content_bytes:
             raise MCPResourceError("MCP discovery exceeds max_content_bytes")
         return result
 
-    def _tool_visible(self, name: str) -> bool:
+    def _tool_visible(self, tool: dict[str, Any]) -> bool:
         """Keep discovery metadata inside the same principal policy as tool execution."""
 
         from .agent_principal import permissions_are_available
+        from .mcp import mcp_tool_info_from_remote
 
-        requirements = tuple(value for value in (
-            self._configured.permission, self._configured.tool_permissions.get(name),
-        ) if value is not None)
+        # Build the full MCPToolInfo from the wire dict so dynamic classifiers see
+        # descriptions and annotations consistently with framework adapters.
+        requirements = self._configured.permissions_for_tool(
+            mcp_tool_info_from_remote(tool)
+        )
         return permissions_are_available(requirements)
 
     def _filter(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -259,8 +277,9 @@ class MCPResourceClient:
         """Apply both explicit tool selection and invocation permission projection."""
 
         allowed = self._configured.tool_filter
+        # Enforce any explicit tool allowlist before running permission classification.
         selected = tools if allowed is None else [item for item in tools if item["name"] in allowed]
-        return [item for item in selected if self._tool_visible(item["name"])]
+        return [item for item in selected if self._tool_visible(item)]
 
 
 def _capability_kind(operation: str) -> str:

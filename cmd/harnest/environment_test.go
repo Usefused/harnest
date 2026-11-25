@@ -746,3 +746,37 @@ fi
 	}
 	return sys
 }
+
+// TestEnvironmentSyncPinsWorkingDirectoryFromUnlinkedCWD verifies agent env sync never inherits an unlinked shell CWD.
+func TestEnvironmentSyncPinsWorkingDirectoryFromUnlinkedCWD(t *testing.T) {
+	root, agent := scaffoldIDEEnvironmentTestAgent(t)
+	resolvedAgent, err := filepath.EvalSymlinks(agent)
+	// Resolve symlinked temp paths so comparisons with bundle.Directory match consistently on macOS.
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(root, "calls.txt")
+	t.Setenv("HARNEST_ENV_TEST_CALLS", calls)
+
+	var recorded []*exec.Cmd
+	sys := environmentTestSystem(t, root)
+	sys.commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, name, args...)
+		recorded = append(recorded, cmd)
+		return cmd
+	}
+
+	staleDir := enterUnlinkedWorkingDirectory(t)
+	mustSyncAgentEnvironment(t, sys, agent)
+	// Sync must run at least venv, pip compile, pip sync, pip check, and project_lock subprocesses.
+	if len(recorded) < 4 {
+		t.Fatalf("expected at least 4 subprocess invocations, got %d", len(recorded))
+	}
+	clearedTarget := filepath.Join(resolvedAgent, ".harnest", "environments", "agent")
+	for index, cmd := range recorded {
+		// Every uv and bootstrap command must set Dir away from the unlinked caller CWD and cleared venv target.
+		if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == clearedTarget {
+			t.Fatalf("command %d (%v) used invalid Dir=%q (stale=%q clearedTarget=%q)", index, cmd.Args, cmd.Dir, staleDir, clearedTarget)
+		}
+	}
+}
