@@ -2387,6 +2387,7 @@ def _validate_extension_entries(extension: ExtensionDescriptor) -> None:
         for kind in EXTENSION_CONTRIBUTION_KINDS
         for path in extension.contribution_paths(kind)
     )
+    allowed_summary = ", ".join(sorted(allowed))
     for path in sorted(extension.directory.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise BundleConventionError(
@@ -2394,9 +2395,11 @@ def _validate_extension_entries(extension: ExtensionDescriptor) -> None:
             )
         if _is_ignored(path):
             continue
+        # List allowed root entries so typos like `libs` vs `lib` or undeclared contribution folders are actionable.
         if path.name not in allowed:
             raise BundleConventionError(
-                f"unexpected extension resource: {path}"
+                f"unexpected extension resource: {path} "
+                f"(allowed: {allowed_summary}; declare additional content folders under contributes: in extension.yaml)"
             )
         expected_file = path.name in {
             "README.md",

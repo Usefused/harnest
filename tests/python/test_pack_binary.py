@@ -350,6 +350,43 @@ class PackBinaryTests(unittest.TestCase):
             self.assertEqual(_finish(plan, applying=True, as_json=False, output=upgrade_out, is_init=False), 0)
             self.assertIn(f"Applied. Backup: {fake_backup}", upgrade_out.getvalue())
 
+    def test_pack_build_excludes_authoring_environment_and_vscode_state(self) -> None:
+        """Pack wheels and binary staging skip .harnest, .venv, and .vscode in both pack roots and pack extensions."""
+        from harnest.authoring.distribution import build_pack
+
+        pack_dir = self._create_full_pack(include_local_pkg=False)
+        # Simulate local IDE sync artifacts at both the pack root and inside a bundled extension.
+        for base in (pack_dir, pack_dir / "company-ext" / "acme_guard"):
+            (base / ".harnest" / "environments" / "authoring").mkdir(parents=True, exist_ok=True)
+            (base / ".harnest" / "environments" / "authoring" / "marker.txt").write_text("local\n", encoding="utf-8")
+            (base / ".vscode").mkdir(parents=True, exist_ok=True)
+            (base / ".vscode" / "settings.json").write_text('{"python.defaultInterpreterPath": "x"}\n', encoding="utf-8")
+            (base / ".venv").symlink_to(base / ".harnest" / "environments" / "authoring")
+
+        wheel = build_pack(pack_dir, output=self.root / "dist")
+        with ZipFile(wheel) as archive:
+            names = archive.namelist()
+        for forbidden in (".harnest", ".venv", ".vscode"):
+            self.assertFalse(any(forbidden in name for name in names), f"wheel leaked {forbidden}: {names}")
+
+        staging = self.root / "binary-stage"
+        prepare_pack_binary(pack_dir, staging)
+        staged_files = [path.relative_to(staging).as_posix() for path in staging.rglob("*")]
+        for forbidden in (".harnest", ".venv", ".vscode"):
+            self.assertFalse(any(forbidden in name for name in staged_files), f"binary stage leaked {forbidden}: {staged_files}")
+
+    def test_pack_extension_unexpected_entry_lists_allowed_entries(self) -> None:
+        """Unexpected root entries in a pack extension report the allowed root names."""
+        pack_dir = self._create_full_pack(include_local_pkg=False)
+        (pack_dir / "company-ext" / "acme_guard" / "libs").mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ProjectError) as raised:
+            prepare_pack_binary(pack_dir, self.root / "bad-stage")
+        message = str(raised.exception)
+        self.assertIn("unexpected entry: libs", message)
+        self.assertIn("allowed:", message)
+        self.assertIn("lib", message)
+        self.assertIn("contributes:", message)
+
 
 if __name__ == "__main__":
     unittest.main()

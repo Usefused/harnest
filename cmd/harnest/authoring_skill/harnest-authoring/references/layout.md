@@ -107,8 +107,6 @@ kind: Extension
 metadata:
   name: temporal
   version: 1.0.0
-runtime:
-  entrypoint: extension:extension
 requires:
   extensions: [core]
 contributes:
@@ -121,7 +119,7 @@ capabilities:
   - context.storage
 ```
 
-`requires.extensions` names local Harnest Extensions. Harnest orders dependencies
+`runtime.entrypoint` is optional and defaults to `extension:extension`. `requires.extensions` names local Harnest Extensions. Harnest orders dependencies
 before dependants for startup and reverses that order for shutdown; missing
 dependencies and cycles fail compilation. `capabilities` declares the bounded
 Harnest lifecycle, context, content, storage, HTTP, native, policy, or telemetry

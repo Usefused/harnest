@@ -299,9 +299,15 @@ func validateExtensionWheelResource(
 		return fmt.Errorf("PyPI Harnest Extension wheel contains an unsafe resource path")
 	}
 	root, _, _ := strings.Cut(relative, "/")
-	expectsFile, allowed := extensionAllowedRootEntries(manifest)[root]
+	allowedEntries := extensionAllowedRootEntries(manifest)
+	expectsFile, allowed := allowedEntries[root]
+	// Report the allowed root entries when rejecting an unrecognized wheel path.
 	if !allowed || expectsFile && relative != root {
-		return fmt.Errorf("unexpected Harnest Extension resource in wheel: %s", relative)
+		return fmt.Errorf(
+			"unexpected Harnest Extension resource in wheel: %s (allowed: %s)",
+			relative,
+			formatAllowedExtensionEntries(allowedEntries),
+		)
 	}
 	if file.Mode()&os.ModeSymlink != 0 || !file.Mode().IsRegular() {
 		return fmt.Errorf("PyPI Harnest Extension resources must be regular files: %s", relative)

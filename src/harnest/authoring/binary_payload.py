@@ -38,8 +38,8 @@ BINARY_MANIFEST = "harnest-pack-binary.json"
 _SKILL_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _MAX_WHEEL_BYTES = 128 * 1024 * 1024
 _SKIPPED_SOURCE_PARTS = frozenset({
-    ".git", ".hg", ".venv", "venv", "__pycache__", ".pytest_cache",
-    ".ruff_cache", ".mypy_cache", ".DS_Store",
+    ".git", ".hg", ".harnest", ".venv", ".vscode", "venv", "__pycache__",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache", ".DS_Store",
 })
 
 
@@ -279,11 +279,17 @@ def _validate_extension_root_entries(
     for kind in EXTENSION_CONTRIBUTION_KINDS:
         for path in descriptor.contribution_paths(kind):
             allowed.add(path.relative_to(descriptor.directory).parts[0])
+    allowed_summary = ", ".join(sorted(allowed))
     for item in sorted(source.iterdir(), key=lambda entry: entry.name):
+        # Skip VCS, cache, and local authoring editor/venv state directories.
         if item.name in _SKIPPED_SOURCE_PARTS:
             continue
+        # List allowed root entries so typos like `libs` vs `lib` or undeclared contribution folders are obvious.
         if item.name not in allowed:
-            raise ProjectError(f"pack extension {label} contains unexpected entry: {item.name}")
+            raise ProjectError(
+                f"pack extension {label} contains unexpected entry: {item.name} "
+                f"(allowed: {allowed_summary}; declare additional content folders under contributes: in extension.yaml)"
+            )
 
 
 def _stage_pack_folder(pack: Pack, staging: Path) -> None:

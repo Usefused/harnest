@@ -34,26 +34,62 @@ type environmentState struct {
 func (a *application) newEnvironmentCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "env",
-		Short: "Manage an agent's isolated Python environment",
+		Short: "Manage an isolated Python environment for an agent, pack, or extension",
 	}
 	command.AddCommand(a.newEnvironmentSyncCommand())
 	return command
 }
 
-// newEnvironmentSyncCommand publishes the selected runtime and editor pointers.
+// newEnvironmentSyncCommand publishes the selected runtime and editor pointers for agents, packs, or extensions.
 func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 	var frozen bool
 	var profileValue string
+	var frameworkValue string
 	command := &cobra.Command{
-		Use:   "sync AGENT_DIR",
-		Short: "Synchronize a locked agent dependency profile",
-		Args:  cobra.ExactArgs(1),
+		Use:   "sync [PROJECT_DIR]",
+		Short: "Synchronize a managed Python environment for an agent, pack, or extension",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
+			targetDir := "."
+			// Default to the current working directory when the caller omits PROJECT_DIR.
+			if len(arguments) == 1 {
+				targetDir = arguments[0]
+			}
+			targetKind, resolvedDir, err := detectEnvironmentTarget(targetDir)
+			if err != nil {
+				return err
+			}
+			// Handle pack and standalone extension workspaces without requiring an agent config.yaml.
+			if targetKind != authoringTargetAgent {
+				// Reject agent-only lock flags so callers do not assume a lockfile was verified.
+				if frozen {
+					return fmt.Errorf("--frozen is only supported for agent projects with a committed lockfile")
+				}
+				// Reject explicit agent profile overrides because authoring environments install dev/IDE extras directly.
+				if command.Flags().Changed("profile") {
+					return fmt.Errorf("--profile is only supported for agent projects")
+				}
+				selection, err := a.syncAuthoringEnvironment(command, targetKind, resolvedDir, frameworkValue)
+				if err != nil {
+					return err
+				}
+				label := "Pack"
+				if targetKind == authoringTargetExtension {
+					label = "Extension"
+				}
+				fmt.Fprintf(command.OutOrStdout(), "%s environment ready: %s\n", label, selection.Executable)
+				publishIDEEnvironmentPointers(command, resolvedDir, selection.Executable)
+				return nil
+			}
+			// Reject --framework on agents because config.yaml is the single source of truth for agent frameworks.
+			if strings.TrimSpace(frameworkValue) != "" {
+				return fmt.Errorf("--framework is only supported for pack or standalone extension directories")
+			}
 			profile, err := parseEnvironmentProfile(profileValue)
 			if err != nil {
 				return err
 			}
-			bundle, err := loadAgentBundle(arguments[0])
+			bundle, err := loadAgentBundle(targetDir)
 			if err != nil {
 				return err
 			}
@@ -67,20 +103,7 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 				"Agent environment ready: %s\n",
 				selection.Executable,
 			)
-			idePath, err := syncIDEEnvironmentLink(bundle.Directory, selection.Executable)
-			if err != nil {
-				// The managed runtime is still usable when an editor convenience
-				// link cannot be published, especially when the user owns .venv.
-				fmt.Fprintf(command.ErrOrStderr(), "IDE environment unchanged: %v\n", err)
-			} else {
-				fmt.Fprintf(command.OutOrStdout(), "IDE environment ready: %s\n", idePath)
-			}
-			settingsPath, err := syncVSCodeInterpreterSettings(bundle.Directory, selection.Executable)
-			if err != nil {
-				fmt.Fprintf(command.ErrOrStderr(), "VS Code-compatible editor settings unchanged: %v\n", err)
-				return nil
-			}
-			fmt.Fprintf(command.OutOrStdout(), "VS Code-compatible editor settings: %s\n", settingsPath)
+			publishIDEEnvironmentPointers(command, bundle.Directory, selection.Executable)
 			return nil
 		},
 	}
@@ -88,13 +111,19 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		&frozen,
 		"frozen",
 		false,
-		"require an existing current profile lock without updating it",
+		"require an existing current profile lock without updating it (agent projects only)",
 	)
 	command.Flags().StringVar(
 		&profileValue,
 		"profile",
 		string(runtimeEnvironmentProfile),
-		"dependency profile: runtime, compile, development, or eval",
+		"dependency profile: runtime, compile, development, or eval (agent projects only)",
+	)
+	command.Flags().StringVar(
+		&frameworkValue,
+		"framework",
+		"",
+		"framework extras to install for pack or extension authoring: all, adk, or langgraph",
 	)
 	return command
 }

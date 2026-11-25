@@ -50,9 +50,9 @@ func TestExtensionInitSupportsOutputPackRootAndContributions(t *testing.T) {
 		t.Fatalf("standalone extension init failed: %v", err)
 	}
 	destination := filepath.Join(outParent, "company_adk")
-	// Standalone output must not tell the user to run env sync against a non-agent directory.
-	if strings.Contains(stdout, "env sync") {
-		t.Fatalf("standalone output unexpectedly suggested env sync: %q", stdout)
+	// Standalone output must guide users to attach IDE packages via env sync without mentioning agent lockfiles.
+	if !strings.Contains(stdout, "env sync") || strings.Contains(stdout, "harnest-runtime.lock") {
+		t.Fatalf("standalone output had unexpected follow-up hint: %q", stdout)
 	}
 	assertFilesContain(t, destination, map[string]string{
 		"extension.yaml": "  - content.tools",
@@ -556,5 +556,30 @@ func assertExtensionDirectoryEmpty(t *testing.T, directory string) {
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("extensions directory was changed: %v, %v", entries, err)
+	}
+}
+
+// TestExtensionManifestOptionalRuntimeAndUnexpectedEntryHint verifies omitted runtime defaults and actionable layout errors.
+func TestExtensionManifestOptionalRuntimeAndUnexpectedEntryHint(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "audit_store")
+	writeExtensionFixture(t, source, "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: audit_store\n  version: 0.1.0\ncapabilities: []\n")
+	manifest, err := readLocalExtensionManifest(source)
+	if err != nil {
+		t.Fatalf("manifest without runtime failed: %v", err)
+	}
+	// Effective entrypoint must default to extension:extension when runtime is omitted.
+	if got := effectiveExtensionEntrypoint(manifest); got != "extension:extension" {
+		t.Fatalf("effectiveExtensionEntrypoint = %q, want extension:extension", got)
+	}
+	if err := validateLocalExtensionLayout(source, manifest); err != nil {
+		t.Fatalf("valid layout without runtime failed: %v", err)
+	}
+	// Adding an unrecognized directory such as libs/ must report the allowed entries including lib.
+	if err := os.MkdirAll(filepath.Join(source, "libs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = validateLocalExtensionLayout(source, manifest)
+	if err == nil || !strings.Contains(err.Error(), "allowed:") || !strings.Contains(err.Error(), "lib") {
+		t.Fatalf("expected unexpected-entry error listing allowed entries, got: %v", err)
 	}
 }

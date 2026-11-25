@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Extended `harnest env sync [PROJECT_DIR]` to support pack folders (`pack.yaml`) and standalone extension folders (`extension.yaml`), creating a cached `.harnest/environments/authoring` environment with `harnest`, framework extras (`--framework all|adk|langgraph`), pack `packages:`, and extension `pyproject.toml` dependencies, while wiring `.venv` and `.vscode/settings.json`. Excluded `.harnest`, `.venv`, and `.vscode` from `harnest pack build` and `harnest extensions install`.
+- Made `runtime` / `runtime.entrypoint` optional in `extension.yaml` (defaulting to `extension:extension`), omitted it from `harnest extensions init` scaffolds, and included the sorted list of allowed root entries (plus a `contributes:` hint) in unexpected extension entry errors.
 - **Breaking:** Renamed the Agent Plugins directory from `plugins/` to `agent-plugins/` and the CLI subcommand from `harnest plugins` to `harnest agent-plugins` so portable Agent Plugins 1.0 packages are clearly distinct from Harnest-specific extensions. Existing agents with a `plugins/` folder are rejected at compile and bundle validation time with upgrade guidance; run `harnest upgrade AGENT_DIR --apply` (project schema 8) to back up and relocate `plugins/` to `agent-plugins/` (or remove an emptied `plugins/` directory after migrating legacy RuntimePlugin packages).
 
 ## [2.3.1](https://github.com/Usefused/harnest/compare/v2.3.0...v2.3.1) (2026-11-25)

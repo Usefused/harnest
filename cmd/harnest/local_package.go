@@ -31,11 +31,31 @@ func validatedLocalPackageSource(source, label string) (string, error) {
 	return absolute, nil
 }
 
+// isLocalAuthoringStateEntry identifies top-level IDE/env state created by `harnest env sync` that must not be installed.
+func isLocalAuthoringStateEntry(root, path string) bool {
+	if filepath.Dir(path) != root {
+		return false
+	}
+	switch filepath.Base(path) {
+	case ".harnest", ".venv", ".vscode":
+		return true
+	default:
+		return false
+	}
+}
+
 // rejectLocalPackageTreeLinks permits only ordinary directories and regular files.
 func rejectLocalPackageTreeLinks(root, label string) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("inspect %s source %s: %w", label, path, walkErr)
+		}
+		// Skip top-level local authoring environment and editor state created by `harnest env sync`.
+		if path != root && isLocalAuthoringStateEntry(root, path) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -142,6 +162,13 @@ func copyLocalPackageTree(source, destination, label string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		// Never copy local authoring environments or editor settings into an installed agent extension.
+		if path != source && isLocalAuthoringStateEntry(source, path) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		relative, err := filepath.Rel(source, path)
 		if err != nil {

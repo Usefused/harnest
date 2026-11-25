@@ -17,10 +17,11 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 from .contracts import ProjectError
 from .packs import Pack, check_studio, load_pack
 
-# Build output, caches and environments never belong in a published pack.
+# Build output, caches, editor settings, and managed environments never belong in a published pack.
 _SKIPPED = frozenset({
-    ".git", ".hg", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache",
-    ".mypy_cache", "node_modules", "dist", "build", ".DS_Store",
+    ".git", ".hg", ".harnest", ".venv", ".vscode", "venv", "__pycache__",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache", "node_modules", "dist",
+    "build", ".DS_Store",
 })
 _MAX_FILES = 2048
 _MAX_BYTES = 64 * 1024 * 1024

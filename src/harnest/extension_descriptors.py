@@ -427,19 +427,30 @@ def _descriptor_from_document(
     _require_literal(document, "apiVersion", _API_VERSION)
     _require_literal(document, "kind", _LEGACY_KIND if legacy else "Extension")
     metadata = _require_mapping(document.get("metadata"), label="metadata")
-    runtime = _require_mapping(document.get("runtime"), label="runtime")
     _reject_unknown(metadata, {"name", "version"}, label="metadata")
-    _reject_unknown(runtime, {"entrypoint"}, label="runtime")
     name = _require_identifier(metadata.get("name"), label="metadata.name")
     if name != directory.name:
         raise ExtensionConventionError(
             f"Harnest Extension metadata.name {name!r} must match folder {directory.name!r}"
         )
     version = _require_semver(metadata.get("version"))
-    entrypoint = _require_nonempty_string(
-        runtime.get("entrypoint"), label="runtime.entrypoint"
-    )
     expected_entrypoint = _LEGACY_ENTRYPOINT if legacy else "extension:extension"
+    raw_runtime = document.get("runtime")
+    # Legacy Plugin manifests still require an explicit runtime block; canonical Extensions default to extension:extension.
+    if raw_runtime is None and not legacy:
+        entrypoint = expected_entrypoint
+    else:
+        runtime = _require_mapping(raw_runtime, label="runtime")
+        _reject_unknown(runtime, {"entrypoint"}, label="runtime")
+        raw_entrypoint = runtime.get("entrypoint")
+        # Allow an empty runtime block on canonical Extensions to fall back to the default entrypoint.
+        if raw_entrypoint is None and not legacy:
+            entrypoint = expected_entrypoint
+        else:
+            entrypoint = _require_nonempty_string(
+                raw_entrypoint, label="runtime.entrypoint"
+            )
+    # Keep entrypoint pinned to the closed extension contract even when supplied explicitly.
     if entrypoint != expected_entrypoint:
         raise ExtensionConventionError(
             f"Harnest Extension entrypoint must be {expected_entrypoint!r}"

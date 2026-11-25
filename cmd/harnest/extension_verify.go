@@ -404,8 +404,9 @@ func validateExtensionWheelManifest(contents []byte, entryName, release, kind, e
 	if err := validateLocalExtensionManifest(manifest); err != nil {
 		return fmt.Errorf("invalid extension manifest")
 	}
+	// Compare against effectiveExtensionEntrypoint so wheel manifests omitting runtime still match extension:extension.
 	if manifest.APIVersion != "harnest.dev/v1alpha1" ||
-		manifest.Kind != kind || manifest.Runtime == nil || manifest.Runtime.Entrypoint != entrypoint ||
+		manifest.Kind != kind || effectiveExtensionEntrypoint(manifest) != entrypoint ||
 		manifest.Metadata == nil || manifest.Metadata.Name != entryName || manifest.Metadata.Version != release {
 		return fmt.Errorf("extension manifest identity does not match its distribution")
 	}

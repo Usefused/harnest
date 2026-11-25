@@ -282,5 +282,25 @@ class HarnestExtensionDiscoveryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ExtensionConventionError, "symlink"):
                     discover_extensions(root)
 
+    def test_canonical_extension_runtime_entrypoint_is_optional(self):
+        """Canonical Extension manifests default runtime.entrypoint to extension:extension when omitted."""
+        for label, manifest in (
+            (
+                "omitted_runtime",
+                "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: audit_store\n  version: 0.1.0\ncapabilities: []\n",
+            ),
+            (
+                "empty_runtime",
+                "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: audit_store\n  version: 0.1.0\nruntime: {}\ncapabilities: []\n",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "extensions"
+                self._write(root / "audit_store" / "extension.yaml", manifest)
+                self._write(root / "audit_store" / "extension.py", "extension = object()\n")
+                descriptors = discover_extensions(root)
+                self.assertEqual(len(descriptors), 1)
+                self.assertEqual(descriptors[0].entrypoint, "extension:extension")
+
 if __name__ == "__main__":
     unittest.main()

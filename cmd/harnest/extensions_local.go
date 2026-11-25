@@ -76,8 +76,8 @@ type localExtensionManifest struct {
 		Version string `yaml:"version"`
 	} `yaml:"metadata"`
 	Runtime *struct {
-		Entrypoint string `yaml:"entrypoint"`
-	} `yaml:"runtime"`
+		Entrypoint string `yaml:"entrypoint,omitempty"`
+	} `yaml:"runtime,omitempty"`
 	Requires *struct {
 		Extensions []string `yaml:"extensions"`
 	} `yaml:"requires,omitempty"`
@@ -136,6 +136,9 @@ func (a *application) newExtensionInitCommand() *cobra.Command {
 				fmt.Fprintf(command.OutOrStdout(), "Run `%s env sync %s` to refresh harnest-runtime.lock.\n", a.cliName(), extensionProjectRoot(created.Path))
 			case extensionInitTargetPack:
 				fmt.Fprintf(command.OutOrStdout(), "Add `extensions/%s` under `extensions:` in pack.yaml.\n", created.Name)
+				fmt.Fprintf(command.OutOrStdout(), "Run `%s env sync %s` to attach Harnest and framework packages for your editor.\n", a.cliName(), extensionProjectRoot(created.Path))
+			case extensionInitTargetStandalone:
+				fmt.Fprintf(command.OutOrStdout(), "Run `%s env sync %s` to attach Harnest and framework packages for your editor.\n", a.cliName(), created.Path)
 			}
 			return nil
 		},
@@ -406,7 +409,8 @@ func extensionManifestScaffold(name string, capabilities []string) string {
 // extensionManifestScaffoldWithContributions emits extension.yaml with selected capabilities and contributes folders.
 func extensionManifestScaffoldWithContributions(name string, capabilities, contributions []string) string {
 	var content strings.Builder
-	fmt.Fprintf(&content, "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: %s\n  version: 0.1.0\nruntime:\n  entrypoint: extension:extension\n", name)
+	// Omit runtime.entrypoint because canonical Extensions default to extension:extension.
+	fmt.Fprintf(&content, "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: %s\n  version: 0.1.0\n", name)
 	// Emit contributes only when the caller requested one or more contribution directories.
 	if len(contributions) > 0 {
 		content.WriteString("contributes:\n")
@@ -503,6 +507,10 @@ func validateLocalExtensionLayout(root string, manifest localExtensionManifest) 
 	}
 	for _, entry := range entries {
 		path := filepath.Join(root, entry.Name())
+		// Ignore top-level IDE/env state created by `harnest env sync` (including the managed .venv symlink).
+		if isLocalAuthoringStateEntry(root, path) {
+			continue
+		}
 		info, err := inspectLocalExtensionRootEntry(path, entry)
 		if err != nil {
 			return err
@@ -511,8 +519,13 @@ func validateLocalExtensionLayout(root string, manifest localExtensionManifest) 
 			continue
 		}
 		expectsFile, found := allowed[entry.Name()]
+		// Include the sorted allowed root entries so typos such as `libs` vs `lib` are immediately clear.
 		if !found {
-			return fmt.Errorf("unexpected Harnest Extension resource: %s", path)
+			return fmt.Errorf(
+				"unexpected Harnest Extension resource: %s (allowed: %s; declare additional content folders under contributes: in extension.yaml)",
+				path,
+				formatAllowedExtensionEntries(allowed),
+			)
 		}
 		if expectsFile != info.Mode().IsRegular() {
 			expected := "directory"
@@ -901,6 +914,25 @@ func overlappingExtensionPaths(left, right string) bool {
 	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
+// formatAllowedExtensionEntries renders allowed root entry names in deterministic sorted order for diagnostics.
+func formatAllowedExtensionEntries(allowed map[string]bool) string {
+	names := make([]string, 0, len(allowed))
+	for name := range allowed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// effectiveExtensionEntrypoint returns the configured entrypoint or the canonical extension:extension default.
+func effectiveExtensionEntrypoint(manifest localExtensionManifest) string {
+	// Default omitted runtime or empty entrypoint fields to extension:extension so authors avoid redundant boilerplate.
+	if manifest.Runtime == nil || strings.TrimSpace(manifest.Runtime.Entrypoint) == "" {
+		return "extension:extension"
+	}
+	return manifest.Runtime.Entrypoint
+}
+
 // validateLocalExtensionIdentity checks the canonical descriptor discriminators.
 func validateLocalExtensionIdentity(manifest localExtensionManifest) error {
 	if manifest.APIVersion != "harnest.dev/v1alpha1" {
@@ -918,7 +950,8 @@ func validateLocalExtensionIdentity(manifest localExtensionManifest) error {
 	if !extensionSemver.MatchString(manifest.Metadata.Version) {
 		return fmt.Errorf("metadata.version must be a valid semantic version")
 	}
-	if manifest.Runtime == nil || manifest.Runtime.Entrypoint != "extension:extension" {
+	// Reject any non-default entrypoint while permitting runtime.entrypoint to be omitted.
+	if effectiveExtensionEntrypoint(manifest) != "extension:extension" {
 		return fmt.Errorf("runtime.entrypoint must be extension:extension")
 	}
 	return nil
