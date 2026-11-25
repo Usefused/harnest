@@ -383,7 +383,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             "tools": "lookup.py",
             "subagents": "helper.py",
             "mcp": "server.py",
-            "plugins": "audit.py",
+            "agent-plugins": "audit.py",
             "sandbox": "sandbox.py",
             "skills": "research/SKILL.md",
         }
@@ -423,7 +423,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             ):
                 self._write(root / name / "_README.md", "Optional.\n")
                 (root / name / "empty").mkdir()
-            self._write(root / "plugins" / "_README.md", "Optional.\n")
+            self._write(root / "agent-plugins" / "_README.md", "Optional.\n")
             write_session_store(root)
             # Reaching advanced lowering proves placeholders were skipped.
             target = object()
@@ -450,7 +450,7 @@ class BundleResourceConsumptionTests(unittest.TestCase):
             )
             self._write(root / "instructions.md", "Use standard packages.\n")
             self._write(
-                root / "plugins" / "legacy" / "mcp" / "unsafe.py",
+                root / "agent-plugins" / "legacy" / "mcp" / "unsafe.py",
                 "raise AssertionError('must never import manifestless plugin code')\n",
             )
             write_session_store(root)
@@ -462,6 +462,39 @@ class BundleResourceConsumptionTests(unittest.TestCase):
                     compile_application(
                         root, entrypoint="agent:root_agent", framework="adk"
                     )
+
+    def test_legacy_plugins_directory_is_rejected_with_upgrade_guidance(self):
+        """Reject retired plugins/ folders in both managed and advanced modes."""
+
+        for mode, source in (
+            (
+                "managed",
+                "from harnest.agent import Agent\n"
+                "root_agent = Agent(name='root', model='test/model')\n",
+            ),
+            (
+                "advanced",
+                "from harnest.agent import Agent\n"
+                "root_agent = Agent.advanced(object())\n",
+            ),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self._write(root / "agent.py", source)
+                self._write(root / "instructions.md", "Use agent-plugins.\n")
+                self._write(
+                    root / "plugins" / "portable" / "plugin.json",
+                    '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"portable"}\n',
+                )
+                write_session_store(root)
+                with patch("harnest.bundle._lowering_adapter", return_value=self._backend()):
+                    with self.assertRaisesRegex(
+                        BundleConventionError,
+                        "unsupported legacy plugins directory.*agent-plugins/.*harnest upgrade",
+                    ):
+                        compile_application(
+                            root, entrypoint="agent:root_agent", framework="adk", mode=mode
+                        )
 
     def test_nested_advanced_subagent_is_rejected_instead_of_ignoring_resources(self):
         with tempfile.TemporaryDirectory() as temp:

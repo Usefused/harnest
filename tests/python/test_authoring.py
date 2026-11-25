@@ -722,7 +722,7 @@ class AuthoringTests(unittest.TestCase):
                 "subagents",
                 "mcp",
                 "extensions",
-                "plugins",
+                "agent-plugins",
                 "sandbox",
                 "skills",
                 "evals",

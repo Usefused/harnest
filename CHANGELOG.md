@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** Renamed the Agent Plugins directory from `plugins/` to `agent-plugins/` and the CLI subcommand from `harnest plugins` to `harnest agent-plugins` so portable Agent Plugins 1.0 packages are clearly distinct from Harnest-specific extensions. Existing agents with a `plugins/` folder are rejected at compile and bundle validation time with upgrade guidance; run `harnest upgrade AGENT_DIR --apply` (project schema 8) to back up and relocate `plugins/` to `agent-plugins/` (or remove an emptied `plugins/` directory after migrating legacy RuntimePlugin packages).
+
 ## [2.3.1](https://github.com/Usefused/harnest/compare/v2.3.0...v2.3.1) (2026-11-25)
 
 

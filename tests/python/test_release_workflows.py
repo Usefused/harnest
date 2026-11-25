@@ -534,11 +534,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn("https://github.com/Usefused/harnest", readme)
 
     def test_ci_coordinates_one_cancellable_branch_pipeline(self):
-        """Run both Python suites while executing language-independent gates once."""
+        """Run single-version quality and Linux smoke checks on push/PR while keeping broader matrices scheduled."""
         workflow = load_yaml(".github/workflows/ci.yml")
         quality_job = workflow["jobs"]["quality"]
         quality_step = next(
             step for step in quality_job["steps"] if step["name"] == "Run quality gates"
+        )
+        python_step = next(
+            step for step in quality_job["steps"] if step["name"] == "Set up Python"
         )
 
         events = workflow_events(workflow)
@@ -547,35 +550,31 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
         self.assertIn("github.head_ref || github.ref_name", workflow["concurrency"]["group"])
         self.assertIn("head.repo.full_name", workflow["concurrency"]["group"])
+        # Only quality, Linux studio-release smoke, and conditional extension checks run per push/PR.
         for name, output in (
             ("quality", "core"), ("studio-release", "core"),
-            ("framework-compatibility", "core"), ("extensions", "extensions"),
+            ("extensions", "extensions"),
         ):
             job = workflow["jobs"][name]
             self.assertEqual(job["needs"], "changes")
             self.assertEqual(job["if"], f"needs.changes.outputs.{output} == 'true'")
+        self.assertNotIn("framework-compatibility", workflow["jobs"])
         self.assertEqual(
             workflow["jobs"]["extensions"]["uses"],
             "./.github/workflows/validate-extensions.yml",
         )
-        self.assertEqual(
-            quality_job["strategy"]["matrix"]["python-version"], ["3.11", "3.14"]
-        )
+        self.assertNotIn("strategy", quality_job)
+        self.assertEqual(python_step["with"]["python-version"], "3.14")
         self.assertEqual(quality_step["run"], "make quality PYTHON=python")
-        self.assertEqual(quality_step["if"], "matrix.python-version == '3.14'")
-        compatibility_step = next(
-            step for step in quality_job["steps"] if step["name"] == "Run Python compatibility tests"
-        )
-        self.assertEqual(compatibility_step["if"], "matrix.python-version == '3.11'")
-        self.assertEqual(compatibility_step["run"], "make test-python PYTHON=python")
+        self.assertNotIn("if", quality_step)
         makefile = (ROOT / "Makefile").read_text()
         self.assertIn("studio-tests", makefile.partition("quality:")[2].splitlines()[0])
         self.assertIn("node --test studio/tests/*.test.mjs", makefile)
         self.assertNotIn("release-tag", workflow["jobs"])
         self.assertEqual(workflow["permissions"]["contents"], "read")
 
-    def test_compatibility_is_reused_without_duplicate_branch_triggers(self):
-        """Keep boundary checks on branches and the full cross-product on scheduled runs."""
+    def test_compatibility_runs_on_schedule_without_blocking_every_push(self):
+        """Keep the full Python/framework compatibility matrix on nightly scheduled and manual runs."""
         workflow = load_yaml(".github/workflows/framework-compatibility.yml")
         self.assertEqual(
             set(workflow_events(workflow)), {"workflow_call", "workflow_dispatch", "schedule"}
@@ -583,20 +582,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
         caller = load_yaml(".github/workflows/ci.yml")
         self.assertNotEqual(workflow["concurrency"]["group"], caller["concurrency"]["group"])
-        self.assertEqual(
-            caller["jobs"]["framework-compatibility"]["uses"],
-            "./.github/workflows/framework-compatibility.yml",
-        )
+        self.assertNotIn("framework-compatibility", caller["jobs"])
         inputs = workflow_events(workflow)["workflow_call"]["inputs"]
         self.assertEqual(inputs["matrix"], {
             "description": "Optional compatibility matrix for the calling CI workflow",
             "type": "string", "default": "",
         })
-        selected = json.loads(caller["jobs"]["framework-compatibility"]["with"]["matrix"])
-        self.assertEqual(selected, {"include": [
-            {"python": "3.11", "resolution": "minimum"},
-            {"python": "3.14", "resolution": "latest"},
-        ]})
         matrix = workflow["jobs"]["contracts"]["strategy"]["matrix"]
         fallback = re.fullmatch(r"\$\{\{ fromJSON\(inputs.matrix \|\| '(.*)'\) \}\}", matrix)
         self.assertIsNotNone(fallback)
@@ -688,12 +679,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         caller = load_yaml(".github/workflows/ci.yml")["jobs"]["prepare-release"]
         self.assertEqual(caller["uses"], "./.github/workflows/release-please.yml")
         self.assertEqual(set(caller["needs"]), {
-            "quality", "studio-release", "framework-compatibility", "extensions",
+            "quality", "studio-release", "extensions",
         })
         self.assertIn("!cancelled()", caller["if"])
         self.assertIn("github.event_name == 'push'", caller["if"])
         self.assertIn("github.ref == 'refs/heads/main'", caller["if"])
-        for name in ("quality", "studio-release", "framework-compatibility"):
+        # Core quality and Linux native smoke gates must both succeed before Release Please runs.
+        for name in ("quality", "studio-release"):
             self.assertIn(f"needs.{name}.result == 'success'", caller["if"])
         self.assertIn("needs.extensions.result == 'success'", caller["if"])
         self.assertIn("needs.extensions.result == 'skipped'", caller["if"])
@@ -772,20 +764,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
             repository, revision = action.split("@", 1)
             self.assertEqual(revision, expected_actions[repository])
 
-    def test_native_executables_run_on_windows_in_release_ci(self):
-        """Keep three blocking platforms and schedule arm64 without repeating frontend tests."""
+    def test_native_executables_run_linux_in_ci_and_all_platforms_on_schedule(self):
+        """Keep fast Linux smoke coverage on push/PR and run macOS/Windows coverage nightly."""
         caller = load_yaml(".github/workflows/ci.yml")["jobs"]["studio-release"]
         self.assertEqual(caller["uses"], "./.github/workflows/native-release.yml")
+        self.assertEqual(json.loads(caller["with"]["platforms"]), ["ubuntu-latest"])
         workflow = load_yaml(".github/workflows/native-release.yml")
         events = workflow_events(workflow)
         self.assertEqual(set(events), {"workflow_call", "workflow_dispatch", "schedule"})
-        self.assertEqual(events["schedule"], [{"cron": "41 6 * * 1"}])
+        self.assertEqual(events["schedule"], [{"cron": "41 6 * * *"}])
         self.assertFalse(events["workflow_dispatch"]["inputs"]["arm64"]["default"])
         job = workflow["jobs"]["smoke"]
         matrix = job["strategy"]["matrix"]["os"]
-        self.assertIn("github.event_name == 'schedule' || inputs.arm64", matrix)
+        self.assertIn("inputs.platforms", matrix)
         platforms = [json.loads(value) for value in re.findall(r"'(\[.*?\])'", matrix)]
-        self.assertEqual(platforms, [["macos-15"], ["ubuntu-latest", "macos-15-intel", "windows-latest"]])
+        self.assertEqual(platforms, [["macos-15"], ["ubuntu-latest", "macos-15-intel", "macos-15", "windows-latest"]])
         scripts = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn('scripts/prepare_agent_launchers.py --target "$(go env GOOS)-$(go env GOARCH)"', scripts)
         self.assertIn("go test ./internal/agentpack ./cmd/harnest-agent", scripts)

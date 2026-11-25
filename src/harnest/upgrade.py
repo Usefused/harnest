@@ -22,10 +22,10 @@ from .application_layout import ApplicationLayoutError, lifecycle_directory
 from .lifecycle import _decorator_path_for_phase
 
 
-PROJECT_SCHEMA = 7
+PROJECT_SCHEMA = 8
 PROJECT_LOCK = """apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 7
+projectSchema: 8
 """
 _STORAGE_LIBRARY = """from harnest.store import MemoryStore
 
@@ -2472,10 +2472,12 @@ def _rewrite(root: Path, path: Path, content: str, detail: str) -> UpgradeAction
 
 
 def _action_order(action: UpgradeAction) -> tuple[int, str]:
-    """Move child files first, then vacate the old lifecycle root for packages."""
+    """Move child files first, then vacate lifecycle, relocate extensions, and finish plugins/."""
 
+    # Relocate extensions out of plugins/ before renaming or removing the plugins/ container.
     rank = {"rewrite": 0, "create": 1, "move": 2, "delete": 3,
-            "relocate_lifecycle": 4, "relocate_extension": 5}
+            "relocate_lifecycle": 4, "relocate_extension": 5,
+            "relocate_agent_plugins": 6, "remove_directory": 6}
     return rank.get(action.kind, 9), action.path
 
 
@@ -2552,16 +2554,23 @@ def _backup_action(root: Path, backup: Path, action: UpgradeAction) -> None:
 def _apply_action(root: Path, action: UpgradeAction) -> None:
     """Apply one verified change in lifecycle-before-package migration order."""
     source = root / action.path
+    # Create and rewrite actions write atomically via temporary sibling replacement.
     if action.kind in {"create", "rewrite"}:
         if action.content is None:
             raise UpgradeError(f"upgrade action has no content: {action.path}")
         _atomic_write(source, action.content)
         return
-    if action.kind in {"move", "relocate_lifecycle", "relocate_extension"} and action.destination is not None:
+    # Directory and file moves run after child edits and respect rank ordering.
+    if action.kind in {"move", "relocate_lifecycle", "relocate_extension", "relocate_agent_plugins"} and action.destination is not None:
         destination = root / action.destination
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
         return
+    # Remove only an empty vacated directory (for example plugins/ after moving all RuntimePlugins).
+    if action.kind == "remove_directory":
+        source.rmdir()
+        return
+    # Delete removes a single retired regular file such as studio-packs.lock.
     if action.kind == "delete":
         source.unlink()
         return

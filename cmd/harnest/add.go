@@ -60,7 +60,7 @@ func (a *application) newAddCommand() *cobra.Command {
 
 Start with harnest init <agent> --minimal, then add only the capabilities the
 agent needs. Harnest recreates a deleted optional folder when required. Use the
-dedicated extensions, plugins, and skills commands for packaged resources.`,
+dedicated extensions, agent-plugins, and skills commands for packaged resources.`,
 	}
 	for _, scaffold := range agentResourceScaffolds() {
 		command.AddCommand(a.newAddResourceCommand(scaffold))

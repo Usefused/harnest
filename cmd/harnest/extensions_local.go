@@ -107,30 +107,52 @@ func localExtensionInstallSource(source string) bool {
 		strings.ContainsAny(source, `/\`) || strings.HasPrefix(source, ".")
 }
 
-// newExtensionInitCommand creates one application-local canonical package.
+// newExtensionInitCommand creates a canonical Harnest Extension in an agent, a pack, or a standalone output folder.
 func (a *application) newExtensionInitCommand() *cobra.Command {
 	var project string
+	var output string
 	var capabilities []string
+	var contributions []string
 	command := &cobra.Command{
 		Use:   "init NAME",
-		Short: "Initialize an application-local Harnest Extension",
+		Short: "Initialize a Harnest Extension in an agent, pack, or standalone directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
-			created, err := initializeLocalExtension(arguments[0], project, capabilities)
+			projectChanged := command.Flags().Changed("project")
+			// Reject ambiguous targeting when both --output and an explicit --project are supplied.
+			if strings.TrimSpace(output) != "" && projectChanged {
+				return fmt.Errorf("--output and --project cannot be combined")
+			}
+			created, targetKind, err := initializeExtension(
+				arguments[0], project, output, projectChanged, capabilities, contributions,
+			)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(command.OutOrStdout(), "Initialized Harnest Extension %q at %s\n", created.Name, created.Path)
-			fmt.Fprintf(command.OutOrStdout(), "Run `harnest env sync %s` to refresh harnest-runtime.lock.\n", extensionProjectRoot(created.Path))
+			// Tailor the follow-up instruction to whether the extension lives inside an agent, pack, or standalone path.
+			switch targetKind {
+			case extensionInitTargetAgent:
+				fmt.Fprintf(command.OutOrStdout(), "Run `%s env sync %s` to refresh harnest-runtime.lock.\n", a.cliName(), extensionProjectRoot(created.Path))
+			case extensionInitTargetPack:
+				fmt.Fprintf(command.OutOrStdout(), "Add `extensions/%s` under `extensions:` in pack.yaml.\n", created.Name)
+			}
 			return nil
 		},
 	}
 	command.Flags().StringVar(
 		&project, "project", ".", "Harnest agent root containing config.yaml",
 	)
+	command.Flags().StringVarP(
+		&output, "output", "o", "", "standalone directory where the extension folder will be created (no config.yaml required)",
+	)
 	command.Flags().StringSliceVar(
 		&capabilities, "capability", nil,
-		"declared extension capability (repeatable, for example sandbox.provider)",
+		"declared extension capability (repeatable, for example framework.extension or sandbox.provider)",
+	)
+	command.Flags().StringSliceVar(
+		&contributions, "contribute", nil,
+		"contribution folder to scaffold and declare in extension.yaml (repeatable: lifecycle, mcp, skills, subagents, tools)",
 	)
 	return command
 }
@@ -176,32 +198,164 @@ func extensionProjectRoot(extensionPath string) string {
 	return filepath.Dir(filepath.Dir(extensionPath))
 }
 
-// initializeLocalExtension validates identity and authority before creating files.
-func initializeLocalExtension(name, project string, capabilities []string) (installedExtension, error) {
+type extensionInitTargetKind string
+
+const (
+	extensionInitTargetAgent      extensionInitTargetKind = "agent"
+	extensionInitTargetPack       extensionInitTargetKind = "pack"
+	extensionInitTargetStandalone extensionInitTargetKind = "standalone"
+)
+
+// initializeExtension validates identity, capabilities, contributions, and target root before scaffolding.
+func initializeExtension(
+	name, project, output string,
+	projectExplicit bool,
+	capabilities, contributions []string,
+) (installedExtension, extensionInitTargetKind, error) {
+	// Validate extension identity before inspecting or mutating the filesystem.
 	if err := validateExtensionName(name); err != nil {
-		return installedExtension{}, err
+		return installedExtension{}, "", err
 	}
-	validatedCapabilities, err := validateExtensionCapabilities(capabilities)
+	validatedContributions, err := validateExtensionContributionKinds(contributions)
 	if err != nil {
-		return installedExtension{}, err
+		return installedExtension{}, "", err
+	}
+	// Automatically include required content.* capabilities for scaffolded content contribution folders.
+	mergedCapabilities := mergeContributionCapabilities(capabilities, validatedContributions)
+	validatedCapabilities, err := validateExtensionCapabilities(mergedCapabilities)
+	if err != nil {
+		return installedExtension{}, "", err
+	}
+	destination, targetKind, err := resolveExtensionInitDestination(name, project, output, projectExplicit)
+	if err != nil {
+		return installedExtension{}, "", err
+	}
+	if err := createExtensionScaffoldWithContributions(destination, name, validatedCapabilities, validatedContributions); err != nil {
+		return installedExtension{}, "", err
+	}
+	return installedExtension{Name: name, Path: destination}, targetKind, nil
+}
+
+// resolveExtensionInitDestination selects standalone --output, pack root (when pack.yaml exists), or agent extensions/.
+func resolveExtensionInitDestination(
+	name, project, output string, projectExplicit bool,
+) (string, extensionInitTargetKind, error) {
+	// Explicit --output creates a standalone extension without requiring an agent config.yaml.
+	if trimmed := strings.TrimSpace(output); trimmed != "" {
+		absolute, err := filepath.Abs(trimmed)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve extension output directory: %w", err)
+		}
+		// Match metadata.name to the folder basename without doubling when the user already passed .../<name>.
+		destination := absolute
+		if filepath.Base(absolute) != name {
+			destination = filepath.Join(absolute, name)
+		}
+		// Ensure the parent directory exists as a regular directory before staging inside it.
+		if err := validateLocalPackageRoot(filepath.Dir(destination), filepath.Base(filepath.Dir(destination))); err != nil {
+			return "", "", err
+		}
+		return destination, extensionInitTargetStandalone, nil
+	}
+	// When running inside a pack directory without an explicit --project, scaffold into <pack>/extensions/<name>.
+	if !projectExplicit {
+		if packRoot, isPack := detectPackDirectoryForExtensionInit(project); isPack {
+			extensionsRoot := filepath.Join(packRoot, "extensions")
+			if err := validateLocalPackageRoot(extensionsRoot, "extensions"); err != nil {
+				return "", "", err
+			}
+			return filepath.Join(extensionsRoot, name), extensionInitTargetPack, nil
+		}
 	}
 	projectRoot, err := validatedAgentProject(project)
 	if err != nil {
-		return installedExtension{}, err
+		return "", "", err
 	}
 	extensionsRoot := filepath.Join(projectRoot, "extensions")
 	if err := validateLocalPackageRoot(extensionsRoot, "extensions"); err != nil {
-		return installedExtension{}, err
+		return "", "", err
 	}
-	destination := filepath.Join(extensionsRoot, name)
-	if err := createExtensionScaffold(destination, name, validatedCapabilities); err != nil {
-		return installedExtension{}, err
+	return filepath.Join(extensionsRoot, name), extensionInitTargetAgent, nil
+}
+
+// detectPackDirectoryForExtensionInit returns true when dir holds pack.yaml and not an agent config.yaml.
+func detectPackDirectoryForExtensionInit(dir string) (string, bool) {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
 	}
-	return installedExtension{Name: name, Path: destination}, nil
+	// Agent projects always take precedence when config.yaml is present.
+	if _, err := os.Stat(filepath.Join(absolute, "config.yaml")); err == nil {
+		return "", false
+	}
+	info, err := os.Stat(filepath.Join(absolute, packManifestFile))
+	// Only treat the directory as a pack root when pack.yaml is a regular file.
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return absolute, true
+}
+
+// validateExtensionContributionKinds normalizes and validates --contribute values against supported kinds.
+func validateExtensionContributionKinds(values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		kind := strings.TrimSpace(raw)
+		// Skip empty items produced by trailing commas in flag values.
+		if kind == "" {
+			continue
+		}
+		// Reject unsupported contribution kinds before touching the filesystem.
+		if !isExtensionContributionKind(kind) {
+			return nil, fmt.Errorf("unknown extension contribution %q; choose %s", kind, strings.Join(extensionContributionKinds, ", "))
+		}
+		if _, duplicate := seen[kind]; duplicate {
+			continue
+		}
+		seen[kind] = struct{}{}
+		result = append(result, kind)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// isExtensionContributionKind reports whether kind is one of Harnest's declared extension contribution surfaces.
+func isExtensionContributionKind(kind string) bool {
+	for _, allowed := range extensionContributionKinds {
+		if kind == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeContributionCapabilities appends required content.<kind> capabilities for scaffolded content directories.
+func mergeContributionCapabilities(capabilities, contributions []string) []string {
+	merged := append([]string{}, capabilities...)
+	for _, kind := range contributions {
+		// Lifecycle hooks require decorator-specific capabilities; managed content folders map 1:1 to content.<kind>.
+		if kind == "lifecycle" {
+			continue
+		}
+		merged = append(merged, "content."+kind)
+	}
+	return merged
+}
+
+// initializeLocalExtension validates identity and authority before creating files inside an agent project.
+func initializeLocalExtension(name, project string, capabilities []string) (installedExtension, error) {
+	created, _, err := initializeExtension(name, project, "", true, capabilities, nil)
+	return created, err
 }
 
 // createExtensionScaffold stages both required files before publishing the package.
 func createExtensionScaffold(destination, name string, capabilities []string) error {
+	return createExtensionScaffoldWithContributions(destination, name, capabilities, nil)
+}
+
+// createExtensionScaffoldWithContributions stages required files and optional contribution folders atomically.
+func createExtensionScaffoldWithContributions(destination, name string, capabilities, contributions []string) error {
 	if err := validateLocalPackageDestination(destination, false, "Harnest Extension"); err != nil {
 		return err
 	}
@@ -219,13 +373,19 @@ func createExtensionScaffold(destination, name string, capabilities []string) er
 		return fmt.Errorf("create staged Harnest Extension: %w", err)
 	}
 	files := map[string]string{
-		"extension.yaml": extensionManifestScaffold(name, capabilities),
+		"extension.yaml": extensionManifestScaffoldWithContributions(name, capabilities, contributions),
 		"extension.py":   extensionPythonScaffold(name),
 		"pyproject.toml": extensionProjectScaffold(name),
 	}
 	for filename, contents := range files {
 		if err := os.WriteFile(filepath.Join(staged, filename), []byte(contents), 0o644); err != nil {
 			return fmt.Errorf("write staged Harnest Extension %s: %w", filename, err)
+		}
+	}
+	// Create every declared contribution folder so the scaffold immediately passes manifest validation.
+	for _, kind := range contributions {
+		if err := os.MkdirAll(filepath.Join(staged, kind), 0o755); err != nil {
+			return fmt.Errorf("create staged Harnest Extension %s directory: %w", kind, err)
 		}
 	}
 	// Recheck after staging so concurrent creation never gets silently replaced.
@@ -240,8 +400,22 @@ func createExtensionScaffold(destination, name string, capabilities []string) er
 
 // extensionManifestScaffold emits the canonical descriptor and selected authority only.
 func extensionManifestScaffold(name string, capabilities []string) string {
+	return extensionManifestScaffoldWithContributions(name, capabilities, nil)
+}
+
+// extensionManifestScaffoldWithContributions emits extension.yaml with selected capabilities and contributes folders.
+func extensionManifestScaffoldWithContributions(name string, capabilities, contributions []string) string {
 	var content strings.Builder
-	fmt.Fprintf(&content, "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: %s\n  version: 0.1.0\nruntime:\n  entrypoint: extension:extension\ncapabilities:", name)
+	fmt.Fprintf(&content, "apiVersion: harnest.dev/v1alpha1\nkind: Extension\nmetadata:\n  name: %s\n  version: 0.1.0\nruntime:\n  entrypoint: extension:extension\n", name)
+	// Emit contributes only when the caller requested one or more contribution directories.
+	if len(contributions) > 0 {
+		content.WriteString("contributes:\n")
+		for _, kind := range contributions {
+			fmt.Fprintf(&content, "  %s:\n    - %s\n", kind, kind)
+		}
+	}
+	content.WriteString("capabilities:")
+	// Preserve compact empty-list form when no capabilities were requested.
 	if len(capabilities) == 0 {
 		content.WriteString(" []\n")
 		return content.String()

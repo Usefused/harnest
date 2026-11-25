@@ -32,7 +32,7 @@ class AgentPluginStandardTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.plugins = self.root / "application" / "plugins"
+        self.plugins = self.root / "application" / "agent-plugins"
         self.data = self.root / "client-data"
         environment = patch.dict(os.environ, {"HARNEST_PLUGIN_DATA_DIR": str(self.data)})
         environment.start()
@@ -345,7 +345,7 @@ capabilities: []
     def test_installation_scope_is_stable_across_artifact_roots(self):
         root = self._package()
         original = PortableMCP.create(root, "standard-example", "one")
-        artifact = self.root / "artifact" / "plugins" / "package"
+        artifact = self.root / "artifact" / "agent-plugins" / "package"
         with plugin_installation(original.scope):
             copied = PortableMCP.create(artifact, "standard-example", "two")
         unrelated = PortableMCP.create(artifact, "standard-example", "one")
@@ -505,7 +505,7 @@ class AgentPluginExecutableTests(unittest.TestCase):
         self.addCleanup(workspace.cleanup)
         self.root = Path(workspace.name).resolve()
         self.source = self.root / "source"
-        self.package = self.source / "plugins" / "starter"
+        self.package = self.source / "agent-plugins" / "starter"
         self.package.mkdir(parents=True)
         self.destination = self.root / "artifact-source"
         environment = patch.dict(os.environ, {"HARNEST_PLUGIN_DATA_DIR": str(self.root / "data")})
@@ -522,7 +522,7 @@ class AgentPluginExecutableTests(unittest.TestCase):
         _copy_agent_source(self.source, self.destination)
         for mode in modes:
             with self.subTest(mode=oct(mode)):
-                copied = self.destination / "plugins" / "starter" / f"mode-{mode:o}"
+                copied = self.destination / "agent-plugins" / "starter" / f"mode-{mode:o}"
                 actual = stat.S_IMODE(copied.stat().st_mode)
                 self.assertEqual(actual & 0o111, mode & 0o111)
                 self.assertEqual(actual & 0o7000, 0)
@@ -534,7 +534,7 @@ class AgentPluginExecutableTests(unittest.TestCase):
         executable.write_text("#!/bin/sh\nprintf 'copied-server-ran'\n", encoding="utf-8")
         executable.chmod(0o755)
         _copy_agent_source(self.source, self.destination)
-        copied_package = self.destination / "plugins" / "starter"
+        copied_package = self.destination / "agent-plugins" / "starter"
         portable = PortableMCP.create(copied_package, "starter", "proof")
         client = MCPClient(transport="stdio", command="./bin/server", portable=portable)
         configuration = portable.stdio(client)

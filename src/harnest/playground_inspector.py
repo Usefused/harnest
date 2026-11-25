@@ -1219,9 +1219,10 @@ def _is_skill_file(relative: Path) -> bool:
         len(relative.parts) >= 3 and relative.parts[-3] == "skills"
         and _is_agent_scope(relative.parts[:-3])
     )
+    # Match only top-level portable Agent Plugin and Harnest Extension package trees.
     package_skill = (
         len(relative.parts) == 5
-        and relative.parts[0] in {"plugins", "extensions"}
+        and relative.parts[0] in {"agent-plugins", "extensions"}
         and relative.parts[2] == "skills"
     )
     return relative.name == "SKILL.md" and (root_skill or package_skill)
@@ -1232,7 +1233,7 @@ def _is_agent_plugin_manifest(relative: Path) -> bool:
 
     return (
         len(relative.parts) == 3
-        and relative.parts[0] == "plugins"
+        and relative.parts[0] == "agent-plugins"
         and relative.name == "plugin.json"
     )
 

@@ -62,7 +62,7 @@ class AuthoringErrorTests(unittest.TestCase):
         operations = (
             ("subagents", lambda path: _subagent_entry(path)),
             ("skills", lambda path: _skill_directories(path.parent)),
-            ("plugins", lambda path: _discover_agent_plugin(path)),
+            ("agent-plugins", lambda path: _discover_agent_plugin(path)),
             ("extensions", lambda path: _extension_directories(path.parent)),
             ("evals", lambda path: _eval_file_kind(path)),
             ("lifecycle", lambda path: _extension_files(path.parent)),

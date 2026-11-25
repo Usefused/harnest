@@ -362,7 +362,7 @@ opaque-skill-instructions
             root = Path(directory)
             _write(root / "config.yaml", _CONFIG)
             _write(
-                root / "plugins/support-tools/plugin.json",
+                root / "agent-plugins/support-tools/plugin.json",
                 json.dumps(
                     {
                         "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -374,7 +374,7 @@ opaque-skill-instructions
                 ),
             )
             _write(
-                root / "plugins/support-tools/skills/respond/SKILL.md",
+                root / "agent-plugins/support-tools/skills/respond/SKILL.md",
                 "---\nname: respond\ndescription: Draft a response.\n---\n\nprivate steps\n",
             )
             _write(
@@ -400,7 +400,7 @@ private_token: extension-secret
             blocks = {(block.kind, block.name): block for block in projection.blocks}
 
             plugin = blocks[("agent_plugin", "support-tools")]
-            self.assertEqual(plugin.path, "plugins/support-tools/plugin.json")
+            self.assertEqual(plugin.path, "agent-plugins/support-tools/plugin.json")
             self.assertEqual(plugin.config["standard"], "Agent Plugins 1.0")
             self.assertTrue(plugin.config["skills"])
             extension = blocks[("extension", "audit")]
@@ -418,7 +418,7 @@ private_token: extension-secret
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write(root / "config.yaml", _CONFIG)
-            _write(root / "plugins/broken/plugin.json", '{"name":"secret","name":')
+            _write(root / "agent-plugins/broken/plugin.json", '{"name":"secret","name":')
             _write(root / "extensions/broken/extension.yaml", "metadata: [secret\n")
 
             projection = inspect_workspace(root)

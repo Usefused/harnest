@@ -11,7 +11,7 @@ _FOLDER_CONTENTS = {
     "sandbox": "Python (.py) files, each defining one Sandbox variable matching its filename; agents explicitly assign permitted names with sandboxes=[...]",
     "subagents": "Python (.py) files or named subfolders containing agent.py",
     "skills": "one subfolder per skill, each containing an uppercase SKILL.md file",
-    "plugins": "one subfolder per plugin, rather than loose files",
+    "agent-plugins": "one subfolder per Agent Plugin, rather than loose files",
     "extensions": "one subfolder per Harnest Extension, rather than loose files",
     "evals": "evaluation files ending in .evalset.json and optional test_config.json or <set>.test_config.json settings, directly in this folder",
 }

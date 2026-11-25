@@ -41,11 +41,67 @@ def plan_application_layout(root: Path, actions: list, blockers: list[str]) -> N
         moving_root = moving_root or not any(
             item.directory.parent == legacy_root for item in canonical
         )
+    # Vacate legacy root extensions/ into lifecycle/ before relocating extension packages.
     if moving_root:
         _move(root, legacy_root, root / "lifecycle", actions, blockers,
               kind="relocate_lifecycle")
     for descriptor in legacy:
         _plan_package(root, descriptor, actions, blockers, moving_root)
+    # Migrate or clean up the retired plugins/ directory after extension packages relocate.
+    _plan_agent_plugins_directory(root, legacy, actions, blockers)
+
+
+def _plan_agent_plugins_directory(
+    root: Path,
+    legacy: tuple[ExtensionDescriptor, ...],
+    actions: list,
+    blockers: list[str],
+) -> None:
+    """Rename legacy plugins/ to agent-plugins/ or remove it once emptied of extensions."""
+
+    plugins_root = root / "plugins"
+    # Nothing to migrate when no legacy plugins/ directory exists.
+    if not plugins_root.exists() and not plugins_root.is_symlink():
+        return
+    # Reject symlinks or regular files occupying the retired plugins/ path.
+    if plugins_root.is_symlink() or not plugins_root.is_dir():
+        blockers.append("plugins must be a regular directory before migration")
+        return
+    # Reject any nested symlink before computing tree digests or planning relocation.
+    if any(item.is_symlink() for item in plugins_root.rglob("*")):
+        blockers.append(f"cannot migrate symlinked tree: {plugins_root}")
+        return
+    legacy_dirs = {item.directory.resolve() for item in legacy}
+    remaining = [
+        child for child in sorted(plugins_root.iterdir())
+        if child.resolve() not in legacy_dirs
+    ]
+    # When plugins/ held only legacy RuntimePlugin packages, remove the vacated folder
+    # instead of creating an unexpected empty agent-plugins/ directory.
+    if legacy and not remaining:
+        actions.append(
+            UpgradeAction(
+                "remove_directory",
+                _relative(root, plugins_root),
+                "remove empty legacy plugins/ directory after relocating extensions",
+                digest=_tree_digest(plugins_root),
+            )
+        )
+        return
+    destination = root / "agent-plugins"
+    # Never overwrite or silently merge an already-present agent-plugins/ directory.
+    if destination.exists() or destination.is_symlink():
+        blockers.append("both plugins/ and agent-plugins/ exist; merge them manually")
+        return
+    actions.append(
+        UpgradeAction(
+            "relocate_agent_plugins",
+            _relative(root, plugins_root),
+            "rename the retired plugins/ folder to agent-plugins/",
+            destination=_relative(root, destination),
+            digest=_tree_digest(plugins_root),
+        )
+    )
 
 
 def _plan_package(root: Path, descriptor: ExtensionDescriptor, actions: list, blockers: list[str], moving_root: bool) -> None:

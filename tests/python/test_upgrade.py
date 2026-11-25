@@ -542,8 +542,106 @@ class RepositoryUpgradeTests(unittest.TestCase):
                 (backup / "harnest.lock").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "projectSchema: 7",
+                "projectSchema: 8",
                 (root / "harnest.lock").read_text(encoding="utf-8"),
+            )
+
+    def test_plugins_directory_is_renamed_to_agent_plugins_with_backup(self):
+        """Rename plugins/ to agent-plugins/, preserve backups, and remain idempotent."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            manifest = (
+                '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",'
+                '"name":"warehouse"}\n'
+            )
+            self.write(root / "plugins" / "warehouse" / "plugin.json", manifest)
+            self.write(root / "plugins" / "_README.md", "# Agent Plugins\n")
+
+            plan = plan_upgrade(root)
+            self.assertFalse(plan.blockers)
+            self.assertIn(
+                ("relocate_agent_plugins", "plugins", "agent-plugins"),
+                {(item.kind, item.path, item.destination) for item in plan.actions},
+            )
+            backup = apply_upgrade(plan)
+
+            self.assertFalse((root / "plugins").exists())
+            self.assertEqual(
+                (root / "agent-plugins" / "warehouse" / "plugin.json").read_text(encoding="utf-8"),
+                manifest,
+            )
+            self.assertEqual(
+                (root / "agent-plugins" / "_README.md").read_text(encoding="utf-8"),
+                "# Agent Plugins\n",
+            )
+            self.assertEqual(
+                (backup / "plugins" / "warehouse" / "plugin.json").read_text(encoding="utf-8"),
+                manifest,
+            )
+            self.assertFalse(plan_upgrade(root).actions)
+
+    def test_plugins_rename_blocks_when_agent_plugins_already_exists(self):
+        """Refuse to overwrite or silently merge when both plugins/ and agent-plugins/ exist."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            manifest = (
+                '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",'
+                '"name":"warehouse"}\n'
+            )
+            self.write(root / "plugins" / "warehouse" / "plugin.json", manifest)
+            self.write(root / "agent-plugins" / "other" / "plugin.json", manifest)
+
+            plan = plan_upgrade(root)
+            self.assertTrue(
+                any("both plugins/ and agent-plugins/ exist" in item for item in plan.blockers),
+                plan.blockers,
+            )
+            with self.assertRaisesRegex(UpgradeError, "blockers"):
+                apply_upgrade(plan)
+            self.assertTrue((root / "plugins" / "warehouse" / "plugin.json").is_file())
+            self.assertFalse((root / ".harnest").exists())
+
+    def test_plugins_rename_refuses_destination_created_after_plan(self):
+        """Fail without mutating if agent-plugins/ appears after read-only planning."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(
+                root / "plugins" / "warehouse" / "plugin.json",
+                '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"warehouse"}\n',
+            )
+
+            plan = plan_upgrade(root)
+            self.assertFalse(plan.blockers)
+            (root / "agent-plugins").mkdir()
+            with self.assertRaisesRegex(UpgradeError, "destination changed"):
+                apply_upgrade(plan)
+            self.assertTrue((root / "plugins" / "warehouse" / "plugin.json").is_file())
+            self.assertFalse((root / ".harnest").exists())
+
+    def test_plugins_rename_blocks_nested_symlink(self):
+        """Reject symlinks inside plugins/ rather than copying or moving linked trees."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.legacy_agent(root)
+            self.write(
+                root / "plugins" / "warehouse" / "plugin.json",
+                '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"warehouse"}\n',
+            )
+            outside = root.parent / "outside.txt"
+            outside.write_text("secret\n", encoding="utf-8")
+            (root / "plugins" / "warehouse" / "link.txt").symlink_to(outside)
+
+            plan = plan_upgrade(root)
+            self.assertTrue(
+                any("symlink" in item for item in plan.blockers),
+                plan.blockers,
             )
 
     def test_output_policy_source_is_migrated_to_the_strict_contract(self):

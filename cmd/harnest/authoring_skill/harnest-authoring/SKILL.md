@@ -1,6 +1,6 @@
 ---
 name: harnest-authoring
-description: Build, modify, test, or review Harnest agents and source, including folders, APIs, frameworks, resources, extensions, plugins, lifecycle, MCP, skills, evals, compilation, running, and serving.
+description: Build, modify, test, or review Harnest agents and source, including folders, APIs, frameworks, resources, extensions, agent-plugins, lifecycle, MCP, skills, evals, compilation, running, and serving.
 ---
 
 # Harnest authoring

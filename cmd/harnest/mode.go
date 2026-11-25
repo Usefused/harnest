@@ -22,14 +22,14 @@ var managedResourceDirectories = []string{
 	"mcp",
 	"extensions",
 	"lifecycle",
-	"plugins",
+	"agent-plugins",
 	"sandbox",
 	"skills",
 	"evals",
 }
 
 var advancedExplicitResourceDirectories = []string{
-	"tools", "subagents", "mcp", "plugins", "sandbox", "skills",
+	"tools", "subagents", "mcp", "agent-plugins", "sandbox", "skills",
 }
 
 type populatedManagedResource struct {

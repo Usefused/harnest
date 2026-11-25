@@ -31,8 +31,10 @@ def compile_source_paths(root: Path) -> frozenset[Path]:
 def _capability_trees(scope: Path) -> list[Path]:
     """Retain installed packages rather than the parent folder's guides and samples."""
     result = []
-    for name in ("skills", "plugins", "extensions"):
+    # Preserve complete package directories for skills, Agent Plugins, and Harnest Extensions.
+    for name in ("skills", "agent-plugins", "extensions"):
         for child in (scope / name).glob("*"):
+            # Skip hidden and underscore-prefixed placeholder entries so guides are not bundled.
             if child.is_dir() and not child.name.startswith((".", "_")):
                 result.append(child)
     return result

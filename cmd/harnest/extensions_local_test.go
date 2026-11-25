@@ -36,6 +36,78 @@ func TestExtensionInitCreatesCanonicalLocalPackage(t *testing.T) {
 	}
 }
 
+// TestExtensionInitSupportsOutputPackRootAndContributions verifies standalone --output, pack detection, and --contribute.
+func TestExtensionInitSupportsOutputPackRootAndContributions(t *testing.T) {
+	// Standalone --output creates <output>/<name> and scaffolds declared contribution folders and content.* capabilities.
+	outParent := filepath.Join(t.TempDir(), "extensions")
+	stdout, _, err := executeForTest(
+		t, defaultSystem(), "extensions", "init", "company_adk",
+		"--output", outParent,
+		"--capability", "framework.extension",
+		"--contribute", "lifecycle,tools",
+	)
+	if err != nil {
+		t.Fatalf("standalone extension init failed: %v", err)
+	}
+	destination := filepath.Join(outParent, "company_adk")
+	// Standalone output must not tell the user to run env sync against a non-agent directory.
+	if strings.Contains(stdout, "env sync") {
+		t.Fatalf("standalone output unexpectedly suggested env sync: %q", stdout)
+	}
+	assertFilesContain(t, destination, map[string]string{
+		"extension.yaml": "  - content.tools",
+		"extension.py":   "class CompanyAdkExtension(Extension)",
+	})
+	manifest, err := readLocalExtensionManifest(destination)
+	if err != nil {
+		t.Fatalf("standalone extension manifest invalid: %v", err)
+	}
+	if err := validateLocalExtensionLayout(destination, manifest); err != nil {
+		t.Fatalf("standalone extension layout invalid: %v", err)
+	}
+	// Passing --output ending in the extension name itself must not double the directory segment.
+	exactDest := filepath.Join(t.TempDir(), "exact_ext")
+	if _, _, err := executeForTest(t, defaultSystem(), "extensions", "init", "exact_ext", "--output", exactDest); err != nil {
+		t.Fatalf("exact --output extension init failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(exactDest, "extension.yaml")); err != nil {
+		t.Fatalf("exact --output did not write extension.yaml at %s: %v", exactDest, err)
+	}
+
+	// Combining --output with an explicit --project or passing an unknown --contribute must fail cleanly.
+	if _, _, err := executeForTest(t, defaultSystem(), "extensions", "init", "bad_combo", "--output", outParent, "--project", "."); err == nil {
+		t.Fatal("expected error when combining --output and --project")
+	}
+	if _, _, err := executeForTest(t, defaultSystem(), "extensions", "init", "bad_contrib", "--output", outParent, "--contribute", "bogus"); err == nil {
+		t.Fatal("expected error for unknown --contribute kind")
+	}
+
+	// Running inside a pack directory (pack.yaml without config.yaml) scaffolds into <pack>/extensions/<name>.
+	packDir := filepath.Join(t.TempDir(), "acme-pack")
+	if err := createProjectPackScaffold(packDir, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	if err := os.Chdir(packDir); err != nil {
+		t.Fatal(err)
+	}
+	packOut, _, err := executeForTest(
+		t, defaultSystem(), "extensions", "init", "acme_guard",
+		"--capability", "policy.output", "--contribute", "lifecycle",
+	)
+	if err != nil {
+		t.Fatalf("pack-root extension init failed: %v", err)
+	}
+	assertContainsAll(t, "pack-root hint", packOut, []string{"extensions/acme_guard", "pack.yaml"})
+	if _, err := os.Stat(filepath.Join(packDir, "extensions", "acme_guard", "lifecycle")); err != nil {
+		t.Fatalf("expected lifecycle directory inside pack extension: %v", err)
+	}
+}
+
 // TestExtensionWheelUsesCanonicalIdentity verifies static packaging without executing Python.
 func TestExtensionWheelUsesCanonicalIdentity(t *testing.T) {
 	var buffer bytes.Buffer

@@ -332,6 +332,19 @@ class ProjectPackIntegrationTests(unittest.TestCase):
                          {'team': 'custom-team', 'environment': 'development', 'custom': 'kept'})
         self.assertEqual(self.planner().plan_upgrade(self.root).changes, ())
 
+    def test_upgrade_with_pack_relocates_plugins_and_prunes_empty_legacy_folder(self):
+        """Ensure pack-composed upgrades remove vacated plugins/ so compilation succeeds."""
+        self.initialize()
+        manifest = '{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"warehouse"}\n'
+        (self.root / 'plugins/warehouse').mkdir(parents=True)
+        (self.root / 'plugins/warehouse/plugin.json').write_text(manifest, encoding='utf-8')
+        plan = self.planner().plan_upgrade(self.root)
+        self.assertFalse(plan.blockers)
+        apply_project_plan(plan)
+        self.assertFalse((self.root / 'plugins').exists())
+        self.assertEqual((self.root / 'agent-plugins/warehouse/plugin.json').read_text(encoding='utf-8'), manifest)
+        self.assertEqual(self.planner().plan_upgrade(self.root).changes, ())
+
     def test_local_generated_file_edits_block_entire_upgrade(self):
         self.initialize()
         (self.root / '.github/workflows/agent.yml').write_text('user changes')

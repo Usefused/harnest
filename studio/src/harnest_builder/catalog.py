@@ -78,7 +78,7 @@ async def {identity}(message: str) -> dict:
     return {{"status": "displayed"}}
 '''),
         "skill": (f"skills/{value}/SKILL.md", f"---\nname: {value}\ndescription: Complete {value.replace('_', ' ')} requests using verified information.\n---\n\n1. Identify the requested outcome.\n2. Use available tools when needed.\n3. Return a clear, verified result.\n"),
-        "plugin": (f"plugins/{value}/plugin.json", json.dumps({"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": value}, indent=2) + "\n"),
+        "plugin": (f"agent-plugins/{value}/plugin.json", json.dumps({"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": value}, indent=2) + "\n"),
         "model": (f"models/{identity}.py", 'from pydantic import BaseModel\n\n\nclass Result(BaseModel):\n    """Typed result shared by agent components."""\n\n    answer: str\n'),
         "library": (f"lib/{identity}.py", f'def {identity}(value: str) -> str:\n    """Normalize a shared application value."""\n    return value.strip()\n'),
         "test": (f"tests/unit/test_{identity}.py", f'def test_{identity}(agent):\n    """The compiled root exposes its public identity."""\n    assert agent.name\n'),

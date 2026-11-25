@@ -284,6 +284,9 @@ def compile_application(
         verify_framework_lock(anchor.parent, compatibility)
     except FrameworkCompatibilityError as exc:
         raise BundleImportError(str(exc)) from exc
+    # Reject the retired plugins/ root before mode-specific checks so every compilation path
+    # directs authors to harnest upgrade.
+    _reject_legacy_plugins_directory(anchor.parent)
     if mode == "advanced":
         _reject_advanced_plugin_files(anchor.parent, framework)
     extension_descriptors = _discover_extensions(anchor.parent)
@@ -1142,7 +1145,7 @@ def bundle_agent(anchor: str | Path, root: AgentDefinition) -> Any:
     Pass ``__file__`` from an agent folder's ``agent.py``. Public Python files
     below ``tools/``, ``subagents/``, and ``mcp/`` are imported in
     sorted path order and must export an object named after their file stem.
-    Directory-first ``plugins/`` contribute MCP clients and skills without an
+    Directory-first ``agent-plugins/`` contribute MCP clients and skills without an
     aggregation import.
     """
 
@@ -1254,7 +1257,8 @@ def _reject_advanced_package_resources(
 ) -> None:
     """Allow only Harnest-owned runtime boundaries in advanced mode."""
 
-    agent_plugins = _discover_capability_plugins(bundle_root / "plugins")
+    agent_plugins = _discover_capability_plugins(bundle_root / "agent-plugins")
+    # Advanced mode owns native wiring directly and never auto-composes Agent Plugins.
     if agent_plugins:
         raise BundleConventionError(
             f"advanced {framework} mode does not compose agent-plugins"
@@ -1273,27 +1277,45 @@ def _reject_advanced_package_resources(
 
 
 def _reject_advanced_plugin_files(bundle_root: Path, framework: str) -> None:
-    """Preserve the advanced-mode diagnostic for legacy flat plugin files."""
+    """Preserve the advanced-mode diagnostic for flat files inside agent-plugins/."""
 
-    directory = bundle_root / "plugins"
+    directory = bundle_root / "agent-plugins"
+    # Reject symlinked roots before inspecting entries to prevent boundary escapes.
     if directory.is_symlink():
         raise BundleConventionError(
-            f"plugins directory cannot be a symlink: {directory}"
+            f"agent-plugins directory cannot be a symlink: {directory}"
         )
+    # Missing optional agent-plugins/ directory is valid in advanced mode.
     if not directory.exists():
         return
+    # Regular files cannot occupy the reserved agent-plugins/ folder path.
     if not directory.is_dir():
-        raise BundleConventionError(f"plugins path must be a directory: {directory}")
+        raise BundleConventionError(f"agent-plugins path must be a directory: {directory}")
     for path in directory.iterdir():
+        # Reject symlinked children without following them.
         if path.is_symlink():
             raise BundleConventionError(
                 f"plugin resource cannot be a symlink: {path}"
             )
+        # Underscore/dot-prefixed guides and nested package directories are handled elsewhere.
         if _is_ignored(path) or path.is_dir():
             continue
         raise BundleConventionError(
             f"advanced {framework} mode does not compose filesystem resources from: "
-            "plugins/; wire them into Agent.advanced(...) in agent.py or remove them"
+            "agent-plugins/; wire them into Agent.advanced(...) in agent.py or remove them"
+        )
+
+
+def _reject_legacy_plugins_directory(bundle_root: Path) -> None:
+    """Reject the retired plugins/ folder and direct authors to harnest upgrade."""
+
+    legacy_plugins = bundle_root / "plugins"
+    # Fail closed on any existing plugins/ entry (directory, file, or symlink) so legacy
+    # packages are never silently ignored after the rename to agent-plugins/.
+    if legacy_plugins.exists() or legacy_plugins.is_symlink():
+        raise BundleConventionError(
+            f"unsupported legacy plugins directory {legacy_plugins}; "
+            "use agent-plugins/ (run 'harnest upgrade')"
         )
 
 
@@ -1566,15 +1588,21 @@ def _compose_definition(
 
 
 def _validate_folder_scope(bundle_root: Path, is_root: bool) -> None:
+    """Reject retired folder names and enforce root-only resource boundaries."""
+
     legacy_mcp = bundle_root / "mcp_servers"
+    # Fail closed on the removed mcp_servers/ layout.
     if legacy_mcp.exists() or legacy_mcp.is_symlink():
         raise BundleConventionError(
             f"unsupported legacy MCP directory {legacy_mcp}; use mcp/"
         )
+    # Fail closed on the retired plugins/ folder at both root and subagent scopes.
+    _reject_legacy_plugins_directory(bundle_root)
+    # Root scopes own application-wide folders; only nested subagents are restricted below.
     if is_root:
         return
     root_only_resources = (
-        ("plugins", "capability plugins"),
+        ("agent-plugins", "Agent Plugins"),
         ("extensions", "runtime extensions"),
         ("lifecycle", "application lifecycle"),
         ("lib", "authored libraries"),
@@ -1629,7 +1657,8 @@ def _discover_folder_resources(
     discovered_mcp = _discover_mcp(
         bundle_root / "mcp", capability_scope=_mcp_scope(capability_scope)
     )
-    plugins = _discover_capability_plugins(bundle_root / "plugins") if is_root else ()
+    # Discover portable Agent Plugins only at the root application folder.
+    plugins = _discover_capability_plugins(bundle_root / "agent-plugins") if is_root else ()
     plugin_mcp = _discover_plugin_mcp(plugins)
     extension_mcp = _extension_mcp_sources(extension_descriptors)
     mcp = _merge_mcp_sources(

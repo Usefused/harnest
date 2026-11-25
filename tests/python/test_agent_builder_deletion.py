@@ -117,16 +117,16 @@ class BuilderDeletionTests(_BuilderFixture):
 
     def test_package_links_and_changed_binary_assets_are_rejected(self):
         """Complete-package snapshots cover assets beyond the editable text inventory."""
-        folder = self.project / "plugins/demo"
+        folder = self.project / "agent-plugins/demo"
         folder.mkdir(parents=True)
         (folder / "plugin.json").write_text('{"name":"demo"}')
         asset = folder / "asset.bin"
         asset.write_bytes(b"old")
-        preview = self.preview("plugins/demo")
+        preview = self.preview("agent-plugins/demo")
         asset.write_bytes(b"new")
         self.assertEqual(self.remove(preview).status_code, 409)
         (folder / "linked").symlink_to(self.root)
-        response = self.client.post("/api/capabilities/delete-preview", json={"project": "sample", "path": "plugins/demo"})
+        response = self.client.post("/api/capabilities/delete-preview", json={"project": "sample", "path": "agent-plugins/demo"})
         self.assertEqual(response.status_code, 422)
 
     def test_archive_failure_keeps_original_source_and_no_recovery_record(self):

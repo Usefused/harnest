@@ -223,7 +223,7 @@ or LangGraph package.
   `<name>`.
 - `mcp/<name>.py` must export an `MCPClient` or `None` named `<name>`.
   Exporting `None` is the supported way to disable an optional integration.
-- `plugins/<folder>/plugin.json` declares an Agent Plugins 1.0 package.
+- `agent-plugins/<folder>/plugin.json` declares an Agent Plugins 1.0 package.
   Optional `mcp.json` supplies standard MCP servers; optional `skills/` supplies
   progressive instructions. Neither component requires the other. See the
   [Agent Plugins guide](https://usefused.com/docs/harnest/build/agent-plugins).

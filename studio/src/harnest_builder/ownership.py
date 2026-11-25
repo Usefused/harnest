@@ -144,7 +144,7 @@ def _requested(body: Assignment) -> list[str]:
 
 def _invalid_resource(path: str) -> str:
     """Explain native ownership restrictions instead of accepting decorative connections."""
-    policies = {"extensions": "Extensions are application-wide and must remain on the root agent.", "plugins": "Plugins are root-only in Harnest; move a standalone skill or MCP connection instead.", "lifecycle": "Lifecycle hooks belong to the application, not individual subagents.", "tasks": "Durable tasks belong to the application and cannot be assigned through an agent edge.", "cron": "Schedules target durable tasks, not agents.", "sandbox": "Sandbox access requires an explicit Agent.sandboxes grant in source; moving a folder does not grant access.", "models": "Shared data models belong to the root application.", "lib": "Shared libraries belong to the root application."}
+    policies = {"extensions": "Extensions are application-wide and must remain on the root agent.", "agent-plugins": "Agent Plugins are root-only in Harnest; move a standalone skill or MCP connection instead.", "lifecycle": "Lifecycle hooks belong to the application, not individual subagents.", "tasks": "Durable tasks belong to the application and cannot be assigned through an agent edge.", "cron": "Schedules target durable tasks, not agents.", "sandbox": "Sandbox access requires an explicit Agent.sandboxes grant in source; moving a folder does not grant access.", "models": "Shared data models belong to the root application.", "lib": "Shared libraries belong to the root application."}
     for part in PurePosixPath(path).parts:
         if part in policies:
             return policies[part]

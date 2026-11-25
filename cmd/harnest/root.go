@@ -33,7 +33,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
     tools/               discovered Python tools
     tasks/               durable Python tasks
     cron/                scheduled functions with automatic queued tasks
-    plugins/             Agent Plugins 1.0: plugin.json, optional skills/ and mcp.json
+    agent-plugins/       Agent Plugins 1.0: plugin.json, optional skills/ and mcp.json
     extensions/          reusable Harnest Extension packages
     lifecycle/           application lifecycle hooks and resource factories
     subagents/           discovered Agent definitions
@@ -46,7 +46,7 @@ definition, discovered tools and subagents, evaluations, and authored tests:
 Typical workflow:
 
   harnest skills install
-  harnest plugins install ./portable-plugin --project my-agent
+  harnest agent-plugins install ./portable-plugin --project my-agent
   harnest extensions init postgres --project my-agent
   harnest extensions install ./harnest-extension-postgres --project my-agent
   harnest extensions install docker --project my-agent
@@ -89,7 +89,7 @@ dependencies are installed only when the source or command needs them.
 Harnest Extensions declare extension.yaml kind Extension, export extension
 from extension.py, and share that interpreter; their module is
 harnest.extensions.<name>. Use harnest upgrade to migrate retired RuntimePlugin
-packages; plugins/ is reserved for declarative Agent Plugins.
+packages and legacy plugins/ folders; agent-plugins/ is reserved for declarative Agent Plugins.
 CLI Python is selected from --python, HARNEST_PYTHON, the private Harnest
 runtime, or python3 on PATH.
 

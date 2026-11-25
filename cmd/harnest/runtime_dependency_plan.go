@@ -86,7 +86,8 @@ func hasProjectMCP(root string) (bool, error) {
 	if err != nil || found {
 		return found, err
 	}
-	for _, folder := range []string{"plugins", "extensions"} {
+	// Scan canonical Agent Plugin and Harnest Extension directories for declarative or Python MCP usage.
+	for _, folder := range []string{"agent-plugins", "extensions"} {
 		found, err := hasPackagedMCP(filepath.Join(root, folder))
 		if err != nil || found {
 			return found, err

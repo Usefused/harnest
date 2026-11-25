@@ -278,7 +278,7 @@ extension = AuditExtension()
 ` + "```" + `
 
 Declare extension hooks and resource factories in its internal ` + "`lifecycle/`" + `
-package. Agent Plugins belong in ` + "`plugins/`" + ` instead.
+package. Agent Plugins belong in ` + "`agent-plugins/`" + ` instead.
 `,
 		"lifecycle": `# Application lifecycle
 
@@ -305,13 +305,13 @@ def observe_result(_context, result):
 Use grouped paths such as ` + "`lifecycle.storage.sessions`" + ` and
 ` + "`lifecycle.model.before`" + `. Reusable packages belong in ` + "`extensions/`" + `.
 `,
-		"plugins": `# Agent Plugins
+		"agent-plugins": `# Agent Plugins
 
 Optional: Yes. Delete this folder if the agent uses no portable plugins.
 
 Agent Plugin folders contain an Agent Plugins 1.0 plugin.json manifest and may
 include ` + "`skills/`" + `, mcp.json, or both. For example,
-` + "`plugins/research/plugin.json`" + ` can contain:
+` + "`agent-plugins/research/plugin.json`" + ` can contain:
 
 ` + "```json" + `
 {

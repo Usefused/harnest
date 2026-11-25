@@ -17,9 +17,9 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for source, destination := range map[string]string{
-		"tools/_example.py":      "tools/echo.py",
-		"skills/_example":        "skills/getting-started",
-		"plugins/_example_agent": "plugins/starter",
+		"tools/_example.py":            "tools/echo.py",
+		"skills/_example":              "skills/getting-started",
+		"agent-plugins/_example_agent": "agent-plugins/starter",
 	} {
 		if err := os.Rename(filepath.Join(target, source), filepath.Join(target, destination)); err != nil {
 			t.Fatal(err)
@@ -49,7 +49,7 @@ func TestAdvancedModeCheckReportsMigrationWithoutChangingFiles(t *testing.T) {
 		"Current mode: managed",
 		"Entrypoint: agent:root_agent",
 		"tools/",
-		"plugins/",
+		"agent-plugins/",
 		"skills/",
 		"Agent.advanced(...)",
 		"spec.framework.mode to advanced",

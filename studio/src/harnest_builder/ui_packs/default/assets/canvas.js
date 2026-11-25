@@ -15,12 +15,12 @@ function svg(tag, attributes = {}, text = "") {
 /** Classify authored paths without pretending every folder defines execution order. */
 export function kindOf(path) {
   const core = {"agent.py":"agent", "instructions.md":"instructions", "config.yaml":"config", "agent-card.yaml":"card", "pyproject.toml":"dependencies"};
-  const groups = {tools:"tool", subagents:"subagent", tasks:"task", mcp:"mcp", skills:"skill", plugins:"plugin", extensions:"extension", sandbox:"sandbox", cron:"cron", lifecycle:"lifecycle", models:"model", lib:"library", evals:"eval", tests:"test", channels:"channel"};
+  const groups = {tools:"tool", subagents:"subagent", tasks:"task", mcp:"mcp", skills:"skill", "agent-plugins":"plugin", extensions:"extension", sandbox:"sandbox", cron:"cron", lifecycle:"lifecycle", models:"model", lib:"library", evals:"eval", tests:"test", channels:"channel"};
   return core[path] || groups[path.split("/")[0]] || "source";
 }
 
 const INPUT_KINDS = new Set(["instructions", "config", "card", "dependencies"]);
-const CATEGORIES = {tool:"Tools",subagent:"Subagents",mcp:"MCP connections",extension:"Extensions",skill:"Skills",plugin:"Plugins",channel:"Channels",sandbox:"Sandboxes",task:"Tasks",cron:"Schedules",lifecycle:"Lifecycle",model:"Models",library:"Libraries",eval:"Evaluations",test:"Tests",source:"Other source"};
+const CATEGORIES = {tool:"Tools",subagent:"Subagents",mcp:"MCP connections",extension:"Extensions",skill:"Skills",plugin:"Agent Plugins",channel:"Channels",sandbox:"Sandboxes",task:"Tasks",cron:"Schedules",lifecycle:"Lifecycle",model:"Models",library:"Libraries",eval:"Evaluations",test:"Tests",source:"Other source"};
 
 /** Filter inert guide files while leaving all authored files available in the file browser. */
 function visible(path) {

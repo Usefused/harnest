@@ -19,7 +19,7 @@ func TestRootHelpTeachesStandaloneFilesystemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"harnest skills install", "harnest plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--minimal", "--example", "harnest add mcp", "harnest add subagent", "harnest add tool", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
+	for _, expected := range []string{"harnest skills install", "harnest agent-plugins install", "harnest extensions init", "harnest extensions install", "harnest extensions search", "harnest init", "--minimal", "--example", "harnest add mcp", "harnest add subagent", "harnest add tool", "harnest env sync", "harnest mode advanced", "harnest upgrade", "--apply", "harnest test", "--eval-trajectory strict", "--eval-output eval-result.json", "harnest compile", "harnest run", "harnest serve", "harnest serve my-agent --reload", "config.yaml", "pyproject.toml", "lib/", "models/", "tools/", "tasks/", "cron/", "evals/"} {
 		if !strings.Contains(stdout, expected) {
 			t.Fatalf("help is missing %q:\n%s", expected, stdout)
 		}
@@ -45,7 +45,7 @@ func TestInitExplicitMinimalCreatesOnlyRunnableCoreFiles(t *testing.T) {
 	})
 	for _, directory := range []string{
 		"lib", "models", "tools", "tasks", "cron", "subagents", "mcp",
-		"extensions", "plugins", "sandbox", "skills", "evals", "tests",
+		"extensions", "agent-plugins", "sandbox", "skills", "evals", "tests",
 	} {
 		if _, err := os.Stat(filepath.Join(target, directory)); !os.IsNotExist(err) {
 			t.Fatalf("minimal scaffold unexpectedly created %s: %v", directory, err)
@@ -100,12 +100,12 @@ func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 		t.Fatalf("minimal scaffold unexpectedly contains a graph example:\n%s", agentSource)
 	}
 	assertDirectories(t, target, []string{
-		"lib", "models", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "plugins", "sandbox", "skills", "evals",
+		"lib", "models", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "agent-plugins", "sandbox", "skills", "evals",
 		"tests/unit", "tests/smoke",
 	})
 	assertFilesContain(t, target, map[string]string{
 		".gitignore":             ".venv",
-		"harnest.lock":           "projectSchema: 7",
+		"harnest.lock":           "projectSchema: 8",
 		"pyproject.toml":         `[tool.uv]`,
 		"lib/_README.md":         "from harnest.lib.audit import record_change",
 		"models/_README.md":      "from harnest.models.support import",
@@ -113,7 +113,7 @@ func TestInitCreatesMinimalLoadableKebabNamedCompatibleAgent(t *testing.T) {
 		"tools/_README.md":       "Add one @tool callable",
 		"tasks/_README.md":       "durable @task callable",
 		"cron/_README.md":        "Add one @cron function",
-		"plugins/_README.md":     "Agent Plugin folders",
+		"agent-plugins/_README.md": "Agent Plugin folders",
 		"lifecycle/_README.md":   "@lifecycle-decorated hooks",
 		"extensions/_README.md":  "extension.yaml and extension.py",
 		"tests/unit/_README.md":  "offline test_*.py",
@@ -205,8 +205,8 @@ func assertManagedFolderExamples(t *testing.T, target string) {
 		"mcp/_example.py":                                         "def client():",
 		"extensions/_example/extension.py":                        "class StarterExtension(Extension)",
 		"extensions/_example/extension.yaml":                      "name: starter_runtime",
-		"plugins/_example_agent/plugin.json":                      "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-		"plugins/_example_agent/skills/starter-guidance/SKILL.md": "name: starter-guidance",
+		"agent-plugins/_example_agent/plugin.json":                      "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+		"agent-plugins/_example_agent/skills/starter-guidance/SKILL.md": "name: starter-guidance",
 		"skills/_example/SKILL.md":                                "name: getting-started",
 		"sandbox/_example.py":                                     "SandboxNetworkPolicy.none()",
 		"evals/_example.evalset.json":                             "answers_greeting",

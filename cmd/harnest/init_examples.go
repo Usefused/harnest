@@ -10,10 +10,10 @@ func managedExampleScaffoldFiles(files map[string]string, agentName string) map[
 	samples := map[string]string{
 		"tools/_example.py":                                       pysource.Render("init/examples/tools/_example.py.tmpl", map[string]any{"Source": files["tools/echo.py"]}),
 		"sandbox/_example.py":                                     files["sandbox/_example.py"],
-		"skills/_example/SKILL.md":                                files["skills/getting-started/SKILL.md"],
-		"plugins/_example_agent/plugin.json":                      files["plugins/starter/plugin.json"],
-		"plugins/_example_agent/skills/starter-guidance/SKILL.md": files["plugins/starter/skills/starter-guidance/SKILL.md"],
-		"evals/_example.evalset.json":                             files["evals/starter.evalset.json"],
+		"skills/_example/SKILL.md":                                      files["skills/getting-started/SKILL.md"],
+		"agent-plugins/_example_agent/plugin.json":                      files["agent-plugins/starter/plugin.json"],
+		"agent-plugins/_example_agent/skills/starter-guidance/SKILL.md": files["agent-plugins/starter/skills/starter-guidance/SKILL.md"],
+		"evals/_example.evalset.json":                                   files["evals/starter.evalset.json"],
 		"tests/unit/_example.py":                                  pysource.Render("init/examples/tests/unit/_example.py.tmpl", map[string]any{"Source": files["tests/unit/test_agent.py"]}),
 		"tests/smoke/_example.py":                                 pysource.Render("init/examples/tests/smoke/_example.py.tmpl", map[string]any{"Source": files["tests/smoke/test_health.py"]}),
 	}
@@ -49,7 +49,7 @@ runtime:
 capabilities: []
 `,
 		"extensions/_example/extension.py": pysource.File("init/examples/extensions/_example/extension.py"),
-		"plugins/_README.md": `# Plugin samples
+		"agent-plugins/_README.md": `# Agent Plugin samples
 
 Optional: Yes. Delete this folder if the agent uses no portable plugins.
 
@@ -59,7 +59,7 @@ optional components: a plugin can provide either or both.
 
 Install a local portable package atomically by running:
 
-    harnest plugins install ./path/to/plugin --project ./path/to/agent
+    harnest agent-plugins install ./path/to/plugin --project ./path/to/agent
 
 To add an MCP server, create starter/mcp.json after replacing the HTTPS
 placeholder endpoint with your server's address:

@@ -106,14 +106,34 @@ def _missing_parents(path: Path, root: Path) -> list[Path]:
 
 def _publish(plan: ProjectPlan, created: set[Path]) -> None:
     """Apply reviewed files without replacing unrelated project directories."""
+    deleted: list[Path] = []
     for change in plan.changes:
         path = plan.root / change.path
         value = plan._after.get(change.path)
+        # Remove retired files and remember them so emptied legacy folders (e.g. plugins/) collapse cleanly.
         if value is None:
             path.unlink()
+            deleted.append(path)
         else:
             created.update(_missing_parents(path.parent, plan.root))
             atomic_write(path, value)
+    # Prune only directories left empty by deletions after every write succeeds.
+    _prune_empty_parents(plan.root, deleted)
+
+
+def _prune_empty_parents(root: Path, deleted: list[Path]) -> None:
+    """Remove directories left empty by reviewed file deletions without touching unrelated folders."""
+    candidates: set[Path] = set()
+    for path in deleted:
+        parent = path.parent
+        # Walk up to, but never including, the project root itself.
+        while parent != root and parent.is_relative_to(root):
+            candidates.add(parent)
+            parent = parent.parent
+    # Collapse deepest paths first so nested empty package trees remove their retired parent root too.
+    for directory in sorted(candidates, key=lambda item: len(item.parts), reverse=True):
+        if directory.is_dir() and not directory.is_symlink() and not any(directory.iterdir()):
+            directory.rmdir()
 
 
 def _restore(plan: ProjectPlan, created: set[Path]) -> None:

@@ -7,8 +7,12 @@ on:
         description: Run only native macOS arm64 coverage
         type: boolean
         default: false
+      platforms:
+        description: Optional JSON array of runner OS labels for the calling CI workflow
+        type: string
+        default: ""
   schedule:
-    - cron: '41 6 * * 1'
+    - cron: '41 6 * * *'
   workflow_dispatch:
     inputs:
       arm64:
@@ -31,9 +35,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep arm64 execution coverage off the blocking path while its hosted
-        # pool is capacity constrained; release builds still cross-compile it.
-        os: ${{ fromJSON((github.event_name == 'schedule' || inputs.arm64) && '["macos-15"]' || '["ubuntu-latest", "macos-15-intel", "windows-latest"]') }}
+        # CI passes Linux-only for fast push/PR feedback; scheduled and manual runs test all platforms.
+        os: ${{ fromJSON(inputs.platforms || (inputs.arm64 && '["macos-15"]' || '["ubuntu-latest", "macos-15-intel", "macos-15", "windows-latest"]')) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6

@@ -1,4 +1,4 @@
-// `harnest plugins`: installs standard Agent Plugins into an agent and validates their manifests.
+// `harnest agent-plugins`: installs standard Agent Plugins into an agent and validates their manifests.
 
 package main
 
@@ -30,12 +30,12 @@ type agentPluginManifest struct {
 // newAgentPluginsCommand owns portable Agent Plugins separately from executable Extensions.
 func (a *application) newAgentPluginsCommand() *cobra.Command {
 	command := &cobra.Command{
-		Use:   "plugins",
+		Use:   "agent-plugins",
 		Short: "Install portable Agent Plugins into an agent",
 		Long: `Install portable Agent Plugins 1.0 without importing package code.
 
 The install command accepts a local plugin directory containing plugin.json and
-copies it to plugins/<manifest-name> in the selected Harnest agent. Harnest
+copies it to agent-plugins/<manifest-name> in the selected Harnest agent. Harnest
 Extensions are executable Python packages and use the separate extensions
 command namespace.`,
 	}
@@ -88,12 +88,20 @@ func installAgentPlugin(source, project string, force bool) (installedAgentPlugi
 	if err != nil {
 		return installedAgentPlugin{}, err
 	}
-	pluginsRoot := filepath.Join(projectRoot, "plugins")
+	// Refuse to create agent-plugins/ alongside a retired plugins/ directory so users migrate cleanly first.
+	legacyRoot := filepath.Join(projectRoot, "plugins")
+	if _, err := os.Lstat(legacyRoot); err == nil {
+		return installedAgentPlugin{}, fmt.Errorf("agent still has legacy plugins/ directory; run 'harnest upgrade' first")
+	} else if !os.IsNotExist(err) {
+		return installedAgentPlugin{}, fmt.Errorf("inspect legacy plugins directory: %w", err)
+	}
+	pluginsRoot := filepath.Join(projectRoot, "agent-plugins")
 	if err := validateAgentPluginsRoot(pluginsRoot); err != nil {
 		return installedAgentPlugin{}, err
 	}
+	// Prevent recursive self-copies when the source tree encloses the destination folder.
 	if pathContains(sourceRoot, pluginsRoot) {
-		return installedAgentPlugin{}, fmt.Errorf("plugin source cannot contain the target plugins directory")
+		return installedAgentPlugin{}, fmt.Errorf("plugin source cannot contain the target agent-plugins directory")
 	}
 	destination := filepath.Join(pluginsRoot, manifest.Name)
 	if err := installAgentPluginTree(sourceRoot, destination, force); err != nil {
@@ -309,7 +317,7 @@ func validatedAgentProject(project string) (string, error) {
 
 // validateAgentPluginsRoot prevents an existing link from redirecting installation.
 func validateAgentPluginsRoot(root string) error {
-	return validateLocalPackageRoot(root, "plugins")
+	return validateLocalPackageRoot(root, "agent-plugins")
 }
 
 // pathContains reports whether candidate is root itself or nested beneath it.
@@ -320,7 +328,7 @@ func pathContains(root, candidate string) bool {
 
 // installAgentPluginTree stages a complete copy and swaps it into place atomically.
 func installAgentPluginTree(source, destination string, force bool) error {
-	return installLocalPackageTree(source, destination, force, "Agent Plugin", "plugins")
+	return installLocalPackageTree(source, destination, force, "Agent Plugin", "agent-plugins")
 }
 
 // validateAgentPluginDestination refuses silent replacement and all linked destinations.

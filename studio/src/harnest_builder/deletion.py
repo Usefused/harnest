@@ -14,9 +14,9 @@ from . import deleted_store
 from .files import inventory, read, source_path
 from .ownership_paths import directory_path, entries, fingerprint, validate_directory
 
-CAPABILITY_DIRECTORIES = {"tools", "subagents", "mcp", "skills", "plugins", "extensions", "sandbox",
+CAPABILITY_DIRECTORIES = {"tools", "subagents", "mcp", "skills", "agent-plugins", "extensions", "sandbox",
                           "channels", "tasks", "cron", "lifecycle", "models", "lib", "evals", "tests"}
-PACKAGE_ANCHORS = {"skills": "SKILL.md", "plugins": "plugin.json", "extensions": "extension.yaml", "subagents": "agent.py"}
+PACKAGE_ANCHORS = {"skills": "SKILL.md", "agent-plugins": "plugin.json", "extensions": "extension.yaml", "subagents": "agent.py"}
 
 
 class Selection(BaseModel):

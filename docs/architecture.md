@@ -252,9 +252,9 @@ marked root-only:
 | `cron/<name>.py` (root-only) | A same-named `@cron` function, or a `Cron` targeting a discovered root task. Decorated functions register an implicit task named `harnest.<app>.tasks.cron.<name>` with source `cron/<name>.py`; a supplied five-column UTC expression also registers a fixed schedule. |
 | `subagents/<name>.py` | Exactly one managed `Agent` with an explicit instruction, or one native `Agent.advanced(...)`, named `<name>`. |
 | `mcp/<name>.py` | A literally zero-parameter `client()` factory returning `MCPClient`; the filename supplies local identity. |
-| `plugins/<folder>/plugin.json` (root-only) | Agent Plugins 1.0 manifest; declares the unique portable package name. |
-| `plugins/<folder>/mcp.json` (root-only) | Optional standard MCP servers, adapted to the selected framework without importing package Python. |
-| `plugins/<folder>/skills/<skill>/SKILL.md` (root-only) | Optional plugin-owned progressive skills, independent of MCP availability. |
+| `agent-plugins/<folder>/plugin.json` (root-only) | Agent Plugins 1.0 manifest; declares the unique portable package name. |
+| `agent-plugins/<folder>/mcp.json` (root-only) | Optional standard MCP servers, adapted to the selected framework without importing package Python. |
+| `agent-plugins/<folder>/skills/<skill>/SKILL.md` (root-only) | Optional plugin-owned progressive skills, independent of MCP availability. |
 | `lifecycle/**/*.py` (root-only) | Arbitrary public modules containing explicit `@lifecycle.*` listeners/factories and `@context.provider` providers. |
 | `sandbox/<name>.py` | One matching framework-neutral `Sandbox` variable per file; each agent explicitly grants authored-tool access with `sandboxes=[...]`, then tools call `context.sandboxes["<name>"].execute(code)` or `aexecute(code)`. No automatic model tool is added. Discovery alone grants no access. |
 | `skills/<kebab-name>/SKILL.md` | A progressive skill whose frontmatter `name` matches its directory. |
@@ -560,7 +560,7 @@ folder. Under ADK it may also own child agents in a sibling `subagents/` folder.
 LangGraph nested `Agent` definitions cannot consume discovered child subagents
 today. Parent resources are not added to the nested definition, and nested
 resources are not promoted to the parent.
-Plugins and extensions remain root-only; populated nested `plugins/` or
+Plugins and extensions remain root-only; populated nested `agent-plugins/` or
 `lifecycle/` folders are convention errors.
 
 A direct `subagents/<name>.py` and same-named nested folder are mutually

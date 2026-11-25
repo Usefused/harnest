@@ -179,10 +179,10 @@ class AgentPluginRuntimeTests(unittest.TestCase):
 
     def _package(self):
         """Bundle real server code and an unavailable peer in an unchanged standard package."""
-        self._write("plugins/proof/plugin.json", json.dumps({
+        self._write("agent-plugins/proof/plugin.json", json.dumps({
             "$schema": PLUGIN_SCHEMA, "name": "portable-proof", "version": "1.0.0",
         }))
-        self._write("plugins/proof/mcp.json", json.dumps({
+        self._write("agent-plugins/proof/mcp.json", json.dumps({
             "$schema": MCP_SCHEMA,
             "mcpServers": {
                 "missing": {"type": "stdio", "command": "harnest-proof-missing-executable"},
@@ -196,8 +196,8 @@ class AgentPluginRuntimeTests(unittest.TestCase):
                 },
             },
         }))
-        self._write("plugins/proof/scripts/server.py", _SERVER)
-        self._write("plugins/proof/skills/proof-skill/SKILL.md", '''
+        self._write("agent-plugins/proof/scripts/server.py", _SERVER)
+        self._write("agent-plugins/proof/skills/proof-skill/SKILL.md", '''
             ---
             name: proof-skill
             description: Explain the portable proof tool.
@@ -272,7 +272,7 @@ class AgentPluginRuntimeTests(unittest.TestCase):
 
     def _assert_record(self, record, artifact, expected_data):
         """Distinguish immutable package locations from the stable writable installation."""
-        package_root = artifact / "source" / "plugins" / "proof"
+        package_root = artifact / "source" / "agent-plugins" / "proof"
         self.assertEqual(record["root"], str(package_root))
         self.assertEqual(record["cwd"], str(package_root))
         self.assertEqual(record["data"], str(expected_data))
@@ -301,7 +301,7 @@ class AgentPluginRuntimeTests(unittest.TestCase):
         self.assertIn("unavailable", diagnostic)
         self.assertNotIn("must-not-expand", diagnostic)
         # Context scoping must reset after artifact import, rather than leaking into later applications.
-        unrelated = PortableMCP.create(self.root / "other" / "plugins" / "proof", "portable-proof", "working")
+        unrelated = PortableMCP.create(self.root / "other" / "agent-plugins" / "proof", "portable-proof", "working")
         self.assertNotEqual(unrelated.scope, installation_id(self.source))
 
     def _exercise_dynamic(self, framework):

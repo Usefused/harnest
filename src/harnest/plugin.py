@@ -1,6 +1,6 @@
 """Filesystem contract for standard Agent Plugins.
 
-A portable plugin below ``plugins/`` declares ``plugin.json`` with optional
+A portable plugin below ``agent-plugins/`` declares ``plugin.json`` with optional
 ``mcp.json`` servers and ``skills/`` content. Harnest never infers a plugin
 package from its directory contents or imports package Python.
 """
@@ -23,7 +23,7 @@ class PluginConventionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PluginResources:
-    """Resources discovered from one ``plugins/<name>/`` directory.
+    """Resources discovered from one ``agent-plugins/<name>/`` directory.
 
     ``mcp_clients`` contains standard declarative portable servers and
     ``skill_directories`` contains validated standard skill folders. Paths are
@@ -43,7 +43,7 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
 
     The accepted layout is::
 
-        plugins/
+        agent-plugins/
           bigquery-memory/
             plugin.json
             mcp.json
@@ -55,7 +55,8 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
     """
 
     plugins_directory = Path(directory)
-    _require_optional_directory(plugins_directory, kind="plugins")
+    _require_optional_directory(plugins_directory, kind="agent-plugins")
+    # Missing optional agent-plugins/ folders are valid and produce no plugins.
     if not plugins_directory.exists():
         return ()
 
@@ -64,9 +65,11 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
         plugins_directory.iterdir(), key=lambda item: item.name
     ):
         plugin = _discover_agent_plugin(plugin_directory)
+        # Ignored entries (underscore/dot-prefixed) and invalid disabled packages return None.
         if plugin is not None:
             discovered.append(plugin)
     names = [plugin.name for plugin in discovered]
+    # Duplicate manifest names would cause ambiguous tool prefixes and state directories.
     if len(names) != len(set(names)):
         raise PluginConventionError("duplicate Agent Plugin manifest name; give each installed plugin a unique name")
     return tuple(discovered)
@@ -75,20 +78,25 @@ def discover_plugins(directory: str | Path) -> tuple[PluginResources, ...]:
 def _discover_agent_plugin(directory: Path) -> PluginResources | None:
     """Require the standard manifest and never import package Python."""
 
+    # Symlinked package roots could escape the project boundary during compilation or runtime.
     if directory.is_symlink():
         raise PluginConventionError(
             f"plugin directory cannot be a symlink: {directory}"
         )
+    # Hidden and underscore-prefixed entries remain inert guides or editor artifacts.
     if _is_ignored(directory):
         return None
+    # Loose files inside agent-plugins/ are authoring errors rather than installable packages.
     if not directory.is_dir():
         raise PluginConventionError(
-            folder_entry_error(f"unexpected resource in plugins directory: {directory}", directory, kind="plugins")
+            folder_entry_error(f"unexpected resource in agent-plugins directory: {directory}", directory, kind="agent-plugins")
         )
     manifest = directory / "plugin.json"
+    # Portable Agent Plugins are anchored exclusively by plugin.json.
     if manifest.exists() or manifest.is_symlink():
         from .agent_plugin_loader import discover_portable_plugin
         return discover_portable_plugin(directory)
+    # Retired executable RuntimePlugin manifests must migrate to extensions/ via harnest upgrade.
     if (directory / "plugin.yaml").exists() or (directory / "plugin.yaml").is_symlink():
         raise PluginConventionError(
             f"{directory}: plugin.yaml is retired; run 'harnest upgrade' to "
@@ -96,7 +104,7 @@ def _discover_agent_plugin(directory: Path) -> PluginResources | None:
         )
     raise PluginConventionError(
         f"Agent Plugin {directory} must contain plugin.json; Harnest no longer "
-        "loads manifestless plugins or Python MCP factories from plugins/"
+        "loads manifestless plugins or Python MCP factories from agent-plugins/"
     )
 
 

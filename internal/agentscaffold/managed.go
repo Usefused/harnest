@@ -31,7 +31,7 @@ __pycache__/
 `,
 		"harnest.lock": `apiVersion: harnest.dev/v1alpha1
 kind: ProjectLock
-projectSchema: 7
+projectSchema: 8
 `,
 		"config.yaml": fmt.Sprintf(`apiVersion: harnest.dev/v1alpha1
 kind: Agent

@@ -573,7 +573,7 @@ Small helpers used across areas.
 - [`add_cron.go`](../../cmd/harnest/add_cron.go): `harnest add cron NAME`: scaffolds a scheduled task in the agent's cron/ folder.
 - [`add_eval.go`](../../cmd/harnest/add_eval.go): `harnest add eval NAME`: chooses an eval scaffold, by flag or prompt, and writes it.
 - [`add_eval_files.go`](../../cmd/harnest/add_eval_files.go): Writes the files behind `harnest add eval`: eval sets, custom criteria, and test_config.json updates.
-- [`agent_plugins.go`](../../cmd/harnest/agent_plugins.go): `harnest plugins`: installs standard Agent Plugins into an agent and validates their manifests.
+- [`agent_plugins.go`](../../cmd/harnest/agent_plugins.go): `harnest agent-plugins`: installs standard Agent Plugins into an agent and validates their manifests.
 - [`artifact_cache.go`](../../cmd/harnest/artifact_cache.go): Compiled-artifact cache for `harnest serve`; a cached generation is reused only when complete and validated.
 - [`channels.go`](../../cmd/harnest/channels.go): `harnest add channel` and `harnest channels`: connect messaging platforms through a channel extension.
 - [`commands.go`](../../cmd/harnest/commands.go): `harnest compile`, `harnest test`, and `harnest serve`: the commands that hand an agent to the Python compiler and runtime.

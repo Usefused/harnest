@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 
-# PR updates own branch validation; a second push run would repeat every matrix.
+# PR updates own branch validation; a second push run would repeat every job.
 # Include the source repository so identically named fork branches stay isolated.
 concurrency:
   group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
@@ -57,9 +57,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.14"]
     env:
       HARNEST_TEST_POSTGRES_DSN: postgresql://harnest:harnest@127.0.0.1:5432/harnest
       HARNEST_TEST_POSTGRES_URL: postgresql://harnest:harnest@127.0.0.1:5432/harnest
@@ -77,7 +74,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
           cache: pip
 
       - name: Install Python dependencies
@@ -88,33 +85,21 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Run Python compatibility tests
-        if: matrix.python-version == '3.11'
-        run: make test-python PYTHON=python
-
       - name: Run quality gates
-        if: matrix.python-version == '3.14'
         # setup-python owns `python`; distro-specific python3.x executables may
         # point at a different environment without the dependencies above.
         run: make quality PYTHON=python
 
       - name: Validate installer shell
-        if: matrix.python-version == '3.14'
         run: sh -n install.sh
 
   studio-release:
     needs: changes
     if: needs.changes.outputs.core == 'true'
     uses: ./.github/workflows/native-release.yml
-
-  framework-compatibility:
-    needs: changes
-    if: needs.changes.outputs.core == 'true'
-    uses: ./.github/workflows/framework-compatibility.yml
     with:
-      # Locked dependencies already run in both quality jobs. Keep the broad
-      # cross-product in scheduled/manual compatibility runs.
-      matrix: '{"include":[{"python":"3.11","resolution":"minimum"},{"python":"3.14","resolution":"latest"}]}'
+      # Run fast Linux smoke coverage on every push/PR; macOS and Windows run on nightly schedule.
+      platforms: '["ubuntu-latest"]'
 
   extensions:
     needs: changes
@@ -124,11 +109,10 @@ jobs:
   prepare-release:
     # Skipped extension checks are normal for core-only changes. Explicit success
     # requirements prevent failed, skipped, or superseded core checks releasing.
-    needs: [quality, studio-release, framework-compatibility, extensions]
+    needs: [quality, studio-release, extensions]
     if: >-
       !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.quality.result == 'success' && needs.studio-release.result == 'success' &&
-      needs.framework-compatibility.result == 'success' &&
       (needs.extensions.result == 'success' || needs.extensions.result == 'skipped')
     permissions:
       contents: write

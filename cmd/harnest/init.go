@@ -467,16 +467,16 @@ func scaffoldFilesForProfile(
 --token-prefix to match the server. The command stores only an environment
 placeholder. Each public file exports a zero-argument client() factory returning
 MCPClient; its filename is the client identity. Package reusable skills,
-declarative MCP servers, or both under plugins/<name>/ with an Agent Plugins 1.0
+declarative MCP servers, or both under agent-plugins/<name>/ with an Agent Plugins 1.0
 plugin.json manifest.
 `,
-		"plugins/starter/plugin.json": `{
+		"agent-plugins/starter/plugin.json": `{
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "starter"
 }
 `,
 		"lifecycle/starter.py": pysource.File("init/lifecycle/starter.py"),
-		"plugins/starter/skills/starter-guidance/SKILL.md": `---
+		"agent-plugins/starter/skills/starter-guidance/SKILL.md": `---
 name: starter-guidance
 description: Answer clearly, distinguish verified facts from assumptions, and identify missing information.
 ---
@@ -563,8 +563,8 @@ description: Apply the agent's core instructions when answering a general reques
 			"tools/echo.py",
 			"subagents/__init__.py",
 			"mcp/_README.md",
-			"plugins/starter/plugin.json",
-			"plugins/starter/skills/starter-guidance/SKILL.md",
+			"agent-plugins/starter/plugin.json",
+			"agent-plugins/starter/skills/starter-guidance/SKILL.md",
 			"sandbox/_README.md",
 			"sandbox/_example.py",
 			"skills/getting-started/SKILL.md",
@@ -617,8 +617,8 @@ func guidedScaffoldFiles(
 		"subagents/__init__.py",
 		"mcp/_README.md",
 		"lifecycle/starter.py",
-		"plugins/starter/plugin.json",
-		"plugins/starter/skills/starter-guidance/SKILL.md",
+		"agent-plugins/starter/plugin.json",
+		"agent-plugins/starter/skills/starter-guidance/SKILL.md",
 		"sandbox/_README.md",
 		"sandbox/_example.py",
 		"skills/getting-started/SKILL.md",

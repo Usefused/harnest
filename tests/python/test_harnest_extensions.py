@@ -282,7 +282,9 @@ class HarnestExtensionTests(unittest.TestCase):
             ),
             operations,
         )
+        self.assertIn(("remove_directory", "plugins", None), operations)
         backup = apply_upgrade(plan)
+        assert not (tmp_path / "plugins").exists()
         assert (tmp_path / "lifecycle" / "sessions.py").read_bytes() == original
         assert (backup / "extensions" / "sessions.py").read_bytes() == original
         assert (tmp_path / "extensions" / "clock" / "extension.py").is_file()
@@ -326,7 +328,8 @@ class HarnestExtensionTests(unittest.TestCase):
         package(tmp_path)
         self.assertTrue(plan_upgrade(tmp_path).blockers)
 
-    def test_upgrade_leaves_declarative_agent_plugins_in_place(self):
+    def test_upgrade_relocates_declarative_agent_plugins_to_agent_plugins(self):
+        """Relocate Agent Plugins to agent-plugins/ alongside legacy RuntimePlugin migration."""
         agent(self.root)
         package(self.root, "legacy", legacy=True)
         write(
@@ -339,8 +342,10 @@ class HarnestExtensionTests(unittest.TestCase):
         self.assertFalse(plan.blockers)
         apply_upgrade(plan)
 
-        self.assertTrue((self.root / "plugins" / "portable" / "plugin.json").is_file())
+        self.assertFalse((self.root / "plugins").exists())
+        self.assertTrue((self.root / "agent-plugins" / "portable" / "plugin.json").is_file())
         self.assertTrue((self.root / "extensions" / "legacy" / "extension.py").is_file())
+        self.assertFalse(plan_upgrade(self.root).actions)
 
     def test_canonical_manifest_symlink_is_rejected_without_import(self):
         directory = package(self.root)

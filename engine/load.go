@@ -195,12 +195,20 @@ func validateInstructions(path string) error {
 // validateBundleResourceDirectories checks canonical and legacy roots before loading code.
 func validateBundleResourceDirectories(directory string) error {
 	legacy := filepath.Join(directory, "mcp_servers")
+	// Fail closed on the removed mcp_servers/ layout before scanning active folders.
 	if _, err := os.Lstat(legacy); err == nil {
 		return fmt.Errorf("unsupported legacy MCP directory %s; use mcp", legacy)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect legacy MCP directory %s: %w", legacy, err)
 	}
-	for _, name := range []string{"lib", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "lifecycle", "plugins", "sandbox", "skills", "evals"} {
+	legacyPlugins := filepath.Join(directory, "plugins")
+	// Reject the retired plugins/ directory so un-upgraded agents run harnest upgrade explicitly.
+	if _, err := os.Lstat(legacyPlugins); err == nil {
+		return fmt.Errorf("unsupported legacy plugins directory %s; use agent-plugins/ (run 'harnest upgrade')", legacyPlugins)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect legacy plugins directory %s: %w", legacyPlugins, err)
+	}
+	for _, name := range []string{"lib", "tools", "tasks", "cron", "subagents", "mcp", "extensions", "lifecycle", "agent-plugins", "sandbox", "skills", "evals"} {
 		if err := validateOptionalBundleDirectory(directory, name); err != nil {
 			return err
 		}

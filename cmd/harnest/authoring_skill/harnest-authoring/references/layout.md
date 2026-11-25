@@ -54,10 +54,10 @@ The same imports work during compilation, tests, evals, and standalone serving.
 | `extensions/<name>/pyproject.toml` | Optional PEP 621 project whose name/version match `extension.yaml` and whose static dependencies join the root environment solve. It never creates a private extension environment. |
 | `extensions/<name>/lib/**/*.py` | Private extension helpers. `extension.py` may import `.lib.client`; contributed tools and lifecycle hooks import `harnest.extensions.<name>.lib.client`. Application-wide helpers remain in root `lib/` and import through `harnest.lib.*`. |
 | `extensions/<name>/lifecycle/**/*.py` | Harnest Extension lifecycle, context, storage, route, or native contributions declared under `contributes.lifecycle`. They join root and dependency-ordered extension contributions in one globally validated lifecycle. |
-| `plugins/<name>/plugin.json` | Required Agent Plugins 1.0 manifest with canonical `$schema` and a valid `name`; the manifest supplies identity. |
-| `plugins/<name>/mcp.json` | Optional standard MCP configuration with canonical `$schema`, `mcpServers`, and explicit transport types. No Python factories. |
+| `agent-plugins/<name>/plugin.json` | Required Agent Plugins 1.0 manifest with canonical `$schema` and a valid `name`; the manifest supplies identity. |
+| `agent-plugins/<name>/mcp.json` | Optional standard MCP configuration with canonical `$schema`, `mcpServers`, and explicit transport types. No Python factories. |
 | `extensions/<name>/mcp/<client>.py` | Harnest Extension MCP client, requiring the `content.mcp` capability. |
-| `plugins/<name>/skills/<skill>/SKILL.md` | Optional portable Agent Plugin guidance; no MCP server is required. |
+| `agent-plugins/<name>/skills/<skill>/SKILL.md` | Optional portable Agent Plugin guidance; no MCP server is required. |
 | `extensions/<name>/skills/<skill>/SKILL.md` | Harnest Extension guidance, requiring the `content.skills` capability. |
 | `lifecycle/storage.py` | Generated home for required session/checkpoint factories. Stack `@lifecycle.storage.sessions` and `.checkpoints` when one store owns both roles, or split them across arbitrary lifecycle files. Import a root `harnest.lib.*` helper only when reuse warrants it. |
 | `lifecycle/credentials.py` | Optional root `@lifecycle.credential_provider` factory returning one private `CredentialProvider`; never publish it with `@context.provider`. |
@@ -71,7 +71,7 @@ The same imports work during compilation, tests, evals, and standalone serving.
 
 `extensions/<name>/extension.yaml` declares a Harnest Extension that owns
 same-process Python behavior and declared content. An **Agent Plugin** under
-`plugins/` declares `plugin.json`, with optional `skills/` and `mcp.json`. Either
+`agent-plugins/` declares `plugin.json`, with optional `skills/` and `mcp.json`. Either
 component can stand alone. Unsupported client namespaces are ignored.
 
 Use the canonical schemas at `https://agent-plugins.org/schemas/1.0.0/plugin.schema.json`
@@ -84,12 +84,13 @@ persistent `PLUGIN_DATA`; `HARNEST_PLUGIN_DATA_DIR` selects its parent directory
 
 Root hooks and factories belong in `lifecycle/`; extension-owned hooks belong
 in `extensions/<name>/lifecycle/`. Preview `harnest upgrade` to migrate legacy
-root `extensions/` and retired RuntimePlugin packages safely, with backups and
-collision checks. The upgrade moves executable `plugins/<name>/plugin.yaml`
-packages to `extensions/<name>/extension.yaml`, renames `plugin.py` and its
-singleton, prefixes the distribution name, and rewrites `harnest.plugins`
-imports. It leaves Agent Plugin `plugin.json` packages in `plugins/`. Do not mix
-old lifecycle files and new packages under `extensions/`.
+root `extensions/`, retired RuntimePlugin packages, and legacy `plugins/`
+folders safely, with backups and collision checks. The upgrade moves executable
+`plugins/<name>/plugin.yaml` packages to `extensions/<name>/extension.yaml`,
+renames `plugin.py` and its singleton, prefixes the distribution name, rewrites
+`harnest.plugins` imports, and renames `plugins/` to `agent-plugins/` (or
+removes an emptied `plugins/` folder). Do not mix old lifecycle files and new
+packages under `extensions/`.
 
 Harnest never infers Extension content from folder names. `contributes` maps the
 fixed `lifecycle`, `mcp`, `skills`, `subagents`, and `tools` surfaces to existing,

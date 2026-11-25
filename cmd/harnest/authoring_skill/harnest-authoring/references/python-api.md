@@ -672,7 +672,7 @@ Static arguments are signature-checked and remain in Harnest's private payload
 store. Only long-lived serving owns schedules; a one-shot local invocation may
 execute tasks but does not activate cron.
 
-An **Agent Plugin** below `plugins/` uses the Agent Plugins 1.0 `plugin.json`
+An **Agent Plugin** below `agent-plugins/` uses the Agent Plugins 1.0 `plugin.json`
 manifest, optional `mcp.json`, and optional `skills/`. Harnest maps supported
 components into its managed runtime without importing a Python plugin object.
 Use `extensions/` for Harnest-specific Python and lifecycle behavior. Standard
