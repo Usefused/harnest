@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import inspect
 import keyword
+from pathlib import Path
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -341,7 +343,7 @@ def _activate_extension(descriptor: ExtensionDescriptor) -> ActivatedExtension:
             raise ImportError("extension module loader is unavailable")
         loader.exec_module(module)
     except Exception as error:
-        failure = type(error).__name__
+        failure = _format_extension_import_failure(error, in_entrypoint=True)
     if failure is not None:
         _remove_extension_modules(descriptor.name, namespace=namespace)
         raise ExtensionImportError(
@@ -381,6 +383,80 @@ def _extension_module(descriptor: ExtensionDescriptor) -> ModuleType:
             f"cannot create a module for extension {descriptor.name!r}"
         )
     return importlib.util.module_from_spec(spec)
+
+
+def _resolve_extension_submodule(path: Path) -> str | None:
+    """Map an active extension's contributed Python file into its harnest.extensions.<name> package."""
+    with _activation_lock:
+        state = _active_state
+        # Return early when no extensions are activated so non-extension files keep synthetic module names.
+        if state is None:
+            return None
+        extensions = state.extensions
+    resolved = path.resolve()
+    for activated in extensions:
+        ext_root = activated.descriptor.directory.resolve()
+        try:
+            relative = resolved.relative_to(ext_root)
+        except ValueError:
+            continue
+        parts = relative.with_suffix("").parts
+        # Fall back to a synthetic module name if a custom contributed path uses non-identifier directory names.
+        if not parts or not all(part.isidentifier() for part in parts):
+            return None
+        _ensure_extension_parent_packages(
+            activated.descriptor.namespace, ext_root, parts[:-1]
+        )
+        return f"{activated.descriptor.namespace}.{'.'.join(parts)}"
+    return None
+
+
+def _ensure_extension_parent_packages(
+    root_namespace: str, root_directory: Path, parent_parts: tuple[str, ...]
+) -> None:
+    """Register intermediate namespace packages so relative imports like 'from ..lib import ...' resolve."""
+    current_name = root_namespace
+    current_dir = root_directory
+    parent_module = sys.modules.get(root_namespace)
+    for segment in parent_parts:
+        next_name = f"{current_name}.{segment}"
+        next_dir = current_dir / segment
+        existing = sys.modules.get(next_name)
+        # Create a namespace package entry only if Python has not already loaded that intermediate package.
+        if existing is None:
+            spec = importlib.machinery.ModuleSpec(
+                next_name, loader=None, is_package=True
+            )
+            spec.submodule_search_locations = [str(next_dir)]
+            package = importlib.util.module_from_spec(spec)
+            package.__path__ = [str(next_dir)]
+            package.__package__ = next_name
+            sys.modules[next_name] = package
+            # Attach the subpackage on its parent module so attribute traversal matches sys.modules.
+            if parent_module is not None and not hasattr(parent_module, segment):
+                setattr(parent_module, segment, package)
+            existing = package
+        parent_module = existing
+        current_name = next_name
+        current_dir = next_dir
+
+
+def _format_extension_import_failure(
+    error: Exception, *, in_entrypoint: bool = False
+) -> str:
+    """Include the missing module name on ModuleNotFoundError without exposing arbitrary exception messages."""
+    # Only ModuleNotFoundError.name (a module identifier) is surfaced so secret-bearing errors stay scrubbed.
+    if isinstance(error, ModuleNotFoundError) and error.name:
+        detail = f"{type(error).__name__} (No module named {error.name!r})"
+        # Guide authors toward relative imports when top-level 'lib' fails inside an extension package.
+        if error.name == "lib" or error.name.startswith("lib."):
+            example = "from .lib.<module> import ..." if in_entrypoint else "from ..lib.<module> import ..."
+            return (
+                f"{detail}; to import from an extension's own lib/ folder, "
+                f"use a relative import such as '{example}'"
+            )
+        return detail
+    return type(error).__name__
 
 
 def _validated_extension_export(

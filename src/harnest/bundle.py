@@ -71,6 +71,8 @@ from .extensions import (
     ActivatedExtension,
     ExtensionImportError,
     ExtensionNamespaceError,
+    _format_extension_import_failure,
+    _resolve_extension_submodule,
     activate_extensions,
     release_extensions,
 )
@@ -2898,8 +2900,11 @@ def _reject_extra_exports(
 
 
 def _load_module(path: Path) -> ModuleType:
+    """Load an authored or extension-contributed module, preserving package context for extension files."""
+    extension_module_name = _resolve_extension_submodule(path)
     digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
-    module_name = f"_harnest_bundle_{digest}_{path.stem}"
+    # Use the active extension's package path when available so relative imports (e.g. 'from ..lib import ...') work.
+    module_name = extension_module_name or f"_harnest_bundle_{digest}_{path.stem}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise BundleImportError(f"unable to create an import spec for resource: {path}")
@@ -2910,6 +2915,12 @@ def _load_module(path: Path) -> ModuleType:
         spec.loader.exec_module(module)
     except Exception as exc:
         sys.modules.pop(module_name, None)
+        # Provide targeted lib/ guidance when a relative-import mistake occurs inside an extension resource.
+        if extension_module_name is not None and isinstance(exc, ModuleNotFoundError):
+            failure = _format_extension_import_failure(exc, in_entrypoint=False)
+            raise BundleImportError(
+                f"failed to import resource {path}: {failure}"
+            ) from exc
         raise BundleImportError(
             f"failed to import resource {path}: {type(exc).__name__}: {exc}"
         ) from exc

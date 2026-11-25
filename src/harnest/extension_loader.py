@@ -21,6 +21,10 @@ from .checkpoint import (
 )
 from .context import ContextValue, registration_for as context_registration_for
 from .credentials import CredentialProvider
+from .extensions import (
+    _format_extension_import_failure,
+    _resolve_extension_submodule,
+)
 from .frameworks.base import FrameworkConventionError
 from .frameworks.registry import framework_names, get_framework
 from .http_routes import (
@@ -881,7 +885,10 @@ def _validate_factory_signature(
 
 
 def _load_module(path: Path) -> Any:
-    module_name = f"_harnest_lifecycle_{uuid.uuid4().hex}"
+    """Load one lifecycle module, binding extension-owned files inside their extension package namespace."""
+    extension_module_name = _resolve_extension_submodule(path)
+    # Bind files inside an active extension under harnest.extensions.<name>.* so relative imports like '..lib' resolve.
+    module_name = extension_module_name or f"_harnest_lifecycle_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ExtensionDiscoveryError(f"cannot import extension module: {path}")
@@ -890,11 +897,15 @@ def _load_module(path: Path) -> Any:
     try:
         spec.loader.exec_module(module)
     except Exception as exc:
+        sys.modules.pop(module_name, None)
+        failure = _format_extension_import_failure(exc, in_entrypoint=False)
         raise ExtensionDiscoveryError(
-            f"failed to import extension {path} with {type(exc).__name__}"
+            f"failed to import extension {path} with {failure}"
         ) from exc
     finally:
-        sys.modules.pop(module_name, None)
+        # Remove temporary synthetic names for root lifecycle files; extension submodules are cleaned up by release_extensions.
+        if extension_module_name is None:
+            sys.modules.pop(module_name, None)
     return module
 
 

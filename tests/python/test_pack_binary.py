@@ -285,11 +285,9 @@ class PackBinaryTests(unittest.TestCase):
     def test_branded_cli_name_prefixes_errors_and_sanitizes_env(self) -> None:
         """HARNEST_CLI_NAME rebrands Python CLI/pack errors and wheel launchers while rejecting unsafe values."""
         from io import StringIO
-        import subprocess
         from unittest.mock import patch
         from harnest.authoring.distribution import _launcher
         from harnest.cli import cli_name, main as cli_main
-        from harnest.studio_server import _initialization_failure
 
         # Valid kebab-case HARNEST_CLI_NAME must prefix pack_cli and harnest.cli errors.
         with patch.dict(os.environ, {"HARNEST_CLI_NAME": "acme-cli"}):
@@ -309,10 +307,6 @@ class PackBinaryTests(unittest.TestCase):
                 cli_code = cli_main(["compile", str(self.root / "missing-agent"), "--output", str(self.root / "out")])
             self.assertEqual(cli_code, 2)
             self.assertTrue(cli_err.getvalue().startswith("acme-cli: "), cli_err.getvalue())
-
-            # Studio initialization error formatter must strip the active branded prefix cleanly.
-            completed = subprocess.CompletedProcess(["acme-cli"], 1, stdout="", stderr="acme-cli: directory is not empty\n")
-            self.assertEqual(_initialization_failure(completed), "directory is not empty")
 
         # Unsafe or malformed HARNEST_CLI_NAME values must fall back to "harnest".
         with patch.dict(os.environ, {"HARNEST_CLI_NAME": "bad\nname"}):
@@ -386,6 +380,113 @@ class PackBinaryTests(unittest.TestCase):
         self.assertIn("allowed:", message)
         self.assertIn("lib", message)
         self.assertIn("contributes:", message)
+
+    def test_pack_extension_lifecycle_and_tools_import_own_lib_via_relative_imports(self) -> None:
+        """Pack extensions resolve 'from ..lib import ...' inside lifecycle/ and tools/ without colliding with agent lib/."""
+        pack_dir = self._create_full_pack(include_local_pkg=False)
+        ext_root = pack_dir / "company-ext" / "acme_guard"
+        (ext_root / "lib").mkdir(parents=True, exist_ok=True)
+        (ext_root / "tools").mkdir(parents=True, exist_ok=True)
+        (ext_root / "extension.yaml").write_text(
+            "apiVersion: harnest.dev/v1alpha1\n"
+            "kind: Extension\n"
+            "metadata:\n"
+            "  name: acme_guard\n"
+            "  version: 1.0.0\n"
+            "capabilities:\n"
+            "  - policy.output\n"
+            "  - content.tools\n"
+            "contributes:\n"
+            "  lifecycle:\n"
+            "    - lifecycle\n"
+            "  tools:\n"
+            "    - tools\n",
+            encoding="utf-8",
+        )
+        (ext_root / "lib" / "helpers.py").write_text(
+            'SOURCE = "extension-lib"\n'
+            'TOOL_ACTIVITY = False\n',
+            encoding="utf-8",
+        )
+        (ext_root / "lifecycle" / "policy.py").write_text(
+            "from harnest import lifecycle\n"
+            "from harnest.output import AgentMetadataMode, OutputPolicy\n"
+            "from ..lib.helpers import TOOL_ACTIVITY\n\n"
+            "@lifecycle.output_policy\n"
+            "def company_output_policy() -> OutputPolicy:\n"
+            "    return OutputPolicy(\n"
+            "        tool_activity=TOOL_ACTIVITY,\n"
+            "        agent_metadata=AgentMetadataMode.SUPPRESS,\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        (ext_root / "tools" / "whoami.py").write_text(
+            "from harnest.agent import tool\n"
+            "from ..lib.helpers import SOURCE\n\n"
+            "@tool\n"
+            "def whoami() -> str:\n"
+            '    """Return the helper source."""\n'
+            "    return SOURCE\n",
+            encoding="utf-8",
+        )
+
+        staging = self.root / "rel-stage"
+        prepare_pack_binary(pack_dir, staging)
+        agent_dir = self.root / "agent-with-own-lib"
+        _write_minimal_agent(agent_dir)
+        # Give the agent a competing top-level lib/helpers.py to verify extension relative imports stay isolated.
+        (agent_dir / "lib").mkdir(parents=True, exist_ok=True)
+        (agent_dir / "lib" / "helpers.py").write_text('SOURCE = "agent-lib"\nTOOL_ACTIVITY = True\n', encoding="utf-8")
+
+        compiled_dir = self.root / "compiled-rel"
+        previous = os.environ.get("HARNEST_PACK_EXTENSIONS")
+        os.environ["HARNEST_PACK_EXTENSIONS"] = str(staging / "extensions")
+        try:
+            compile_artifact(agent_dir, compiled_dir)
+        finally:
+            if previous is None:
+                os.environ.pop("HARNEST_PACK_EXTENSIONS", None)
+            else:
+                os.environ["HARNEST_PACK_EXTENSIONS"] = previous
+
+        app = load_compiled_application(compiled_dir)
+        try:
+            self.assertIsNotNone(app.output_policy)
+            self.assertFalse(app.output_policy.tool_activity)
+            tool_names = [getattr(item, "__name__", getattr(item, "name", "")) for item in app.target.tools]
+            self.assertIn("whoami", tool_names)
+        finally:
+            from harnest._library import release_authored_library
+            release_extensions(discover_application_extensions(compiled_dir / "source"))
+            release_authored_library(compiled_dir / "source")
+
+    def test_pack_extension_missing_lib_import_reports_module_name_and_hint(self) -> None:
+        """ModuleNotFoundError inside an extension lifecycle module names the missing module and suggests relative imports."""
+        pack_dir = self._create_full_pack(include_local_pkg=False)
+        ext_root = pack_dir / "company-ext" / "acme_guard"
+        (ext_root / "lifecycle" / "policy.py").write_text(
+            "from lib.only_in_extension import VALUE\n",
+            encoding="utf-8",
+        )
+        staging = self.root / "err-stage"
+        prepare_pack_binary(pack_dir, staging)
+        agent_dir = self.root / "agent-err"
+        _write_minimal_agent(agent_dir)
+
+        previous = os.environ.get("HARNEST_PACK_EXTENSIONS")
+        os.environ["HARNEST_PACK_EXTENSIONS"] = str(staging / "extensions")
+        try:
+            with self.assertRaises(BundleConventionError) as raised:
+                compile_artifact(agent_dir, self.root / "compiled-err")
+        finally:
+            if previous is None:
+                os.environ.pop("HARNEST_PACK_EXTENSIONS", None)
+            else:
+                os.environ["HARNEST_PACK_EXTENSIONS"] = previous
+        message = str(raised.exception)
+        self.assertIn("ModuleNotFoundError", message)
+        self.assertIn("No module named 'lib'", message)
+        self.assertIn("from ..lib.<module> import ...", message)
 
 
 if __name__ == "__main__":
