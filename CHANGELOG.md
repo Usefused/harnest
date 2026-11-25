@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/Usefused/harnest/compare/v2.3.0...v2.3.1) (2026-11-25)
+
+
+### Fixes
+
+* add scoped eval configs, crash-safe env leases, and connection error hints ([bcb57d1](https://github.com/Usefused/harnest/commit/bcb57d18c44225838e916e3480192c266029f06b))
+
 ## [2.3.0](https://github.com/Usefused/harnest/compare/v2.2.0...v2.3.0) (2026-11-24)
 
 - Added `--scoped` to `harnest add eval` so evaluation sets can write isolated `<set>.test_config.json` sidecar criteria instead of merging into the shared `evals/test_config.json`.
