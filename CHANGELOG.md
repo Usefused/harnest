@@ -4,6 +4,13 @@
 
 - Added an optional `framework` parameter (accepting a framework name or collection of names such as `["adk", "langgraph"]`) and optional `FrameworkExtensionContext` injection (`framework`, `mode`, `agent_name`, `project_root`) to `@lifecycle.framework_extension`, so multi-framework packs and extensions can scope factories per framework or branch dynamically inside one factory.
 
+## [2.5.0](https://github.com/Usefused/harnest/compare/v2.4.0...v2.5.0) (2026-11-26)
+
+
+### Features
+
+* add framework filter and FrameworkExtensionContext to [@lifecycle](https://github.com/lifecycle).framework_extension ([24d1eee](https://github.com/Usefused/harnest/commit/24d1eee463b08d9ce93793317a3b7b729266f7a2))
+
 ## [2.4.0](https://github.com/Usefused/harnest/compare/v2.3.1...v2.4.0) (2026-11-26)
 
 - Bound extension-contributed Python modules (`lifecycle/`, `tools/`, `mcp/`, `subagents/`) into their active `harnest.extensions.<name>` package namespace so standard relative imports (such as `from ..lib.<module> import ...`) resolve against the extension's own `lib/` folder in both packs and agents without colliding with the agent's `lib/`. Included the missing module name (and a relative-import hint when `lib` fails inside an extension) in `ModuleNotFoundError` import diagnostics.
