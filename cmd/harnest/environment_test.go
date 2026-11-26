@@ -737,6 +737,8 @@ fi
 `
 	sys := defaultSystem()
 	sys.userHomeDir = func() (string, error) { return root, nil }
+	// Isolate embedded-uv tests from any host uv binary installed on PATH.
+	sys.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	sys.commandContext = exec.CommandContext
 	sys.embeddedWheel = func(string) (runtimewheel.Artifact, error) {
 		return runtimewheel.Artifact{Name: "harnest-test.whl", Contents: []byte("wheel")}, nil

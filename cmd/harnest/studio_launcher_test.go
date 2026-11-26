@@ -129,6 +129,8 @@ func TestStudioCachesOnlyCompleteReleaseRuntime(t *testing.T) {
 func TestStudioFailedInstallCannotPublishReadiness(t *testing.T) {
 	root := t.TempDir()
 	sys := defaultSystem()
+	// Ensure neither system uv nor embedded uv is available when verifying failure handling.
+	sys.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	sys.embeddedUV = func() (uvbootstrap.Artifact, error) { return uvbootstrap.Artifact{}, errors.New("unavailable") }
 	app := &application{system: sys}
 	_, err := app.prepareStudioEnvironment(&cobra.Command{}, root, runtimewheel.Artifact{Contents: []byte("release")})
@@ -163,6 +165,8 @@ func TestInstallStudioEnvironmentPinsWorkingDirectoryOutsideClearedTarget(t *tes
 
 	var recorded []*exec.Cmd
 	sys := defaultSystem()
+	// Force embedded uv fallback so this test deterministically exercises the clear-simulating stub.
+	sys.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
 		return uvbootstrap.Artifact{Name: "uv", Contents: clearSimulatingUVScript()}, nil
 	}

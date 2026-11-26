@@ -129,11 +129,6 @@ func (a *application) syncAuthoringEnvironment(
 	if err != nil {
 		return pythonSelection{}, fmt.Errorf("load embedded Harnest wheel: %w", err)
 	}
-	uv, err := a.system.embeddedUV()
-	// Require embedded uv so authoring sync works without host Python packaging tools.
-	if err != nil {
-		return pythonSelection{}, fmt.Errorf("load embedded uv: %w", err)
-	}
 	paths, err := inspectAuthoringEnvironmentPaths(root)
 	// Reject symlinked or unwritable .harnest directories before acquiring the environment lock.
 	if err != nil {
@@ -156,7 +151,7 @@ func (a *application) syncAuthoringEnvironment(
 	} else if ok {
 		return selection, nil
 	}
-	return a.installAuthoringEnvironment(command, plan, wheel, uv, paths, fingerprint)
+	return a.installAuthoringEnvironment(command, plan, wheel, paths, fingerprint)
 }
 
 // reuseCachedAuthoringEnvironment returns the cached authoring interpreter when its fingerprint and CLI probe pass.
@@ -499,7 +494,6 @@ func (a *application) installAuthoringEnvironment(
 	command *cobra.Command,
 	plan authoringDependencyPlan,
 	wheel runtimewheel.Artifact,
-	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
 	fingerprint string,
 ) (pythonSelection, error) {
@@ -507,9 +501,10 @@ func (a *application) installAuthoringEnvironment(
 	if err != nil {
 		return pythonSelection{}, err
 	}
-	uvPath, cleanupUV, err := stageUV(uvArtifact)
+	// Prefer a system-installed uv binary before falling back to the embedded uv artifact.
+	uvPath, cleanupUV, err := a.resolveUV()
 	if err != nil {
-		return pythonSelection{}, err
+		return pythonSelection{}, fmt.Errorf("load uv: %w", err)
 	}
 	defer cleanupUV()
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
@@ -614,8 +609,7 @@ func (a *application) authoringEnvironmentVariables(directory string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	return mergedEnvironment(map[string]string{
-		"UV_NO_PROGRESS":         "1",
+	return a.uvEnvironment(map[string]string{
 		"UV_PROJECT_ENVIRONMENT": directory,
 		"UV_PYTHON_INSTALL_DIR":  managedPythonDirectory(runtimeDirectory),
 	}), nil

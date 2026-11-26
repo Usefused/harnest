@@ -118,17 +118,9 @@ func requireNewPackPath(output string) error {
 	return os.MkdirAll(filepath.Dir(output), 0755)
 }
 
-// packUV uses the release resolver, permitting PATH only for contributor builds.
+// packUV prefers a system-installed uv binary before falling back to the embedded uv artifact.
 func (a *application) packUV() (string, func(), error) {
-	artifact, err := a.system.embeddedUV()
-	if err == nil {
-		return stageUV(artifact)
-	}
-	if releaseVersionPattern.MatchString(a.version) {
-		return "", nil, err
-	}
-	executable, err := a.system.lookPath("uv")
-	return executable, func() {}, err
+	return a.resolveUV()
 }
 
 // packWheel preserves release ownership while allowing explicit contributor wheel builds.
@@ -180,20 +172,21 @@ func (a *application) preparePackPayload(command *cobra.Command, uv, wheel, stag
 	for _, constraint := range constraints {
 		args = append(args, "--constraint", constraint)
 	}
-	// Run uv pip compile in staging so an unlinked caller shell CWD cannot fail resolution.
-	if _, err = a.packCommandOutput(command, staging, uv, args...); err != nil {
+	uvEnv := a.uvEnvironment(nil)
+	// Run uv pip compile in staging with shared uv environment handling so corporate indexes work consistently.
+	if _, err = a.packCommandOutput(command, staging, uvEnv, uv, args...); err != nil {
 		return payload, fmt.Errorf("resolve shared runtime; conflicting agents need separate packs: %w", err)
 	}
 	packages := filepath.Join(staging, "packages")
-	// Run uv pip sync in staging so package installation never inherits a stale caller CWD.
-	if err = a.runRuntimeCommandInDirectory(command, staging, nil, uv, "pip", "sync", "--python", python, "--target", packages, "--link-mode", "copy", "--require-hashes", lock); err != nil {
+	// Run uv pip sync in staging with shared uv environment handling so package installation matches compile.
+	if err = a.runRuntimeCommandInDirectory(command, staging, uvEnv, uv, "pip", "sync", "--python", python, "--target", packages, "--link-mode", "copy", "--require-hashes", lock); err != nil {
 		return payload, err
 	}
 	// Stop if console script relocation fails before inspecting the installed Harnest version.
 	if err = a.relocatePackTools(command, packages, python); err != nil {
 		return payload, err
 	}
-	result, err := a.packCommandOutput(command, staging, python, "-I", "-c", `import importlib.metadata,json,sys; sys.path.insert(0,sys.argv[1]); print(json.dumps(importlib.metadata.version("harnest")))`, packages)
+	result, err := a.packCommandOutput(command, staging, nil, python, "-I", "-c", `import importlib.metadata,json,sys; sys.path.insert(0,sys.argv[1]); print(json.dumps(importlib.metadata.version("harnest")))`, packages)
 	// Fail if installed Harnest metadata cannot be read from the staged packages directory.
 	if err != nil {
 		return payload, err
@@ -208,17 +201,18 @@ func (a *application) preparePackPayload(command *cobra.Command, uv, wheel, stag
 // packInterpreter selects only uv's relocatable CPython distribution, never a host framework install.
 func (a *application) packInterpreter(command *cobra.Command, uv, staging, version string) (packPayload, string, error) {
 	var payload packPayload
+	uvEnv := a.uvEnvironment(nil)
 	// Pin uv python install to staging so a deleted caller CWD cannot abort interpreter download.
-	if err := a.runRuntimeCommandInDirectory(command, staging, nil, uv, "python", "install", version, "--no-bin"); err != nil {
+	if err := a.runRuntimeCommandInDirectory(command, staging, uvEnv, uv, "python", "install", version, "--no-bin"); err != nil {
 		return payload, "", err
 	}
-	result, err := a.packCommandOutput(command, staging, uv, "python", "find", "--managed-python", "--system", "--no-project", version)
+	result, err := a.packCommandOutput(command, staging, uvEnv, uv, "python", "find", "--managed-python", "--system", "--no-project", version)
 	// Stop if uv cannot locate the installed relocatable interpreter.
 	if err != nil {
 		return payload, "", err
 	}
 	python := strings.TrimSpace(string(result))
-	result, err = a.packCommandOutput(command, staging, python, "-I", "-c", inspectPortablePython)
+	result, err = a.packCommandOutput(command, staging, nil, python, "-I", "-c", inspectPortablePython)
 	// Stop if the discovered Python binary cannot report its base prefix layout.
 	if err != nil {
 		return payload, "", err
@@ -228,12 +222,16 @@ func (a *application) packInterpreter(command *cobra.Command, uv, staging, versi
 }
 
 // packCommandOutput keeps machine-readable interpreter discovery separate from diagnostics.
-func (a *application) packCommandOutput(command *cobra.Command, directory, executable string, args ...string) ([]byte, error) {
+func (a *application) packCommandOutput(command *cobra.Command, directory string, environment []string, executable string, args ...string) ([]byte, error) {
 	var output bytes.Buffer
 	process := a.system.commandContext(command.Context(), executable, args...)
 	// Pin process.Dir to an existing staging directory so uv and Python never fail on an unlinked caller CWD.
 	if directory != "" {
 		process.Dir = directory
+	}
+	// Apply explicit subprocess environment variables when provided for uv invocations.
+	if len(environment) != 0 {
+		process.Env = environment
 	}
 	process.Stderr = command.ErrOrStderr()
 	process.Stdout = &output

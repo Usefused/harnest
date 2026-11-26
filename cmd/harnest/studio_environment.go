@@ -71,15 +71,10 @@ func (a *application) installStudioEnvironment(command *cobra.Command, directory
 	if err != nil {
 		return err
 	}
-	artifact, err := a.system.embeddedUV()
-	// Abort Studio bootstrap if the embedded uv binary cannot be loaded.
+	// Prefer a system-installed uv binary before falling back to embedded uv.
+	uv, cleanupUV, err := a.resolveUV()
 	if err != nil {
 		return fmt.Errorf("load Studio Python bootstrap: %w", err)
-	}
-	uv, cleanupUV, err := stageUV(artifact)
-	// Abort if embedded uv cannot be staged on disk.
-	if err != nil {
-		return err
 	}
 	defer cleanupUV()
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
@@ -88,7 +83,7 @@ func (a *application) installStudioEnvironment(command *cobra.Command, directory
 		return err
 	}
 	defer cleanupWheel()
-	environment := mergedEnvironment(map[string]string{"UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1"})
+	environment := a.uvEnvironment(nil)
 	workingDirectory := runtimeCommandWorkingDirectory(target, uv)
 	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download;
 	// pin process.Dir outside target so --clear never deletes uv's CWD and unlinked shell CWDs cannot fail bootstrap.

@@ -19,7 +19,6 @@ import (
 	"harnest.dev/harnest/engine"
 	"harnest.dev/harnest/internal/pysource"
 	"harnest.dev/harnest/internal/runtimewheel"
-	"harnest.dev/harnest/internal/uvbootstrap"
 )
 
 const environmentStateFile = "environment.json"
@@ -190,17 +189,13 @@ func (a *application) prepareAgentEnvironment(
 	if err != nil {
 		return pythonSelection{}, fmt.Errorf("load embedded Harnest wheel: %w", err)
 	}
-	uv, err := a.system.embeddedUV()
-	if err != nil {
-		return pythonSelection{}, fmt.Errorf("load embedded uv: %w", err)
-	}
-	return a.selectAgentEnvironment(command, bundle, profile, frozen, lease, wheel, uv, plan)
+	return a.selectAgentEnvironment(command, bundle, profile, frozen, lease, wheel, plan)
 }
 
 // selectAgentEnvironment holds the project lock through publication and lease acquisition.
 func (a *application) selectAgentEnvironment(
 	command *cobra.Command, bundle engine.Bundle, profile environmentProfile, frozen, lease bool,
-	wheel runtimewheel.Artifact, uv uvbootstrap.Artifact, plan runtimeDependencyPlan,
+	wheel runtimewheel.Artifact, plan runtimeDependencyPlan,
 ) (pythonSelection, error) {
 	paths, err := inspectEnvironmentPaths(bundle, profile)
 	if err != nil {
@@ -215,7 +210,7 @@ func (a *application) selectAgentEnvironment(
 		return pythonSelection{}, err
 	}
 	defer unlock()
-	selection, err := a.reuseOrRepairAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen, fingerprint)
+	selection, err := a.reuseOrRepairAgentEnvironment(command, bundle, wheel, paths, plan, profile, frozen, fingerprint)
 	if err != nil {
 		return pythonSelection{}, err
 	}
@@ -230,7 +225,7 @@ func (a *application) selectAgentEnvironment(
 
 // reuseOrRepairAgentEnvironment checks that external package tools have not removed the CLI.
 func (a *application) reuseOrRepairAgentEnvironment(
-	command *cobra.Command, bundle engine.Bundle, wheel runtimewheel.Artifact, uv uvbootstrap.Artifact,
+	command *cobra.Command, bundle engine.Bundle, wheel runtimewheel.Artifact,
 	paths environmentPaths, plan runtimeDependencyPlan, profile environmentProfile, frozen bool, fingerprint string,
 ) (pythonSelection, error) {
 	selection, found := cachedAgentPython(paths, fingerprint)
@@ -245,7 +240,7 @@ func (a *application) reuseOrRepairAgentEnvironment(
 		// The inputs still match; restore the published versions without resolving new ones.
 		frozen = true
 	}
-	return a.installAgentEnvironment(command, bundle, wheel, uv, paths, plan, profile, frozen)
+	return a.installAgentEnvironment(command, bundle, wheel, paths, plan, profile, frozen)
 }
 
 // agentCLIAvailable distinguishes a missing module from a failure to execute the probe.
@@ -555,14 +550,13 @@ func (a *application) installAgentEnvironment(
 	command *cobra.Command,
 	bundle engine.Bundle,
 	wheel runtimewheel.Artifact,
-	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
 	plan runtimeDependencyPlan,
 	profile environmentProfile,
 	frozen bool,
 ) (pythonSelection, error) {
 	staged, cleanup, err := a.stageAgentEnvironment(
-		bundle, wheel, uvArtifact, paths, profile,
+		bundle, wheel, paths, profile,
 	)
 	if err != nil {
 		return pythonSelection{}, err
@@ -604,7 +598,6 @@ type stagedAgentEnvironment struct {
 func (a *application) stageAgentEnvironment(
 	bundle engine.Bundle,
 	wheel runtimewheel.Artifact,
-	uvArtifact uvbootstrap.Artifact,
 	paths environmentPaths,
 	profile environmentProfile,
 ) (stagedAgentEnvironment, func(), error) {
@@ -619,9 +612,10 @@ func (a *application) stageAgentEnvironment(
 	} else if statErr != nil && !os.IsNotExist(statErr) {
 		return stagedAgentEnvironment{}, nil, fmt.Errorf("inspect agent environment: %w", statErr)
 	}
-	uvPath, cleanupUV, err := stageUV(uvArtifact)
+	// Prefer a system-installed uv binary before falling back to the embedded uv artifact.
+	uvPath, cleanupUV, err := a.resolveUV()
 	if err != nil {
-		return stagedAgentEnvironment{}, nil, err
+		return stagedAgentEnvironment{}, nil, fmt.Errorf("load uv: %w", err)
 	}
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
 	if err != nil {
@@ -721,10 +715,9 @@ func (a *application) agentEnvironmentVariables(
 	for key, value := range bundle.Config.Spec.Environment {
 		overrides[key] = value
 	}
-	overrides["UV_NO_PROGRESS"] = "1"
 	overrides["UV_PROJECT_ENVIRONMENT"] = directory
 	overrides["UV_PYTHON_INSTALL_DIR"] = managedPythonDirectory(runtimeDirectory)
-	return mergedEnvironment(overrides), nil
+	return a.uvEnvironment(overrides), nil
 }
 
 func writeEnvironmentState(path string, state environmentState) error {

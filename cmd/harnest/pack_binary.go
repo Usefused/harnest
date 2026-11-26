@@ -215,7 +215,7 @@ func (a *application) preparePackCLIEnvironment(
 	return pythonSelection{Executable: runtimePythonPath(directory), Source: "CLI runtime"}, nil
 }
 
-// installPackCLIEnvironment installs only the embedded Harnest wheel using embedded uv.
+// installPackCLIEnvironment installs only the embedded Harnest wheel using system or embedded uv.
 func (a *application) installPackCLIEnvironment(
 	command *cobra.Command, directory string, wheel runtimewheel.Artifact,
 ) error {
@@ -224,15 +224,10 @@ func (a *application) installPackCLIEnvironment(
 	if err != nil {
 		return err
 	}
-	artifact, err := a.system.embeddedUV()
-	// Abort bootstrap if the embedded uv binary is unavailable.
+	// Prefer a system-installed uv binary before falling back to embedded uv.
+	uv, cleanupUV, err := a.resolveUV()
 	if err != nil {
 		return fmt.Errorf("load CLI Python bootstrap: %w", err)
-	}
-	uv, cleanupUV, err := stageUV(artifact)
-	// Abort if embedded uv cannot be written to an executable temp path.
-	if err != nil {
-		return err
 	}
 	defer cleanupUV()
 	wheelPath, cleanupWheel, err := stageRuntimeWheel(wheel)
@@ -241,7 +236,7 @@ func (a *application) installPackCLIEnvironment(
 		return err
 	}
 	defer cleanupWheel()
-	environment := mergedEnvironment(map[string]string{"UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1"})
+	environment := a.uvEnvironment(nil)
 	workingDirectory := runtimeCommandWorkingDirectory(target, uv)
 	// Prefer any supported system Python (3.11-3.14) before falling back to a uv-managed 3.14 download;
 	// pin process.Dir outside target so --clear never deletes uv's CWD and unlinked shell CWDs cannot fail bootstrap.

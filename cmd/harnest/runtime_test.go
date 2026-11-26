@@ -141,6 +141,13 @@ if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
 fi
 `)
 	sys := defaultSystem()
+	// Exercise the stdlib venv + pip fallback when neither system uv nor embedded uv is available.
+	sys.lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return "", os.ErrNotExist
+		}
+		return exec.LookPath(name)
+	}
 	sys.embeddedWheel = testEmbeddedWheel(t)
 	runtimeDirectory := filepath.Join(t.TempDir(), "runtime")
 
@@ -293,4 +300,130 @@ func assertPinnedManagedRuntimeDirs(
 			t.Fatalf("command %d used Dir=%q, want %q", index, cmd.Dir, wantDir)
 		}
 	}
+}
+
+// TestResolveUVPrefersSystemUVAndHARNESTUVBeforeEmbedded verifies system uv is used before embedded uv.
+func TestResolveUVPrefersSystemUVAndHARNESTUVBeforeEmbedded(t *testing.T) {
+	sys := defaultSystem()
+	embeddedCalled := false
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		embeddedCalled = true
+		return uvbootstrap.Artifact{Name: "uv", Contents: []byte("embedded")}, nil
+	}
+	sys.lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return "/usr/local/bin/uv", nil
+		}
+		if name == "/opt/corp/uv" {
+			return "/opt/corp/uv", nil
+		}
+		return "", os.ErrNotExist
+	}
+	app := &application{system: sys, version: "test-version"}
+	uvPath, cleanup, err := app.resolveUV()
+	if err != nil {
+		t.Fatalf("resolveUV failed: %v", err)
+	}
+	defer cleanup()
+	if uvPath != "/usr/local/bin/uv" || embeddedCalled {
+		t.Fatalf("got uv=%q embeddedCalled=%v, want system uv without embedded extraction", uvPath, embeddedCalled)
+	}
+	// Explicit HARNEST_UV must take precedence over PATH uv.
+	t.Setenv("HARNEST_UV", "/opt/corp/uv")
+	overridePath, cleanupOverride, err := app.resolveUV()
+	if err != nil || overridePath != "/opt/corp/uv" || embeddedCalled {
+		t.Fatalf("got override=%q err=%v embeddedCalled=%v, want /opt/corp/uv", overridePath, err, embeddedCalled)
+	}
+	cleanupOverride()
+}
+
+// TestRuntimeInstallUsesSystemUVWithHostPythonAndRespectsUVConfig verifies runtime install uses system uv and honors UV_INDEX_URL / PIP_INDEX_URL.
+func TestRuntimeInstallUsesSystemUVWithHostPythonAndRespectsUVConfig(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "system-uv-runtime.txt")
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	t.Setenv("UV_INDEX_URL", "")
+	t.Setenv("UV_DEFAULT_INDEX", "")
+	t.Setenv("PIP_INDEX_URL", "https://artifactory.internal/simple")
+
+	hostPython := writeExecutable(t, "#!/bin/sh\nexit 0\n")
+	systemUV := writeExecutable(t, `#!/bin/sh
+printf 'SYSUV\tNO_CONFIG=%s\tDEFAULT_INDEX=%s\tARGS=%s\n' "${UV_NO_CONFIG:-}" "${UV_DEFAULT_INDEX:-}" "$*" >> "$HARNEST_TEST_RECORD"
+if [ "$1" = "venv" ]; then
+  for target in "$@"; do :; done
+  /bin/mkdir -p "$target/bin"
+  printf '%s\n' '#!/bin/sh' > "$target/bin/python"
+  /bin/chmod 0755 "$target/bin/python"
+fi
+`)
+	sys := defaultSystem()
+	sys.embeddedWheel = testEmbeddedWheel(t)
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		t.Fatal("embeddedUV should not be called when system uv is on PATH")
+		return uvbootstrap.Artifact{}, nil
+	}
+	sys.lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return systemUV, nil
+		}
+		if name == hostPython {
+			return hostPython, nil
+		}
+		return "", os.ErrNotExist
+	}
+	runtimeDirectory := filepath.Join(t.TempDir(), "runtime")
+	if _, _, err := executeForTest(t, sys, "runtime", "install", "--bootstrap-python", hostPython, "--directory", runtimeDirectory); err != nil {
+		t.Fatalf("runtime install with system uv failed: %v", err)
+	}
+	calls := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "system uv runtime install", calls, []string{
+		"NO_CONFIG=\tDEFAULT_INDEX=https://artifactory.internal/simple",
+		"ARGS=venv --python " + hostPython + " --clear " + runtimeDirectory,
+		"ARGS=pip install --python " + runtimePythonPath(runtimeDirectory) + " --upgrade ",
+	})
+}
+
+// TestRuntimeInstallManagedPythonUsesSystemUVAndRespectsUVIndexPrecedence verifies system uv is used for managed Python and UV_INDEX_URL takes precedence over PIP_INDEX_URL.
+func TestRuntimeInstallManagedPythonUsesSystemUVAndRespectsUVIndexPrecedence(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "managed-system-uv.txt")
+	t.Setenv("HARNEST_TEST_RECORD", record)
+	t.Setenv("UV_INDEX_URL", "https://uv-index.internal/simple")
+	t.Setenv("UV_DEFAULT_INDEX", "")
+	t.Setenv("PIP_INDEX_URL", "https://pip-index.internal/simple")
+
+	systemUV := writeExecutable(t, `#!/bin/sh
+printf 'SYSUV\tUV_INDEX=%s\tDEFAULT_INDEX=%s\tARGS=%s\n' "${UV_INDEX_URL:-}" "${UV_DEFAULT_INDEX:-}" "$*" >> "$HARNEST_TEST_RECORD"
+if [ "$1" = "venv" ]; then
+  for target in "$@"; do :; done
+  /bin/mkdir -p "$target/bin"
+  printf '%s\n' '#!/bin/sh' > "$target/bin/python"
+  /bin/chmod 0755 "$target/bin/python"
+fi
+`)
+	sys := defaultSystem()
+	sys.embeddedWheel = testEmbeddedWheel(t)
+	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
+		t.Fatal("embeddedUV should not be called when system uv is available")
+		return uvbootstrap.Artifact{}, nil
+	}
+	// Expose only system uv and no compatible host Python so managed Python installs via system uv.
+	sys.lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return systemUV, nil
+		}
+		return "", os.ErrNotExist
+	}
+	runtimeDirectory := filepath.Join(t.TempDir(), "runtime")
+	stdout, _, err := executeForTest(t, sys, "runtime", "install", "--directory", runtimeDirectory)
+	// Managed Python installation must succeed via system uv without touching embedded uv.
+	if err != nil {
+		t.Fatalf("managed runtime install with system uv failed: %v", err)
+	}
+	assertContainsAll(t, "managed system uv output", stdout, []string{
+		"installing managed Python 3.14 with system uv (" + systemUV + ")",
+	})
+	calls := string(mustReadTestFile(t, record))
+	assertContainsAll(t, "managed system uv calls", calls, []string{
+		"UV_INDEX=https://uv-index.internal/simple\tDEFAULT_INDEX=\t",
+		"ARGS=venv --python 3.14 --managed-python --clear " + runtimeDirectory,
+	})
 }

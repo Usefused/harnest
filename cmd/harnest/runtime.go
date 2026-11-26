@@ -129,8 +129,13 @@ func (a *application) installRuntimeWithPython(
 	if err != nil {
 		return err
 	}
+	// Prefer system or embedded uv with the host Python so UV_INDEX_URL, UV_DEFAULT_INDEX, and uv.toml are honored.
+	if uvPath, cleanupUV, uvErr := a.resolveUV(); uvErr == nil {
+		defer cleanupUV()
+		return a.installRuntimeWithUV(command, target, uvPath, bootstrap, wheelPath, false)
+	}
 	workingDirectory := runtimeCommandWorkingDirectory(target, wheelPath)
-	// Run venv creation in a guaranteed-existing directory outside target so a removed caller CWD cannot break setup.
+	// Fall back to stdlib venv + pip only when neither system nor embedded uv is available.
 	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, nil, bootstrap, "-m", "venv", target); err != nil {
 		return runtimeBootstrapError{cause: fmt.Errorf("create managed Python environment: %w", err)}
 	}
@@ -153,7 +158,7 @@ func isRuntimeBootstrapError(err error) bool {
 	return errors.As(err, &bootstrapErr)
 }
 
-// installRuntimeWithManagedPython bootstraps a managed Python interpreter and Harnest wheel via embedded uv.
+// installRuntimeWithManagedPython bootstraps a managed Python interpreter and Harnest wheel via system or embedded uv.
 func (a *application) installRuntimeWithManagedPython(
 	command *cobra.Command,
 	directory, wheelPath string,
@@ -164,38 +169,53 @@ func (a *application) installRuntimeWithManagedPython(
 	if err != nil {
 		return err
 	}
-	artifact, err := a.system.embeddedUV()
-	// Surface missing embedded uv artifacts alongside the earlier host-Python discovery failure.
+	uvPath, embeddedUV, cleanup, err := a.resolveUVWithOrigin()
+	// Surface missing uv alongside the earlier host-Python discovery failure.
 	if err != nil {
 		return fmt.Errorf("bootstrap managed Python after %v: %w", discoveryErr, err)
 	}
-	uvPath, cleanup, err := stageUV(artifact)
-	// Abort if embedded uv cannot be materialized to an executable staging path.
-	if err != nil {
-		return err
-	}
 	defer cleanup()
-	fmt.Fprintf(
-		command.OutOrStdout(),
-		"No compatible system Python found; installing managed Python %s with embedded uv %s.\n",
-		uvbootstrap.ManagedPythonVersion,
-		uvbootstrap.Version,
-	)
-	environment := mergedEnvironment(map[string]string{
-		"UV_NO_CONFIG":          "1",
-		"UV_NO_PROGRESS":        "1",
+	// Report accurately whether managed Python is being installed via system uv or embedded uv.
+	if embeddedUV {
+		fmt.Fprintf(
+			command.OutOrStdout(),
+			"No compatible system Python found; installing managed Python %s with embedded uv %s.\n",
+			uvbootstrap.ManagedPythonVersion,
+			uvbootstrap.Version,
+		)
+	} else {
+		fmt.Fprintf(
+			command.OutOrStdout(),
+			"No compatible system Python found; installing managed Python %s with system uv (%s).\n",
+			uvbootstrap.ManagedPythonVersion,
+			uvPath,
+		)
+	}
+	return a.installRuntimeWithUV(command, target, uvPath, uvbootstrap.ManagedPythonVersion, wheelPath, true)
+}
+
+// installRuntimeWithUV creates the runtime venv and installs the embedded wheel using the selected uv binary.
+func (a *application) installRuntimeWithUV(
+	command *cobra.Command,
+	target, uvPath, pythonSpec, wheelPath string,
+	managedOnly bool,
+) error {
+	environment := a.uvEnvironment(map[string]string{
 		"UV_PYTHON_INSTALL_DIR": managedPythonDirectory(target),
 	})
 	workingDirectory := runtimeCommandWorkingDirectory(target, uvPath)
+	venvArgs := []string{"venv", "--python", pythonSpec}
+	// Request uv-managed CPython explicitly when no compatible system interpreter was found.
+	if managedOnly {
+		venvArgs = append(venvArgs, "--managed-python")
+	}
+	venvArgs = append(venvArgs, "--clear", target)
 	// Pin uv's working directory outside target so --clear cannot unlink uv's own CWD and stale shell CWDs never fail bootstrap.
-	if err := a.runRuntimeCommandInDirectory(
-		command,
-		workingDirectory,
-		environment,
-		uvPath,
-		"venv", "--python", uvbootstrap.ManagedPythonVersion, "--managed-python", "--clear", target,
-	); err != nil {
-		return fmt.Errorf("install managed Python %s: %w", uvbootstrap.ManagedPythonVersion, err)
+	if err := a.runRuntimeCommandInDirectory(command, workingDirectory, environment, uvPath, venvArgs...); err != nil {
+		if managedOnly {
+			return fmt.Errorf("install managed Python %s: %w", pythonSpec, err)
+		}
+		return runtimeBootstrapError{cause: fmt.Errorf("create managed Python environment: %w", err)}
 	}
 	// Install the staged wheel from the same verified working directory so uv never depends on the caller's shell CWD.
 	if err := a.runRuntimeCommandInDirectory(
@@ -208,6 +228,64 @@ func (a *application) installRuntimeWithManagedPython(
 		return fmt.Errorf("install embedded Harnest runtime: %w", err)
 	}
 	return nil
+}
+
+// resolveUV prefers HARNEST_UV or a system-installed uv on PATH before staging the embedded uv binary.
+func (a *application) resolveUV() (string, func(), error) {
+	path, _, cleanup, err := a.resolveUVWithOrigin()
+	return path, cleanup, err
+}
+
+// resolveUVWithOrigin resolves the preferred uv executable and reports whether it came from the embedded bundle.
+func (a *application) resolveUVWithOrigin() (string, bool, func(), error) {
+	// Honor an explicit HARNEST_UV override when configured by the user or corporate tooling.
+	if override := strings.TrimSpace(a.system.getenv("HARNEST_UV")); override != "" {
+		resolved, err := a.system.lookPath(override)
+		// Fail loudly on an explicit HARNEST_UV override instead of silently falling back.
+		if err != nil {
+			return "", false, nil, fmt.Errorf("HARNEST_UV executable %q is unavailable: %w", override, err)
+		}
+		return resolved, false, func() {}, nil
+	}
+	// Prefer an already-installed system uv on PATH so host wrappers, certs, and caches are reused first.
+	if executable, err := a.system.lookPath("uv"); err == nil && strings.TrimSpace(executable) != "" {
+		return executable, false, func() {}, nil
+	}
+	// Fall back to the embedded uv binary bundled in released Harnest executables.
+	artifact, err := a.system.embeddedUV()
+	if err != nil {
+		return "", false, nil, err
+	}
+	stagedPath, cleanup, err := stageUV(artifact)
+	return stagedPath, true, cleanup, err
+}
+
+// uvEnvironment builds subprocess env vars for uv, preserving user uv.toml and bridging legacy PIP_INDEX_URL.
+func (a *application) uvEnvironment(overrides map[string]string) []string {
+	merged := make(map[string]string, len(overrides)+2)
+	for key, value := range overrides {
+		merged[key] = value
+	}
+	merged["UV_NO_PROGRESS"] = "1"
+	// Bridge legacy PIP_INDEX_URL to UV_DEFAULT_INDEX only when no explicit UV index env var is set.
+	if a.shouldBridgePIPIndex(merged) {
+		merged["UV_DEFAULT_INDEX"] = strings.TrimSpace(a.system.getenv("PIP_INDEX_URL"))
+	}
+	return mergedEnvironment(merged)
+}
+
+// shouldBridgePIPIndex reports whether PIP_INDEX_URL should populate UV_DEFAULT_INDEX for uv commands.
+func (a *application) shouldBridgePIPIndex(overrides map[string]string) bool {
+	if strings.TrimSpace(a.system.getenv("PIP_INDEX_URL")) == "" {
+		return false
+	}
+	// Never override an explicit UV_DEFAULT_INDEX or UV_INDEX_URL from the caller or agent config.
+	if strings.TrimSpace(a.system.getenv("UV_DEFAULT_INDEX")) != "" ||
+		strings.TrimSpace(a.system.getenv("UV_INDEX_URL")) != "" {
+		return false
+	}
+	return strings.TrimSpace(overrides["UV_DEFAULT_INDEX"]) == "" &&
+		strings.TrimSpace(overrides["UV_INDEX_URL"]) == ""
 }
 
 func (a *application) resolveBootstrapPython(ctx context.Context, requested string) (string, error) {

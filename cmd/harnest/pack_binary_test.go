@@ -344,6 +344,8 @@ func TestInstallPackCLIEnvironmentPinsWorkingDirectoryOutsideClearedTarget(t *te
 
 	var recorded []*exec.Cmd
 	sys := defaultSystem()
+	// Force embedded uv fallback so this test deterministically exercises the clear-simulating stub.
+	sys.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	sys.embeddedUV = func() (uvbootstrap.Artifact, error) {
 		return uvbootstrap.Artifact{Name: "uv", Contents: clearSimulatingUVScript()}, nil
 	}
