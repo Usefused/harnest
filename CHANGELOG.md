@@ -1,12 +1,9 @@
 # Changelog
 
-## Unreleased
+## [2.6.0](https://github.com/Usefused/harnest/compare/v2.5.0...v2.6.0) (2026-11-26)
 
 - Prefer an already-installed system `uv` on `PATH` (or `HARNEST_UV` override) before falling back to embedded `uv` across `runtime install`, `env sync`, `studio`, `pack build`, and `runtime build`. Switched `harnest runtime install` to use `uv` with the host Python when available, removed `UV_NO_CONFIG=1` so user/system `uv.toml` and `UV_INDEX_URL`/`UV_DEFAULT_INDEX` are respected everywhere, and bridged legacy `PIP_INDEX_URL` to `UV_DEFAULT_INDEX` when no `UV_*` index is set.
 - Added `context.files.from_folder(path, *, source=None, policy=WritePolicy.IF_MISSING)` (returning a `ChangePlan` that flattens inside `ChangePlan(...)`) so project packs can recursively copy template folders such as `lib/`, `models/`, or `agent-plugins/<name>/` with tracked ownership in one call.
-
-## [2.6.0](https://github.com/Usefused/harnest/compare/v2.5.0...v2.6.0) (2026-11-26)
-
 
 ### Features
 
