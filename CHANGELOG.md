@@ -1,8 +1,11 @@
 # Changelog
 
-## [2.4.0](https://github.com/Usefused/harnest/compare/v2.3.1...v2.4.0) (2026-11-26)
+## Unreleased
 
 - Added an optional `framework` parameter (accepting a framework name or collection of names such as `["adk", "langgraph"]`) and optional `FrameworkExtensionContext` injection (`framework`, `mode`, `agent_name`, `project_root`) to `@lifecycle.framework_extension`, so multi-framework packs and extensions can scope factories per framework or branch dynamically inside one factory.
+
+## [2.4.0](https://github.com/Usefused/harnest/compare/v2.3.1...v2.4.0) (2026-11-26)
+
 - Bound extension-contributed Python modules (`lifecycle/`, `tools/`, `mcp/`, `subagents/`) into their active `harnest.extensions.<name>` package namespace so standard relative imports (such as `from ..lib.<module> import ...`) resolve against the extension's own `lib/` folder in both packs and agents without colliding with the agent's `lib/`. Included the missing module name (and a relative-import hint when `lib` fails inside an extension) in `ModuleNotFoundError` import diagnostics.
 - Extended `harnest env sync [PROJECT_DIR]` to support pack folders (`pack.yaml`) and standalone extension folders (`extension.yaml`), creating a cached `.harnest/environments/authoring` environment with `harnest`, framework extras (`--framework all|adk|langgraph`), pack `packages:`, and extension `pyproject.toml` dependencies, while wiring `.venv` and `.vscode/settings.json`. Excluded `.harnest`, `.venv`, and `.vscode` from `harnest pack build` and `harnest extensions install`.
 - Made `runtime` / `runtime.entrypoint` optional in `extension.yaml` (defaulting to `extension:extension`), omitted it from `harnest extensions init` scaffolds, and included the sorted list of allowed root entries (plus a `contributes:` hint) in unexpected extension entry errors.
