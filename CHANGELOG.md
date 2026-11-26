@@ -7,6 +7,25 @@
 - Made `runtime` / `runtime.entrypoint` optional in `extension.yaml` (defaulting to `extension:extension`), omitted it from `harnest extensions init` scaffolds, and included the sorted list of allowed root entries (plus a `contributes:` hint) in unexpected extension entry errors.
 - **Breaking:** Renamed the Agent Plugins directory from `plugins/` to `agent-plugins/` and the CLI subcommand from `harnest plugins` to `harnest agent-plugins` so portable Agent Plugins 1.0 packages are clearly distinct from Harnest-specific extensions. Existing agents with a `plugins/` folder are rejected at compile and bundle validation time with upgrade guidance; run `harnest upgrade AGENT_DIR --apply` (project schema 8) to back up and relocate `plugins/` to `agent-plugins/` (or remove an emptied `plugins/` directory after migrating legacy RuntimePlugin packages).
 
+## [2.4.0](https://github.com/Usefused/harnest/compare/v2.3.1...v2.4.0) (2026-11-26)
+
+
+### Features
+
+* extend env sync for packs and extensions, optional extension runtime entrypoint, and actionable layout errors ([84e3f9c](https://github.com/Usefused/harnest/commit/84e3f9cc0b046b9ddfff83f0ede163ae7ec4c192))
+
+
+### Fixes
+
+* pin runtime command working directory to avoid unlinked shell CWD failures ([3237979](https://github.com/Usefused/harnest/commit/323797995eed827125330e5b0f11974fd7e60567))
+* support relative lib imports in extension modules and surface missing module names on ModuleNotFoundError ([9488eb4](https://github.com/Usefused/harnest/commit/9488eb4d4778831d8f1fbb3eebcfb375a90906a5))
+
+
+### Refactoring
+
+* keep Python and Go functions within max complexity 10 and format Go files ([c8e9aab](https://github.com/Usefused/harnest/commit/c8e9aab6805a0c8408a8b8021d669b5a05052703))
+* rename agent plugins directory to agent-plugins and update CLI subcommand ([8cc102a](https://github.com/Usefused/harnest/commit/8cc102a30834aeaeb7979ee76fd0ceccfbdfd4a1))
+
 ## [2.3.1](https://github.com/Usefused/harnest/compare/v2.3.0...v2.3.1) (2026-11-25)
 
 
