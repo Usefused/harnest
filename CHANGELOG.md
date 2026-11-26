@@ -5,6 +5,14 @@
 - Prefer an already-installed system `uv` on `PATH` (or `HARNEST_UV` override) before falling back to embedded `uv` across `runtime install`, `env sync`, `studio`, `pack build`, and `runtime build`. Switched `harnest runtime install` to use `uv` with the host Python when available, removed `UV_NO_CONFIG=1` so user/system `uv.toml` and `UV_INDEX_URL`/`UV_DEFAULT_INDEX` are respected everywhere, and bridged legacy `PIP_INDEX_URL` to `UV_DEFAULT_INDEX` when no `UV_*` index is set.
 - Added `context.files.from_folder(path, *, source=None, policy=WritePolicy.IF_MISSING)` (returning a `ChangePlan` that flattens inside `ChangePlan(...)`) so project packs can recursively copy template folders such as `lib/`, `models/`, or `agent-plugins/<name>/` with tracked ownership in one call.
 
+## [2.6.0](https://github.com/Usefused/harnest/compare/v2.5.0...v2.6.0) (2026-11-26)
+
+
+### Features
+
+* add context.files.from_folder for recursive pack template copying ([e1a8fdf](https://github.com/Usefused/harnest/commit/e1a8fdfad5f40d35583884db4848b95161f8d521))
+* prefer system uv before embedded uv and respect uv config everywhere ([9715c7f](https://github.com/Usefused/harnest/commit/9715c7f8bbb71a3531cc51ece590bcf2c3f924f5))
+
 ## [2.5.0](https://github.com/Usefused/harnest/compare/v2.4.0...v2.5.0) (2026-11-26)
 
 - Added an optional `framework` parameter (accepting a framework name or collection of names such as `["adk", "langgraph"]`) and optional `FrameworkExtensionContext` injection (`framework`, `mode`, `agent_name`, `project_root`) to `@lifecycle.framework_extension`, so multi-framework packs and extensions can scope factories per framework or branch dynamically inside one factory.
