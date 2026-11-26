@@ -582,6 +582,7 @@ Small helpers used across areas.
 - [`dependency_policy.go`](../../cmd/harnest/dependency_policy.go): Rejects agent requirements that pin packages the Harnest compiler owns, such as Harnest itself and framework SDKs.
 - [`doctor.go`](../../cmd/harnest/doctor.go): `harnest doctor`: checks Python, the agent's managed environment, and the framework packages it needs.
 - [`environment.go`](../../cmd/harnest/environment.go): `harnest env` and the managed per-agent Python environments that every command runs in.
+- [`environment_authoring.go`](../../cmd/harnest/environment_authoring.go): Managed IDE/authoring Python environments for pack (pack.yaml) and standalone extension (extension.yaml) folders.
 - [`environment_framework.go`](../../cmd/harnest/environment_framework.go): Records the agent's framework version in harnest.lock and checks that the installed version matches.
 - [`environment_profile.go`](../../cmd/harnest/environment_profile.go): Environment profiles (compile, test, serve, ...): the wheel extras and lock file each one uses.
 - [`environment_prune.go`](../../cmd/harnest/environment_prune.go): Leases that keep a managed environment alive while a command uses it, and pruning of stale environments.
