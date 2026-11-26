@@ -43,11 +43,18 @@ class ChangePlan:
     """An ordered collection of file and YAML operations returned by a pack hook."""
     operations: tuple[_Operation, ...]
 
-    def __init__(self, *operations: _Operation) -> None:
-        """Capture operations without performing any filesystem writes."""
-        if any(not isinstance(item, _Operation) for item in operations):
-            raise ProjectError("ChangePlan accepts context.files/context.yaml operations only")
-        object.__setattr__(self, "operations", operations)
+    def __init__(self, *operations: _Operation | ChangePlan) -> None:
+        """Capture operations (flattening nested ChangePlans) without performing any filesystem writes."""
+        flattened: list[_Operation] = []
+        for item in operations:
+            # Accept single operations directly or expand nested ChangePlans such as context.files.from_folder(...).
+            if isinstance(item, _Operation):
+                flattened.append(item)
+            elif isinstance(item, ChangePlan):
+                flattened.extend(item.operations)
+            else:
+                raise ProjectError("ChangePlan accepts context.files/context.yaml operations only")
+        object.__setattr__(self, "operations", tuple(flattened))
 
 
 @dataclass(frozen=True)

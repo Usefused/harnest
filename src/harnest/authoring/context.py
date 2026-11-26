@@ -10,11 +10,16 @@ from typing import Any, Mapping
 import yaml
 from pydantic import BaseModel
 
-from .contracts import ProjectError, WritePolicy, _File, _Operation
+from .contracts import ChangePlan, ProjectError, WritePolicy, _File, _Operation
 
 
 IGNORED = frozenset({".git", ".harnest", ".venv", "__pycache__", ".pytest_cache", ".cache"})
 LOCK = "harnest-packs.lock"
+
+
+def _is_ignored_template_entry(relative: Path, item: Path) -> bool:
+    """Return True for VCS, cache, bytecode, or Finder files skipped by from_folder."""
+    return any(part in IGNORED or part == ".DS_Store" for part in relative.parts) or item.suffix == ".pyc"
 
 
 def relative_path(value: str, *, internal: bool = False) -> str:
@@ -85,6 +90,24 @@ class ProjectFiles:
         """Copy a packaged document or binary asset unchanged through tracked file ownership."""
         return _Operation("write", relative_path(path), policy_value(policy), self._template_file(source).read_bytes())
 
+    def from_folder(
+        self,
+        path: str,
+        *,
+        source: str | None = None,
+        policy: WritePolicy = WritePolicy.IF_MISSING,
+    ) -> ChangePlan:
+        """Copy every regular file inside a packaged template folder recursively with tracked ownership."""
+        destination_root = relative_path(path)
+        # Default source to path so `from_folder("lib")` copies `templates/lib/` into `lib/`.
+        effective_source = path if source is None else source
+        source_root = self._template_directory(effective_source)
+        resolved_policy = policy_value(policy)
+        operations = self._collect_folder_operations(
+            destination_root, source_root, effective_source, resolved_policy
+        )
+        return ChangePlan(*operations)
+
     def _template_file(self, source: str) -> Path:
         """Share one containment boundary for rendered templates and verbatim resources."""
         if self._templates is None:
@@ -95,6 +118,47 @@ class ProjectFiles:
         if not path.is_file():
             raise ProjectError(f"pack resource must be a regular file: {source}")
         return path
+
+    def _template_directory(self, source: str) -> Path:
+        """Resolve and validate a symlink-free folder inside the pack's template directory."""
+        # Require an explicit templates root before reading packaged folders.
+        if self._templates is None:
+            raise ProjectError("pack has no template directory")
+        path = self._templates / relative_path(source)
+        # Reject symlinked folders and escaping paths before walking any children.
+        if path.is_symlink() or not path.resolve().is_relative_to(self._templates.resolve()):
+            raise ProjectError("template folder escapes its package directory")
+        if not path.is_dir():
+            raise ProjectError(f"pack resource must be a directory: {source}")
+        return path
+
+    def _collect_folder_operations(
+        self,
+        destination_root: str,
+        source_root: Path,
+        source_label: str,
+        policy: WritePolicy,
+    ) -> tuple[_Operation, ...]:
+        """Walk a validated template folder deterministically and build tracked write operations."""
+        operations: list[_Operation] = []
+        for item in sorted(source_root.rglob("*"), key=lambda entry: entry.relative_to(source_root).as_posix()):
+            relative = item.relative_to(source_root)
+            # Skip VCS, cache, bytecode, and macOS Finder metadata files.
+            if _is_ignored_template_entry(relative, item):
+                continue
+            # Refuse symlinks inside copied folders so pack templates never pull in outside files.
+            if item.is_symlink():
+                raise ProjectError(f"pack folder resource cannot be a symlink: {relative.as_posix()}")
+            if item.is_dir():
+                continue
+            if not item.is_file():
+                raise ProjectError(f"pack folder resource must be a regular file: {relative.as_posix()}")
+            target = relative_path(f"{destination_root}/{relative.as_posix()}")
+            operations.append(_Operation("write", target, policy, item.read_bytes()))
+        # Fail clearly on empty folders rather than silently producing a no-op plan.
+        if not operations:
+            raise ProjectError(f"pack folder contains no files: {source_label}")
+        return tuple(operations)
 
     def delete(self, path: str) -> _Operation:
         """Propose removal only if the pack still owns unchanged generated content."""

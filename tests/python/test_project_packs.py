@@ -306,6 +306,70 @@ class ProjectPackIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectError, 'no template directory'):
             ProjectFiles({}, None).from_file('docs/reference', source='reference')
 
+    def test_pack_from_folder_copies_recursively_and_preserves_managed_policy(self):
+        """context.files.from_folder copies nested files, skips caches, flattens in ChangePlan, and tracks ownership."""
+        from harnest.authoring.context import ProjectFiles
+        from harnest.authoring.contracts import _File
+        from harnest.authoring.operations import OperationEngine, read_lock
+
+        assets = self.root.parent / 'folder-assets'
+        (assets / 'lib' / 'nested').mkdir(parents=True)
+        (assets / 'lib' / 'client.py').write_text('CLIENT = "v1"\n')
+        (assets / 'lib' / 'nested' / 'util.py').write_text('UTIL = 1\n')
+        (assets / 'lib' / '__pycache__').mkdir()
+        (assets / 'lib' / '__pycache__' / 'client.cpython-312.pyc').write_bytes(b'pyc')
+        (assets / 'lib' / '.DS_Store').write_bytes(b'ds')
+        (assets / 'plugin-src' / 'skills' / 'demo').mkdir(parents=True)
+        (assets / 'plugin-src' / 'plugin.json').write_text('{"name":"demo"}\n')
+        (assets / 'plugin-src' / 'skills' / 'demo' / 'SKILL.md').write_text('# demo\n')
+
+        pack = _pack('folders', 1, templates=assets)
+        pack.initialize(lambda ctx: ChangePlan(
+            ctx.files.from_folder('lib', policy=WritePolicy.MANAGED),
+            ctx.files.from_folder('agent-plugins/demo', source='plugin-src', policy=WritePolicy.IF_MISSING),
+        ))
+        plan = self.planner(packs=[pack]).plan_init(self.root, minimal=True)
+        self.assertFalse(plan.blockers)
+        apply_project_plan(plan)
+        self.assertEqual((self.root / 'lib/client.py').read_text(), 'CLIENT = "v1"\n')
+        self.assertEqual((self.root / 'lib/nested/util.py').read_text(), 'UTIL = 1\n')
+        self.assertEqual((self.root / 'agent-plugins/demo/plugin.json').read_text(), '{"name":"demo"}\n')
+        self.assertEqual((self.root / 'agent-plugins/demo/skills/demo/SKILL.md').read_text(), '# demo\n')
+        self.assertFalse((self.root / 'lib/__pycache__').exists())
+        self.assertFalse((self.root / 'lib/.DS_Store').exists())
+
+        # Also verify direct return of from_folder() and MANAGED local-modification protection.
+        engine = OperationEngine({}, read_lock({}))
+        files = ProjectFiles(engine.files, assets)
+        for op in files.from_folder('lib', policy=WritePolicy.MANAGED).operations:
+            engine.apply('folders', op)
+        engine.files['lib/client.py'] = _File(b'CLIENT = "edited"\n')
+        (assets / 'lib' / 'client.py').write_text('CLIENT = "v2"\n')
+        with self.assertRaisesRegex(ProjectError, 'local modifications'):
+            for op in files.from_folder('lib', policy=WritePolicy.MANAGED).operations:
+                engine.apply('folders', op)
+
+    def test_pack_from_folder_rejects_symlinks_empty_files_and_escaping_paths(self):
+        """context.files.from_folder rejects escaping paths, symlinks, files, empty folders, and missing templates."""
+        from harnest.authoring.context import ProjectFiles
+
+        assets = self.root.parent / 'bad-folder-assets'
+        assets.mkdir()
+        (assets / 'empty').mkdir()
+        (assets / 'single.py').write_text('X = 1\n')
+        (assets / 'with-link').mkdir()
+        outside = self.root.parent / 'outside-folder'
+        outside.mkdir()
+        (outside / 'secret.py').write_text('SECRET = 1\n')
+        (assets / 'linked-dir').symlink_to(outside)
+        (assets / 'with-link' / 'leak.py').symlink_to(outside / 'secret.py')
+        files = ProjectFiles({}, assets)
+        for source in ('../outside-folder', 'linked-dir', 'with-link', 'empty', 'single.py', 'missing'):
+            with self.subTest(source=source), self.assertRaises(ProjectError):
+                files.from_folder('lib', source=source)
+        with self.assertRaisesRegex(ProjectError, 'no template directory'):
+            ProjectFiles({}, None).from_folder('lib')
+
     def test_invalid_options_block_before_live_mutation(self):
         for values in [{}, {'team': ''}, {'team': 'ok', 'environment': 'bad'}, {'team': 'ok', 'unknown': 'x'}]:
             with self.subTest(values=values):
