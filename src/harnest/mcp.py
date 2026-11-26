@@ -120,6 +120,62 @@ def _mcp_tool_annotations(raw: Any) -> MCPToolAnnotations:
     )
 
 
+def _mcp_tool_info_from_mapping(
+    tool: Mapping[str, Any], name: str | None
+) -> MCPToolInfo:
+    """Build an MCPToolInfo descriptor from a raw tools/list JSON mapping."""
+
+    # Explicit canonical names override the raw mapping name when a framework already applied a prefix.
+    resolved_name = name if name is not None else str(tool.get("name", ""))
+    raw_description = tool.get("description")
+    # Ignore non-string descriptions from malformed remote server payloads.
+    description = raw_description if isinstance(raw_description, str) else ""
+    return MCPToolInfo(
+        name=resolved_name,
+        description=description,
+        annotations=_mcp_tool_annotations(tool.get("annotations")),
+    )
+
+
+def _remote_tool_name(tool: Any, raw_mcp_tool: Any, name: str | None) -> str:
+    """Resolve the remote tool's canonical name across framework wrapper shapes."""
+
+    # Prefer an explicit caller-supplied canonical name first.
+    if name is not None:
+        return name
+    raw_name = getattr(raw_mcp_tool, "name", None)
+    # Fall back to the wrapped MCP SDK tool's original remote name before the adapter tool name.
+    if isinstance(raw_name, str) and raw_name:
+        return raw_name
+    return str(getattr(tool, "name", ""))
+
+
+def _remote_tool_description(tool: Any, raw_mcp_tool: Any) -> str:
+    """Resolve the remote tool's description from the wrapped MCP tool or adapter."""
+
+    raw_description = getattr(raw_mcp_tool, "description", None)
+    # Use the adapter's description only when the wrapped MCP SDK tool did not provide a string.
+    if not isinstance(raw_description, str):
+        raw_description = getattr(tool, "description", None)
+    return raw_description if isinstance(raw_description, str) else ""
+
+
+def _remote_tool_annotations(tool: Any, raw_mcp_tool: Any) -> Any:
+    """Locate raw MCP annotations across ADK wrappers, direct attributes, and LangChain metadata."""
+
+    raw_annotations = getattr(raw_mcp_tool, "annotations", None)
+    # Check the adapter's direct annotations attribute when the wrapped MCP tool has none.
+    if raw_annotations is None:
+        raw_annotations = getattr(tool, "annotations", None)
+    # Finally inspect LangChain StructuredTool.metadata where langchain-mcp-adapters stores dumped ToolAnnotations.
+    if raw_annotations is None:
+        metadata = getattr(tool, "metadata", None)
+        if isinstance(metadata, Mapping):
+            nested = metadata.get("annotations")
+            return nested if nested is not None else metadata
+    return raw_annotations
+
+
 def mcp_tool_info_from_remote(tool: Any, *, name: str | None = None) -> MCPToolInfo:
     """Extract canonical name, description, and annotations from a discovered MCP tool."""
 
@@ -134,45 +190,50 @@ def mcp_tool_info_from_remote(tool: Any, *, name: str | None = None) -> MCPToolI
         )
     # Resource discovery returns JSON dict payloads from tools/list responses.
     if isinstance(tool, Mapping):
-        resolved_name = name if name is not None else str(tool.get("name", ""))
-        raw_description = tool.get("description")
-        description = raw_description if isinstance(raw_description, str) else ""
-        return MCPToolInfo(
-            name=resolved_name,
-            description=description,
-            annotations=_mcp_tool_annotations(tool.get("annotations")),
-        )
+        return _mcp_tool_info_from_mapping(tool, name)
     # ADK wraps the underlying MCP SDK Tool on _mcp_tool; some adapters expose raw_mcp_tool.
     raw_mcp_tool = getattr(tool, "raw_mcp_tool", None)
     if raw_mcp_tool is None:
         raw_mcp_tool = getattr(tool, "_mcp_tool", None)
-    # Prefer an explicit canonical name (for frameworks that already applied a prefix),
-    # then the wrapped MCP tool's remote name, then the adapter tool's name.
-    if name is not None:
-        resolved_name = name
-    elif raw_mcp_tool is not None and isinstance(getattr(raw_mcp_tool, "name", None), str) and raw_mcp_tool.name:
-        resolved_name = raw_mcp_tool.name
-    else:
-        resolved_name = str(getattr(tool, "name", ""))
-    # Prefer the raw MCP tool description when present, falling back to the adapter tool.
-    raw_description = getattr(raw_mcp_tool, "description", None) if raw_mcp_tool is not None else None
-    if not isinstance(raw_description, str):
-        raw_description = getattr(tool, "description", None)
-    description = raw_description if isinstance(raw_description, str) else ""
-    # Check wrapped MCP annotations first, then direct annotations, then LangChain
-    # StructuredTool.metadata where langchain-mcp-adapters stores dumped ToolAnnotations.
-    raw_annotations = getattr(raw_mcp_tool, "annotations", None) if raw_mcp_tool is not None else None
-    if raw_annotations is None:
-        raw_annotations = getattr(tool, "annotations", None)
-    if raw_annotations is None:
-        metadata = getattr(tool, "metadata", None)
-        if isinstance(metadata, Mapping):
-            nested = metadata.get("annotations")
-            raw_annotations = nested if nested is not None else metadata
     return MCPToolInfo(
-        name=resolved_name,
-        description=description,
-        annotations=_mcp_tool_annotations(raw_annotations),
+        name=_remote_tool_name(tool, raw_mcp_tool, name),
+        description=_remote_tool_description(tool, raw_mcp_tool),
+        annotations=_mcp_tool_annotations(_remote_tool_annotations(tool, raw_mcp_tool)),
+    )
+
+
+def _normalize_tool_descriptor(tool: str | MCPToolInfo) -> MCPToolInfo:
+    """Convert a plain tool name or MCPToolInfo into a normalized descriptor."""
+
+    # Allow static callers to pass a bare tool name string alongside full MCPToolInfo values.
+    if isinstance(tool, str):
+        return MCPToolInfo(name=tool)
+    if isinstance(tool, MCPToolInfo):
+        return tool
+    raise TypeError("tool must be a tool name string or MCPToolInfo")
+
+
+def _validate_dynamic_tool_permissions(result: Any) -> list[str]:
+    """Validate and normalize the return value of a dynamic tool_permissions classifier."""
+
+    from .agent_principal import validate_permission
+
+    # None adds no tool-level permission, leaving untagged tools denied under a principal.
+    if result is None:
+        return []
+    if isinstance(result, str):
+        return [validate_permission(result)]
+    # Accept sequences and sets of permission strings while rejecting raw byte buffers.
+    if not isinstance(result, (bytes, bytearray)) and isinstance(
+        result, (Sequence, set, frozenset)
+    ):
+        return [validate_permission(item) for item in result]
+    # Close an accidentally returned coroutine to avoid RuntimeWarning before failing closed.
+    if inspect.iscoroutine(result):
+        result.close()
+    raise TypeError(
+        "MCP tool_permissions classifier must return a permission string, "
+        "a collection of permission strings, or None"
     )
 
 
@@ -457,49 +518,20 @@ class MCPClient:
     def permissions_for_tool(self, tool: str | MCPToolInfo) -> tuple[str, ...]:
         """Resolve client and per-tool permissions for one discovered remote MCP tool."""
 
-        from .agent_principal import validate_permission
-
-        # Normalize plain tool names to a descriptor so both static and dynamic
-        # policies share one resolution path.
-        if isinstance(tool, str):
-            descriptor = MCPToolInfo(name=tool)
-        elif isinstance(tool, MCPToolInfo):
-            descriptor = tool
-        else:
-            raise TypeError("tool must be a tool name string or MCPToolInfo")
-
+        descriptor = _normalize_tool_descriptor(tool)
         resolved: list[str] = []
         # Include the client-wide permission first when declared.
         if self.permission is not None:
             resolved.append(self.permission)
-
-        # Static mappings look up by exact remote tool name; dynamic callables
-        # classify the full descriptor and validate every returned identifier.
+        # Static mappings look up by exact remote tool name; dynamic callables classify the full descriptor.
         if isinstance(self.tool_permissions, Mapping):
             mapped = self.tool_permissions.get(descriptor.name)
             if mapped is not None:
                 resolved.append(mapped)
         else:
-            result = self.tool_permissions(descriptor)
-            # None adds no tool-level permission, leaving untagged tools denied under a principal.
-            if result is None:
-                pass
-            elif isinstance(result, str):
-                resolved.append(validate_permission(result))
-            elif not isinstance(result, (bytes, bytearray)) and isinstance(
-                result, (Sequence, set, frozenset)
-            ):
-                for item in result:
-                    resolved.append(validate_permission(item))
-            else:
-                # Close an accidentally returned coroutine to avoid RuntimeWarning before failing closed.
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise TypeError(
-                    "MCP tool_permissions classifier must return a permission string, "
-                    "a collection of permission strings, or None"
-                )
-
+            resolved.extend(
+                _validate_dynamic_tool_permissions(self.tool_permissions(descriptor))
+            )
         # Deduplicate while preserving deterministic declaration order.
         return tuple(dict.fromkeys(resolved))
 

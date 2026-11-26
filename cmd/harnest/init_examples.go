@@ -8,14 +8,14 @@ import "harnest.dev/harnest/internal/pysource"
 // has no code, preserving its root agent and required storage implementation.
 func managedExampleScaffoldFiles(files map[string]string, agentName string) map[string]string {
 	samples := map[string]string{
-		"tools/_example.py":                                       pysource.Render("init/examples/tools/_example.py.tmpl", map[string]any{"Source": files["tools/echo.py"]}),
-		"sandbox/_example.py":                                     files["sandbox/_example.py"],
+		"tools/_example.py":                                             pysource.Render("init/examples/tools/_example.py.tmpl", map[string]any{"Source": files["tools/echo.py"]}),
+		"sandbox/_example.py":                                           files["sandbox/_example.py"],
 		"skills/_example/SKILL.md":                                      files["skills/getting-started/SKILL.md"],
 		"agent-plugins/_example_agent/plugin.json":                      files["agent-plugins/starter/plugin.json"],
 		"agent-plugins/_example_agent/skills/starter-guidance/SKILL.md": files["agent-plugins/starter/skills/starter-guidance/SKILL.md"],
 		"evals/_example.evalset.json":                                   files["evals/starter.evalset.json"],
-		"tests/unit/_example.py":                                  pysource.Render("init/examples/tests/unit/_example.py.tmpl", map[string]any{"Source": files["tests/unit/test_agent.py"]}),
-		"tests/smoke/_example.py":                                 pysource.Render("init/examples/tests/smoke/_example.py.tmpl", map[string]any{"Source": files["tests/smoke/test_health.py"]}),
+		"tests/unit/_example.py":                                        pysource.Render("init/examples/tests/unit/_example.py.tmpl", map[string]any{"Source": files["tests/unit/test_agent.py"]}),
+		"tests/smoke/_example.py":                                       pysource.Render("init/examples/tests/smoke/_example.py.tmpl", map[string]any{"Source": files["tests/smoke/test_health.py"]}),
 	}
 	// Reuse the default profile unchanged: resources with existing code need no
 	// second example, and placeholders must not activate capabilities implicitly.

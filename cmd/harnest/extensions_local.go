@@ -372,6 +372,21 @@ func createExtensionScaffoldWithContributions(destination, name string, capabili
 	}
 	defer os.RemoveAll(stagingRoot)
 	staged := filepath.Join(stagingRoot, name)
+	if err := writeStagedExtensionScaffold(staged, name, capabilities, contributions); err != nil {
+		return err
+	}
+	// Recheck after staging so concurrent creation never gets silently replaced.
+	if err := validateLocalPackageDestination(destination, false, "Harnest Extension"); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, destination); err != nil {
+		return fmt.Errorf("initialize Harnest Extension: %w", err)
+	}
+	return nil
+}
+
+// writeStagedExtensionScaffold writes canonical extension files and requested contribution folders into staged.
+func writeStagedExtensionScaffold(staged, name string, capabilities, contributions []string) error {
 	if err := os.Mkdir(staged, 0o755); err != nil {
 		return fmt.Errorf("create staged Harnest Extension: %w", err)
 	}
@@ -390,13 +405,6 @@ func createExtensionScaffoldWithContributions(destination, name string, capabili
 		if err := os.MkdirAll(filepath.Join(staged, kind), 0o755); err != nil {
 			return fmt.Errorf("create staged Harnest Extension %s directory: %w", kind, err)
 		}
-	}
-	// Recheck after staging so concurrent creation never gets silently replaced.
-	if err := validateLocalPackageDestination(destination, false, "Harnest Extension"); err != nil {
-		return err
-	}
-	if err := os.Rename(staged, destination); err != nil {
-		return fmt.Errorf("initialize Harnest Extension: %w", err)
 	}
 	return nil
 }

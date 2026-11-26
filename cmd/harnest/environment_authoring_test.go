@@ -195,43 +195,42 @@ package = false
 // TestEnvironmentSyncAuthoringValidationGuards verifies policy enforcement and flag restrictions on packs, extensions, and agents.
 func TestEnvironmentSyncAuthoringValidationGuards(t *testing.T) {
 	root := t.TempDir()
-	packDir := filepath.Join(root, "policy-pack")
-	writePackFixtureFile(t, filepath.Join(packDir, "pack.yaml"), `apiVersion: harnest.dev/pack/v1
+	policyPack := filepath.Join(root, "policy-pack")
+	writePackFixtureFile(t, filepath.Join(policyPack, "pack.yaml"), `apiVersion: harnest.dev/pack/v1
 name: policy
 version: 0.1.0
 title: Policy Pack
 packages:
   - google-adk>=2.8
 `)
-	sys := environmentTestSystem(t, root)
-	// Pack packages declaring compiler-owned frameworks must be rejected.
-	if _, _, err := executeForTest(t, sys, "env", "sync", packDir); err == nil || !strings.Contains(err.Error(), "compiler-owned") {
-		t.Fatalf("expected compiler-owned rejection for pack.yaml, got: %v", err)
-	}
-
-	// Agent-only flags (--frozen and --profile) must be rejected on pack directories.
-	writePackFixtureFile(t, filepath.Join(packDir, "pack.yaml"), `apiVersion: harnest.dev/pack/v1
-name: policy
+	cleanPack := filepath.Join(root, "clean-pack")
+	writePackFixtureFile(t, filepath.Join(cleanPack, "pack.yaml"), `apiVersion: harnest.dev/pack/v1
+name: clean
 version: 0.1.0
-title: Policy Pack
+title: Clean Pack
 `)
-	if _, _, err := executeForTest(t, sys, "env", "sync", packDir, "--frozen"); err == nil || !strings.Contains(err.Error(), "--frozen") {
-		t.Fatalf("expected --frozen error on pack, got: %v", err)
-	}
-	if _, _, err := executeForTest(t, sys, "env", "sync", packDir, "--profile", "development"); err == nil || !strings.Contains(err.Error(), "--profile") {
-		t.Fatalf("expected --profile error on pack, got: %v", err)
-	}
-	if _, _, err := executeForTest(t, sys, "env", "sync", packDir, "--framework", "unknown"); err == nil || !strings.Contains(err.Error(), "--framework") {
-		t.Fatalf("expected --framework error on pack, got: %v", err)
-	}
-
-	// --framework must be rejected on agent projects because config.yaml owns their framework.
 	agentDir := filepath.Join(root, "flag-agent")
 	if err := createScaffold(agentDir, "flag-agent"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := executeForTest(t, sys, "env", "sync", agentDir, "--framework", "adk"); err == nil || !strings.Contains(err.Error(), "--framework") {
-		t.Fatalf("expected --framework error on agent, got: %v", err)
+	sys := environmentTestSystem(t, root)
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "compiler-owned pack dep", args: []string{"env", "sync", policyPack}, wantErr: "compiler-owned"},
+		{name: "frozen on pack", args: []string{"env", "sync", cleanPack, "--frozen"}, wantErr: "--frozen"},
+		{name: "profile on pack", args: []string{"env", "sync", cleanPack, "--profile", "development"}, wantErr: "--profile"},
+		{name: "unknown framework on pack", args: []string{"env", "sync", cleanPack, "--framework", "unknown"}, wantErr: "--framework"},
+		{name: "framework on agent", args: []string{"env", "sync", agentDir, "--framework", "adk"}, wantErr: "--framework"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := executeForTest(t, sys, tc.args...); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 

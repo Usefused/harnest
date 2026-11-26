@@ -51,6 +51,29 @@ def plan_application_layout(root: Path, actions: list, blockers: list[str]) -> N
     _plan_agent_plugins_directory(root, legacy, actions, blockers)
 
 
+def _validate_plugins_migration_root(plugins_root: Path) -> str | None:
+    """Validate that a legacy plugins/ path is a regular symlink-free directory before migration."""
+
+    # Reject symlinks or regular files occupying the retired plugins/ path.
+    if plugins_root.is_symlink() or not plugins_root.is_dir():
+        return "plugins must be a regular directory before migration"
+    # Reject any nested symlink before computing tree digests or planning relocation.
+    if any(item.is_symlink() for item in plugins_root.rglob("*")):
+        return f"cannot migrate symlinked tree: {plugins_root}"
+    return None
+
+
+def _has_non_extension_entries(
+    plugins_root: Path, legacy: tuple[ExtensionDescriptor, ...]
+) -> bool:
+    """Report whether plugins/ holds entries other than relocated legacy RuntimePlugin packages."""
+
+    legacy_dirs = {item.directory.resolve() for item in legacy}
+    return any(
+        child.resolve() not in legacy_dirs for child in sorted(plugins_root.iterdir())
+    )
+
+
 def _plan_agent_plugins_directory(
     root: Path,
     legacy: tuple[ExtensionDescriptor, ...],
@@ -63,22 +86,14 @@ def _plan_agent_plugins_directory(
     # Nothing to migrate when no legacy plugins/ directory exists.
     if not plugins_root.exists() and not plugins_root.is_symlink():
         return
-    # Reject symlinks or regular files occupying the retired plugins/ path.
-    if plugins_root.is_symlink() or not plugins_root.is_dir():
-        blockers.append("plugins must be a regular directory before migration")
+    blocker = _validate_plugins_migration_root(plugins_root)
+    # Stop planning this directory when symlink or file-type invariants fail.
+    if blocker is not None:
+        blockers.append(blocker)
         return
-    # Reject any nested symlink before computing tree digests or planning relocation.
-    if any(item.is_symlink() for item in plugins_root.rglob("*")):
-        blockers.append(f"cannot migrate symlinked tree: {plugins_root}")
-        return
-    legacy_dirs = {item.directory.resolve() for item in legacy}
-    remaining = [
-        child for child in sorted(plugins_root.iterdir())
-        if child.resolve() not in legacy_dirs
-    ]
     # When plugins/ held only legacy RuntimePlugin packages, remove the vacated folder
     # instead of creating an unexpected empty agent-plugins/ directory.
-    if legacy and not remaining:
+    if legacy and not _has_non_extension_entries(plugins_root, legacy):
         actions.append(
             UpgradeAction(
                 "remove_directory",

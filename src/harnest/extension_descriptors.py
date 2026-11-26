@@ -434,27 +434,7 @@ def _descriptor_from_document(
             f"Harnest Extension metadata.name {name!r} must match folder {directory.name!r}"
         )
     version = _require_semver(metadata.get("version"))
-    expected_entrypoint = _LEGACY_ENTRYPOINT if legacy else "extension:extension"
-    raw_runtime = document.get("runtime")
-    # Legacy Plugin manifests still require an explicit runtime block; canonical Extensions default to extension:extension.
-    if raw_runtime is None and not legacy:
-        entrypoint = expected_entrypoint
-    else:
-        runtime = _require_mapping(raw_runtime, label="runtime")
-        _reject_unknown(runtime, {"entrypoint"}, label="runtime")
-        raw_entrypoint = runtime.get("entrypoint")
-        # Allow an empty runtime block on canonical Extensions to fall back to the default entrypoint.
-        if raw_entrypoint is None and not legacy:
-            entrypoint = expected_entrypoint
-        else:
-            entrypoint = _require_nonempty_string(
-                raw_entrypoint, label="runtime.entrypoint"
-            )
-    # Keep entrypoint pinned to the closed extension contract even when supplied explicitly.
-    if entrypoint != expected_entrypoint:
-        raise ExtensionConventionError(
-            f"Harnest Extension entrypoint must be {expected_entrypoint!r}"
-        )
+    entrypoint = _parse_entrypoint(document.get("runtime"), legacy=legacy)
     requires = _parse_requires(document.get("requires"), legacy=legacy)
     contributions = _parse_contributions(
         directory, None if legacy else document.get("contributes")
@@ -482,6 +462,31 @@ def _descriptor_from_document(
         dependencies=project.dependencies,
         contributions=contributions,
     )
+
+
+def _parse_entrypoint(raw_runtime: Any, *, legacy: bool) -> str:
+    """Resolve and validate the extension entrypoint, defaulting canonical manifests to extension:extension."""
+
+    expected_entrypoint = _LEGACY_ENTRYPOINT if legacy else "extension:extension"
+    # Legacy Plugin manifests still require an explicit runtime block; canonical Extensions default when omitted.
+    if raw_runtime is None and not legacy:
+        return expected_entrypoint
+    runtime = _require_mapping(raw_runtime, label="runtime")
+    _reject_unknown(runtime, {"entrypoint"}, label="runtime")
+    raw_entrypoint = runtime.get("entrypoint")
+    # Allow an empty runtime block on canonical Extensions to fall back to the default entrypoint.
+    if raw_entrypoint is None and not legacy:
+        entrypoint = expected_entrypoint
+    else:
+        entrypoint = _require_nonempty_string(
+            raw_entrypoint, label="runtime.entrypoint"
+        )
+    # Keep entrypoint pinned to the closed extension contract even when supplied explicitly.
+    if entrypoint != expected_entrypoint:
+        raise ExtensionConventionError(
+            f"Harnest Extension entrypoint must be {expected_entrypoint!r}"
+        )
+    return entrypoint
 
 
 def _validate_dependency_projects(

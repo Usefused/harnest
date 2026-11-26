@@ -259,24 +259,7 @@ func TestInstallRuntimeWithManagedPythonPinsWorkingDirectory(t *testing.T) {
 			if err != nil {
 				t.Fatalf("runtime install failed: %v", err)
 			}
-			// Expect both uv venv and uv pip install calls to be recorded.
-			if len(recorded) != 2 {
-				t.Fatalf("expected 2 uv invocations, got %d", len(recorded))
-			}
-			for index, cmd := range recorded {
-				// Dir must always be an explicit existing directory outside both the stale caller CWD and cleared target.
-				if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == runtimeDirectory {
-					t.Fatalf("command %d (%v) used invalid Dir=%q (stale=%q target=%q)", index, cmd.Args, cmd.Dir, staleDir, runtimeDirectory)
-				}
-				// Use parent when it already existed; otherwise fall back to the staged uv directory rather than a missing parent.
-				if tc.parentExists {
-					if cmd.Dir != filepath.Dir(runtimeDirectory) {
-						t.Fatalf("command %d used Dir=%q, want %q", index, cmd.Dir, filepath.Dir(runtimeDirectory))
-					}
-				} else if cmd.Dir != filepath.Dir(cmd.Path) {
-					t.Fatalf("command %d with missing parent used Dir=%q, want staged uv dir %q", index, cmd.Dir, filepath.Dir(cmd.Path))
-				}
-			}
+			assertPinnedManagedRuntimeDirs(t, recorded, staleDir, runtimeDirectory, tc.parentExists)
 			log := string(mustReadTestFile(t, record))
 			assertContainsAll(t, "managed runtime uv log", log, []string{
 				"POST_CLEAR_PWD=",
@@ -284,5 +267,30 @@ func TestInstallRuntimeWithManagedPythonPinsWorkingDirectory(t *testing.T) {
 				"ARGS=pip install --python " + runtimePythonPath(runtimeDirectory),
 			})
 		})
+	}
+}
+
+// assertPinnedManagedRuntimeDirs verifies uv commands ran in an existing directory outside staleDir and target.
+func assertPinnedManagedRuntimeDirs(
+	t *testing.T, recorded []*exec.Cmd, staleDir, runtimeDirectory string, parentExists bool,
+) {
+	t.Helper()
+	// Expect both uv venv and uv pip install calls to be recorded.
+	if len(recorded) != 2 {
+		t.Fatalf("expected 2 uv invocations, got %d", len(recorded))
+	}
+	for index, cmd := range recorded {
+		// Dir must always be an explicit existing directory outside both the stale caller CWD and cleared target.
+		if cmd.Dir == "" || cmd.Dir == staleDir || cmd.Dir == runtimeDirectory {
+			t.Fatalf("command %d (%v) used invalid Dir=%q (stale=%q target=%q)", index, cmd.Args, cmd.Dir, staleDir, runtimeDirectory)
+		}
+		wantDir := filepath.Dir(cmd.Path)
+		// Prefer the target's parent directory when it already existed on disk.
+		if parentExists {
+			wantDir = filepath.Dir(runtimeDirectory)
+		}
+		if cmd.Dir != wantDir {
+			t.Fatalf("command %d used Dir=%q, want %q", index, cmd.Dir, wantDir)
+		}
 	}
 }

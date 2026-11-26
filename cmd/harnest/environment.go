@@ -61,50 +61,15 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 			}
 			// Handle pack and standalone extension workspaces without requiring an agent config.yaml.
 			if targetKind != authoringTargetAgent {
-				// Reject agent-only lock flags so callers do not assume a lockfile was verified.
-				if frozen {
-					return fmt.Errorf("--frozen is only supported for agent projects with a committed lockfile")
-				}
-				// Reject explicit agent profile overrides because authoring environments install dev/IDE extras directly.
-				if command.Flags().Changed("profile") {
-					return fmt.Errorf("--profile is only supported for agent projects")
-				}
-				selection, err := a.syncAuthoringEnvironment(command, targetKind, resolvedDir, frameworkValue)
-				if err != nil {
-					return err
-				}
-				label := "Pack"
-				if targetKind == authoringTargetExtension {
-					label = "Extension"
-				}
-				fmt.Fprintf(command.OutOrStdout(), "%s environment ready: %s\n", label, selection.Executable)
-				publishIDEEnvironmentPointers(command, resolvedDir, selection.Executable)
-				return nil
+				return a.runAuthoringEnvironmentSync(
+					command, targetKind, resolvedDir, frameworkValue, frozen, command.Flags().Changed("profile"),
+				)
 			}
 			// Reject --framework on agents because config.yaml is the single source of truth for agent frameworks.
 			if strings.TrimSpace(frameworkValue) != "" {
 				return fmt.Errorf("--framework is only supported for pack or standalone extension directories")
 			}
-			profile, err := parseEnvironmentProfile(profileValue)
-			if err != nil {
-				return err
-			}
-			bundle, err := loadAgentBundle(targetDir)
-			if err != nil {
-				return err
-			}
-			selection, err := a.syncAgentEnvironment(command, bundle, profile, frozen)
-			if err != nil {
-				return err
-			}
-			defer pruneAgentEnvironments(bundle.Directory)
-			fmt.Fprintf(
-				command.OutOrStdout(),
-				"Agent environment ready: %s\n",
-				selection.Executable,
-			)
-			publishIDEEnvironmentPointers(command, bundle.Directory, selection.Executable)
-			return nil
+			return a.runAgentEnvironmentSync(command, targetDir, profileValue, frozen)
 		},
 	}
 	command.Flags().BoolVar(
@@ -126,6 +91,57 @@ func (a *application) newEnvironmentSyncCommand() *cobra.Command {
 		"framework extras to install for pack or extension authoring: all, adk, or langgraph",
 	)
 	return command
+}
+
+// runAgentEnvironmentSync executes the locked agent profile sync and publishes IDE pointers.
+func (a *application) runAgentEnvironmentSync(
+	command *cobra.Command, targetDir, profileValue string, frozen bool,
+) error {
+	profile, err := parseEnvironmentProfile(profileValue)
+	if err != nil {
+		return err
+	}
+	bundle, err := loadAgentBundle(targetDir)
+	if err != nil {
+		return err
+	}
+	selection, err := a.syncAgentEnvironment(command, bundle, profile, frozen)
+	if err != nil {
+		return err
+	}
+	defer pruneAgentEnvironments(bundle.Directory)
+	fmt.Fprintf(command.OutOrStdout(), "Agent environment ready: %s\n", selection.Executable)
+	publishIDEEnvironmentPointers(command, bundle.Directory, selection.Executable)
+	return nil
+}
+
+// runAuthoringEnvironmentSync validates pack/extension flags, syncs the authoring venv, and updates editor links.
+func (a *application) runAuthoringEnvironmentSync(
+	command *cobra.Command,
+	targetKind authoringEnvironmentKind,
+	resolvedDir, frameworkValue string,
+	frozen, profileChanged bool,
+) error {
+	// Reject agent-only lock flags so callers do not assume a lockfile was verified.
+	if frozen {
+		return fmt.Errorf("--frozen is only supported for agent projects with a committed lockfile")
+	}
+	// Reject explicit agent profile overrides because authoring environments install dev/IDE extras directly.
+	if profileChanged {
+		return fmt.Errorf("--profile is only supported for agent projects")
+	}
+	selection, err := a.syncAuthoringEnvironment(command, targetKind, resolvedDir, frameworkValue)
+	if err != nil {
+		return err
+	}
+	label := "Pack"
+	// Tailor the status prefix to match whether a pack or standalone extension was synced.
+	if targetKind == authoringTargetExtension {
+		label = "Extension"
+	}
+	fmt.Fprintf(command.OutOrStdout(), "%s environment ready: %s\n", label, selection.Executable)
+	publishIDEEnvironmentPointers(command, resolvedDir, selection.Executable)
+	return nil
 }
 
 // agentPython leases the selected interpreter before another command can replace it.

@@ -81,7 +81,10 @@ func TestExtensionInitSupportsOutputPackRootAndContributions(t *testing.T) {
 	if _, _, err := executeForTest(t, defaultSystem(), "extensions", "init", "bad_contrib", "--output", outParent, "--contribute", "bogus"); err == nil {
 		t.Fatal("expected error for unknown --contribute kind")
 	}
+}
 
+// TestExtensionInitAutoDetectsPackRoot verifies `extensions init` inside a pack folder writes into <pack>/extensions/<name>.
+func TestExtensionInitAutoDetectsPackRoot(t *testing.T) {
 	// Running inside a pack directory (pack.yaml without config.yaml) scaffolds into <pack>/extensions/<name>.
 	packDir := filepath.Join(t.TempDir(), "acme-pack")
 	if err := createProjectPackScaffold(packDir, "acme"); err != nil {

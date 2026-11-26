@@ -151,17 +151,36 @@ func (a *application) syncAuthoringEnvironment(
 	}
 	defer unlock()
 	// Reuse the existing environment when inputs match and Harnest is still importable inside it.
-	if selection, found := cachedAgentPython(paths, fingerprint); found {
-		available, probeErr := a.agentCLIAvailable(command, selection.Executable)
-		if probeErr != nil {
-			return pythonSelection{}, probeErr
-		}
-		if available {
-			selection.Source = string(kind) + " environment"
-			return selection, nil
-		}
+	if selection, ok, probeErr := a.reuseCachedAuthoringEnvironment(command, paths, fingerprint, kind); probeErr != nil {
+		return pythonSelection{}, probeErr
+	} else if ok {
+		return selection, nil
 	}
 	return a.installAuthoringEnvironment(command, plan, wheel, uv, paths, fingerprint)
+}
+
+// reuseCachedAuthoringEnvironment returns the cached authoring interpreter when its fingerprint and CLI probe pass.
+func (a *application) reuseCachedAuthoringEnvironment(
+	command *cobra.Command,
+	paths environmentPaths,
+	fingerprint string,
+	kind authoringEnvironmentKind,
+) (pythonSelection, bool, error) {
+	selection, found := cachedAgentPython(paths, fingerprint)
+	// Trigger a clean install whenever no matching cached state exists.
+	if !found {
+		return pythonSelection{}, false, nil
+	}
+	available, err := a.agentCLIAvailable(command, selection.Executable)
+	if err != nil {
+		return pythonSelection{}, false, err
+	}
+	// Rebuild if an external tool cleared Harnest out of the cached authoring environment.
+	if !available {
+		return pythonSelection{}, false, nil
+	}
+	selection.Source = string(kind) + " environment"
+	return selection, true, nil
 }
 
 // inspectAuthoringEnvironmentPaths prepares .harnest/environments and returns state/lock paths.
@@ -233,17 +252,7 @@ func collectPackAuthoringInputs(
 			return err
 		}
 		plan.packages = append(plan.packages, spec)
-		// Hash local wheel contents or local package manifests so edits trigger an environment refresh.
-		if spec.localPath != "" {
-			if spec.editable {
-				localPyproject := filepath.Join(spec.localPath, "pyproject.toml")
-				if regularFileExists(localPyproject) {
-					plan.localProjFiles = append(plan.localProjFiles, localPyproject)
-				}
-			} else {
-				plan.wheelFiles = append(plan.wheelFiles, spec.localPath)
-			}
-		}
+		recordLocalPackPackageInput(plan, spec)
 	}
 	extensionDirs, err := discoverPackExtensionDirectories(root, manifest.Extensions)
 	// Propagate invalid extension paths declared in pack.yaml rather than silently skipping them.
@@ -258,6 +267,23 @@ func collectPackAuthoringInputs(
 	return nil
 }
 
+// recordLocalPackPackageInput tracks local wheel files or package manifests for cache fingerprinting.
+func recordLocalPackPackageInput(plan *authoringDependencyPlan, spec authoringPackageSpec) {
+	// Skip remote PEP 508 specs because pack.yaml itself is already hashed.
+	if spec.localPath == "" {
+		return
+	}
+	// Hash pyproject.toml for editable local package directories and raw wheel bytes for .whl files.
+	if spec.editable {
+		localPyproject := filepath.Join(spec.localPath, "pyproject.toml")
+		if regularFileExists(localPyproject) {
+			plan.localProjFiles = append(plan.localProjFiles, localPyproject)
+		}
+		return
+	}
+	plan.wheelFiles = append(plan.wheelFiles, spec.localPath)
+}
+
 // parseAuthoringPackPackage validates one unified pack.yaml packages entry as a local path or PEP 508 requirement.
 func parseAuthoringPackPackage(
 	root, raw string, owned map[string]struct{},
@@ -269,29 +295,7 @@ func parseAuthoringPackPackage(
 	}
 	// Treat path-shaped entries as pack-relative local wheels or editable package directories.
 	if looksLikePackPackagePath(trimmed) {
-		candidate := filepath.Join(root, filepath.FromSlash(trimmed))
-		// Keep local package references strictly inside the pack directory.
-		if !pathWithinDirectory(root, candidate) {
-			return authoringPackageSpec{}, fmt.Errorf("pack.yaml packages entry must stay inside the pack directory: %q", raw)
-		}
-		info, err := os.Lstat(candidate)
-		// Require declared local packages and wheels to exist on disk before invoking uv.
-		if err != nil {
-			return authoringPackageSpec{}, fmt.Errorf("inspect pack.yaml package %q: %w", raw, err)
-		}
-		// Reject symlinks so pack environments cannot pull in files outside the workspace.
-		if info.Mode()&os.ModeSymlink != 0 {
-			return authoringPackageSpec{}, fmt.Errorf("pack.yaml package cannot be a symlink: %q", raw)
-		}
-		// Install local Python package folders editably so editor changes take effect immediately.
-		if info.IsDir() {
-			return authoringPackageSpec{localPath: candidate, editable: true}, nil
-		}
-		// Install local wheel files directly; reject other arbitrary non-wheel files.
-		if info.Mode().IsRegular() && strings.HasSuffix(candidate, ".whl") {
-			return authoringPackageSpec{localPath: candidate}, nil
-		}
-		return authoringPackageSpec{}, fmt.Errorf("pack.yaml local package must be a directory or .whl file: %q", raw)
+		return parseLocalAuthoringPackPackage(root, raw, trimmed)
 	}
 	// Block option-shaped requirement strings from being interpreted as uv flags.
 	if strings.HasPrefix(trimmed, "-") {
@@ -302,6 +306,33 @@ func parseAuthoringPackPackage(
 		return authoringPackageSpec{}, err
 	}
 	return authoringPackageSpec{requirement: trimmed}, nil
+}
+
+// parseLocalAuthoringPackPackage validates one pack-relative .whl or editable package directory entry.
+func parseLocalAuthoringPackPackage(root, raw, trimmed string) (authoringPackageSpec, error) {
+	candidate := filepath.Join(root, filepath.FromSlash(trimmed))
+	// Keep local package references strictly inside the pack directory.
+	if !pathWithinDirectory(root, candidate) {
+		return authoringPackageSpec{}, fmt.Errorf("pack.yaml packages entry must stay inside the pack directory: %q", raw)
+	}
+	info, err := os.Lstat(candidate)
+	// Require declared local packages and wheels to exist on disk before invoking uv.
+	if err != nil {
+		return authoringPackageSpec{}, fmt.Errorf("inspect pack.yaml package %q: %w", raw, err)
+	}
+	// Reject symlinks so pack environments cannot pull in files outside the workspace.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return authoringPackageSpec{}, fmt.Errorf("pack.yaml package cannot be a symlink: %q", raw)
+	}
+	// Install local Python package folders editably so editor changes take effect immediately.
+	if info.IsDir() {
+		return authoringPackageSpec{localPath: candidate, editable: true}, nil
+	}
+	// Install local wheel files directly; reject other arbitrary non-wheel files.
+	if info.Mode().IsRegular() && strings.HasSuffix(candidate, ".whl") {
+		return authoringPackageSpec{localPath: candidate}, nil
+	}
+	return authoringPackageSpec{}, fmt.Errorf("pack.yaml local package must be a directory or .whl file: %q", raw)
 }
 
 // looksLikePackPackagePath mirrors Python's _looks_like_pack_path heuristic for pack.yaml packages entries.
@@ -324,12 +355,19 @@ func discoverPackExtensionDirectories(root string, declared []string) ([]string,
 		if !pathWithinDirectory(root, candidate) {
 			return nil, fmt.Errorf("pack.yaml extension path must stay inside the pack directory: %q", relative)
 		}
-		if _, exists := seen[candidate]; !exists {
-			seen[candidate] = struct{}{}
-			directories = append(directories, candidate)
-		}
+		directories = appendUniquePath(directories, seen, candidate)
 	}
-	// Also scan pack/extensions/<name> so newly scaffolded extensions sync even before being added to pack.yaml.
+	var err error
+	directories, err = scanPackExtensionsSubdir(root, seen, directories)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(directories)
+	return directories, nil
+}
+
+// scanPackExtensionsSubdir discovers canonical extension.yaml folders under <pack>/extensions/.
+func scanPackExtensionsSubdir(root string, seen map[string]struct{}, directories []string) ([]string, error) {
 	extensionsRoot := filepath.Join(root, "extensions")
 	entries, err := optionalRegularDirectoryEntries(extensionsRoot)
 	if err != nil {
@@ -342,16 +380,20 @@ func discoverPackExtensionDirectories(root string, declared []string) ([]string,
 		}
 		candidate := filepath.Join(extensionsRoot, entry.Name())
 		// Only treat directories with extension.yaml as canonical Harnest Extensions.
-		if !regularFileExists(filepath.Join(candidate, "extension.yaml")) {
-			continue
-		}
-		if _, exists := seen[candidate]; !exists {
-			seen[candidate] = struct{}{}
-			directories = append(directories, candidate)
+		if regularFileExists(filepath.Join(candidate, "extension.yaml")) {
+			directories = appendUniquePath(directories, seen, candidate)
 		}
 	}
-	sort.Strings(directories)
 	return directories, nil
+}
+
+// appendUniquePath adds candidate to paths once when not already recorded in seen.
+func appendUniquePath(paths []string, seen map[string]struct{}, candidate string) []string {
+	if _, exists := seen[candidate]; exists {
+		return paths
+	}
+	seen[candidate] = struct{}{}
+	return append(paths, candidate)
 }
 
 // collectExtensionAuthoringInputs validates one extension's manifest and optional pyproject.toml dependencies.
@@ -461,17 +503,9 @@ func (a *application) installAuthoringEnvironment(
 	paths environmentPaths,
 	fingerprint string,
 ) (pythonSelection, error) {
-	relative := filepath.ToSlash(filepath.Join("environments", authoringEnvironmentSlot))
-	directory := filepath.Join(paths.root, filepath.FromSlash(relative))
-	// Reject a symlinked authoring slot so uv venv --clear never modifies a path outside .harnest/.
-	if info, statErr := os.Lstat(directory); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return pythonSelection{}, fmt.Errorf("authoring environment cannot be a symlink: %s", directory)
-	} else if statErr != nil && !os.IsNotExist(statErr) {
-		return pythonSelection{}, fmt.Errorf("inspect authoring environment: %w", statErr)
-	}
-	// Remove stale publication state before mutating the slot so a failed sync never looks cached.
-	if err := os.Remove(paths.state); err != nil && !os.IsNotExist(err) {
-		return pythonSelection{}, fmt.Errorf("invalidate authoring environment: %w", err)
+	relative, directory, err := prepareAuthoringSlot(paths)
+	if err != nil {
+		return pythonSelection{}, err
 	}
 	uvPath, cleanupUV, err := stageUV(uvArtifact)
 	if err != nil {
@@ -487,6 +521,43 @@ func (a *application) installAuthoringEnvironment(
 	if err != nil {
 		return pythonSelection{}, err
 	}
+	python, err := a.runAuthoringUVInstall(command, uvPath, wheelPath, directory, environment, plan)
+	if err != nil {
+		return pythonSelection{}, err
+	}
+	if err := writeEnvironmentState(paths.state, environmentState{
+		Fingerprint: fingerprint,
+		Directory:   relative,
+	}); err != nil {
+		return pythonSelection{}, err
+	}
+	return pythonSelection{Executable: python, Source: string(plan.kind) + " environment"}, nil
+}
+
+// prepareAuthoringSlot validates the authoring venv path and clears any stale cache state before mutation.
+func prepareAuthoringSlot(paths environmentPaths) (string, string, error) {
+	relative := filepath.ToSlash(filepath.Join("environments", authoringEnvironmentSlot))
+	directory := filepath.Join(paths.root, filepath.FromSlash(relative))
+	// Reject a symlinked authoring slot so uv venv --clear never modifies a path outside .harnest/.
+	if info, statErr := os.Lstat(directory); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", "", fmt.Errorf("authoring environment cannot be a symlink: %s", directory)
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return "", "", fmt.Errorf("inspect authoring environment: %w", statErr)
+	}
+	// Remove stale publication state before mutating the slot so a failed sync never looks cached.
+	if err := os.Remove(paths.state); err != nil && !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("invalidate authoring environment: %w", err)
+	}
+	return relative, directory, nil
+}
+
+// runAuthoringUVInstall runs uv venv, pip install, and pip check pinned outside the cleared target directory.
+func (a *application) runAuthoringUVInstall(
+	command *cobra.Command,
+	uvPath, wheelPath, directory string,
+	environment []string,
+	plan authoringDependencyPlan,
+) (string, error) {
 	workingDirectory := runtimeCommandWorkingDirectory(directory, uvPath)
 	// Create a clean venv outside directory so --clear never unlinks uv's working directory.
 	if err := a.runRuntimeCommandInDirectory(
@@ -500,29 +571,22 @@ func (a *application) installAuthoringEnvironment(
 		"--clear",
 		directory,
 	); err != nil {
-		return pythonSelection{}, fmt.Errorf("create %s virtual environment: %w", plan.kind, err)
+		return "", fmt.Errorf("create %s virtual environment: %w", plan.kind, err)
 	}
 	python := runtimePythonPath(directory)
-	installArgs := authoringInstallArguments(python, wheelPath, plan)
 	// Install Harnest, framework extras, pack packages, and extension dependencies in one solve.
 	if err := a.runRuntimeCommandInDirectory(
-		command, workingDirectory, environment, uvPath, installArgs...,
+		command, workingDirectory, environment, uvPath, authoringInstallArguments(python, wheelPath, plan)...,
 	); err != nil {
-		return pythonSelection{}, fmt.Errorf("install %s authoring dependencies: %w", plan.kind, err)
+		return "", fmt.Errorf("install %s authoring dependencies: %w", plan.kind, err)
 	}
 	// Verify dependency compatibility so version conflicts surface immediately during env sync.
 	if err := a.runRuntimeCommandInDirectory(
 		command, workingDirectory, environment, uvPath, "pip", "check", "--python", python,
 	); err != nil {
-		return pythonSelection{}, fmt.Errorf("verify %s authoring dependency compatibility: %w", plan.kind, err)
+		return "", fmt.Errorf("verify %s authoring dependency compatibility: %w", plan.kind, err)
 	}
-	if err := writeEnvironmentState(paths.state, environmentState{
-		Fingerprint: fingerprint,
-		Directory:   relative,
-	}); err != nil {
-		return pythonSelection{}, err
-	}
-	return pythonSelection{Executable: python, Source: string(plan.kind) + " environment"}, nil
+	return python, nil
 }
 
 // authoringInstallArguments builds the single uv pip install invocation for a pack or extension workspace.
