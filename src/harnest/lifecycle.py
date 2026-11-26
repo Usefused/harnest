@@ -7,8 +7,9 @@ are the explicit opt-in that makes one of its functions executable by Harnest.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
-from typing import Any, Callable, Mapping, MutableMapping, TypeVar, overload
+from typing import Any, Callable, Mapping, MutableMapping, Sequence, TypeVar, overload
 
 from .frameworks.registry import framework_names
 from .lifecycle_transition import Finish, Next, TransitionContext
@@ -116,6 +117,7 @@ class LifecycleRegistration:
     order: int
     framework: str | None = None
     name: str | None = None
+    frameworks: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,12 +133,23 @@ class LifecycleListener:
     framework: str | None = None
     context_name: str | None = None
     registration_name: str | None = None
+    frameworks: tuple[str, ...] | None = None
 
     @property
     def identity(self) -> str:
         """Return the stable identity used to order and deduplicate listeners."""
 
         return f"{self.relative_path}:{self.line}:{self.function_name}"
+
+
+@dataclass(frozen=True, slots=True)
+class FrameworkExtensionContext:
+    """Read-only compilation context optionally passed into @lifecycle.framework_extension factories."""
+
+    framework: str
+    mode: str = "managed"
+    agent_name: str = ""
+    project_root: Path | None = None
 
 
 @dataclass(slots=True)
@@ -390,28 +403,94 @@ resource = _PhaseDecorator("resource")
 authenticate = _PhaseDecorator("authenticate")
 
 
-@overload
-def framework_extension(function: _Hook, *, order: int = 0) -> _Hook: ...
+FrameworkFilter = str | Sequence[str] | set[str] | frozenset[str] | None
 
 
 @overload
 def framework_extension(
-    function: None = None, *, order: int = 0
+    function: _Hook, *, order: int = 0, framework: FrameworkFilter = None
+) -> _Hook: ...
+
+
+@overload
+def framework_extension(
+    function: None = None, *, order: int = 0, framework: FrameworkFilter = None
 ) -> Callable[[_Hook], _Hook]: ...
 
 
 def framework_extension(
-    function: _Hook | None = None, *, order: int = 0
+    function: _Hook | None = None,
+    *,
+    order: int = 0,
+    framework: FrameworkFilter = None,
 ) -> _Hook | Callable[[_Hook], _Hook]:
-    """Register a zero-argument factory for one framework-specific extension.
+    """Register a factory for one framework-specific extension.
 
-    The factory returns the selected framework's framework extension type, for
-    example an ADK ``BasePlugin`` or a LangChain ``AgentMiddleware``; the
-    compiler validates it against the project's framework.
+    The factory accepts either zero arguments or one
+    :class:`FrameworkExtensionContext` argument and returns the selected
+    framework's extension type (for example an ADK ``BasePlugin`` or a
+    LangChain ``AgentMiddleware``). Pass ``framework`` as a framework name
+    (``"adk"``) or collection of names (``["adk", "langgraph"]``) to scope when
+    the factory runs.
     """
 
-    decorator = _registration_decorator("framework_extension", order=order)
+    selected_single, selected_tuple = _validate_framework_filter(framework)
+    decorator = _registration_decorator(
+        "framework_extension",
+        order=order,
+        framework=selected_single,
+        frameworks=selected_tuple,
+    )
     return decorator if function is None else decorator(function)
+
+
+def _validate_single_framework_name(value: Any, known: tuple[str, ...]) -> str:
+    """Validate one framework name entry against the registered framework list."""
+
+    # Reject non-string entries before checking membership in known frameworks.
+    if not isinstance(value, str):
+        raise TypeError(
+            "framework_extension framework must be a framework name, a collection of framework names, or None"
+        )
+    # Fail fast on typos at decoration time rather than silently skipping the factory later.
+    if value not in known:
+        choices = ", ".join(known)
+        raise ValueError(
+            f"unsupported framework_extension framework {value!r}; expected one of: {choices}"
+        )
+    return value
+
+
+def _validate_framework_filter(
+    framework: FrameworkFilter,
+) -> tuple[str | None, tuple[str, ...] | None]:
+    """Normalize an optional framework name or collection into (single_name, tuple_of_names)."""
+
+    # Omitting framework preserves default behavior (apply to every agent framework).
+    if framework is None:
+        return None, None
+    known = framework_names()
+    # Accept a single framework string directly.
+    if isinstance(framework, str):
+        validated = _validate_single_framework_name(framework, known)
+        return validated, (validated,)
+    # Reject raw byte buffers and non-collection values explicitly.
+    if isinstance(framework, (bytes, bytearray)) or not isinstance(
+        framework, (Sequence, set, frozenset)
+    ):
+        raise TypeError(
+            "framework_extension framework must be a framework name, a collection of framework names, or None"
+        )
+    validated_items = tuple(
+        dict.fromkeys(
+            _validate_single_framework_name(item, known) for item in framework
+        )
+    )
+    # An empty list would silently disable the factory; reject it explicitly.
+    if not validated_items:
+        raise ValueError("framework_extension framework collection cannot be empty")
+    single = validated_items[0] if len(validated_items) == 1 else None
+    return single, validated_items
 
 
 def _registration_decorator(
@@ -420,6 +499,7 @@ def _registration_decorator(
     order: int,
     framework: str | None = None,
     name: str | None = None,
+    frameworks: tuple[str, ...] | None = None,
 ) -> Callable[[_Hook], _Hook]:
     """Attach validated discovery metadata and preserve the original callable."""
     if phase not in _PHASES | _FACTORY_PHASES | _IMPROVEMENT_PHASES:
@@ -436,7 +516,7 @@ def _registration_decorator(
         existing = registrations_for(function)
         if existing and not _can_stack_storage(existing, phase):
             raise TypeError("a function may have only one lifecycle decorator")
-        registration = LifecycleRegistration(phase, order, framework, name)
+        registration = LifecycleRegistration(phase, order, framework, name, frameworks)
         if registration in existing:
             raise TypeError("a storage role may be declared only once per factory")
         setattr(
@@ -499,6 +579,7 @@ __all__ = [
     "DROP_EVENT",
     "EvalCaptureOptions",
     "Finish",
+    "FrameworkExtensionContext",
     "LifecycleContext",
     "LifecycleListener",
     "LifecycleRegistration",

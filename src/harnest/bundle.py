@@ -388,7 +388,11 @@ def _compile_advanced_application(
     _reject_advanced_filesystem_resources(anchor.parent, framework=framework)
     _reject_advanced_package_resources(anchor.parent, extension_descriptors, framework)
     discovered_extensions = _load_extensions(
-        anchor.parent, framework, extension_descriptors
+        anchor.parent,
+        framework,
+        extension_descriptors,
+        mode="advanced",
+        agent_name=anchor.parent.name,
     )
     _validate_extension_capabilities(
         extension_descriptors, discovered_extensions.declared_listeners
@@ -480,7 +484,11 @@ def _compile_managed_application(
         predicate=lambda item: isinstance(item, (AgentDefinition, Graph)),
     )
     discovered_extensions = _load_extensions(
-        anchor.parent, framework, extension_descriptors
+        anchor.parent,
+        framework,
+        extension_descriptors,
+        mode=mode,
+        agent_name=getattr(value, "name", ""),
     )
     _validate_extension_capabilities(
         extension_descriptors, discovered_extensions.declared_listeners
@@ -718,8 +726,13 @@ def _load_extensions(
     bundle_root: Path,
     framework: str,
     extension_descriptors: Sequence[ExtensionDescriptor] = (),
+    *,
+    mode: str = "managed",
+    agent_name: str = "",
 ) -> Any:
     """Compile explicit lifecycle roots with format-specific capability provenance."""
+
+    from .lifecycle import FrameworkExtensionContext
 
     directory = lifecycle_directory(bundle_root)
     sources = (
@@ -733,8 +746,16 @@ def _load_extensions(
             for path in extension.contribution_paths("lifecycle")
         ),
     )
+    framework_context = FrameworkExtensionContext(
+        framework=framework,
+        mode=mode,
+        agent_name=agent_name or bundle_root.name,
+        project_root=bundle_root.resolve(),
+    )
     try:
-        return discover_extension_sources(sources, framework=framework)
+        return discover_extension_sources(
+            sources, framework=framework, framework_context=framework_context
+        )
     except ExtensionDiscoveryError as exc:
         raise BundleConventionError(str(exc)) from exc
 

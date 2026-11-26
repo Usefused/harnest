@@ -335,6 +335,7 @@
     "DROP_EVENT",
     "EvalCaptureOptions",
     "Finish",
+    "FrameworkExtensionContext",
     "LifecycleContext",
     "LifecycleCoverage",
     "LifecycleListener",

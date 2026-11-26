@@ -34,6 +34,7 @@ from .http_routes import (
     validate_http_route_extensions,
 )
 from .lifecycle import (
+    FrameworkExtensionContext,
     LifecycleListener,
     _decorator_path_for_phase,
     registrations_for,
@@ -124,7 +125,10 @@ def discover_extensions(
 
 
 def discover_extension_sources(
-    sources: Sequence[ExtensionSource], *, framework: str
+    sources: Sequence[ExtensionSource],
+    *,
+    framework: str,
+    framework_context: FrameworkExtensionContext | None = None,
 ) -> DiscoveredExtensions:
     """Compile ordered extension trees into one globally validated registry."""
 
@@ -142,7 +146,15 @@ def discover_extension_sources(
     output_policy, remaining = _create_output_policy(remaining)
     telemetry_exporters, remaining = _extract_telemetry_exporters(remaining)
     portable, framework_listeners = _partition_listeners(remaining)
-    native = tuple(_create_framework_extension(item, framework) for item in framework_listeners)
+    active_context = framework_context or FrameworkExtensionContext(framework=framework)
+    # Invoke only unscoped factories or factories explicitly targeting the agent's configured framework.
+    matching_framework_listeners = tuple(
+        item for item in framework_listeners if _matches_framework(item, framework)
+    )
+    native = tuple(
+        _create_framework_extension(item, framework, active_context)
+        for item in matching_framework_listeners
+    )
     _validate_framework_duplicates(native, framework)
     context_values = _factory_context_values(
         *((listener, _storage_value_for_listener(storage, listener))
@@ -675,6 +687,7 @@ def _listener_for_registration(
             context_registration.name if context_registration is not None else None
         ),
         registration_name=_registration_name(registration),
+        frameworks=registration.frameworks if registration is not None else None,
     )
 
 
@@ -741,6 +754,9 @@ def _validate_listener_signature(
     }
     if phase == "http_routes":
         _validate_http_route_factory_signature(relative, name, function)
+        return
+    if phase == "framework_extension":
+        _validate_framework_extension_factory_signature(relative, name, function)
         return
     if phase in _EVAL_IMPROVEMENT_PHASES:
         _validate_single_argument(relative, name, function)
@@ -859,6 +875,29 @@ def _validate_http_route_factory_signature(
         )
 
 
+def _validate_framework_extension_factory_signature(
+    relative: str, name: str, function: Any
+) -> None:
+    """Allow framework extension factories to take zero args or one FrameworkExtensionContext."""
+
+    parameters = tuple(inspect.signature(function).parameters.values())
+    positional = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    # Permit either zero-argument factories or a single positional FrameworkExtensionContext parameter.
+    if len(parameters) > 1 or any(item.kind not in positional for item in parameters):
+        raise ExtensionDiscoveryError(
+            f"framework lifecycle factory {relative}:{name} must accept no arguments "
+            "or one FrameworkExtensionContext argument"
+        )
+    # Framework extensions are instantiated synchronously during compilation.
+    if inspect.iscoroutinefunction(function):
+        raise ExtensionDiscoveryError(
+            f"framework lifecycle factory {relative}:{name} must be synchronous"
+        )
+
+
 def _validate_factory_signature(
     relative: str, name: str, function: Any, phase: str
 ) -> None:
@@ -909,18 +948,38 @@ def _load_module(path: Path) -> Any:
     return module
 
 
-def _create_framework_extension(listener: LifecycleListener, framework: str) -> Any:
-    """Instantiate a synchronous factory and validate the selected framework contract."""
+def _matches_framework(listener: LifecycleListener, framework: str) -> bool:
+    """Return True when a framework_extension factory applies to the target framework."""
 
-    value = _call_factory(listener, label="framework lifecycle")
+    # Multi-framework tuples take precedence when populated.
+    if listener.frameworks is not None:
+        return framework in listener.frameworks
+    # Fall back to the legacy single-framework field when set.
+    if listener.framework is not None:
+        return listener.framework == framework
+    return True
+
+
+def _create_framework_extension(
+    listener: LifecycleListener,
+    framework: str,
+    context: FrameworkExtensionContext,
+) -> Any:
+    """Instantiate a synchronous factory (passing context when accepted) and validate its return type."""
+
+    # Pass FrameworkExtensionContext only when the factory declares a parameter for it.
+    args = (context,) if inspect.signature(listener.callback).parameters else ()
+    value = _call_factory(listener, label="framework lifecycle", args=args)
     _validate_framework_extension(value, framework, listener.identity)
     return value
 
 
-def _call_factory(listener: LifecycleListener, *, label: str) -> Any:
+def _call_factory(
+    listener: LifecycleListener, *, label: str, args: tuple[Any, ...] = ()
+) -> Any:
     failure: ExtensionDiscoveryError | None = None
     try:
-        value = listener.callback()
+        value = listener.callback(*args)
     except Exception as error:
         failure = ExtensionDiscoveryError(
             f"{label} factory {listener.identity} failed with "

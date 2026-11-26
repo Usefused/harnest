@@ -103,6 +103,12 @@ def middleware_factory(value: int) -> CompanyService:
     return CompanyService()
 
 
+@lifecycle.framework_extension(order=2, framework=["adk", "langgraph"])
+def adk_plugin_factory(ctx: lifecycle.FrameworkExtensionContext) -> CompanyService:
+    assert_type(ctx.framework, str)
+    return CompanyService()
+
+
 async def authored_decorators(skill: SkillContext) -> None:
     assert_type(await queued_lookup("key", limit=3), str)
     assert_type(sync_lookup("key"), int)

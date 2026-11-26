@@ -777,11 +777,75 @@ class ExtensionDiscoveryTests(unittest.TestCase):
             result = discover_extensions(root, framework="adk")
         self.assertEqual([item.name for item in result.framework_extensions], ["audit"])
 
+    def test_framework_extension_filter_and_context_injection(self):
+        """@lifecycle.framework_extension accepts framework arrays and injects FrameworkExtensionContext."""
+        from harnest import lifecycle
+
+        # Array framework filter + 1-arg FrameworkExtensionContext branching in one shared factory.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            root.mkdir(parents=True)
+            self._session_store(root)
+            (root / "audit.py").write_text(
+                "from harnest import lifecycle\n"
+                "@lifecycle.framework_extension(order=4, framework=['adk', 'langgraph'])\n"
+                "def shared_extension(ctx: lifecycle.FrameworkExtensionContext):\n"
+                "  if ctx.framework == 'adk':\n"
+                "    from google.adk.plugins.base_plugin import BasePlugin\n"
+                "    return BasePlugin(name=f'{ctx.agent_name}_{ctx.mode}')\n"
+                "  from langchain.agents.middleware import AgentMiddleware\n"
+                "  class AuditMiddleware(AgentMiddleware):\n"
+                "    agent_name = ctx.agent_name\n"
+                "    mode = ctx.mode\n"
+                "  return AuditMiddleware()\n",
+                encoding="utf-8",
+            )
+            adk_ctx = lifecycle.FrameworkExtensionContext(
+                framework="adk", mode="managed", agent_name="billing", project_root=Path(directory)
+            )
+            lg_ctx = lifecycle.FrameworkExtensionContext(
+                framework="langgraph", mode="managed", agent_name="billing", project_root=Path(directory)
+            )
+            adk_result = discover_extension_sources(
+                (ExtensionSource(root, "root/extensions"),), framework="adk", framework_context=adk_ctx
+            )
+            lg_result = discover_extension_sources(
+                (ExtensionSource(root, "root/extensions"),), framework="langgraph", framework_context=lg_ctx
+            )
+        self.assertEqual([item.name for item in adk_result.framework_extensions], ["billing_managed"])
+        self.assertEqual(len(lg_result.framework_extensions), 1)
+        self.assertEqual(lg_result.framework_extensions[0].agent_name, "billing")
+
+        # An ADK-only factory must be skipped without executing when compiling a LangGraph agent.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "extensions"
+            root.mkdir(parents=True)
+            self._session_store(root)
+            (root / "adk_only.py").write_text(
+                "from harnest import lifecycle\n"
+                "@lifecycle.framework_extension(framework=['adk'])\n"
+                "def adk_only(ctx):\n"
+                "  raise AssertionError('ADK factory must not run for LangGraph')\n",
+                encoding="utf-8",
+            )
+            skipped = discover_extensions(root, framework="langgraph")
+        self.assertEqual(skipped.framework_extensions, ())
+
+        # Invalid framework filter names, empty collections, or non-strings must fail at decoration time.
+        with self.assertRaisesRegex(ValueError, "unsupported framework_extension framework"):
+            lifecycle.framework_extension(framework="unknown")
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            lifecycle.framework_extension(framework=[])
+        with self.assertRaisesRegex(ValueError, "unsupported framework_extension framework"):
+            lifecycle.framework_extension(framework=["adk", "unknown"])
+        with self.assertRaisesRegex(TypeError, "framework name"):
+            lifecycle.framework_extension(framework=123)  # type: ignore[arg-type]
+
     def test_wrong_native_value_and_factory_arguments_are_rejected(self):
         for source, message in (
             (
-                "@lifecycle.framework_extension\ndef plugin(value): return value\n",
-                "no arguments",
+                "@lifecycle.framework_extension\ndef plugin(first, second): return first\n",
+                "no arguments or one FrameworkExtensionContext argument",
             ),
             ("@lifecycle.framework_extension\ndef plugin(): return object()\n", "BasePlugin"),
         ):
