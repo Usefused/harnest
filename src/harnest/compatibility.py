@@ -19,7 +19,7 @@ from packaging.version import InvalidVersion, Version
 from .frameworks.registry import framework_metadata
 
 
-_SOURCE_VERSION = "2.4.0"  # x-release-please-version
+_SOURCE_VERSION = "2.5.0"  # x-release-please-version
 
 
 @dataclass(frozen=True, slots=True)

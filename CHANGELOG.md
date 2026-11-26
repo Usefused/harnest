@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## [2.5.0](https://github.com/Usefused/harnest/compare/v2.4.0...v2.5.0) (2026-11-26)
 
 - Added an optional `framework` parameter (accepting a framework name or collection of names such as `["adk", "langgraph"]`) and optional `FrameworkExtensionContext` injection (`framework`, `mode`, `agent_name`, `project_root`) to `@lifecycle.framework_extension`, so multi-framework packs and extensions can scope factories per framework or branch dynamically inside one factory.
+
+### Features
+
+* add framework filter and FrameworkExtensionContext to [@lifecycle](https://github.com/lifecycle).framework_extension ([24d1eee](https://github.com/Usefused/harnest/commit/24d1eee463b08d9ce93793317a3b7b729266f7a2))
 
 ## [2.4.0](https://github.com/Usefused/harnest/compare/v2.3.1...v2.4.0) (2026-11-26)
 
